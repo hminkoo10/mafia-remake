@@ -1,0 +1,23 @@
+{
+  "participant_role": "마피아 참가자",
+  "manager_role": "관리자",
+  "default_mafia_count": 2,
+  "default_doctor_count": 1,
+  "default_police_count": 1,
+  "default_joker_count": 1,
+  "night_seconds": 40,
+  "discussion_seconds": 60,
+  "vote_seconds": 20,
+  "chat_slowmode_seconds": 3,
+  "reveal_death_roles": false,
+  "citizen_special_count": 0,
+  "mafia_special_count": 0,
+  "neutral_special_count": 1,
+  "enable_detective": true,
+  "enable_graverobber": true,
+  "enable_spy": true,
+  "enable_godfather": true,
+  "enable_joker": true,
+  "enable_politician": true,
+  "enable_terrorist": true
+}
