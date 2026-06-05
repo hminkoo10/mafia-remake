@@ -4,6 +4,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 import random
+import secrets
 
 
 class Role(str, Enum):
@@ -171,7 +172,7 @@ class MafiaGame:
         agent_count: int = 0,
         vigilante_count: int = 0,
     ) -> None:
-        self._rng = rng or random.SystemRandom()
+        self._rng = rng if rng is not None else secrets.SystemRandom()
         special_roles = special_roles or []
         self._validate_counts(
             players,
@@ -1326,17 +1327,17 @@ class MafiaGame:
                 or not voter.alive
                 or not target
                 or not target.alive
-                or target.role != Role.MADAM
+                or voter.role != Role.MADAM
                 or voter.user_id == target.user_id
             ):
                 continue
-            if voter.user_id not in self.madam_seduced_ids:
-                seduced.append(voter)
-            self.madam_seduced_ids.add(voter.user_id)
-            self.madam_seduction_release_days.pop(voter.user_id, None)
-            if self.is_mafia_team(voter):
-                self._contact_mafia_team_member(voter)
-                self.madam_contacted.add(target.user_id)
+            if target.user_id not in self.madam_seduced_ids:
+                seduced.append(target)
+            self.madam_seduced_ids.add(target.user_id)
+            self.madam_seduction_release_days.pop(target.user_id, None)
+            if self.is_mafia_team(target):
+                self._contact_mafia_team_member(target)
+                self.madam_contacted.add(voter.user_id)
         return seduced
 
     def start_vote(self) -> None:
