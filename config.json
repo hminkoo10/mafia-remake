@@ -1,10 +1,12 @@
 {
+  "game_enabled": true,
   "participant_role": "마피아 참가자",
   "manager_role": "관리자",
   "default_mafia_count": 3,
   "default_doctor_count": 1,
   "default_police_count": 1,
   "default_joker_count": 1,
+  "max_player_count": 0,
   "night_seconds": 40,
   "discussion_seconds": 60,
   "vote_seconds": 20,
@@ -21,6 +23,7 @@
   "enable_contractor": true,
   "enable_witch": true,
   "enable_scientist": true,
+  "enable_madam": true,
   "enable_godfather": true,
   "enable_joker": true,
   "enable_politician": true,
@@ -28,11 +31,15 @@
   "enable_reporter": true,
   "enable_hacker": true,
   "enable_terrorist": true,
+  "enable_lover": true,
+  "enable_priest": true,
   "enable_shaman": true,
   "enable_soldier": true,
   "enable_nurse": true,
   "enable_cult_team": true,
   "use_agent": true,
   "use_vigilante": false,
-  "anonymous_mode": true
+  "anonymous_mode": false,
+  "anonymous_name_mode": "animal",
+  "blacklist_user_ids": []
 }
