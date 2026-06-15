@@ -387,6 +387,7 @@ class MafiaGame:
             Role.REPORTER,
             Role.DETECTIVE,
             Role.SPY,
+            Role.CONTRACTOR,
             Role.SHAMAN,
             Role.PRIEST,
             Role.WITCH,
@@ -425,6 +426,8 @@ class MafiaGame:
             return actor.user_id in self.detective_targets
         if role == Role.SPY:
             return bool(self.spy_targets.get(actor.user_id))
+        if role == Role.CONTRACTOR:
+            return actor.user_id in self.contractor_contracts
         if role == Role.SHAMAN:
             return actor.user_id in self.shaman_targets
         if role == Role.PRIEST:
@@ -454,7 +457,10 @@ class MafiaGame:
             self.phase == Phase.NIGHT
             and actor
             and actor.alive
-            and actor.role == Role.CONTRACTOR
+            and (
+                actor.role == Role.CONTRACTOR
+                or (actor.role == Role.THIEF and self.thief_stolen_roles.get(actor_id) == Role.CONTRACTOR)
+            )
             and self.day_number >= 2
             and len(self.contractor_contract_targets(actor)) >= 2
         )
@@ -1156,7 +1162,9 @@ class MafiaGame:
         if self.phase != Phase.NIGHT:
             raise ValueError("지금은 밤이 아닙니다.")
         actor = self._require_alive(actor_id)
-        if actor.role != Role.CONTRACTOR:
+        if actor.role != Role.CONTRACTOR and not (
+            actor.role == Role.THIEF and self.thief_stolen_roles.get(actor_id) == Role.CONTRACTOR
+        ):
             raise ValueError("청부업자만 청부를 사용할 수 있습니다.")
         if self.is_frog(actor):
             raise ValueError("개구리 상태에서는 밤 행동을 사용할 수 없습니다.")
@@ -1305,7 +1313,11 @@ class MafiaGame:
         self.spy_targets.pop(actor_id, None)
         self.spy_bonus_pending.discard(actor_id)
         if actor_id in self.contractor_contacts_this_night:
-            self.contractor_contacted.discard(actor_id)
+            actor = self.get_player(actor_id)
+            if actor and actor.role == Role.THIEF:
+                self.thief_contacted.discard(actor_id)
+            else:
+                self.contractor_contacted.discard(actor_id)
             self.contractor_contacts_this_night = [
                 user_id for user_id in self.contractor_contacts_this_night if user_id != actor_id
             ]
@@ -1899,6 +1911,9 @@ class MafiaGame:
         if role == Role.SPY:
             targets = self.spy_targets.get(watched.user_id, [])
             return targets[-1] if targets else None
+        if role == Role.CONTRACTOR:
+            contract = self.contractor_contracts.get(watched.user_id)
+            return contract[0][0] if contract else None
         if role == Role.SHAMAN:
             return self.shaman_targets.get(watched.user_id)
         if role == Role.PRIEST:
@@ -1973,7 +1988,10 @@ class MafiaGame:
                 for target, guessed_role in targets
             )
             if matched_mafia:
-                self.contractor_contacted.add(actor_id)
+                if actor.role == Role.THIEF:
+                    self.thief_contacted.add(actor_id)
+                else:
+                    self.contractor_contacted.add(actor_id)
                 if actor_id not in self.contractor_contacts_this_night:
                     self.contractor_contacts_this_night.append(actor_id)
 
@@ -2182,7 +2200,7 @@ class MafiaGame:
     def _resolve_agent_results(self) -> dict[int, str]:
         results: dict[int, str] = {}
         for agent in self.alive_players():
-            if agent.role != Role.AGENT:
+            if agent.role != Role.AGENT and self.thief_stolen_roles.get(agent.user_id) != Role.AGENT:
                 continue
 
             candidates = [

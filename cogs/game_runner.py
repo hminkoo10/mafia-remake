@@ -972,7 +972,8 @@ async def run_night(
 
     failed_names: list[str] = []
     for actor in running.game.night_action_actors():
-        if actor.role == Role.CONTRACTOR:
+        effective_role = running.game.thief_night_role(actor) if actor.role == Role.THIEF else actor.role
+        if effective_role == Role.CONTRACTOR:
             contract_targets = sorted(
                 running.game.contractor_contract_targets(actor),
                 key=lambda player: player.name.casefold(),
@@ -991,7 +992,6 @@ async def run_night(
             continue
         targets = night_targets(running.game, actor)
         if targets:
-            effective_role = running.game.thief_night_role(actor) if actor.role == Role.THIEF else actor.role
             sent = await send_player_secret(
                 guild,
                 running,
