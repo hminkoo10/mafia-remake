@@ -1347,14 +1347,34 @@ class MafiaGame:
         mafia_target_id = self._majority_target(
             self.mafia_targets,
         )
-        healing_targets = dict(self.doctor_targets)
+        healing_targets = {
+            actor_id: target_id
+            for actor_id, target_id in self.doctor_targets.items()
+            if (actor := self.get_player(actor_id)) and actor.role == Role.DOCTOR
+        }
+        stolen_doctor_target_ids = {
+            target_id
+            for actor_id, target_id in self.doctor_targets.items()
+            if self._is_stolen_doctor_actor(actor_id)
+            and self._is_alive(actor_id)
+            and self._is_alive(target_id)
+        }
         if not self.alive_role_count(Role.DOCTOR):
             healing_targets.update(self.nurse_targets)
-        protected_id = self._majority_target(healing_targets)
+        majority_protected_id = self._majority_target(healing_targets)
+        protected_ids = set(stolen_doctor_target_ids)
+        if majority_protected_id is not None:
+            protected_ids.add(majority_protected_id)
         police_target_id = self._majority_target(
             self.police_targets,
         )
         godfather_target_id = self._majority_target(godfather_attackers)
+        protected_id = self._reported_protected_id(
+            protected_ids,
+            mafia_target_id,
+            godfather_target_id,
+            majority_protected_id,
+        )
 
         mafia_target = self.get_player(mafia_target_id) if mafia_target_id else None
         protected = self.get_player(protected_id) if protected_id else None
@@ -1382,7 +1402,11 @@ class MafiaGame:
         killed_by_mafia_team_ids: set[int] = set()
         soldier_blocks: list[Player] = []
         lover_sacrifices: list[tuple[Player, Player]] = []
-        enhanced_protection = protected_id is not None and self._nurse_enhanced_heal_active()
+        enhanced_protection_ids = (
+            {majority_protected_id}
+            if majority_protected_id is not None and self._nurse_enhanced_heal_active()
+            else set()
+        )
 
         def kill_player(target: Player, *, by_mafia_team: bool = False) -> None:
             if target.alive:
@@ -1405,9 +1429,9 @@ class MafiaGame:
                 kill_player(lover_savior, by_mafia_team=True)
                 lover_sacrifices.append((lover_savior, target))
                 return
-            if target.user_id == protected_id and enhanced_protection:
+            if target.user_id in enhanced_protection_ids:
                 return
-            if not ignore_doctor and target.user_id == protected_id:
+            if not ignore_doctor and target.user_id in protected_ids:
                 return
             if allow_soldier_block and (
                 target.role == Role.SOLDIER
@@ -2280,6 +2304,25 @@ class MafiaGame:
     def _is_stolen_godfather_actor(self, user_id: int) -> bool:
         player = self.get_player(user_id)
         return bool(player and player.role == Role.THIEF and self.thief_stolen_roles.get(user_id) == Role.GODFATHER)
+
+    def _is_stolen_doctor_actor(self, user_id: int) -> bool:
+        player = self.get_player(user_id)
+        return bool(player and player.role == Role.THIEF and self.thief_stolen_roles.get(user_id) == Role.DOCTOR)
+
+    @staticmethod
+    def _reported_protected_id(
+        protected_ids: set[int],
+        mafia_target_id: int | None,
+        godfather_target_id: int | None,
+        majority_protected_id: int | None,
+    ) -> int | None:
+        if mafia_target_id in protected_ids:
+            return mafia_target_id
+        if godfather_target_id in protected_ids:
+            return godfather_target_id
+        if majority_protected_id is not None:
+            return majority_protected_id
+        return min(protected_ids) if protected_ids else None
 
     def _majority_target(self, targets: dict[int, int]) -> int | None:
         live_targets = [
