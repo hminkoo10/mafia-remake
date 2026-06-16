@@ -519,7 +519,6 @@ class MafiaGame:
             if player.role == Role.VIGILANTE
             and not self.is_madam_seduced(player)
             and player.user_id not in self.vigilante_investigation_used_ids
-            and player.user_id not in self.vigilante_execution_used_ids
             and any(target.user_id != player.user_id for target in self.alive_players())
         ]
 
@@ -533,8 +532,6 @@ class MafiaGame:
             raise ValueError("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.")
         if actor_id in self.vigilante_investigation_used_ids:
             raise ValueError("자경단원 조사는 이미 사용했습니다.")
-        if actor_id in self.vigilante_execution_used_ids:
-            raise ValueError("숙청 처형을 이미 시도해 더 이상 조사할 수 없습니다.")
         target = self._require_alive(target_id)
         if actor_id == target_id:
             raise ValueError("자경단원은 자기 자신을 조사할 수 없습니다.")
@@ -696,19 +693,17 @@ class MafiaGame:
         self.police_result_announced = True
 
     def vigilante_execution_targets(self, actor: Player) -> list[Player]:
-        if actor.role != Role.VIGILANTE or not actor.alive:
+        if (
+            actor.role != Role.VIGILANTE
+            or not actor.alive
+            or actor.user_id in self.vigilante_execution_used_ids
+        ):
             return []
-        known_enemy_ids = self.vigilante_known_enemy_ids.get(actor.user_id, set())
-        targets: list[Player] = []
-        for player in self.alive_players():
-            if player.user_id == actor.user_id:
-                continue
-            if player.user_id in known_enemy_ids:
-                targets.append(player)
-                continue
-            if self.is_publicly_revealed(player) and self.is_mafia_team(player):
-                targets.append(player)
-        return targets
+        return [
+            player
+            for player in self.alive_players()
+            if player.user_id != actor.user_id
+        ]
 
     def consume_hacker_results(self) -> dict[int, str]:
         results: dict[int, str] = {}
@@ -828,16 +823,13 @@ class MafiaGame:
                 raise ValueError("숙청 처형은 이미 사용했습니다.")
             if actor_id == target_id:
                 raise ValueError("자경단원은 자기 자신을 숙청할 수 없습니다.")
-            available_target_ids = {
-                player.user_id for player in self.vigilante_execution_targets(actor)
-            }
+            available_target_ids = {player.user_id for player in self.vigilante_execution_targets(actor)}
             if target_id not in available_target_ids:
-                raise ValueError("자경단원은 확실하게 알고 있는 마피아팀만 숙청할 수 있습니다.")
+                raise ValueError("자경단원은 살아있는 다른 플레이어만 숙청할 수 있습니다.")
 
             target = self._proxy_target(selected_target)
             self.vigilante_targets[actor_id] = target.user_id
             self.vigilante_execution_used_ids.add(actor_id)
-            self.vigilante_investigation_used_ids.add(actor_id)
             return f"숙청 대상: {selected_target.name}"
 
         if actor.role == Role.REPORTER:

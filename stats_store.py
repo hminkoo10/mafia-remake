@@ -210,11 +210,14 @@ def role_rating_adjustment(running: RunningGame, player: Player, role: Role, win
         else:
             add(-1, "요원 공작 결과 없음")
     elif role == Role.VIGILANTE:
+        used_any_vigilante_action = False
         if player.user_id in game.vigilante_execution_used_ids:
+            used_any_vigilante_action = True
             add(5, "자경단원 숙청 사용")
-        elif player.user_id in game.vigilante_investigation_used_ids:
+        if player.user_id in game.vigilante_investigation_used_ids:
+            used_any_vigilante_action = True
             add(2, "자경단원 조사 사용")
-        else:
+        if not used_any_vigilante_action:
             add(-2, "자경단원 능력 미사용")
     elif role == Role.REPORTER:
         if player.user_id in game.reporter_used_ids:

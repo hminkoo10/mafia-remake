@@ -133,7 +133,7 @@ def personal_role_status(game: MafiaGame, player: Player) -> list[str]:
         return [
             f"조사 사용: {'사용함' if player.user_id in game.vigilante_investigation_used_ids else '미사용'}",
             f"처형 사용: {'사용함' if player.user_id in game.vigilante_execution_used_ids else '미사용'}",
-            f"숙청 가능 확정 대상: {', '.join(known) if known else '없음'}",
+            f"조사로 확인한 마피아팀: {', '.join(known) if known else '없음'}",
         ]
     return []
 

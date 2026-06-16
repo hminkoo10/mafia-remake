@@ -449,7 +449,7 @@ async def send_vigilante_day_actions(
             actor,
             "자경단원 낮 행동을 선택하세요.\n"
             "숙청 조사는 1회용입니다. 밤이 시작될 때 대상이 마피아팀인지 비밀 메시지로 전달됩니다.\n"
-            "숙청 처형은 밤에 확실하게 알고 있는 마피아팀에게 한 번만 시도할 수 있습니다.",
+            "숙청 처형은 조사와 별개로 밤에 한 번 시도할 수 있고, 마피아팀이 아니어도 기회가 소진됩니다.",
             VigilanteDayActionView(running.guild_id, actor, targets),
         )
         if not sent:
