@@ -8,3 +8,13 @@ __pycache__/
 venv/
 simulate_game.py
 target/
+.rustup/
+.cargo/bin/
+.cargo/registry/
+.cargo/git/
+.cargo/.global-cache
+.cargo/.package-cache
+.cargo/.package-cache-mutate
+.mingw/
+.rustup-init.exe
+C/

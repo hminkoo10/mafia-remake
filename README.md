@@ -9,16 +9,37 @@
 Rust 고속 런타임입니다.
 
 ```powershell
-$env:CARGO_HOME='C:\rust-mafia\cargo'
-$env:RUSTUP_HOME='C:\rust-mafia\rustup'
-$env:Path="$env:CARGO_HOME\bin;$env:Path"
-cargo run --release
+.\scripts\bootstrap-windows-rust.ps1
+.\scripts\run-windows.ps1
 ```
+
+Windows에서 처음 부트스트랩하면 `.cargo`, `.rustup`, `.mingw`, `target`이 모두 이 프로젝트 폴더 안에 만들어집니다.
 
 이미 빌드된 실행 파일을 바로 실행할 수도 있습니다.
 
 ```powershell
-.\target\release\mafia-remake.exe
+.\target\x86_64-pc-windows-gnullvm\release\mafia-remake.exe
+```
+
+Windows 빌드:
+
+```powershell
+.\scripts\build-windows.ps1
+```
+
+Windows 테스트:
+
+```powershell
+.\scripts\test-windows.ps1
+```
+
+Linux 빌드:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential pkg-config curl git
+./scripts/bootstrap-linux-rust.sh
+./scripts/build-linux.sh
 ```
 
 기존 Python 구현은 비교/백업용 legacy 코드로 남아 있습니다.
