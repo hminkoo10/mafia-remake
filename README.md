@@ -11,7 +11,6 @@ Rust 고속 런타임입니다.
 ```powershell
 $env:CARGO_HOME='C:\rust-mafia\cargo'
 $env:RUSTUP_HOME='C:\rust-mafia\rustup'
-$env:CARGO_TARGET_DIR='C:\rust-mafia\target\mafia-remake'
 $env:Path="$env:CARGO_HOME\bin;$env:Path"
 cargo run --release
 ```
@@ -19,7 +18,7 @@ cargo run --release
 이미 빌드된 실행 파일을 바로 실행할 수도 있습니다.
 
 ```powershell
-C:\rust-mafia\target\mafia-remake\release\mafia-remake.exe
+.\target\release\mafia-remake.exe
 ```
 
 기존 Python 구현은 비교/백업용 legacy 코드로 남아 있습니다.

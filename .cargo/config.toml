@@ -1,6 +1,8 @@
 [build]
-target-dir = "C:/rust-mafia/target/mafia-remake"
 jobs = 22
+
+[env]
+AR_x86_64_pc_windows_gnu = { value = "C:/rust-mafia/rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/llvm-ar.exe", force = true }
 
 [target.x86_64-pc-windows-gnu]
 linker = "C:/rust-mafia/rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/rust-lld.exe"
