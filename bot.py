@@ -4,6 +4,7 @@ import asyncio
 from contextlib import suppress
 from dataclasses import fields
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -60,10 +61,14 @@ from role_data import (
     MAFIA_TERM_ENTRIES,
 )
 from stats_store import (
+    INITIAL_RATING,
+    LEADERBOARD_METRIC_NAMES,
     default_player_stats,
     ensure_player_stats,
     initial_role_for_stats,
     is_mafia_team_role,
+    leaderboard_entries,
+    leaderboard_metric_name,
     leaderboard_text,
     leaderboard_value,
     load_stats,
@@ -91,6 +96,8 @@ WEB_SETTINGS_PATH = "/web-settings"
 WEB_SETTINGS_SESSION_TTL_SECONDS = 600
 WEB_SETTINGS_DEFAULT_HOST = "0.0.0.0"
 WEB_SETTINGS_DEFAULT_PORT = 8800
+BOT_STARTED_AT = time.monotonic()
+WEB_LEADERBOARD_METRICS = ("rating", "wins", "winrate", "games", "mafia", "playtime")
 
 
 def parse_user_id_list(values: object) -> list[int]:
@@ -225,10 +232,142 @@ def apply_web_config_updates(updates: dict[str, object]) -> str | None:
     return None
 
 
+def web_status_values() -> dict[str, object]:
+    now = time.monotonic()
+    bot_user = getattr(bot, "user", None)
+    latency = bot.latency
+    latency_ms = round(latency * 1000) if math.isfinite(latency) else 0
+    guilds = list(getattr(bot, "guilds", []))
+    running_games = []
+    for guild_id, running in games.items():
+        guild = bot.get_guild(guild_id)
+        channel = guild.get_channel(running.channel_id) if guild else None
+        alive_count = len(running.game.alive_players())
+        dead_count = len(running.game.dead_players())
+        running_games.append(
+            {
+                "guild_id": guild_id,
+                "guild_name": guild.name if guild else str(guild_id),
+                "channel_id": running.channel_id,
+                "channel_name": f"#{channel.name}" if hasattr(channel, "name") else str(running.channel_id),
+                "phase": running.game.phase.value,
+                "day": f"{running.game.day_number}일차",
+                "participant_count": len(running.game.players),
+                "alive_count": alive_count,
+                "dead_count": dead_count,
+                "spectator_count": len(running.spectator_user_ids),
+                "anonymous_enabled": running.anonymous_enabled,
+                "elapsed": play_duration_text(int(now - running.started_at)),
+            }
+        )
+
+    return {
+        "bot": {
+            "ready": bot.is_ready(),
+            "name": bot_user.name if bot_user else "Dimi Check",
+            "latency_ms": latency_ms,
+            "guild_count": len(guilds),
+            "user_count": sum(int(guild.member_count or 0) for guild in guilds),
+            "uptime": play_duration_text(int(now - BOT_STARTED_AT)),
+        },
+        "games": sorted(running_games, key=lambda item: (str(item["guild_name"]), str(item["channel_name"]))),
+        "recruiting_guild_count": len(recruiting_guilds),
+        "settings": {
+            "game_enabled": config.game_enabled,
+            "max_player_count_text": max_player_setting_text(),
+            "role_summary": (
+                f"마피아 {config.default_mafia_count}명, "
+                f"의사 {config.default_doctor_count}명, "
+                f"수사직 {config.default_police_count}명"
+            ),
+            "special_summary": (
+                f"시민 {config.citizen_special_count}개, "
+                f"마피아 {config.mafia_special_count}개, "
+                f"중립 {config.neutral_special_count}개"
+            ),
+            "anonymous_mode_text": (
+                f"켜짐 ({anonymous_name_mode_text()})" if config.anonymous_mode else "꺼짐"
+            ),
+            "slowmode_text": f"{config.chat_slowmode_seconds}초",
+            "cult_team_text": "켜짐" if config.enable_cult_team else "꺼짐",
+        },
+    }
+
+
+def web_stats_summary() -> dict[str, object]:
+    stats = load_stats()
+    users = stats.get("users", {})
+    if not isinstance(users, dict):
+        users = {}
+    entries = [entry for entry in users.values() if isinstance(entry, dict)]
+    played_entries = [entry for entry in entries if int(entry.get("games", 0)) > 0]
+    total_player_games = sum(int(entry.get("games", 0)) for entry in played_entries)
+    total_wins = sum(int(entry.get("wins", 0)) for entry in played_entries)
+    total_play_seconds = sum(int(entry.get("play_seconds", 0)) for entry in played_entries)
+    ratings = [int(entry.get("rating", INITIAL_RATING)) for entry in played_entries]
+    return {
+        "registered_users": len(entries),
+        "recorded_players": len(played_entries),
+        "total_player_games": total_player_games,
+        "total_wins": total_wins,
+        "total_playtime": play_duration_text(total_play_seconds),
+        "total_play_seconds": total_play_seconds,
+        "average_rating": round(sum(ratings) / len(ratings)) if ratings else INITIAL_RATING,
+    }
+
+
+def web_leaderboard_values(metric: str = "rating", limit: int = 10) -> dict[str, object]:
+    if metric not in WEB_LEADERBOARD_METRICS:
+        metric = "rating"
+    safe_limit = max(1, min(int(limit), 50))
+    entries = []
+    for rank, (user_id, entry) in enumerate(leaderboard_entries(metric, limit=safe_limit), start=1):
+        games_count = int(entry.get("games", 0))
+        wins = int(entry.get("wins", 0))
+        losses = int(entry.get("losses", 0))
+        mafia_games = int(entry.get("mafia_team_games", 0))
+        play_seconds = int(entry.get("play_seconds", 0))
+        rating = int(entry.get("rating", INITIAL_RATING))
+        rating_peak = int(entry.get("rating_peak", INITIAL_RATING))
+        rating_games = int(entry.get("rating_games", 0))
+        entries.append(
+            {
+                "rank": rank,
+                "user_id": user_id,
+                "name": str(entry.get("name", "알 수 없음")),
+                "games": games_count,
+                "wins": wins,
+                "losses": losses,
+                "winrate": round(wins / games_count * 100, 1) if games_count else 0.0,
+                "winrate_text": win_rate_text(wins, games_count),
+                "mafia_team_games": mafia_games,
+                "play_seconds": play_seconds,
+                "playtime": play_duration_text(play_seconds),
+                "rating": rating,
+                "rating_peak": rating_peak,
+                "rating_games": rating_games,
+                "value": leaderboard_value(entry, metric),
+            }
+        )
+    return {
+        "metric": metric,
+        "metric_name": leaderboard_metric_name(metric),
+        "metrics": [
+            {"key": key, "name": LEADERBOARD_METRIC_NAMES[key]}
+            for key in WEB_LEADERBOARD_METRICS
+        ],
+        "limit": safe_limit,
+        "entries": entries,
+    }
+
+
 web_settings_app = web_settings.create_app(
     sessions=web_settings_sessions,
     get_config_values=web_config_values,
     apply_config_updates=apply_web_config_updates,
+    get_status_values=web_status_values,
+    get_leaderboard_values=web_leaderboard_values,
+    get_stats_summary=web_stats_summary,
     base_path=WEB_SETTINGS_PATH,
 )
 

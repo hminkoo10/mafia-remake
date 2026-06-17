@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 
@@ -58,6 +59,7 @@ FONT_PATHS = {
 }
 
 
+@lru_cache(maxsize=32)
 def load_font(size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     for path in FONT_PATHS["bold" if bold else "regular"]:
         if path.exists():

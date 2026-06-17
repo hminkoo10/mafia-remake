@@ -85,8 +85,10 @@ class RunningGame:
     memos: dict[int, dict[int, list[str]]] = field(default_factory=dict)
     spectator_user_ids: set[int] = field(default_factory=set)
     game_status_message_id: int | None = None
+    game_status_text: str | None = None
     shaman_channel_id: int | None = None
     shaman_status_message_id: int | None = None
+    shaman_status_text: str | None = None
     frog_channel_id: int | None = None
     frog_game_channel_overwrites: dict[int, discord.PermissionOverwrite | None] = field(default_factory=dict)
     night_timed_events_due: bool = False
@@ -102,6 +104,9 @@ class RunningGame:
     anonymous_role_status_message_ids: dict[Role, int] = field(default_factory=dict)
     anonymous_role_input_status_message_ids: dict[tuple[int, Role], int] = field(default_factory=dict)
     private_role_status_message_ids: dict[Role, int] = field(default_factory=dict)
+    anonymous_role_status_texts: dict[object, str] = field(default_factory=dict)
+    private_role_status_texts: dict[Role, str] = field(default_factory=dict)
+    anonymous_channel_topics: dict[int, str] = field(default_factory=dict)
     anonymous_aliases: dict[int, str] = field(default_factory=dict)
     anonymous_original_names: dict[int, str] = field(default_factory=dict)
     anonymous_webhook_urls: dict[int, str] = field(default_factory=dict)

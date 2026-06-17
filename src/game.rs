@@ -1,0 +1,3363 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
+
+use crate::model::{
+    CONTRACTOR_GUESS_ROLES, ConfirmVoteResult, NightResult, Phase, Player, Role, VoteResult, Winner,
+};
+use anyhow::{Result, bail};
+use rand::prelude::IndexedRandom;
+use rand::seq::SliceRandom;
+use std::collections::{HashMap, HashSet};
+
+#[derive(Debug, Clone)]
+pub struct MafiaGame {
+    pub players: Vec<Player>,
+    players_by_id: HashMap<u64, usize>,
+    pub phase: Phase,
+    pub day_number: u32,
+    pub mafia_targets: HashMap<u64, u64>,
+    pub mafia_display_targets: HashMap<u64, u64>,
+    pub doctor_targets: HashMap<u64, u64>,
+    pub nurse_targets: HashMap<u64, u64>,
+    pub nurse_prescription_targets: HashMap<u64, u64>,
+    pub nurse_contacted: HashSet<u64>,
+    pub nurse_contacts_this_night: Vec<u64>,
+    pub gangster_targets: HashMap<u64, u64>,
+    pub gangster_used_ids: HashSet<u64>,
+    pub gangster_blocked_vote_days: HashMap<u64, u32>,
+    pub police_targets: HashMap<u64, u64>,
+    pub vigilante_targets: HashMap<u64, u64>,
+    pub vigilante_pending_results: HashMap<u64, u64>,
+    pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
+    pub vigilante_investigation_used_ids: HashSet<u64>,
+    pub vigilante_execution_used_ids: HashSet<u64>,
+    pub reporter_targets: HashMap<u64, u64>,
+    pub reporter_skip_submitted: HashSet<u64>,
+    pub reporter_used_ids: HashSet<u64>,
+    pub hacker_targets: HashMap<u64, u64>,
+    pub hacker_pending_results: HashMap<u64, u64>,
+    pub hacker_used_ids: HashSet<u64>,
+    pub hacker_proxy_targets: HashMap<u64, u64>,
+    pub psychologist_used_days: HashMap<u64, u32>,
+    pub detective_targets: HashMap<u64, u64>,
+    pub shaman_targets: HashMap<u64, u64>,
+    pub priest_targets: HashMap<u64, u64>,
+    pub priest_used_ids: HashSet<u64>,
+    pub spy_targets: HashMap<u64, Vec<u64>>,
+    pub spy_bonus_pending: HashSet<u64>,
+    pub spy_contacts_this_night: Vec<u64>,
+    pub contractor_contracts: HashMap<u64, ((u64, Role), (u64, Role))>,
+    pub contractor_contacts_this_night: Vec<u64>,
+    pub thief_used_days: HashMap<u64, u32>,
+    pub thief_stolen_roles: HashMap<u64, Role>,
+    pub thief_contacted: HashSet<u64>,
+    pub witch_targets: HashMap<u64, u64>,
+    pub witch_contacted: HashSet<u64>,
+    pub witch_contacts_this_night: Vec<u64>,
+    pub witch_curse_applied_actor_ids: HashSet<u64>,
+    pub godfather_targets: HashMap<u64, u64>,
+    pub terrorist_targets: HashMap<u64, u64>,
+    pub terrorist_action_submitted: HashSet<u64>,
+    pub frog_user_ids: HashSet<u64>,
+    pub soldier_bulletproof_used: HashSet<u64>,
+    pub purified_dead_ids: HashSet<u64>,
+    pub publicly_revealed_ids: HashSet<u64>,
+    pub agent_discovered_ids: HashSet<u64>,
+    pub day_votes: HashMap<u64, Option<u64>>,
+    pub confirm_votes: HashMap<u64, bool>,
+    pub police_result_announced: bool,
+    pub spy_contacted: HashSet<u64>,
+    pub contractor_contacted: HashSet<u64>,
+    pub scientist_contacted: HashSet<u64>,
+    pub scientist_revive_used_ids: HashSet<u64>,
+    pub scientist_pending_revive_ids: HashSet<u64>,
+    pub madam_contacted: HashSet<u64>,
+    pub madam_seduced_ids: HashSet<u64>,
+    pub madam_seduction_release_days: HashMap<u64, u32>,
+    pub godfather_contacted: HashSet<u64>,
+    pub revealed_judge_ids: HashSet<u64>,
+    pub cult_targets: HashMap<u64, u64>,
+    pub fanatic_targets: HashMap<u64, u64>,
+    pub culted_ids: HashSet<u64>,
+    pub cult_bells_this_night: u32,
+    pub joker_won: bool,
+    pub joker_winner_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GameCounts {
+    pub mafia_count: usize,
+    pub doctor_count: usize,
+    pub police_count: usize,
+    pub agent_count: usize,
+    pub vigilante_count: usize,
+    pub joker_count: usize,
+    pub special_roles: Vec<Role>,
+}
+
+impl MafiaGame {
+    pub fn new(
+        players: Vec<(u64, String)>,
+        mafia_count: usize,
+        doctor_count: usize,
+        police_count: usize,
+        special_roles: Vec<Role>,
+    ) -> Result<Self> {
+        Self::new_with_counts(
+            players,
+            GameCounts {
+                mafia_count,
+                doctor_count,
+                police_count,
+                special_roles,
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn new_with_counts(players: Vec<(u64, String)>, counts: GameCounts) -> Result<Self> {
+        validate_counts(&players, &counts)?;
+
+        let mut roles = Vec::with_capacity(players.len());
+        roles.extend(std::iter::repeat_n(Role::Mafia, counts.mafia_count));
+        roles.extend(std::iter::repeat_n(Role::Doctor, counts.doctor_count));
+        roles.extend(std::iter::repeat_n(Role::Police, counts.police_count));
+        roles.extend(std::iter::repeat_n(Role::Agent, counts.agent_count));
+        roles.extend(std::iter::repeat_n(Role::Vigilante, counts.vigilante_count));
+        roles.extend(std::iter::repeat_n(Role::Joker, counts.joker_count));
+        roles.extend(counts.special_roles);
+        roles.extend(std::iter::repeat_n(
+            Role::Citizen,
+            players.len() - roles.len(),
+        ));
+
+        let mut rng = rand::rng();
+        roles.shuffle(&mut rng);
+        let mut shuffled_players = players;
+        shuffled_players.shuffle(&mut rng);
+
+        let players = shuffled_players
+            .into_iter()
+            .zip(roles)
+            .map(|((user_id, name), role)| Player::new(user_id, name, role))
+            .collect::<Vec<_>>();
+        let players_by_id = players
+            .iter()
+            .enumerate()
+            .map(|(index, player)| (player.user_id, index))
+            .collect();
+
+        Ok(Self {
+            players,
+            players_by_id,
+            phase: Phase::Night,
+            day_number: 1,
+            mafia_targets: HashMap::new(),
+            mafia_display_targets: HashMap::new(),
+            doctor_targets: HashMap::new(),
+            nurse_targets: HashMap::new(),
+            nurse_prescription_targets: HashMap::new(),
+            nurse_contacted: HashSet::new(),
+            nurse_contacts_this_night: Vec::new(),
+            gangster_targets: HashMap::new(),
+            gangster_used_ids: HashSet::new(),
+            gangster_blocked_vote_days: HashMap::new(),
+            police_targets: HashMap::new(),
+            vigilante_targets: HashMap::new(),
+            vigilante_pending_results: HashMap::new(),
+            vigilante_known_enemy_ids: HashMap::new(),
+            vigilante_investigation_used_ids: HashSet::new(),
+            vigilante_execution_used_ids: HashSet::new(),
+            reporter_targets: HashMap::new(),
+            reporter_skip_submitted: HashSet::new(),
+            reporter_used_ids: HashSet::new(),
+            hacker_targets: HashMap::new(),
+            hacker_pending_results: HashMap::new(),
+            hacker_used_ids: HashSet::new(),
+            hacker_proxy_targets: HashMap::new(),
+            psychologist_used_days: HashMap::new(),
+            detective_targets: HashMap::new(),
+            shaman_targets: HashMap::new(),
+            priest_targets: HashMap::new(),
+            priest_used_ids: HashSet::new(),
+            spy_targets: HashMap::new(),
+            spy_bonus_pending: HashSet::new(),
+            spy_contacts_this_night: Vec::new(),
+            contractor_contracts: HashMap::new(),
+            contractor_contacts_this_night: Vec::new(),
+            thief_used_days: HashMap::new(),
+            thief_stolen_roles: HashMap::new(),
+            thief_contacted: HashSet::new(),
+            witch_targets: HashMap::new(),
+            witch_contacted: HashSet::new(),
+            witch_contacts_this_night: Vec::new(),
+            witch_curse_applied_actor_ids: HashSet::new(),
+            godfather_targets: HashMap::new(),
+            terrorist_targets: HashMap::new(),
+            terrorist_action_submitted: HashSet::new(),
+            frog_user_ids: HashSet::new(),
+            soldier_bulletproof_used: HashSet::new(),
+            purified_dead_ids: HashSet::new(),
+            publicly_revealed_ids: HashSet::new(),
+            agent_discovered_ids: HashSet::new(),
+            day_votes: HashMap::new(),
+            confirm_votes: HashMap::new(),
+            police_result_announced: false,
+            spy_contacted: HashSet::new(),
+            contractor_contacted: HashSet::new(),
+            scientist_contacted: HashSet::new(),
+            scientist_revive_used_ids: HashSet::new(),
+            scientist_pending_revive_ids: HashSet::new(),
+            madam_contacted: HashSet::new(),
+            madam_seduced_ids: HashSet::new(),
+            madam_seduction_release_days: HashMap::new(),
+            godfather_contacted: HashSet::new(),
+            revealed_judge_ids: HashSet::new(),
+            cult_targets: HashMap::new(),
+            fanatic_targets: HashMap::new(),
+            culted_ids: HashSet::new(),
+            cult_bells_this_night: 0,
+            joker_won: false,
+            joker_winner_id: None,
+        })
+    }
+
+    pub fn get_player(&self, user_id: u64) -> Option<&Player> {
+        self.players_by_id
+            .get(&user_id)
+            .and_then(|index| self.players.get(*index))
+    }
+
+    pub fn get_player_mut(&mut self, user_id: u64) -> Option<&mut Player> {
+        let index = *self.players_by_id.get(&user_id)?;
+        self.players.get_mut(index)
+    }
+
+    pub fn alive_players(&self) -> Vec<&Player> {
+        self.players.iter().filter(|player| player.alive).collect()
+    }
+
+    pub fn dead_players(&self) -> Vec<&Player> {
+        self.players.iter().filter(|player| !player.alive).collect()
+    }
+
+    pub fn unpurified_dead_players(&self) -> Vec<&Player> {
+        self.players
+            .iter()
+            .filter(|player| !player.alive && !self.purified_dead_ids.contains(&player.user_id))
+            .collect()
+    }
+
+    pub fn alive_role_count(&self, role: Role) -> usize {
+        self.players
+            .iter()
+            .filter(|player| player.alive && player.role == role)
+            .count()
+    }
+
+    pub fn is_mafia_team(&self, player: &Player) -> bool {
+        player.role.is_mafia_team()
+    }
+
+    pub fn is_cult_team(&self, player: &Player) -> bool {
+        player.role == Role::CultLeader || self.culted_ids.contains(&player.user_id)
+    }
+
+    pub fn is_known_mafia_team(&self, player: &Player) -> bool {
+        match player.role {
+            Role::Mafia | Role::Villain => true,
+            Role::Spy => self.spy_contacted.contains(&player.user_id),
+            Role::Contractor => self.contractor_contacted.contains(&player.user_id),
+            Role::Thief => self.thief_contacted.contains(&player.user_id),
+            Role::Witch => self.witch_contacted.contains(&player.user_id),
+            Role::Scientist => self.scientist_contacted.contains(&player.user_id),
+            Role::Madam => self.madam_contacted.contains(&player.user_id),
+            Role::Godfather => self.godfather_contacted.contains(&player.user_id),
+            _ => false,
+        }
+    }
+
+    pub fn is_citizen_team(&self, player: &Player) -> bool {
+        !self.is_mafia_team(player) && !self.is_cult_team(player) && player.role != Role::Joker
+    }
+
+    pub fn is_frog(&self, player: &Player) -> bool {
+        player.alive && self.frog_user_ids.contains(&player.user_id)
+    }
+
+    pub fn is_madam_seduced(&self, player: &Player) -> bool {
+        player.alive && self.madam_seduced_ids.contains(&player.user_id)
+    }
+
+    pub fn visible_role(&self, player: &Player) -> Role {
+        if self.is_frog(player) {
+            Role::Frog
+        } else {
+            player.role
+        }
+    }
+
+    pub fn can_mafia_attack(&self, player: &Player, _attacker_id: Option<u64>) -> bool {
+        player.alive
+    }
+
+    pub fn night_action_actors(&mut self) -> Vec<Player> {
+        self.ensure_godfather_auto_contact();
+        let alive = self
+            .players
+            .iter()
+            .filter(|player| player.alive)
+            .cloned()
+            .collect::<Vec<_>>();
+        let has_other_alive = alive.len() > 1;
+        let unpurified_dead = self
+            .players
+            .iter()
+            .filter(|player| !player.alive && !self.purified_dead_ids.contains(&player.user_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut actors = Vec::new();
+        for player in alive.iter() {
+            if self.is_frog(player) {
+                continue;
+            }
+            if self.is_madam_seduced(player) && !self.is_mafia_team(player) {
+                continue;
+            }
+            let acts = match player.role {
+                Role::Mafia => alive
+                    .iter()
+                    .any(|target| self.can_mafia_attack(target, Some(player.user_id))),
+                Role::Doctor => true,
+                Role::Nurse => self.nurse_can_act(player, &alive),
+                Role::Gangster => has_other_alive,
+                Role::Thief => self.thief_can_act_at_night(player, &alive, &unpurified_dead),
+                Role::Police | Role::Detective | Role::Spy | Role::Terrorist => has_other_alive,
+                Role::Vigilante => !self.vigilante_execution_targets(player).is_empty(),
+                Role::Reporter => self.reporter_can_act(player, &alive),
+                Role::Contractor => self.contractor_can_act(player),
+                Role::Witch => has_other_alive,
+                Role::Shaman => !unpurified_dead.is_empty(),
+                Role::Priest => {
+                    !self.priest_used_ids.contains(&player.user_id) && !unpurified_dead.is_empty()
+                }
+                Role::Godfather => {
+                    self.godfather_contacted.contains(&player.user_id) && has_other_alive
+                }
+                Role::CultLeader => self.cult_leader_can_act(player, &alive),
+                Role::Fanatic => has_other_alive,
+                _ => false,
+            };
+            if acts {
+                actors.push(player.clone());
+            }
+        }
+        actors
+    }
+
+    pub fn all_night_actions_submitted(&mut self) -> bool {
+        self.phase == Phase::Night
+            && self
+                .night_action_actors()
+                .iter()
+                .all(|actor| self.night_action_submitted(actor))
+    }
+
+    pub fn has_changeable_mafia_action(&mut self) -> bool {
+        self.night_action_actors().iter().any(|actor| {
+            actor.role == Role::Mafia
+                || (actor.role == Role::Thief && self.thief_night_role(actor) == Some(Role::Mafia))
+        })
+    }
+
+    pub fn should_finish_night_early(&mut self) -> bool {
+        self.all_night_actions_submitted() && !self.has_changeable_mafia_action()
+    }
+
+    fn night_action_submitted(&self, actor: &Player) -> bool {
+        match actor.role {
+            Role::Mafia => self.mafia_targets.contains_key(&actor.user_id),
+            Role::Doctor => self.doctor_targets.contains_key(&actor.user_id),
+            Role::Nurse => {
+                self.nurse_targets.contains_key(&actor.user_id)
+                    || self.nurse_prescription_targets.contains_key(&actor.user_id)
+            }
+            Role::Gangster => self.gangster_targets.contains_key(&actor.user_id),
+            Role::Thief => self.stolen_night_action_submitted(actor),
+            Role::Police => self.police_targets.contains_key(&actor.user_id),
+            Role::Vigilante => self.vigilante_targets.contains_key(&actor.user_id),
+            Role::Reporter => {
+                self.reporter_targets.contains_key(&actor.user_id)
+                    || self.reporter_skip_submitted.contains(&actor.user_id)
+            }
+            Role::Detective => self.detective_targets.contains_key(&actor.user_id),
+            Role::Shaman => self.shaman_targets.contains_key(&actor.user_id),
+            Role::Priest => self.priest_targets.contains_key(&actor.user_id),
+            Role::Spy => {
+                self.spy_targets
+                    .get(&actor.user_id)
+                    .is_some_and(|targets| !targets.is_empty())
+                    && !self.spy_bonus_pending.contains(&actor.user_id)
+            }
+            Role::Contractor => self.contractor_contracts.contains_key(&actor.user_id),
+            Role::Witch => self.witch_targets.contains_key(&actor.user_id),
+            Role::Godfather => self.godfather_targets.contains_key(&actor.user_id),
+            Role::Terrorist => self.terrorist_action_submitted.contains(&actor.user_id),
+            Role::CultLeader => self.cult_targets.contains_key(&actor.user_id),
+            Role::Fanatic => self.fanatic_targets.contains_key(&actor.user_id),
+            _ => true,
+        }
+    }
+
+    fn nurse_can_act(&self, player: &Player, alive: &[Player]) -> bool {
+        if self.nurse_contacted.contains(&player.user_id) {
+            return !alive.iter().any(|target| target.role == Role::Doctor) && !alive.is_empty();
+        }
+        alive.len() > 1
+    }
+
+    pub fn thief_night_role(&self, player: &Player) -> Option<Role> {
+        if player.role != Role::Thief {
+            return None;
+        }
+        let role = *self.thief_stolen_roles.get(&player.user_id)?;
+        match role {
+            Role::Mafia
+            | Role::Doctor
+            | Role::Police
+            | Role::Reporter
+            | Role::Detective
+            | Role::Spy
+            | Role::Contractor
+            | Role::Shaman
+            | Role::Priest
+            | Role::Witch
+            | Role::Godfather
+            | Role::Terrorist
+            | Role::Gangster => Some(role),
+            _ => None,
+        }
+    }
+
+    fn thief_can_act_at_night(
+        &self,
+        player: &Player,
+        alive: &[Player],
+        unpurified_dead: &[Player],
+    ) -> bool {
+        match self.thief_night_role(player) {
+            Some(Role::Mafia | Role::Doctor) => !alive.is_empty(),
+            Some(Role::Shaman | Role::Priest) => !unpurified_dead.is_empty(),
+            Some(Role::Reporter) => self.reporter_can_act(player, alive),
+            Some(_) => alive.len() > 1,
+            None => false,
+        }
+    }
+
+    fn stolen_night_action_submitted(&self, actor: &Player) -> bool {
+        match self.thief_night_role(actor) {
+            Some(Role::Mafia) => self.mafia_targets.contains_key(&actor.user_id),
+            Some(Role::Doctor) => self.doctor_targets.contains_key(&actor.user_id),
+            Some(Role::Police) => self.police_targets.contains_key(&actor.user_id),
+            Some(Role::Reporter) => {
+                self.reporter_targets.contains_key(&actor.user_id)
+                    || self.reporter_skip_submitted.contains(&actor.user_id)
+            }
+            Some(Role::Detective) => self.detective_targets.contains_key(&actor.user_id),
+            Some(Role::Spy) => self
+                .spy_targets
+                .get(&actor.user_id)
+                .is_some_and(|targets| !targets.is_empty()),
+            Some(Role::Contractor) => self.contractor_contracts.contains_key(&actor.user_id),
+            Some(Role::Shaman) => self.shaman_targets.contains_key(&actor.user_id),
+            Some(Role::Priest) => self.priest_targets.contains_key(&actor.user_id),
+            Some(Role::Witch) => self.witch_targets.contains_key(&actor.user_id),
+            Some(Role::Godfather) => self.godfather_targets.contains_key(&actor.user_id),
+            Some(Role::Terrorist) => self.terrorist_action_submitted.contains(&actor.user_id),
+            Some(Role::Gangster) => self.gangster_targets.contains_key(&actor.user_id),
+            _ => true,
+        }
+    }
+
+    fn cult_leader_can_act(&self, player: &Player, alive: &[Player]) -> bool {
+        self.day_number % 2 == 1
+            && alive.iter().any(|target| {
+                target.user_id != player.user_id && !self.culted_ids.contains(&target.user_id)
+            })
+    }
+
+    pub fn spy_can_use_bonus_action(&self, actor_id: u64) -> bool {
+        self.phase == Phase::Night
+            && self.is_alive(actor_id)
+            && self.spy_bonus_pending.contains(&actor_id)
+    }
+
+    pub fn contractor_can_use_contract(&self, actor_id: u64) -> bool {
+        let Some(actor) = self.get_player(actor_id) else {
+            return false;
+        };
+        self.phase == Phase::Night
+            && actor.alive
+            && (actor.role == Role::Contractor
+                || (actor.role == Role::Thief
+                    && self.thief_stolen_roles.get(&actor_id) == Some(&Role::Contractor)))
+            && self.day_number >= 2
+            && self.contractor_contract_targets(actor).len() >= 2
+    }
+
+    pub fn contractor_contract_targets(&self, actor: &Player) -> Vec<Player> {
+        self.players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && player.user_id != actor.user_id
+                    && !player.role.is_investigation_role()
+                    && !self.is_publicly_revealed(player)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn is_publicly_revealed(&self, player: &Player) -> bool {
+        self.publicly_revealed_ids.contains(&player.user_id)
+    }
+
+    pub fn hacker_day_actors(&self) -> Vec<Player> {
+        if self.phase != Phase::Day || self.alive_players().len() <= 1 {
+            return Vec::new();
+        }
+        self.players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && player.role == Role::Hacker
+                    && !self.is_madam_seduced(player)
+                    && !self.hacker_used_ids.contains(&player.user_id)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn submit_hacker_action(&mut self, actor_id: u64, target_id: u64) -> Result<String> {
+        if self.phase != Phase::Day {
+            bail!("해킹은 낮에만 사용할 수 있습니다.");
+        }
+        let actor = self.require_alive(actor_id)?.clone();
+        if actor.role != Role::Hacker {
+            bail!("해커만 해킹을 사용할 수 있습니다.");
+        }
+        if self.is_madam_seduced(&actor) {
+            bail!("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.");
+        }
+        if self.hacker_used_ids.contains(&actor_id) {
+            bail!("해킹은 이미 사용했습니다.");
+        }
+        let target = self.require_alive(target_id)?.clone();
+        if actor_id == target_id {
+            bail!("해커는 자기 자신을 해킹할 수 없습니다.");
+        }
+        self.hacker_targets.insert(actor_id, target_id);
+        self.hacker_pending_results.insert(actor_id, target_id);
+        self.hacker_proxy_targets.insert(actor_id, target_id);
+        self.hacker_used_ids.insert(actor_id);
+        Ok(format!("해킹 대상: {}", target.name))
+    }
+
+    pub fn vigilante_day_actors(&self) -> Vec<Player> {
+        if self.phase != Phase::Day || self.alive_players().len() <= 1 {
+            return Vec::new();
+        }
+        self.players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && player.role == Role::Vigilante
+                    && !self.is_madam_seduced(player)
+                    && !self
+                        .vigilante_investigation_used_ids
+                        .contains(&player.user_id)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn submit_vigilante_investigation(
+        &mut self,
+        actor_id: u64,
+        target_id: u64,
+    ) -> Result<String> {
+        if self.phase != Phase::Day {
+            bail!("자경단원 조사는 낮에만 사용할 수 있습니다.");
+        }
+        let actor = self.require_alive(actor_id)?.clone();
+        if actor.role != Role::Vigilante {
+            bail!("자경단원만 숙청 조사를 사용할 수 있습니다.");
+        }
+        if self.is_madam_seduced(&actor) {
+            bail!("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.");
+        }
+        if self.vigilante_investigation_used_ids.contains(&actor_id) {
+            bail!("자경단원 조사는 이미 사용했습니다.");
+        }
+        let target = self.require_alive(target_id)?.clone();
+        if actor_id == target_id {
+            bail!("자경단원은 자기 자신을 조사할 수 없습니다.");
+        }
+        self.vigilante_pending_results.insert(actor_id, target_id);
+        self.vigilante_investigation_used_ids.insert(actor_id);
+        Ok(format!("숙청 조사 대상: {}", target.name))
+    }
+
+    pub fn consume_vigilante_results(&mut self) -> HashMap<u64, String> {
+        let pending = std::mem::take(&mut self.vigilante_pending_results);
+        let mut results = HashMap::new();
+        for (actor_id, target_id) in pending {
+            let Some(actor) = self.get_player(actor_id).cloned() else {
+                continue;
+            };
+            let Some(target) = self.get_player(target_id).cloned() else {
+                continue;
+            };
+            if !actor.alive {
+                continue;
+            }
+            let result_text = if self.is_known_mafia_team(&target) {
+                self.vigilante_known_enemy_ids
+                    .entry(actor_id)
+                    .or_default()
+                    .insert(target_id);
+                "마피아팀입니다"
+            } else {
+                "마피아팀이 아닙니다"
+            };
+            results.insert(
+                actor_id,
+                format!("[숙청] {} 님은 **{}**.", target.name, result_text),
+            );
+        }
+        results
+    }
+
+    pub fn psychologist_day_actors(&self) -> Vec<Player> {
+        if self.phase != Phase::Day || self.alive_players().len() < 3 {
+            return Vec::new();
+        }
+        self.players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && player.role == Role::Psychologist
+                    && !self.is_madam_seduced(player)
+                    && self.psychologist_used_days.get(&player.user_id) != Some(&self.day_number)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn submit_psychologist_observation(
+        &mut self,
+        actor_id: u64,
+        first_target_id: u64,
+        second_target_id: u64,
+    ) -> Result<String> {
+        if self.phase != Phase::Day {
+            bail!("심리학자 관찰은 낮에만 사용할 수 있습니다.");
+        }
+        let actor = self.require_alive(actor_id)?.clone();
+        if actor.role != Role::Psychologist {
+            bail!("심리학자만 관찰을 사용할 수 있습니다.");
+        }
+        if self.is_madam_seduced(&actor) {
+            bail!("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.");
+        }
+        if self.psychologist_used_days.get(&actor_id) == Some(&self.day_number) {
+            bail!("오늘은 이미 관찰을 사용했습니다.");
+        }
+        if first_target_id == second_target_id {
+            bail!("서로 다른 두 명을 선택해야 합니다.");
+        }
+        if actor_id == first_target_id || actor_id == second_target_id {
+            bail!("심리학자는 자기 자신을 관찰 대상으로 고를 수 없습니다.");
+        }
+        let first = self.require_alive(first_target_id)?.clone();
+        let second = self.require_alive(second_target_id)?.clone();
+        self.psychologist_used_days
+            .insert(actor_id, self.day_number);
+        let relation = if self.team_key(&first) == self.team_key(&second) {
+            "같은 팀입니다"
+        } else {
+            "다른 팀입니다"
+        };
+        Ok(format!(
+            "[관찰] {} 님과 {} 님은 **{}**.",
+            first.name, second.name, relation
+        ))
+    }
+
+    pub fn thief_vote_actors(&self) -> Vec<Player> {
+        if self.phase != Phase::Vote || self.alive_players().len() <= 1 {
+            return Vec::new();
+        }
+        self.players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && player.role == Role::Thief
+                    && !self.is_frog(player)
+                    && self.thief_used_days.get(&player.user_id) != Some(&self.day_number)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn submit_thief_steal(&mut self, actor_id: u64, target_id: u64) -> Result<String> {
+        if self.phase != Phase::Vote {
+            bail!("도둑의 도벽은 투표 시간에만 사용할 수 있습니다.");
+        }
+        let actor = self.require_alive(actor_id)?.clone();
+        if actor.role != Role::Thief {
+            bail!("도둑만 도벽을 사용할 수 있습니다.");
+        }
+        if self.is_frog(&actor) {
+            bail!("개구리 상태에서는 능력을 사용할 수 없습니다.");
+        }
+        if self.thief_used_days.get(&actor_id) == Some(&self.day_number) {
+            bail!("오늘은 이미 도벽을 사용했습니다.");
+        }
+        let target = self.require_alive(target_id)?.clone();
+        if actor_id == target_id {
+            bail!("도둑은 자기 자신을 훔칠 수 없습니다.");
+        }
+        self.thief_used_days.insert(actor_id, self.day_number);
+        self.thief_stolen_roles.insert(actor_id, target.role);
+        let contacted_now = self.is_mafia_team(&target) && self.thief_contacted.insert(actor_id);
+        let mut lines = vec![
+            format!("[도벽] {} 님의 직업 능력을 훔쳤습니다.", target.name),
+            format!(
+                "다음 밤까지 **{}** 능력을 사용할 수 있습니다.",
+                target.role.value()
+            ),
+        ];
+        if contacted_now {
+            lines.push("[교련] 마피아 직업을 훔쳐 마피아팀과 접선했습니다.".to_string());
+        }
+        Ok(lines.join("\n"))
+    }
+
+    fn team_key(&self, player: &Player) -> &'static str {
+        if self.is_cult_team(player) {
+            "cult"
+        } else if self.is_mafia_team(player) {
+            "mafia"
+        } else if player.role == Role::Joker {
+            "joker"
+        } else {
+            "citizen"
+        }
+    }
+
+    fn police_action_actors(&mut self) -> Vec<Player> {
+        self.night_action_actors()
+            .into_iter()
+            .filter(|player| {
+                player.role == Role::Police
+                    || (player.role == Role::Thief
+                        && self.thief_night_role(player) == Some(Role::Police))
+            })
+            .collect()
+    }
+
+    pub fn police_result_ready(&mut self) -> bool {
+        let actors = self.police_action_actors();
+        if actors.is_empty() {
+            return false;
+        }
+        let actor_ids = actors
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        let live_targets = self
+            .police_targets
+            .iter()
+            .filter(|(actor_id, target_id)| {
+                actor_ids.contains(actor_id)
+                    && self.is_alive(**actor_id)
+                    && self.is_alive(**target_id)
+            })
+            .map(|(actor_id, target_id)| (*actor_id, *target_id))
+            .collect::<HashMap<_, _>>();
+        if live_targets.is_empty() {
+            return false;
+        }
+        if live_targets.len() == actors.len() {
+            return true;
+        }
+        count_values(live_targets.values().copied())
+            .values()
+            .any(|count| *count > actors.len() / 2)
+    }
+
+    pub fn current_police_result(&self) -> (Option<Player>, Option<bool>) {
+        let target_id = self.majority_target(&self.police_targets);
+        let target = target_id.and_then(|id| self.get_player(id).cloned());
+        let is_mafia = target
+            .as_ref()
+            .map(|player| self.is_known_mafia_team(player));
+        (target, is_mafia)
+    }
+
+    pub fn police_result_message(&self) -> String {
+        let (target, is_mafia) = self.current_police_result();
+        let Some(target) = target else {
+            return "경찰 조사 대상이 과반을 넘지 못해 이번 밤 조사 결과가 없습니다.".to_string();
+        };
+        let result_text = if is_mafia.unwrap_or(false) {
+            "마피아입니다"
+        } else {
+            "마피아가 아닙니다"
+        };
+        format!("조사 결과: {} 님은 **{}**.", target.name, result_text)
+    }
+
+    pub fn consume_ready_police_result(&mut self) -> Option<String> {
+        if self.police_result_announced || !self.police_result_ready() {
+            return None;
+        }
+        self.police_result_announced = true;
+        Some(self.police_result_message())
+    }
+
+    pub fn mark_police_result_announced(&mut self) {
+        self.police_result_announced = true;
+    }
+
+    pub fn vigilante_execution_targets(&self, actor: &Player) -> Vec<Player> {
+        if actor.role != Role::Vigilante
+            || !actor.alive
+            || self.vigilante_execution_used_ids.contains(&actor.user_id)
+        {
+            return Vec::new();
+        }
+        self.players
+            .iter()
+            .filter(|player| player.alive && player.user_id != actor.user_id)
+            .cloned()
+            .collect()
+    }
+
+    pub fn consume_hacker_results(&mut self) -> HashMap<u64, String> {
+        let pending = std::mem::take(&mut self.hacker_pending_results);
+        let mut results = HashMap::new();
+        for (actor_id, target_id) in pending {
+            let Some(actor) = self.get_player(actor_id) else {
+                continue;
+            };
+            let Some(target) = self.get_player(target_id) else {
+                continue;
+            };
+            if !actor.alive {
+                continue;
+            }
+            results.insert(
+                actor_id,
+                format!(
+                    "[해킹] {} 님의 직업은 **{}** 입니다.",
+                    target.name,
+                    self.visible_role(target).value()
+                ),
+            );
+        }
+        results
+    }
+
+    pub fn all_day_votes_submitted(&self) -> bool {
+        self.phase == Phase::Vote
+            && self.players.iter().filter(|p| p.alive).all(|player| {
+                self.day_votes.contains_key(&player.user_id) || self.vote_blocked(player.user_id)
+            })
+    }
+
+    pub fn all_confirm_votes_submitted(&self) -> bool {
+        self.phase == Phase::ConfirmVote
+            && self
+                .players
+                .iter()
+                .filter(|p| p.alive)
+                .all(|player| self.confirm_votes.contains_key(&player.user_id))
+    }
+
+    pub fn submit_night_action(&mut self, actor_id: u64, target_id: Option<u64>) -> Result<String> {
+        if self.phase != Phase::Night {
+            bail!("지금은 밤이 아닙니다.");
+        }
+        let actor = self.require_alive(actor_id)?.clone();
+        if self.is_frog(&actor) {
+            bail!("개구리 상태에서는 밤 행동을 사용할 수 없습니다.");
+        }
+        if self.is_madam_seduced(&actor) && !self.is_mafia_team(&actor) {
+            bail!("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.");
+        }
+        if actor.role == Role::Thief {
+            return self.submit_stolen_night_action(&actor, target_id);
+        }
+
+        match actor.role {
+            Role::Mafia => self.submit_target_action(
+                actor_id,
+                target_id,
+                "공격 대상을 선택해야 합니다.",
+                None,
+                false,
+                |game, actor_id, selected, target_id| {
+                    let previous = game.mafia_display_targets.get(&actor_id).copied();
+                    let proxy = game.proxy_target_id(target_id);
+                    game.mafia_targets.insert(actor_id, proxy);
+                    game.mafia_display_targets.insert(actor_id, target_id);
+                    Ok(if previous == Some(target_id) {
+                        format!("공격 대상 유지: {}", selected.name)
+                    } else if previous.is_some() {
+                        format!("공격 대상 변경: {}", selected.name)
+                    } else {
+                        format!("공격 대상: {}", selected.name)
+                    })
+                },
+            ),
+            Role::Doctor => self.once_target_action(
+                actor_id,
+                target_id,
+                "보호 대상을 선택해야 합니다.",
+                "이미 이번 밤 행동을 선택했습니다.",
+                RoleActionMap::Doctor,
+                None,
+                "보호 대상",
+            ),
+            Role::Nurse => self.submit_nurse_action(actor_id, target_id),
+            Role::Gangster => self.once_target_action(
+                actor_id,
+                target_id,
+                "공갈 대상을 선택해야 합니다.",
+                "이미 이번 밤 행동을 선택했습니다.",
+                RoleActionMap::Gangster,
+                Some("건달은 자기 자신을 공갈할 수 없습니다."),
+                "공갈 대상",
+            ),
+            Role::Police => self.once_target_action(
+                actor_id,
+                target_id,
+                "조사 대상을 선택해야 합니다.",
+                "이미 이번 밤 행동을 선택했습니다.",
+                RoleActionMap::Police,
+                Some("경찰은 자기 자신을 조사할 수 없습니다."),
+                "조사 투표 대상",
+            ),
+            Role::Vigilante => self.submit_vigilante_night_action(actor_id, target_id),
+            Role::Reporter => self.submit_reporter_action(actor_id, target_id, ""),
+            Role::Detective => self.once_target_action(
+                actor_id,
+                target_id,
+                "추적 대상을 선택해야 합니다.",
+                "이미 이번 밤 행동을 선택했습니다.",
+                RoleActionMap::Detective,
+                Some("사립탐정은 자기 자신을 추적할 수 없습니다."),
+                "추적 대상",
+            ),
+            Role::Shaman => self.submit_dead_target_action(
+                actor_id,
+                target_id,
+                "성불 대상을 선택해야 합니다.",
+                RoleActionMap::Shaman,
+                "영매는 사망한 참가자만 성불할 수 있습니다.",
+                "이미 성불한 사망자입니다.",
+                "성불 대상",
+            ),
+            Role::Priest => self.submit_priest_action(actor_id, target_id, ""),
+            Role::Spy => self.submit_spy_action(actor_id, target_id, ""),
+            Role::Terrorist => self.once_target_action(
+                actor_id,
+                target_id,
+                "지목 대상을 선택해야 합니다.",
+                "이미 이번 밤 행동을 선택했습니다.",
+                RoleActionMap::Terrorist,
+                Some("테러리스트는 자기 자신을 지목할 수 없습니다."),
+                "지목 대상",
+            ),
+            Role::Witch => self.once_target_action(
+                actor_id,
+                target_id,
+                "저주 대상을 선택해야 합니다.",
+                "이미 이번 밤 행동을 선택했습니다.",
+                RoleActionMap::Witch,
+                Some("마녀는 자기 자신을 저주할 수 없습니다."),
+                "저주 대상",
+            ),
+            Role::Godfather => self.submit_godfather_action(actor_id, target_id, ""),
+            Role::CultLeader => self.submit_cult_action(actor_id, target_id),
+            Role::Fanatic => self.submit_fanatic_action(actor_id, target_id),
+            _ => bail!("{}은/는 밤 행동이 없습니다.", actor.role.value()),
+        }
+    }
+
+    fn submit_target_action<F>(
+        &mut self,
+        actor_id: u64,
+        target_id: Option<u64>,
+        missing: &str,
+        self_error: Option<&str>,
+        _once: bool,
+        apply: F,
+    ) -> Result<String>
+    where
+        F: FnOnce(&mut Self, u64, Player, u64) -> Result<String>,
+    {
+        let Some(target_id) = target_id else {
+            bail!("{}", missing);
+        };
+        let selected = self.require_alive(target_id)?.clone();
+        if actor_id == target_id {
+            if let Some(message) = self_error {
+                bail!("{}", message);
+            }
+        }
+        apply(self, actor_id, selected, target_id)
+    }
+
+    fn once_target_action(
+        &mut self,
+        actor_id: u64,
+        target_id: Option<u64>,
+        missing: &str,
+        duplicate: &str,
+        map: RoleActionMap,
+        self_error: Option<&str>,
+        label: &str,
+    ) -> Result<String> {
+        let Some(target_id) = target_id else {
+            bail!("{}", missing);
+        };
+        if self.action_contains(map, actor_id) {
+            bail!("{}", duplicate);
+        }
+        if actor_id == target_id {
+            if let Some(message) = self_error {
+                bail!("{}", message);
+            }
+        }
+        let selected = self.require_alive(target_id)?.clone();
+        let proxy = self.proxy_target_id(target_id);
+        self.action_insert(map, actor_id, proxy);
+        if matches!(map, RoleActionMap::Terrorist) {
+            self.terrorist_action_submitted.insert(actor_id);
+        }
+        Ok(format!("{}: {}", label, selected.name))
+    }
+
+    fn submit_nurse_action(&mut self, actor_id: u64, target_id: Option<u64>) -> Result<String> {
+        let Some(target_id) = target_id else {
+            bail!("대상을 선택해야 합니다.");
+        };
+        if self.nurse_targets.contains_key(&actor_id)
+            || self.nurse_prescription_targets.contains_key(&actor_id)
+        {
+            bail!("이미 이번 밤 행동을 선택했습니다.");
+        }
+        let selected = self.require_alive(target_id)?.clone();
+        if self.nurse_contacted.contains(&actor_id) {
+            if self.alive_role_count(Role::Doctor) > 0 {
+                bail!("의사가 살아있는 동안 간호사는 치료 대상을 직접 선택하지 않습니다.");
+            }
+            let proxy = self.proxy_target_id(target_id);
+            self.nurse_targets.insert(actor_id, proxy);
+            return Ok(format!("치료 대상: {}", selected.name));
+        }
+        if actor_id == target_id {
+            bail!("간호사는 자기 자신을 처방할 수 없습니다.");
+        }
+        let proxy = self.proxy_target_id(target_id);
+        self.nurse_prescription_targets.insert(actor_id, proxy);
+        if selected.role == Role::Doctor {
+            self.nurse_contacted.insert(actor_id);
+            self.nurse_contacts_this_night.push(actor_id);
+            Ok("[처방] 의사와 접선했습니다.".to_string())
+        } else {
+            Ok("[처방] 대상은 의사가 아닙니다.".to_string())
+        }
+    }
+
+    fn submit_vigilante_night_action(
+        &mut self,
+        actor_id: u64,
+        target_id: Option<u64>,
+    ) -> Result<String> {
+        let Some(target_id) = target_id else {
+            bail!("숙청 대상을 선택해야 합니다.");
+        };
+        if self.vigilante_targets.contains_key(&actor_id) {
+            bail!("이미 이번 밤 행동을 선택했습니다.");
+        }
+        if self.vigilante_execution_used_ids.contains(&actor_id) {
+            bail!("숙청 처형은 이미 사용했습니다.");
+        }
+        if actor_id == target_id {
+            bail!("자경단원은 자기 자신을 숙청할 수 없습니다.");
+        }
+        let actor = self.require_alive(actor_id)?.clone();
+        let selected = self.require_alive(target_id)?.clone();
+        let available = self
+            .vigilante_execution_targets(&actor)
+            .into_iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        if !available.contains(&target_id) {
+            bail!("자경단원은 살아있는 다른 플레이어만 숙청할 수 있습니다.");
+        }
+        let proxy = self.proxy_target_id(target_id);
+        self.vigilante_targets.insert(actor_id, proxy);
+        self.vigilante_execution_used_ids.insert(actor_id);
+        Ok(format!("숙청 대상: {}", selected.name))
+    }
+
+    fn submit_reporter_action(
+        &mut self,
+        actor_id: u64,
+        target_id: Option<u64>,
+        prefix: &str,
+    ) -> Result<String> {
+        if self.day_number < 2 {
+            bail!("엠바고로 첫 번째 낮에는 기사를 낼 수 없습니다.");
+        }
+        if self.reporter_used_ids.contains(&actor_id) {
+            bail!("기자는 특종을 이미 사용했습니다.");
+        }
+        if self.reporter_targets.contains_key(&actor_id)
+            || self.reporter_skip_submitted.contains(&actor_id)
+        {
+            bail!("이미 이번 밤 행동을 선택했습니다.");
+        }
+        let Some(target_id) = target_id else {
+            self.reporter_skip_submitted.insert(actor_id);
+            return Ok(format!("{prefix}이번 밤에는 특종을 사용하지 않습니다."));
+        };
+        if actor_id == target_id {
+            bail!("기자는 자기 자신을 취재할 수 없습니다.");
+        }
+        let selected = self.require_alive(target_id)?.clone();
+        let proxy = self.proxy_target_id(target_id);
+        self.reporter_targets.insert(actor_id, proxy);
+        self.reporter_used_ids.insert(actor_id);
+        Ok(format!("{prefix}특종 대상: {}", selected.name))
+    }
+
+    fn submit_dead_target_action(
+        &mut self,
+        actor_id: u64,
+        target_id: Option<u64>,
+        missing: &str,
+        map: RoleActionMap,
+        alive_error: &str,
+        purified_error: &str,
+        label: &str,
+    ) -> Result<String> {
+        let Some(target_id) = target_id else {
+            bail!("{}", missing);
+        };
+        if self.action_contains(map, actor_id) {
+            bail!("이미 이번 밤 행동을 선택했습니다.");
+        }
+        let target = self.require_player(target_id)?.clone();
+        if target.alive {
+            bail!("{}", alive_error);
+        }
+        if self.purified_dead_ids.contains(&target.user_id) {
+            bail!("{}", purified_error);
+        }
+        self.action_insert(map, actor_id, target_id);
+        Ok(format!("{}: {}", label, target.name))
+    }
+
+    fn submit_priest_action(
+        &mut self,
+        actor_id: u64,
+        target_id: Option<u64>,
+        prefix: &str,
+    ) -> Result<String> {
+        if self.priest_used_ids.contains(&actor_id) {
+            bail!("소생은 이미 사용했습니다.");
+        }
+        let result = self.submit_dead_target_action(
+            actor_id,
+            target_id,
+            "소생 대상을 선택해야 합니다.",
+            RoleActionMap::Priest,
+            "성직자는 사망한 참가자만 소생시킬 수 있습니다.",
+            "성불 상태인 사망자는 소생시킬 수 없습니다.",
+            "소생 대상",
+        )?;
+        self.priest_used_ids.insert(actor_id);
+        Ok(format!("{prefix}{result}"))
+    }
+
+    fn submit_spy_action(
+        &mut self,
+        actor_id: u64,
+        target_id: Option<u64>,
+        prefix: &str,
+    ) -> Result<String> {
+        let Some(target_id) = target_id else {
+            bail!("첩보 대상을 선택해야 합니다.");
+        };
+        if self.spy_actions_used(actor_id) >= self.spy_action_limit(actor_id) {
+            bail!("이미 이번 밤 행동을 선택했습니다.");
+        }
+        if actor_id == target_id {
+            bail!("스파이는 자기 자신을 지목할 수 없습니다.");
+        }
+        let selected = self.require_alive(target_id)?.clone();
+        let proxy = self.proxy_target_id(target_id);
+        let target = self.require_player(proxy)?.clone();
+        self.spy_targets.entry(actor_id).or_default().push(proxy);
+        let mut lines = vec![format!(
+            "{prefix}[첩보] {} 님의 직업은 **{}** 입니다.",
+            target.name,
+            self.visible_role(&target).value()
+        )];
+        if target.role == Role::Mafia && !self.spy_contacted.contains(&actor_id) {
+            self.spy_contacted.insert(actor_id);
+            self.spy_bonus_pending.insert(actor_id);
+            self.spy_contacts_this_night.push(actor_id);
+            lines.push(
+                "[접선] 마피아와 접선했습니다. 이번 밤에 한 번 더 첩보를 사용할 수 있습니다."
+                    .to_string(),
+            );
+        }
+        if self.spy_bonus_pending.contains(&actor_id) && self.spy_actions_used(actor_id) >= 2 {
+            self.spy_bonus_pending.remove(&actor_id);
+        }
+        if prefix.is_empty() {
+            Ok(lines.join("\n"))
+        } else {
+            Ok(format!("{prefix}첩보 대상: {}", selected.name))
+        }
+    }
+
+    fn submit_godfather_action(
+        &mut self,
+        actor_id: u64,
+        target_id: Option<u64>,
+        prefix: &str,
+    ) -> Result<String> {
+        let Some(target_id) = target_id else {
+            bail!("확정 처치 대상을 선택해야 합니다.");
+        };
+        self.ensure_godfather_auto_contact();
+        let stolen = self.is_stolen_godfather_actor(actor_id);
+        if !stolen && !self.godfather_contacted.contains(&actor_id) {
+            bail!("대부는 세 번째 밤부터 마피아 팀과 자동 접선되어 행동할 수 있습니다.");
+        }
+        if self.godfather_targets.contains_key(&actor_id) {
+            bail!("이미 이번 밤 행동을 선택했습니다.");
+        }
+        if actor_id == target_id {
+            bail!("대부는 자기 자신을 지목할 수 없습니다.");
+        }
+        let selected = self.require_alive(target_id)?.clone();
+        let proxy = self.proxy_target_id(target_id);
+        self.godfather_targets.insert(actor_id, proxy);
+        Ok(format!("{prefix}확정 처치 대상: {}", selected.name))
+    }
+
+    fn submit_cult_action(&mut self, actor_id: u64, target_id: Option<u64>) -> Result<String> {
+        let Some(target_id) = target_id else {
+            bail!("포교 대상을 선택해야 합니다.");
+        };
+        if self.day_number % 2 != 1 {
+            bail!("교주는 홀수날 밤에만 포교할 수 있습니다.");
+        }
+        if self.cult_targets.contains_key(&actor_id) {
+            bail!("이미 이번 밤 행동을 선택했습니다.");
+        }
+        if actor_id == target_id {
+            bail!("교주는 자기 자신을 포교할 수 없습니다.");
+        }
+        let selected = self.require_alive(target_id)?.clone();
+        let proxy = self.proxy_target_id(target_id);
+        let target = self.require_player(proxy)?.clone();
+        if self.is_cult_team(&target) {
+            bail!("이미 교주팀인 대상은 포교할 수 없습니다.");
+        }
+        self.cult_targets.insert(actor_id, proxy);
+        if target.role != Role::Priest
+            && !self.is_mafia_team(&target)
+            && target.role != Role::CultLeader
+        {
+            if self.culted_ids.insert(target.user_id) {
+                self.cult_bells_this_night += 1;
+            }
+        }
+        Ok(format!("포교 대상: {}", selected.name))
+    }
+
+    fn submit_fanatic_action(&mut self, actor_id: u64, target_id: Option<u64>) -> Result<String> {
+        let Some(target_id) = target_id else {
+            bail!("추종 대상을 선택해야 합니다.");
+        };
+        if self.fanatic_targets.contains_key(&actor_id) {
+            bail!("이미 이번 밤 행동을 선택했습니다.");
+        }
+        if actor_id == target_id {
+            bail!("광신도는 자기 자신을 추종할 수 없습니다.");
+        }
+        let selected = self.require_alive(target_id)?.clone();
+        let proxy = self.proxy_target_id(target_id);
+        let target = self.require_player(proxy)?.clone();
+        self.fanatic_targets.insert(actor_id, proxy);
+        if target.role == Role::CultLeader && self.culted_ids.insert(actor_id) {
+            self.cult_bells_this_night += 1;
+        }
+        Ok(format!("추종 대상: {}", selected.name))
+    }
+
+    fn submit_stolen_night_action(
+        &mut self,
+        actor: &Player,
+        target_id: Option<u64>,
+    ) -> Result<String> {
+        let actor_id = actor.user_id;
+        let Some(stolen_role) = self.thief_night_role(actor) else {
+            bail!("오늘 밤 사용할 수 있는 도벽 능력이 없습니다.");
+        };
+        let prefix = format!("[도벽: {}] ", stolen_role.value());
+        match stolen_role {
+            Role::Mafia => {
+                let Some(target_id) = target_id else {
+                    bail!("공격 대상을 선택해야 합니다.");
+                };
+                let selected = self.require_alive(target_id)?.clone();
+                let previous = self.mafia_display_targets.get(&actor_id).copied();
+                let proxy = self.proxy_target_id(target_id);
+                self.mafia_targets.insert(actor_id, proxy);
+                self.mafia_display_targets.insert(actor_id, target_id);
+                Ok(if previous.is_some() && previous != Some(target_id) {
+                    format!("{prefix}공격 대상 변경: {}", selected.name)
+                } else {
+                    format!("{prefix}공격 대상: {}", selected.name)
+                })
+            }
+            Role::Doctor => self.once_target_action(
+                actor_id,
+                target_id,
+                "보호 대상을 선택해야 합니다.",
+                "이미 이번 밤 행동을 선택했습니다.",
+                RoleActionMap::Doctor,
+                None,
+                &format!("{prefix}보호 대상"),
+            ),
+            Role::Police => self.once_target_action(
+                actor_id,
+                target_id,
+                "조사 대상을 선택해야 합니다.",
+                "이미 이번 밤 행동을 선택했습니다.",
+                RoleActionMap::Police,
+                Some("자기 자신은 조사할 수 없습니다."),
+                &format!("{prefix}조사 대상"),
+            ),
+            Role::Reporter => self.submit_reporter_action(actor_id, target_id, &prefix),
+            Role::Detective => self.once_target_action(
+                actor_id,
+                target_id,
+                "추적 대상을 선택해야 합니다.",
+                "이미 이번 밤 행동을 선택했습니다.",
+                RoleActionMap::Detective,
+                Some("자기 자신은 추적할 수 없습니다."),
+                &format!("{prefix}추적 대상"),
+            ),
+            Role::Spy => self.submit_spy_action(actor_id, target_id, &prefix),
+            Role::Contractor => bail!("청부는 전용 선택 메뉴로 사용해야 합니다."),
+            Role::Shaman => self.submit_dead_target_action(
+                actor_id,
+                target_id,
+                "성불 대상을 선택해야 합니다.",
+                RoleActionMap::Shaman,
+                "성불은 사망자에게만 사용할 수 있습니다.",
+                "이미 성불된 사망자입니다.",
+                &format!("{prefix}성불 대상"),
+            ),
+            Role::Priest => self.submit_priest_action(actor_id, target_id, &prefix),
+            Role::Witch => self.once_target_action(
+                actor_id,
+                target_id,
+                "저주 대상을 선택해야 합니다.",
+                "이미 이번 밤 행동을 선택했습니다.",
+                RoleActionMap::Witch,
+                Some("자기 자신은 저주할 수 없습니다."),
+                &format!("{prefix}저주 대상"),
+            ),
+            Role::Godfather => self.submit_godfather_action(actor_id, target_id, &prefix),
+            Role::Terrorist => self.once_target_action(
+                actor_id,
+                target_id,
+                "지목 대상을 선택해야 합니다.",
+                "이미 이번 밤 행동을 선택했습니다.",
+                RoleActionMap::Terrorist,
+                Some("자기 자신은 지목할 수 없습니다."),
+                &format!("{prefix}지목 대상"),
+            ),
+            Role::Gangster => self.once_target_action(
+                actor_id,
+                target_id,
+                "공갈 대상을 선택해야 합니다.",
+                "이미 이번 밤 행동을 선택했습니다.",
+                RoleActionMap::Gangster,
+                Some("자기 자신은 공갈할 수 없습니다."),
+                &format!("{prefix}공갈 대상"),
+            ),
+            _ => bail!("훔친 직업은 이번 밤에 사용할 수 있는 능력이 없습니다."),
+        }
+    }
+
+    pub fn submit_contractor_contract(
+        &mut self,
+        actor_id: u64,
+        first_target_id: u64,
+        first_role: Role,
+        second_target_id: u64,
+        second_role: Role,
+    ) -> Result<String> {
+        if self.phase != Phase::Night {
+            bail!("지금은 밤이 아닙니다.");
+        }
+        let actor = self.require_alive(actor_id)?.clone();
+        if actor.role != Role::Contractor
+            && !(actor.role == Role::Thief
+                && self.thief_stolen_roles.get(&actor_id) == Some(&Role::Contractor))
+        {
+            bail!("청부업자만 청부를 사용할 수 있습니다.");
+        }
+        if self.is_frog(&actor) {
+            bail!("개구리 상태에서는 밤 행동을 사용할 수 없습니다.");
+        }
+        if self.day_number < 2 {
+            bail!("청부는 두 번째 밤부터 사용할 수 있습니다.");
+        }
+        if self.contractor_contracts.contains_key(&actor_id) {
+            bail!("이미 이번 밤 행동을 선택했습니다.");
+        }
+        if first_target_id == second_target_id {
+            bail!("청부 대상 두 명은 서로 달라야 합니다.");
+        }
+        if !CONTRACTOR_GUESS_ROLES.contains(&first_role)
+            || !CONTRACTOR_GUESS_ROLES.contains(&second_role)
+        {
+            bail!("청부로 추측할 수 없는 직업입니다.");
+        }
+        if actor_id == first_target_id || actor_id == second_target_id {
+            bail!("청부업자는 자기 자신을 지목할 수 없습니다.");
+        }
+        let first = self.require_alive(first_target_id)?.clone();
+        let second = self.require_alive(second_target_id)?.clone();
+        if first.role.is_investigation_role() || second.role.is_investigation_role() {
+            bail!("경찰, 요원, 자경단원은 청부 대상으로 지목할 수 없습니다.");
+        }
+        if self.is_publicly_revealed(&first) || self.is_publicly_revealed(&second) {
+            bail!("게임 채널에 직업이 공개된 사람은 청부 대상으로 지목할 수 없습니다.");
+        }
+        self.contractor_contracts.insert(
+            actor_id,
+            ((first.user_id, first_role), (second.user_id, second_role)),
+        );
+        Ok(format!(
+            "[청부] 암살 대상을 선택했습니다.\n- {}: {}\n- {}: {}",
+            first.name,
+            first_role.value(),
+            second.name,
+            second_role.value()
+        ))
+    }
+
+    pub fn apply_witch_curses(&mut self) -> (Vec<Player>, Vec<u64>) {
+        let mut cursed_players = Vec::new();
+        let mut contacts = Vec::new();
+        let targets = self.witch_targets.clone();
+        for (actor_id, target_id) in targets {
+            if !self.witch_curse_applied_actor_ids.insert(actor_id) {
+                continue;
+            }
+            let actor_alive = self.get_player(actor_id).is_some_and(|actor| actor.alive);
+            let Some(target) = self.get_player(target_id).cloned() else {
+                continue;
+            };
+            if !actor_alive || self.is_frog(&target) || !target.alive {
+                continue;
+            }
+            self.frog_user_ids.insert(target.user_id);
+            self.clear_night_action(target.user_id);
+            cursed_players.push(target.clone());
+            self.resolve_priest_cult_after_curse(&target);
+            if target.role == Role::Mafia && self.witch_contacted.insert(actor_id) {
+                self.witch_contacts_this_night.push(actor_id);
+                contacts.push(actor_id);
+            }
+        }
+        (cursed_players, contacts)
+    }
+
+    fn resolve_priest_cult_after_curse(&mut self, target: &Player) {
+        if target.role != Role::Priest || self.culted_ids.contains(&target.user_id) {
+            return;
+        }
+        for (actor_id, target_id) in self.cult_targets.clone() {
+            let Some(actor) = self.get_player(actor_id) else {
+                continue;
+            };
+            if target_id == target.user_id && actor.alive && actor.role == Role::CultLeader {
+                self.culted_ids.insert(target.user_id);
+                self.cult_bells_this_night += 1;
+                return;
+            }
+        }
+    }
+
+    pub fn restore_frogs(&mut self) -> Vec<Player> {
+        let ids = self.frog_user_ids.drain().collect::<Vec<_>>();
+        ids.into_iter()
+            .filter_map(|id| self.get_player(id).cloned())
+            .collect()
+    }
+
+    pub fn revive_pending_scientists(&mut self) -> Vec<Player> {
+        let ids = self
+            .scientist_pending_revive_ids
+            .drain()
+            .collect::<Vec<_>>();
+        let mut revived = Vec::new();
+        for id in ids {
+            if let Some(index) = self.players_by_id.get(&id).copied() {
+                if !self.players[index].alive {
+                    self.players[index].alive = true;
+                    self.scientist_contacted.insert(id);
+                    self.publicly_revealed_ids.insert(id);
+                    revived.push(self.players[index].clone());
+                }
+            }
+        }
+        revived
+    }
+
+    pub fn has_pending_scientist_revive(&self) -> bool {
+        self.scientist_pending_revive_ids
+            .iter()
+            .any(|id| self.get_player(*id).is_some_and(|player| !player.alive))
+    }
+
+    fn mark_dead(&mut self, user_id: u64) -> Option<Player> {
+        let index = *self.players_by_id.get(&user_id)?;
+        if !self.players[index].alive {
+            return Some(self.players[index].clone());
+        }
+        self.players[index].alive = false;
+        self.frog_user_ids.remove(&user_id);
+        if self.players[index].role == Role::Scientist
+            && self.scientist_revive_used_ids.insert(user_id)
+        {
+            self.scientist_pending_revive_ids.insert(user_id);
+            self.scientist_contacted.insert(user_id);
+        }
+        Some(self.players[index].clone())
+    }
+
+    fn clear_night_action(&mut self, actor_id: u64) {
+        self.mafia_targets.remove(&actor_id);
+        self.mafia_display_targets.remove(&actor_id);
+        self.doctor_targets.remove(&actor_id);
+        self.nurse_targets.remove(&actor_id);
+        self.nurse_prescription_targets.remove(&actor_id);
+        self.gangster_targets.remove(&actor_id);
+        self.police_targets.remove(&actor_id);
+        self.vigilante_targets.remove(&actor_id);
+        self.detective_targets.remove(&actor_id);
+        self.shaman_targets.remove(&actor_id);
+        if self.priest_targets.remove(&actor_id).is_some() {
+            self.priest_used_ids.remove(&actor_id);
+        }
+        self.godfather_targets.remove(&actor_id);
+        self.terrorist_action_submitted.remove(&actor_id);
+        if self.reporter_targets.remove(&actor_id).is_some() {
+            self.reporter_used_ids.remove(&actor_id);
+        }
+        self.reporter_skip_submitted.remove(&actor_id);
+        self.spy_targets.remove(&actor_id);
+        self.spy_bonus_pending.remove(&actor_id);
+        self.contractor_contracts.remove(&actor_id);
+        self.witch_targets.remove(&actor_id);
+        self.witch_curse_applied_actor_ids.remove(&actor_id);
+    }
+
+    pub fn resolve_night(&mut self) -> Result<NightResult> {
+        if self.phase != Phase::Night {
+            bail!("밤 단계만 정산할 수 있습니다.");
+        }
+
+        self.ensure_godfather_auto_contact();
+        self.apply_witch_curses();
+        let timed_cult_bells = self.consume_cult_bells();
+        let witch_contacts = self.witch_contacts_this_night.clone();
+        let godfather_attackers = self
+            .godfather_targets
+            .iter()
+            .filter(|(actor_id, _)| {
+                self.godfather_contacted.contains(actor_id)
+                    || self.is_stolen_godfather_actor(**actor_id)
+            })
+            .map(|(actor_id, target_id)| (*actor_id, *target_id))
+            .collect::<HashMap<_, _>>();
+        let mafia_target_id = self.majority_target(&self.mafia_targets);
+        let mut healing_targets = self
+            .doctor_targets
+            .iter()
+            .filter(|(actor_id, _)| {
+                self.get_player(**actor_id)
+                    .is_some_and(|actor| actor.role == Role::Doctor)
+            })
+            .map(|(actor_id, target_id)| (*actor_id, *target_id))
+            .collect::<HashMap<_, _>>();
+        let stolen_doctor_target_ids = self
+            .doctor_targets
+            .iter()
+            .filter(|(actor_id, target_id)| {
+                self.is_stolen_doctor_actor(**actor_id)
+                    && self.is_alive(**actor_id)
+                    && self.is_alive(**target_id)
+            })
+            .map(|(_, target_id)| *target_id)
+            .collect::<HashSet<_>>();
+        if self.alive_role_count(Role::Doctor) == 0 {
+            healing_targets.extend(self.nurse_targets.iter().map(|(a, t)| (*a, *t)));
+        }
+        let majority_protected_id = self.majority_target(&healing_targets);
+        let mut protected_ids = stolen_doctor_target_ids;
+        if let Some(id) = majority_protected_id {
+            protected_ids.insert(id);
+        }
+        let police_target_id = self.majority_target(&self.police_targets);
+        let godfather_target_id = self.majority_target(&godfather_attackers);
+        let protected_id = reported_protected_id(
+            &protected_ids,
+            mafia_target_id,
+            godfather_target_id,
+            majority_protected_id,
+        );
+
+        let mafia_target = mafia_target_id.and_then(|id| self.get_player(id).cloned());
+        let protected = protected_id.and_then(|id| self.get_player(id).cloned());
+        let police_target = police_target_id.and_then(|id| self.get_player(id).cloned());
+        let godfather_target = godfather_target_id.and_then(|id| self.get_player(id).cloned());
+
+        let detective_results = self.resolve_detective_results(
+            mafia_target_id,
+            protected_id,
+            police_target_id,
+            godfather_target_id,
+        );
+        let (spy_results, spy_contacts) = self.resolve_spy_results();
+        let (contractor_results, contractor_contacts, contractor_kills) =
+            self.resolve_contractor_results();
+        let godfather_results = self.resolve_godfather_results();
+        let (shaman_results, shaman_purifications) = self.resolve_shaman_results();
+        let (vigilante_results, vigilante_kills) = self.resolve_vigilante_results();
+        let (nurse_results, nurse_contacts) = self.resolve_nurse_results();
+        let gangster_results = self.resolve_gangster_results();
+        let (cult_results, cult_bells) = self.resolve_cult_results();
+        let (fanatic_results, fanatic_bells) = self.resolve_fanatic_results();
+        let mut fanatic_inherits = self.ensure_fanatic_reincarnation();
+
+        let mut killed_players: Vec<Player> = Vec::new();
+        let mut killed_by_mafia_team_ids = HashSet::new();
+        let mut soldier_blocks = Vec::new();
+        let mut lover_sacrifices = Vec::new();
+        let enhanced_protection_ids =
+            if majority_protected_id.is_some() && self.nurse_enhanced_heal_active() {
+                protected_ids.clone()
+            } else {
+                HashSet::new()
+            };
+
+        self.resolve_mafia_team_attack(
+            mafia_target.as_ref(),
+            false,
+            true,
+            &protected_ids,
+            &enhanced_protection_ids,
+            &mut killed_players,
+            &mut killed_by_mafia_team_ids,
+            &mut soldier_blocks,
+            &mut lover_sacrifices,
+        );
+        self.resolve_mafia_team_attack(
+            godfather_target.as_ref(),
+            true,
+            false,
+            &protected_ids,
+            &enhanced_protection_ids,
+            &mut killed_players,
+            &mut killed_by_mafia_team_ids,
+            &mut soldier_blocks,
+            &mut lover_sacrifices,
+        );
+
+        for target in &contractor_kills {
+            self.kill_player(
+                target.user_id,
+                true,
+                &mut killed_players,
+                &mut killed_by_mafia_team_ids,
+            );
+        }
+        for target in &vigilante_kills {
+            self.kill_player(
+                target.user_id,
+                false,
+                &mut killed_players,
+                &mut killed_by_mafia_team_ids,
+            );
+        }
+
+        let terrorist_retaliations = self
+            .resolve_terrorist_night_retaliations(&killed_by_mafia_team_ids, &mut killed_players);
+        let (priest_results, priest_revives) = self.resolve_priest_results(&killed_players);
+        let graverobber_results = self.resolve_graverobbers(&killed_players);
+        let agent_results = self.resolve_agent_results();
+        let reporter_results = self.resolve_reporter_results(
+            &killed_players
+                .iter()
+                .map(|player| player.user_id)
+                .collect::<HashSet<_>>(),
+        );
+        for id in self.ensure_fanatic_reincarnation() {
+            if !fanatic_inherits.contains(&id) {
+                fanatic_inherits.push(id);
+            }
+        }
+
+        self.clear_night_maps();
+        self.phase = Phase::Day;
+        self.expire_madam_seductions();
+
+        Ok(NightResult {
+            killed: killed_players.first().cloned(),
+            protected,
+            mafia_target,
+            police_target_is_mafia: police_target
+                .as_ref()
+                .map(|target| self.is_known_mafia_team(target)),
+            police_target,
+            killed_players,
+            detective_results,
+            spy_results,
+            spy_contacts,
+            contractor_results,
+            contractor_contacts,
+            contractor_kills,
+            witch_contacts,
+            godfather_results,
+            shaman_results,
+            shaman_purifications,
+            graverobber_results,
+            terrorist_retaliations,
+            soldier_blocks,
+            lover_sacrifices,
+            priest_results,
+            priest_revives,
+            agent_results,
+            reporter_results,
+            hacker_results: HashMap::new(),
+            vigilante_results,
+            vigilante_kills,
+            nurse_results,
+            nurse_contacts,
+            cult_results,
+            fanatic_results,
+            fanatic_inherits,
+            gangster_results,
+            cult_bells: timed_cult_bells + cult_bells + fanatic_bells,
+            ..Default::default()
+        })
+    }
+
+    fn clear_night_maps(&mut self) {
+        self.mafia_targets.clear();
+        self.mafia_display_targets.clear();
+        self.doctor_targets.clear();
+        self.nurse_targets.clear();
+        self.nurse_prescription_targets.clear();
+        self.nurse_contacts_this_night.clear();
+        self.gangster_targets.clear();
+        self.police_targets.clear();
+        self.vigilante_targets.clear();
+        self.reporter_targets.clear();
+        self.reporter_skip_submitted.clear();
+        self.detective_targets.clear();
+        self.shaman_targets.clear();
+        self.priest_targets.clear();
+        self.spy_targets.clear();
+        self.spy_bonus_pending.clear();
+        self.spy_contacts_this_night.clear();
+        self.contractor_contracts.clear();
+        self.contractor_contacts_this_night.clear();
+        self.witch_targets.clear();
+        self.witch_contacts_this_night.clear();
+        self.witch_curse_applied_actor_ids.clear();
+        self.godfather_targets.clear();
+        self.terrorist_action_submitted.clear();
+        self.cult_targets.clear();
+        self.fanatic_targets.clear();
+        self.thief_stolen_roles.clear();
+        self.cult_bells_this_night = 0;
+        self.day_votes.clear();
+        self.confirm_votes.clear();
+        self.police_result_announced = false;
+    }
+
+    pub fn ensure_godfather_auto_contact(&mut self) -> Vec<u64> {
+        if self.day_number < 3 {
+            return Vec::new();
+        }
+        let ids = self
+            .players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && player.role == Role::Godfather
+                    && !self.godfather_contacted.contains(&player.user_id)
+            })
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        for id in &ids {
+            self.godfather_contacted.insert(*id);
+        }
+        ids
+    }
+
+    fn contact_mafia_team_member(&mut self, player: &Player) {
+        match player.role {
+            Role::Spy => {
+                self.spy_contacted.insert(player.user_id);
+            }
+            Role::Contractor => {
+                self.contractor_contacted.insert(player.user_id);
+            }
+            Role::Thief => {
+                self.thief_contacted.insert(player.user_id);
+            }
+            Role::Witch => {
+                self.witch_contacted.insert(player.user_id);
+            }
+            Role::Scientist => {
+                self.scientist_contacted.insert(player.user_id);
+            }
+            Role::Madam => {
+                self.madam_contacted.insert(player.user_id);
+            }
+            Role::Godfather => {
+                self.godfather_contacted.insert(player.user_id);
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_madam_seduction(&mut self, live_votes: &HashMap<u64, Option<u64>>) -> Vec<Player> {
+        let mut seduced = Vec::new();
+        for (voter_id, target_id) in live_votes {
+            let Some(target_id) = target_id else {
+                continue;
+            };
+            let Some(voter) = self.get_player(*voter_id).cloned() else {
+                continue;
+            };
+            let Some(target) = self.get_player(*target_id).cloned() else {
+                continue;
+            };
+            if !voter.alive
+                || !target.alive
+                || voter.role != Role::Madam
+                || voter.user_id == target.user_id
+            {
+                continue;
+            }
+            if self.madam_seduced_ids.insert(target.user_id) {
+                seduced.push(target.clone());
+            }
+            self.madam_seduction_release_days
+                .insert(target.user_id, self.day_number + 1);
+            if self.is_mafia_team(&target) {
+                self.contact_mafia_team_member(&target);
+                self.madam_contacted.insert(voter.user_id);
+            }
+        }
+        seduced
+    }
+
+    pub fn start_vote(&mut self) -> Result<()> {
+        if self.phase != Phase::Day {
+            bail!("낮 단계에서만 투표를 시작할 수 있습니다.");
+        }
+        self.phase = Phase::Vote;
+        self.day_votes.clear();
+        self.confirm_votes.clear();
+        Ok(())
+    }
+
+    pub fn submit_day_vote(&mut self, voter_id: u64, target_id: Option<u64>) -> Result<String> {
+        if self.phase != Phase::Vote {
+            bail!("지금은 투표 시간이 아닙니다.");
+        }
+        let voter = self.require_alive(voter_id)?.clone();
+        if self.vote_blocked(voter.user_id) {
+            self.day_votes.insert(voter.user_id, None);
+            return Ok("공갈당해 이번 지목 투표권이 없습니다.".to_string());
+        }
+        let Some(target_id) = target_id else {
+            self.day_votes.insert(voter.user_id, None);
+            return Ok("투표 대상: 스킵".to_string());
+        };
+        let target = self.require_alive(target_id)?.clone();
+        self.day_votes.insert(voter.user_id, Some(target.user_id));
+        Ok(format!("투표 대상: {}", target.name))
+    }
+
+    pub fn resolve_nomination_vote(&mut self) -> Result<VoteResult> {
+        if self.phase != Phase::Vote {
+            bail!("투표 단계만 정산할 수 있습니다.");
+        }
+        let live_votes = self
+            .day_votes
+            .iter()
+            .filter(|(voter_id, target_id)| {
+                self.is_alive(**voter_id)
+                    && !self.vote_blocked(**voter_id)
+                    && target_id.is_none_or(|id| self.is_alive(id))
+            })
+            .map(|(voter_id, target_id)| (*voter_id, *target_id))
+            .collect::<HashMap<_, _>>();
+        let blocked_voters = self
+            .players
+            .iter()
+            .filter(|player| player.alive && self.vote_blocked(player.user_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let madam_seduced = self.apply_madam_seduction(&live_votes);
+        if live_votes.is_empty() {
+            self.advance_to_next_night();
+            return Ok(VoteResult {
+                blocked_voters,
+                madam_seduced,
+                ..Default::default()
+            });
+        }
+        let mut counts: HashMap<Option<u64>, i32> = HashMap::new();
+        for (voter_id, target_id) in &live_votes {
+            *counts.entry(*target_id).or_default() += self.vote_weight(*voter_id);
+        }
+        let highest = counts.values().copied().max().unwrap_or(0);
+        let top = counts
+            .iter()
+            .filter(|(_, count)| **count == highest)
+            .map(|(target_id, _)| *target_id)
+            .collect::<Vec<_>>();
+        if top.len() != 1 {
+            self.advance_to_next_night();
+            return Ok(VoteResult {
+                tied: true,
+                vote_counts: counts,
+                madam_seduced,
+                blocked_voters,
+                ..Default::default()
+            });
+        }
+        if top[0].is_none() {
+            self.advance_to_next_night();
+            return Ok(VoteResult {
+                skipped: true,
+                vote_counts: counts,
+                madam_seduced,
+                blocked_voters,
+                ..Default::default()
+            });
+        }
+        let nominated = top[0].and_then(|id| self.get_player(id).cloned());
+        self.phase = Phase::FinalDefense;
+        Ok(VoteResult {
+            executed: nominated,
+            vote_counts: counts,
+            madam_seduced,
+            blocked_voters,
+            ..Default::default()
+        })
+    }
+
+    pub fn resolve_vote(&mut self) -> Result<VoteResult> {
+        self.resolve_nomination_vote()
+    }
+
+    pub fn start_confirmation_vote(&mut self) -> Result<()> {
+        if self.phase != Phase::FinalDefense {
+            bail!("최후변론 뒤에만 찬반투표를 시작할 수 있습니다.");
+        }
+        self.phase = Phase::ConfirmVote;
+        self.confirm_votes.clear();
+        Ok(())
+    }
+
+    pub fn submit_confirmation_vote(&mut self, voter_id: u64, approve: bool) -> Result<String> {
+        if self.phase != Phase::ConfirmVote {
+            bail!("지금은 찬반투표 시간이 아닙니다.");
+        }
+        let voter = self.require_alive(voter_id)?.clone();
+        self.confirm_votes.insert(voter.user_id, approve);
+        Ok(if approve {
+            "찬성에 투표했습니다.".to_string()
+        } else {
+            "반대에 투표했습니다.".to_string()
+        })
+    }
+
+    pub fn resolve_confirmation_vote(&mut self, target_id: u64) -> Result<ConfirmVoteResult> {
+        if self.phase != Phase::ConfirmVote {
+            bail!("찬반투표 단계만 정산할 수 있습니다.");
+        }
+        let live_votes = self
+            .confirm_votes
+            .iter()
+            .filter(|(voter_id, _)| self.is_alive(**voter_id))
+            .map(|(voter_id, approve)| (*voter_id, *approve))
+            .collect::<HashMap<_, _>>();
+        let mut counts = HashMap::<bool, i32>::new();
+        for (voter_id, approve) in &live_votes {
+            *counts.entry(*approve).or_default() += self.vote_weight(*voter_id);
+        }
+        let yes = *counts.get(&true).unwrap_or(&0);
+        let no = *counts.get(&false).unwrap_or(&0);
+        let target = self.get_player(target_id).cloned();
+        let normal_approved = target
+            .as_ref()
+            .is_some_and(|target| target.alive && yes > no);
+        let mut approved = normal_approved;
+        let judge = self.active_judge();
+        let judge_choice = judge
+            .as_ref()
+            .and_then(|judge| live_votes.get(&judge.user_id).copied());
+        let mut decided_by_judge = false;
+        if let Some(judge) = judge.as_ref() {
+            if self.revealed_judge_ids.contains(&judge.user_id) {
+                approved = target.as_ref().is_some_and(|target| target.alive)
+                    && judge_choice.unwrap_or(false);
+                decided_by_judge = true;
+            } else if judge_choice.is_some_and(|choice| choice != normal_approved) {
+                self.revealed_judge_ids.insert(judge.user_id);
+                self.publicly_revealed_ids.insert(judge.user_id);
+                approved = target.as_ref().is_some_and(|target| target.alive)
+                    && judge_choice.unwrap_or(false);
+                decided_by_judge = true;
+            }
+        }
+        let tied = !decided_by_judge && yes == no;
+        let blocked_by_politician = approved
+            && target
+                .as_ref()
+                .is_some_and(|target| target.role == Role::Politician);
+        let mut executed = None;
+        let mut extra_killed = Vec::new();
+        if blocked_by_politician {
+            if let Some(target) = target.as_ref() {
+                self.publicly_revealed_ids.insert(target.user_id);
+            }
+        } else if approved {
+            if let Some(target) = target.as_ref() {
+                executed = self.mark_dead(target.user_id);
+                if target.role == Role::Joker {
+                    self.joker_won = true;
+                    self.joker_winner_id = Some(target.user_id);
+                }
+                if target.role == Role::Terrorist {
+                    if let Some(retaliation_id) =
+                        self.terrorist_targets.get(&target.user_id).copied()
+                    {
+                        if let Some(retaliation_target) = self.get_player(retaliation_id).cloned() {
+                            if retaliation_target.alive
+                                && !self.is_citizen_team(&retaliation_target)
+                            {
+                                if let Some(killed) = self.mark_dead(retaliation_target.user_id) {
+                                    extra_killed.push(killed);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.ensure_fanatic_reincarnation();
+        self.advance_to_next_night();
+        Ok(ConfirmVoteResult {
+            executed,
+            approved,
+            tied,
+            blocked_by_politician,
+            extra_killed,
+            vote_counts: counts,
+            judge: if decided_by_judge { judge } else { None },
+            judge_choice: if decided_by_judge { judge_choice } else { None },
+            decided_by_judge,
+        })
+    }
+
+    pub fn winner(&self) -> Option<Winner> {
+        if self.joker_won {
+            return Some(Winner::Joker);
+        }
+        if let Some(winner) = self.prophet_winner() {
+            return Some(winner);
+        }
+        let alive = self.alive_players();
+        let mafia_alive = alive
+            .iter()
+            .filter(|player| self.is_known_mafia_team(player))
+            .count();
+        let cult_alive = alive
+            .iter()
+            .filter(|player| self.is_cult_team(player))
+            .count();
+        let non_cult_alive = alive.len().saturating_sub(cult_alive);
+        let cult_leader_alive = alive.iter().any(|player| player.role == Role::CultLeader);
+        if cult_leader_alive && cult_alive > 0 && cult_alive >= non_cult_alive {
+            return Some(Winner::Cult);
+        }
+        let non_mafia_alive = alive.len().saturating_sub(mafia_alive);
+        if mafia_alive == 0 {
+            if self.has_pending_scientist_revive() {
+                return None;
+            }
+            return Some(Winner::Citizen);
+        }
+        if mafia_alive >= non_mafia_alive {
+            if self.revealed_judge_alive() {
+                return None;
+            }
+            return Some(Winner::Mafia);
+        }
+        None
+    }
+
+    fn prophet_winner(&self) -> Option<Winner> {
+        if self.phase != Phase::Day || self.day_number < 4 {
+            return None;
+        }
+        let prophet = self
+            .players
+            .iter()
+            .filter(|player| player.alive && player.role == Role::Prophet)
+            .min_by_key(|player| player.name.to_lowercase())?;
+        if self.is_cult_team(prophet) {
+            Some(Winner::Cult)
+        } else if self.is_mafia_team(prophet) {
+            Some(Winner::Mafia)
+        } else {
+            Some(Winner::Citizen)
+        }
+    }
+
+    fn active_judge(&self) -> Option<Player> {
+        let mut judges = self
+            .players
+            .iter()
+            .filter(|player| player.alive && player.role == Role::Judge)
+            .cloned()
+            .collect::<Vec<_>>();
+        if judges.is_empty() {
+            return None;
+        }
+        judges.sort_by_key(|player| player.name.to_lowercase());
+        judges
+            .iter()
+            .find(|judge| self.revealed_judge_ids.contains(&judge.user_id))
+            .cloned()
+            .or_else(|| judges.into_iter().next())
+    }
+
+    fn revealed_judge_alive(&self) -> bool {
+        self.players.iter().any(|player| {
+            player.alive
+                && player.role == Role::Judge
+                && self.revealed_judge_ids.contains(&player.user_id)
+        })
+    }
+
+    pub fn reveal_roles(&self) -> String {
+        let mut players = self.players.clone();
+        players.sort_by_key(|player| player.name.to_lowercase());
+        players
+            .into_iter()
+            .map(|player| {
+                format!(
+                    "- {}: {}{}",
+                    player.name,
+                    player.role.value(),
+                    if player.alive { "" } else { " (사망)" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn public_status(&self) -> String {
+        let alive_players = self.alive_players();
+        let dead_players = self.dead_players();
+        let alive = alive_players
+            .iter()
+            .map(|player| player.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let dead = dead_players
+            .iter()
+            .map(|player| player.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "{}일차 / 현재 단계: {}\n생존자({}명): {}\n사망자: {}",
+            self.day_number,
+            self.phase.value(),
+            alive_players.len(),
+            alive,
+            if dead.is_empty() { "없음" } else { &dead }
+        )
+    }
+
+    fn resolve_detective_results(
+        &self,
+        mafia_target_id: Option<u64>,
+        protected_id: Option<u64>,
+        police_target_id: Option<u64>,
+        godfather_target_id: Option<u64>,
+    ) -> HashMap<u64, String> {
+        let mut results = HashMap::new();
+        for (actor_id, watched_id) in &self.detective_targets {
+            let Some(actor) = self.get_player(*actor_id) else {
+                continue;
+            };
+            let Some(watched) = self.get_player(*watched_id) else {
+                continue;
+            };
+            if !actor.alive {
+                continue;
+            }
+            let action_target_id = self.resolved_action_target(
+                watched,
+                mafia_target_id,
+                protected_id,
+                police_target_id,
+                godfather_target_id,
+            );
+            if let Some(action_target_id) = action_target_id {
+                let target_name = self
+                    .get_player(action_target_id)
+                    .map(|player| player.name.clone())
+                    .unwrap_or_else(|| action_target_id.to_string());
+                results.insert(
+                    *actor_id,
+                    format!(
+                        "{} 님은 밤에 {} 님에게 능력을 사용했습니다.",
+                        watched.name, target_name
+                    ),
+                );
+            } else {
+                results.insert(
+                    *actor_id,
+                    format!("{} 님은 밤에 능력을 사용하지 않았습니다.", watched.name),
+                );
+            }
+        }
+        results
+    }
+
+    fn resolved_action_target(
+        &self,
+        watched: &Player,
+        mafia_target_id: Option<u64>,
+        protected_id: Option<u64>,
+        police_target_id: Option<u64>,
+        godfather_target_id: Option<u64>,
+    ) -> Option<u64> {
+        match watched.role {
+            Role::Mafia => mafia_target_id,
+            Role::Doctor => self.doctor_targets.get(&watched.user_id).copied(),
+            Role::Nurse => self
+                .nurse_targets
+                .get(&watched.user_id)
+                .or_else(|| self.nurse_prescription_targets.get(&watched.user_id))
+                .copied(),
+            Role::Gangster => self.gangster_targets.get(&watched.user_id).copied(),
+            Role::Thief => self.resolved_thief_action_target(watched),
+            Role::Police => self
+                .police_targets
+                .contains_key(&watched.user_id)
+                .then_some(police_target_id)
+                .flatten(),
+            Role::Vigilante => self.vigilante_targets.get(&watched.user_id).copied(),
+            Role::Reporter => self.reporter_targets.get(&watched.user_id).copied(),
+            Role::Detective => self.detective_targets.get(&watched.user_id).copied(),
+            Role::Shaman => self.shaman_targets.get(&watched.user_id).copied(),
+            Role::Priest => self.priest_targets.get(&watched.user_id).copied(),
+            Role::Spy => self
+                .spy_targets
+                .get(&watched.user_id)
+                .and_then(|targets| targets.last().copied()),
+            Role::Contractor => self
+                .contractor_contracts
+                .get(&watched.user_id)
+                .map(|contract| contract.0.0),
+            Role::Witch => self.witch_targets.get(&watched.user_id).copied(),
+            Role::Terrorist => self.terrorist_targets.get(&watched.user_id).copied(),
+            Role::Godfather => {
+                if self.godfather_contacted.contains(&watched.user_id) {
+                    godfather_target_id
+                } else {
+                    self.godfather_targets.get(&watched.user_id).copied()
+                }
+            }
+            Role::CultLeader => self.cult_targets.get(&watched.user_id).copied(),
+            Role::Fanatic => self.fanatic_targets.get(&watched.user_id).copied(),
+            _ => {
+                let _ = protected_id;
+                None
+            }
+        }
+    }
+
+    fn resolved_thief_action_target(&self, watched: &Player) -> Option<u64> {
+        match self.thief_night_role(watched) {
+            Some(Role::Mafia) => self.mafia_targets.get(&watched.user_id).copied(),
+            Some(Role::Doctor) => self.doctor_targets.get(&watched.user_id).copied(),
+            Some(Role::Police) => self.police_targets.get(&watched.user_id).copied(),
+            Some(Role::Reporter) => self.reporter_targets.get(&watched.user_id).copied(),
+            Some(Role::Detective) => self.detective_targets.get(&watched.user_id).copied(),
+            Some(Role::Spy) => self
+                .spy_targets
+                .get(&watched.user_id)
+                .and_then(|targets| targets.last().copied()),
+            Some(Role::Contractor) => self
+                .contractor_contracts
+                .get(&watched.user_id)
+                .map(|contract| contract.0.0),
+            Some(Role::Shaman) => self.shaman_targets.get(&watched.user_id).copied(),
+            Some(Role::Priest) => self.priest_targets.get(&watched.user_id).copied(),
+            Some(Role::Witch) => self.witch_targets.get(&watched.user_id).copied(),
+            Some(Role::Godfather) => self.godfather_targets.get(&watched.user_id).copied(),
+            Some(Role::Terrorist) => self.terrorist_targets.get(&watched.user_id).copied(),
+            Some(Role::Gangster) => self.gangster_targets.get(&watched.user_id).copied(),
+            _ => None,
+        }
+    }
+
+    fn resolve_terrorist_night_retaliations(
+        &mut self,
+        killed_by_mafia_team_ids: &HashSet<u64>,
+        killed_players: &mut Vec<Player>,
+    ) -> Vec<(Player, Player)> {
+        let mut retaliations = Vec::new();
+        for terrorist_id in killed_by_mafia_team_ids {
+            let Some(terrorist) = self.get_player(*terrorist_id).cloned() else {
+                continue;
+            };
+            if terrorist.role != Role::Terrorist {
+                continue;
+            }
+            let Some(target_id) = self.terrorist_targets.get(terrorist_id).copied() else {
+                continue;
+            };
+            let Some(target) = self.get_player(target_id).cloned() else {
+                continue;
+            };
+            if target.alive && self.is_mafia_team(&target) {
+                if let Some(killed) = self.mark_dead(target.user_id) {
+                    killed_players.push(killed.clone());
+                    retaliations.push((terrorist, killed));
+                }
+            }
+        }
+        retaliations
+    }
+
+    fn resolve_spy_results(&self) -> (HashMap<u64, String>, Vec<u64>) {
+        let mut results = HashMap::new();
+        for (actor_id, target_ids) in &self.spy_targets {
+            let Some(actor) = self.get_player(*actor_id) else {
+                continue;
+            };
+            if !actor.alive {
+                continue;
+            }
+            let mut lines = Vec::new();
+            for target_id in target_ids {
+                if let Some(target) = self.get_player(*target_id) {
+                    lines.push(format!(
+                        "[첩보] {} 님의 직업은 **{}** 입니다.",
+                        target.name,
+                        self.visible_role(target).value()
+                    ));
+                }
+            }
+            if self.spy_contacts_this_night.contains(actor_id) {
+                lines.push("[접선] 마피아와 접선했습니다.".to_string());
+            }
+            if !lines.is_empty() {
+                results.insert(*actor_id, lines.join("\n"));
+            }
+        }
+        (results, self.spy_contacts_this_night.clone())
+    }
+
+    fn resolve_contractor_results(&mut self) -> (HashMap<u64, String>, Vec<u64>, Vec<Player>) {
+        let mut results = HashMap::new();
+        let mut kills = Vec::new();
+        let contracts = self.contractor_contracts.clone();
+        for (actor_id, contract) in contracts {
+            let Some(actor) = self.get_player(actor_id).cloned() else {
+                continue;
+            };
+            if !actor.alive {
+                continue;
+            }
+            let targets = [
+                (self.get_player(contract.0.0).cloned(), contract.0.1),
+                (self.get_player(contract.1.0).cloned(), contract.1.1),
+            ];
+            let matched_mafia = targets.iter().any(|(target, guessed_role)| {
+                target.as_ref().is_some_and(|target| {
+                    target.alive && target.role == Role::Mafia && *guessed_role == Role::Mafia
+                })
+            });
+            if matched_mafia {
+                if actor.role == Role::Thief {
+                    self.thief_contacted.insert(actor_id);
+                } else {
+                    self.contractor_contacted.insert(actor_id);
+                }
+                if !self.contractor_contacts_this_night.contains(&actor_id) {
+                    self.contractor_contacts_this_night.push(actor_id);
+                }
+            }
+            let success = targets.iter().all(|(target, guessed_role)| {
+                target.as_ref().is_some_and(|target| {
+                    target.alive
+                        && self.is_citizen_team(target)
+                        && target.role == *guessed_role
+                        && !self.is_publicly_revealed(target)
+                })
+            });
+            if !success {
+                let mut text = "대상의 정보가 정확하지 않아 암살에 실패했습니다.".to_string();
+                if matched_mafia {
+                    text = format!("[동업] 마피아와 접선했습니다.\n{text}");
+                }
+                results.insert(actor_id, text);
+                continue;
+            }
+            for (target, _) in targets {
+                if let Some(target) = target {
+                    if !kills.iter().any(|k: &Player| k.user_id == target.user_id) {
+                        kills.push(target);
+                    }
+                }
+            }
+            let mut text = "청부가 성공했습니다. 대상 둘이 아침에 암살됩니다.".to_string();
+            if matched_mafia {
+                text = format!("[동업] 마피아와 접선했습니다.\n{text}");
+            }
+            results.insert(actor_id, text);
+        }
+        (results, self.contractor_contacts_this_night.clone(), kills)
+    }
+
+    fn resolve_godfather_results(&self) -> HashMap<u64, String> {
+        self.godfather_targets
+            .iter()
+            .filter_map(|(actor_id, target_id)| {
+                let actor = self.get_player(*actor_id)?;
+                let target = self.get_player(*target_id)?;
+                (actor.alive && target.alive).then(|| {
+                    (
+                        *actor_id,
+                        format!("{} 님을 확정 처치 대상으로 지목했습니다.", target.name),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn resolve_shaman_results(&mut self) -> (HashMap<u64, String>, Vec<u64>) {
+        let mut results = HashMap::new();
+        let mut purifications = Vec::new();
+        for (actor_id, target_id) in self.shaman_targets.clone() {
+            let Some(actor) = self.get_player(actor_id) else {
+                continue;
+            };
+            let Some(target) = self.get_player(target_id).cloned() else {
+                continue;
+            };
+            if !actor.alive || target.alive || self.purified_dead_ids.contains(&target.user_id) {
+                continue;
+            }
+            self.purified_dead_ids.insert(target.user_id);
+            purifications.push(target.user_id);
+            results.insert(
+                actor_id,
+                format!(
+                    "[성불] {} 님의 직업은 **{}** 입니다.\n대상은 사망자 채널에서 채팅할 수 없습니다.",
+                    target.name,
+                    self.visible_role(&target).value()
+                ),
+            );
+        }
+        (results, purifications)
+    }
+
+    fn resolve_reporter_results(
+        &mut self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> HashMap<u64, String> {
+        let mut results = HashMap::new();
+        for (actor_id, target_id) in self.reporter_targets.clone() {
+            if blocked_actor_ids.contains(&actor_id) {
+                continue;
+            }
+            let Some(actor) = self.get_player(actor_id) else {
+                continue;
+            };
+            let Some(target) = self.get_player(target_id).cloned() else {
+                continue;
+            };
+            if !actor.alive {
+                continue;
+            }
+            let visible_role = self.visible_role(&target);
+            if visible_role != Role::Frog {
+                self.publicly_revealed_ids.insert(target.user_id);
+            }
+            results.insert(
+                actor_id,
+                format!(
+                    "[속보입니다! {}님이 {}이라는 소식입니다!]",
+                    target.name,
+                    visible_role.value()
+                ),
+            );
+        }
+        results
+    }
+
+    fn resolve_vigilante_results(&self) -> (HashMap<u64, String>, Vec<Player>) {
+        let mut results = HashMap::new();
+        let mut kills = Vec::new();
+        for (actor_id, target_id) in &self.vigilante_targets {
+            let Some(actor) = self.get_player(*actor_id) else {
+                continue;
+            };
+            let Some(target) = self.get_player(*target_id).cloned() else {
+                continue;
+            };
+            if !actor.alive {
+                continue;
+            }
+            if target.alive && self.is_mafia_team(&target) {
+                kills.push(target.clone());
+                results.insert(
+                    *actor_id,
+                    format!("[숙청] {} 님을 처형했습니다.", target.name),
+                );
+            } else {
+                results.insert(
+                    *actor_id,
+                    "[숙청] 대상이 마피아팀이 아니거나 이미 사망해 처형에 실패했습니다."
+                        .to_string(),
+                );
+            }
+        }
+        (results, kills)
+    }
+
+    fn resolve_nurse_results(&mut self) -> (HashMap<u64, String>, Vec<u64>) {
+        let mut results = HashMap::new();
+        for (actor_id, target_id) in self.nurse_prescription_targets.clone() {
+            let Some(actor) = self.get_player(actor_id) else {
+                continue;
+            };
+            let Some(target) = self.get_player(target_id).cloned() else {
+                continue;
+            };
+            if !actor.alive {
+                continue;
+            }
+            if target.role == Role::Doctor {
+                self.nurse_contacted.insert(actor_id);
+                if !self.nurse_contacts_this_night.contains(&actor_id) {
+                    self.nurse_contacts_this_night.push(actor_id);
+                }
+                results.insert(
+                    actor_id,
+                    format!(
+                        "[처방] {} 님은 의사입니다. 의사와 접선했습니다.",
+                        target.name
+                    ),
+                );
+            } else {
+                results.insert(
+                    actor_id,
+                    format!("[처방] {} 님은 의사가 아닙니다.", target.name),
+                );
+            }
+        }
+        for (actor_id, target_id) in &self.nurse_targets {
+            if let (Some(actor), Some(target)) =
+                (self.get_player(*actor_id), self.get_player(*target_id))
+            {
+                if actor.alive {
+                    results.insert(
+                        *actor_id,
+                        format!("[치료] {} 님을 치료 대상으로 선택했습니다.", target.name),
+                    );
+                }
+            }
+        }
+        (results, self.nurse_contacts_this_night.clone())
+    }
+
+    fn resolve_gangster_results(&mut self) -> HashMap<u64, String> {
+        let mut results = HashMap::new();
+        for (actor_id, target_id) in self.gangster_targets.clone() {
+            let Some(actor) = self.get_player(actor_id) else {
+                continue;
+            };
+            let Some(target) = self.get_player(target_id).cloned() else {
+                continue;
+            };
+            if !actor.alive || !target.alive {
+                continue;
+            }
+            self.gangster_used_ids.insert(actor_id);
+            self.gangster_blocked_vote_days
+                .insert(target.user_id, self.day_number);
+            results.insert(
+                actor_id,
+                format!(
+                    "[공갈] {} 님의 다음 낮 지목 투표권을 빼앗았습니다.",
+                    target.name
+                ),
+            );
+        }
+        results
+    }
+
+    fn nurse_enhanced_heal_active(&self) -> bool {
+        self.players.iter().any(|player| {
+            player.alive
+                && player.role == Role::Nurse
+                && self.nurse_contacted.contains(&player.user_id)
+        })
+    }
+
+    fn resolve_priest_results(
+        &mut self,
+        killed_players: &[Player],
+    ) -> (HashMap<u64, String>, Vec<Player>) {
+        let mut results = HashMap::new();
+        let mut revived = Vec::new();
+        let killed_ids = killed_players
+            .iter()
+            .map(|p| p.user_id)
+            .collect::<HashSet<_>>();
+        for (actor_id, target_id) in self.priest_targets.clone() {
+            let Some(actor) = self.get_player(actor_id) else {
+                continue;
+            };
+            if killed_ids.contains(&actor_id) || !actor.alive {
+                continue;
+            }
+            let Some(target) = self.get_player(target_id).cloned() else {
+                results.insert(
+                    actor_id,
+                    "[소생] 대상이 이미 살아있어 부활에 실패했습니다.".to_string(),
+                );
+                continue;
+            };
+            if target.alive {
+                results.insert(
+                    actor_id,
+                    "[소생] 대상이 이미 살아있어 부활에 실패했습니다.".to_string(),
+                );
+                continue;
+            }
+            if self.purified_dead_ids.contains(&target.user_id) {
+                results.insert(
+                    actor_id,
+                    "[소생] 대상이 성불 상태라 부활에 실패했습니다.".to_string(),
+                );
+                continue;
+            }
+            if let Some(index) = self.players_by_id.get(&target.user_id).copied() {
+                self.players[index].alive = true;
+                self.scientist_pending_revive_ids.remove(&target.user_id);
+                let revived_player = self.players[index].clone();
+                revived.push(revived_player.clone());
+                results.insert(
+                    actor_id,
+                    format!("[소생] {} 님을 부활시켰습니다.", revived_player.name),
+                );
+            }
+        }
+        (results, revived)
+    }
+
+    fn resolve_cult_results(&mut self) -> (HashMap<u64, String>, u32) {
+        let mut results = HashMap::new();
+        for (actor_id, target_id) in self.cult_targets.clone() {
+            let Some(actor) = self.get_player(actor_id) else {
+                continue;
+            };
+            let Some(target) = self.get_player(target_id).cloned() else {
+                continue;
+            };
+            if !actor.alive || actor.role != Role::CultLeader || !target.alive {
+                continue;
+            }
+            if self.culted_ids.contains(&target.user_id) {
+                results.insert(
+                    actor_id,
+                    format!(
+                        "[포교] {} 님을 포교했습니다. 직업은 **{}** 입니다.",
+                        target.name,
+                        target.role.value()
+                    ),
+                );
+                continue;
+            }
+            if self.is_mafia_team(&target) || target.role == Role::CultLeader {
+                results.insert(actor_id, "[포교] 포교에 실패했습니다.".to_string());
+                continue;
+            }
+            if target.role == Role::Priest {
+                results.insert(actor_id, "[포교] 포교에 실패했습니다.".to_string());
+                results.insert(
+                    target.user_id,
+                    format!(
+                        "[신앙] 교주가 포교를 시도했습니다. 교주는 **{}** 님입니다.",
+                        actor.name
+                    ),
+                );
+                continue;
+            }
+            self.culted_ids.insert(target.user_id);
+            results.insert(
+                actor_id,
+                format!(
+                    "[포교] {} 님을 포교했습니다. 직업은 **{}** 입니다.",
+                    target.name,
+                    target.role.value()
+                ),
+            );
+        }
+        (results, 0)
+    }
+
+    fn resolve_fanatic_results(&mut self) -> (HashMap<u64, String>, u32) {
+        let mut results = HashMap::new();
+        for (actor_id, target_id) in self.fanatic_targets.clone() {
+            let Some(actor) = self.get_player(actor_id) else {
+                continue;
+            };
+            let Some(target) = self.get_player(target_id).cloned() else {
+                continue;
+            };
+            if !actor.alive || actor.role != Role::Fanatic {
+                continue;
+            }
+            let is_cult = self.is_cult_team(&target);
+            if target.role == Role::CultLeader {
+                self.culted_ids.insert(actor_id);
+            }
+            let suffix = if is_cult {
+                "교주팀입니다"
+            } else {
+                "교주팀이 아닙니다"
+            };
+            results.insert(
+                actor_id,
+                format!("[추종] {} 님은 **{}**.", target.name, suffix),
+            );
+        }
+        (results, 0)
+    }
+
+    pub fn consume_cult_bells(&mut self) -> u32 {
+        let count = self.cult_bells_this_night;
+        self.cult_bells_this_night = 0;
+        count
+    }
+
+    pub fn ensure_fanatic_reincarnation(&mut self) -> Vec<u64> {
+        if self
+            .players
+            .iter()
+            .any(|player| player.alive && player.role == Role::CultLeader)
+        {
+            return Vec::new();
+        }
+        let Some(index) = self.players.iter().position(|player| {
+            player.alive
+                && player.role == Role::Fanatic
+                && self.culted_ids.contains(&player.user_id)
+        }) else {
+            return Vec::new();
+        };
+        self.players[index].role = Role::CultLeader;
+        self.culted_ids.insert(self.players[index].user_id);
+        vec![self.players[index].user_id]
+    }
+
+    fn resolve_agent_results(&mut self) -> HashMap<u64, String> {
+        let alive = self
+            .players
+            .iter()
+            .filter(|player| player.alive)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut results = HashMap::new();
+        for agent in alive.iter() {
+            if agent.role != Role::Agent
+                && self.thief_stolen_roles.get(&agent.user_id) != Some(&Role::Agent)
+            {
+                continue;
+            }
+            let candidates = alive
+                .iter()
+                .filter(|player| {
+                    player.user_id != agent.user_id
+                        && self.is_citizen_team(player)
+                        && !self.agent_discovered_ids.contains(&player.user_id)
+                        && !self.is_publicly_revealed(player)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if candidates.is_empty() {
+                results.insert(agent.user_id, "지령이 도착하지 않았습니다.".to_string());
+                continue;
+            }
+            let mut rng = rand::rng();
+            let target = candidates.choose(&mut rng).cloned().unwrap();
+            self.agent_discovered_ids.insert(target.user_id);
+            results.insert(
+                agent.user_id,
+                format!(
+                    "[공작] 지령이 도착했습니다.\n{} 님의 직업은 **{}** 입니다.",
+                    target.name,
+                    target.role.value()
+                ),
+            );
+        }
+        results
+    }
+
+    fn resolve_graverobbers(&mut self, killed_players: &[Player]) -> HashMap<u64, Role> {
+        if self.day_number != 1 {
+            return HashMap::new();
+        }
+        let inherited_role = killed_players
+            .first()
+            .map(|player| player.role)
+            .unwrap_or(Role::Citizen);
+        let mut results = HashMap::new();
+        let graverobber_ids = self
+            .players
+            .iter()
+            .filter(|player| player.alive && player.role == Role::Graverobber)
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        for id in graverobber_ids {
+            if let Some(player) = self.get_player_mut(id) {
+                player.role = inherited_role;
+                results.insert(id, inherited_role);
+            }
+        }
+        if !results.is_empty() {
+            if let Some(robbed) = killed_players.first() {
+                if let Some(player) = self.get_player_mut(robbed.user_id) {
+                    player.role = if inherited_role.is_mafia_team() {
+                        Role::Villain
+                    } else {
+                        Role::Citizen
+                    };
+                }
+            }
+        }
+        results
+    }
+
+    fn lover_sacrifice_for(&self, target: &Player) -> Option<Player> {
+        if target.role != Role::Lover {
+            return None;
+        }
+        let alive_lovers = self
+            .players
+            .iter()
+            .filter(|player| player.alive && player.role == Role::Lover)
+            .cloned()
+            .collect::<Vec<_>>();
+        if alive_lovers.len() < 2 {
+            return None;
+        }
+        alive_lovers
+            .into_iter()
+            .find(|lover| lover.user_id != target.user_id)
+    }
+
+    fn resolve_mafia_team_attack(
+        &mut self,
+        target: Option<&Player>,
+        ignore_doctor: bool,
+        allow_soldier_block: bool,
+        protected_ids: &HashSet<u64>,
+        enhanced_protection_ids: &HashSet<u64>,
+        killed_players: &mut Vec<Player>,
+        killed_by_mafia_team_ids: &mut HashSet<u64>,
+        soldier_blocks: &mut Vec<Player>,
+        lover_sacrifices: &mut Vec<(Player, Player)>,
+    ) {
+        let Some(target) = target.cloned() else {
+            return;
+        };
+        if !target.alive {
+            return;
+        }
+        if let Some(lover_savior) = self.lover_sacrifice_for(&target) {
+            self.kill_player(
+                lover_savior.user_id,
+                true,
+                killed_players,
+                killed_by_mafia_team_ids,
+            );
+            lover_sacrifices.push((lover_savior, target));
+            return;
+        }
+        if enhanced_protection_ids.contains(&target.user_id) {
+            return;
+        }
+        if !ignore_doctor && protected_ids.contains(&target.user_id) {
+            return;
+        }
+        if allow_soldier_block
+            && target.role == Role::Soldier
+            && !self.soldier_bulletproof_used.contains(&target.user_id)
+        {
+            self.soldier_bulletproof_used.insert(target.user_id);
+            self.publicly_revealed_ids.insert(target.user_id);
+            soldier_blocks.push(target);
+            return;
+        }
+        self.kill_player(
+            target.user_id,
+            true,
+            killed_players,
+            killed_by_mafia_team_ids,
+        );
+    }
+
+    fn kill_player(
+        &mut self,
+        user_id: u64,
+        by_mafia_team: bool,
+        killed_players: &mut Vec<Player>,
+        killed_by_mafia_team_ids: &mut HashSet<u64>,
+    ) {
+        if let Some(killed) = self.mark_dead(user_id) {
+            if !killed_players
+                .iter()
+                .any(|player| player.user_id == killed.user_id)
+            {
+                killed_players.push(killed.clone());
+            }
+            if by_mafia_team {
+                killed_by_mafia_team_ids.insert(killed.user_id);
+            }
+        }
+    }
+
+    fn require_alive(&self, user_id: u64) -> Result<&Player> {
+        let player = self.require_player(user_id)?;
+        if !player.alive {
+            bail!("사망한 참가자는 행동할 수 없습니다.");
+        }
+        Ok(player)
+    }
+
+    fn require_player(&self, user_id: u64) -> Result<&Player> {
+        self.get_player(user_id)
+            .ok_or_else(|| anyhow::anyhow!("게임 참가자가 아닙니다."))
+    }
+
+    fn proxy_target_id(&self, target_id: u64) -> u64 {
+        let Some(target) = self.get_player(target_id) else {
+            return target_id;
+        };
+        if !target.alive || target.role != Role::Hacker {
+            return target_id;
+        }
+        let Some(proxy_id) = self.hacker_proxy_targets.get(&target.user_id).copied() else {
+            return target_id;
+        };
+        if self.is_alive(proxy_id) {
+            proxy_id
+        } else {
+            target_id
+        }
+    }
+
+    fn is_alive(&self, user_id: u64) -> bool {
+        self.get_player(user_id).is_some_and(|player| player.alive)
+    }
+
+    fn is_stolen_godfather_actor(&self, user_id: u64) -> bool {
+        self.get_player(user_id).is_some_and(|player| {
+            player.role == Role::Thief
+                && self.thief_stolen_roles.get(&user_id) == Some(&Role::Godfather)
+        })
+    }
+
+    fn is_stolen_doctor_actor(&self, user_id: u64) -> bool {
+        self.get_player(user_id).is_some_and(|player| {
+            player.role == Role::Thief
+                && self.thief_stolen_roles.get(&user_id) == Some(&Role::Doctor)
+        })
+    }
+
+    fn majority_target(&self, targets: &HashMap<u64, u64>) -> Option<u64> {
+        let live_targets = targets
+            .iter()
+            .filter(|(actor_id, target_id)| self.is_alive(**actor_id) && self.is_alive(**target_id))
+            .map(|(_, target_id)| *target_id)
+            .collect::<Vec<_>>();
+        let voter_count = live_targets.len();
+        if voter_count == 0 {
+            return None;
+        }
+        let counts = count_values(live_targets);
+        let highest = counts.values().copied().max()?;
+        let tied = counts
+            .iter()
+            .filter(|(_, count)| **count == highest)
+            .map(|(target_id, _)| *target_id)
+            .collect::<Vec<_>>();
+        if tied.len() != 1 || highest <= voter_count / 2 {
+            None
+        } else {
+            Some(tied[0])
+        }
+    }
+
+    fn spy_actions_used(&self, actor_id: u64) -> usize {
+        self.spy_targets.get(&actor_id).map_or(0, Vec::len)
+    }
+
+    fn spy_action_limit(&self, actor_id: u64) -> usize {
+        if self.spy_bonus_pending.contains(&actor_id) {
+            2
+        } else {
+            1
+        }
+    }
+
+    fn contractor_can_act(&self, player: &Player) -> bool {
+        self.day_number >= 2 && self.contractor_contract_targets(player).len() >= 2
+    }
+
+    fn reporter_can_act(&self, player: &Player, alive: &[Player]) -> bool {
+        self.day_number >= 2 && !self.reporter_used_ids.contains(&player.user_id) && alive.len() > 1
+    }
+
+    fn vote_weight(&self, voter_id: u64) -> i32 {
+        if self.vote_blocked(voter_id) {
+            return 0;
+        }
+        self.get_player(voter_id).map_or(1, |voter| {
+            if voter.alive && voter.role == Role::Politician {
+                2
+            } else {
+                1
+            }
+        })
+    }
+
+    fn vote_blocked(&self, voter_id: u64) -> bool {
+        self.gangster_blocked_vote_days.get(&voter_id) == Some(&self.day_number)
+    }
+
+    fn advance_to_next_night(&mut self) {
+        self.expire_madam_seductions();
+        self.expire_vote_blocks();
+        self.phase = Phase::Night;
+        self.day_number += 1;
+    }
+
+    fn expire_vote_blocks(&mut self) {
+        let day = self.day_number;
+        self.gangster_blocked_vote_days
+            .retain(|_, block_day| *block_day > day);
+    }
+
+    fn expire_madam_seductions(&mut self) {
+        let day = self.day_number;
+        let expired = self
+            .madam_seduction_release_days
+            .iter()
+            .filter(|(_, release_day)| **release_day <= day)
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in expired {
+            self.madam_seduced_ids.remove(&id);
+            self.madam_seduction_release_days.remove(&id);
+        }
+    }
+
+    fn action_contains(&self, map: RoleActionMap, actor_id: u64) -> bool {
+        match map {
+            RoleActionMap::Doctor => self.doctor_targets.contains_key(&actor_id),
+            RoleActionMap::Gangster => self.gangster_targets.contains_key(&actor_id),
+            RoleActionMap::Police => self.police_targets.contains_key(&actor_id),
+            RoleActionMap::Detective => self.detective_targets.contains_key(&actor_id),
+            RoleActionMap::Shaman => self.shaman_targets.contains_key(&actor_id),
+            RoleActionMap::Priest => self.priest_targets.contains_key(&actor_id),
+            RoleActionMap::Witch => self.witch_targets.contains_key(&actor_id),
+            RoleActionMap::Terrorist => self.terrorist_action_submitted.contains(&actor_id),
+        }
+    }
+
+    fn action_insert(&mut self, map: RoleActionMap, actor_id: u64, target_id: u64) {
+        match map {
+            RoleActionMap::Doctor => {
+                self.doctor_targets.insert(actor_id, target_id);
+            }
+            RoleActionMap::Gangster => {
+                self.gangster_targets.insert(actor_id, target_id);
+            }
+            RoleActionMap::Police => {
+                self.police_targets.insert(actor_id, target_id);
+            }
+            RoleActionMap::Detective => {
+                self.detective_targets.insert(actor_id, target_id);
+            }
+            RoleActionMap::Shaman => {
+                self.shaman_targets.insert(actor_id, target_id);
+            }
+            RoleActionMap::Priest => {
+                self.priest_targets.insert(actor_id, target_id);
+            }
+            RoleActionMap::Witch => {
+                self.witch_targets.insert(actor_id, target_id);
+            }
+            RoleActionMap::Terrorist => {
+                self.terrorist_targets.insert(actor_id, target_id);
+            }
+        };
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RoleActionMap {
+    Doctor,
+    Gangster,
+    Police,
+    Detective,
+    Shaman,
+    Priest,
+    Witch,
+    Terrorist,
+}
+
+fn validate_counts(players: &[(u64, String)], counts: &GameCounts) -> Result<()> {
+    if players.len() < 3 {
+        bail!("최소 3명이 필요합니다.");
+    }
+    if players.len() > 24 {
+        bail!("투표 스킵 선택지를 포함해야 해서 최대 24명까지 지원합니다.");
+    }
+    if players
+        .iter()
+        .map(|(user_id, _)| *user_id)
+        .collect::<HashSet<_>>()
+        .len()
+        != players.len()
+    {
+        bail!("중복된 참가자가 있습니다.");
+    }
+    let investigation_role_count = [
+        counts.police_count > 0,
+        counts.agent_count
+            + counts
+                .special_roles
+                .iter()
+                .filter(|role| **role == Role::Agent)
+                .count()
+            > 0,
+        counts.vigilante_count
+            + counts
+                .special_roles
+                .iter()
+                .filter(|role| **role == Role::Vigilante)
+                .count()
+            > 0,
+    ]
+    .into_iter()
+    .filter(|value| *value)
+    .count();
+    if investigation_role_count > 1 {
+        bail!("경찰, 요원, 자경단원은 한 게임에 함께 배정할 수 없습니다.");
+    }
+    if counts.agent_count > 0 && counts.special_roles.contains(&Role::Agent) {
+        bail!("요원 수가 중복 배정되었습니다.");
+    }
+    if counts.vigilante_count > 0 && counts.special_roles.contains(&Role::Vigilante) {
+        bail!("자경단원 수가 중복 배정되었습니다.");
+    }
+    let mut role_counts = HashMap::<Role, usize>::new();
+    for role in &counts.special_roles {
+        *role_counts.entry(*role).or_default() += 1;
+    }
+    let duplicate_roles = role_counts
+        .iter()
+        .filter(|(role, count)| **count > 1 && !(**role == Role::Lover && **count == 2))
+        .map(|(role, _)| role.value())
+        .collect::<Vec<_>>();
+    if !duplicate_roles.is_empty() {
+        bail!("같은 특수 역할은 한 게임에 한 번만 선택됩니다.");
+    }
+    let special_count = counts.mafia_count
+        + counts.doctor_count
+        + counts.police_count
+        + counts.agent_count
+        + counts.vigilante_count
+        + counts.joker_count
+        + counts.special_roles.len();
+    if special_count > players.len() {
+        bail!("직업 수의 합계가 참가자 수보다 많습니다.");
+    }
+    let mafia_team_count = counts.mafia_count
+        + counts
+            .special_roles
+            .iter()
+            .filter(|role| role.is_mafia_team())
+            .count();
+    if mafia_team_count < 1 {
+        bail!("마피아 계열은 최소 1명이어야 합니다.");
+    }
+    if mafia_team_count >= players.len() - mafia_team_count {
+        bail!("시작할 때 시민 진영이 마피아 팀보다 많아야 합니다.");
+    }
+    Ok(())
+}
+
+fn count_values(values: impl IntoIterator<Item = u64>) -> HashMap<u64, usize> {
+    let mut counts = HashMap::new();
+    for value in values {
+        *counts.entry(value).or_default() += 1;
+    }
+    counts
+}
+
+fn reported_protected_id(
+    protected_ids: &HashSet<u64>,
+    mafia_target_id: Option<u64>,
+    godfather_target_id: Option<u64>,
+    majority_protected_id: Option<u64>,
+) -> Option<u64> {
+    if mafia_target_id.is_some_and(|id| protected_ids.contains(&id)) {
+        return mafia_target_id;
+    }
+    if godfather_target_id.is_some_and(|id| protected_ids.contains(&id)) {
+        return godfather_target_id;
+    }
+    if majority_protected_id.is_some() {
+        return majority_protected_id;
+    }
+    protected_ids.iter().copied().min()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn basic_players() -> Vec<(u64, String)> {
+        vec![
+            (1, "One".to_string()),
+            (2, "Two".to_string()),
+            (3, "Three".to_string()),
+            (4, "Four".to_string()),
+            (5, "Five".to_string()),
+        ]
+    }
+
+    #[test]
+    fn indexes_players_by_id() {
+        let game = MafiaGame::new(basic_players(), 1, 1, 0, Vec::new()).unwrap();
+        assert_eq!(game.get_player(2).unwrap().name, "Two");
+        assert!(game.get_player(999).is_none());
+    }
+
+    #[test]
+    fn public_status_lists_alive_and_dead_players() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        game.get_player_mut(2).unwrap().alive = false;
+        let status = game.public_status();
+        assert!(status.contains("1일차 / 현재 단계: 밤"));
+        assert!(status.contains("생존자(4명)"));
+        assert!(status.contains("사망자: Two"));
+    }
+
+    #[test]
+    fn citizen_wins_when_known_mafia_dead() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        let mafia_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Mafia)
+            .unwrap()
+            .user_id;
+        game.get_player_mut(mafia_id).unwrap().alive = false;
+        assert_eq!(game.winner(), Some(Winner::Citizen));
+    }
+
+    #[test]
+    fn doctor_blocks_mafia_majority_attack() {
+        let mut game = MafiaGame::new(basic_players(), 1, 1, 0, Vec::new()).unwrap();
+        let mafia = game
+            .players
+            .iter()
+            .find(|p| p.role == Role::Mafia)
+            .unwrap()
+            .user_id;
+        let doctor = game
+            .players
+            .iter()
+            .find(|p| p.role == Role::Doctor)
+            .unwrap()
+            .user_id;
+        let target = game
+            .players
+            .iter()
+            .find(|p| p.role == Role::Citizen)
+            .unwrap()
+            .user_id;
+        game.submit_night_action(mafia, Some(target)).unwrap();
+        game.submit_night_action(doctor, Some(target)).unwrap();
+        let result = game.resolve_night().unwrap();
+        assert!(result.killed.is_none());
+        assert_eq!(result.protected.unwrap().user_id, target);
+    }
+}

@@ -19,6 +19,8 @@ INITIAL_RATING = 1000
 RATING_HISTORY_LIMIT = 20
 RATING_DELTA_CAP = 50
 ROLE_DELTA_CAP = 10
+_STATS_CACHE: dict | None = None
+_STATS_CACHE_SIGNATURE: tuple[int, int] | None = None
 LEADERBOARD_METRIC_NAMES = {
     "wins": "승리수",
     "winrate": "승률",
@@ -27,13 +29,31 @@ LEADERBOARD_METRIC_NAMES = {
     "playtime": "게임시간",
     "rating": "레이팅",
 }
+ROLE_ORDER_INDEX = {role.value: index for index, role in enumerate(ROLE_GUIDE_ORDER)}
 
 
 def original_stats_name(running: RunningGame, player: Player) -> str:
     return running.anonymous_original_names.get(player.user_id, player.name)
 
 
+def stats_file_signature() -> tuple[int, int] | None:
+    try:
+        stat = STATS_FILE.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def remember_stats_cache(stats: dict) -> None:
+    global _STATS_CACHE, _STATS_CACHE_SIGNATURE
+    _STATS_CACHE = stats
+    _STATS_CACHE_SIGNATURE = stats_file_signature()
+
+
 def load_stats() -> dict:
+    signature = stats_file_signature()
+    if _STATS_CACHE is not None and _STATS_CACHE_SIGNATURE == signature:
+        return _STATS_CACHE
     if not STATS_FILE.exists():
         return {"users": {}}
     try:
@@ -56,6 +76,8 @@ def load_stats() -> dict:
             changed = True
     if changed:
         save_stats(data)
+    else:
+        remember_stats_cache(data)
     return data
 
 
@@ -65,6 +87,7 @@ def save_stats(stats: dict) -> None:
         json.dump(stats, file, ensure_ascii=False, indent=2)
         file.write("\n")
     os.replace(temp_path, STATS_FILE)
+    remember_stats_cache(stats)
 
 
 def default_player_stats(name: str) -> dict:
@@ -173,12 +196,15 @@ def rating_team_key(game: MafiaGame, player: Player) -> str:
     return "citizen"
 
 
-def opponent_average_rating(game: MafiaGame, player: Player, ratings: dict[int, int]) -> float:
+def opponent_average_rating(
+    game: MafiaGame,
+    player: Player,
+    ratings: dict[int, int],
+    team_by_user_id: dict[int, str] | None = None,
+) -> float:
     player_team = rating_team_key(game, player)
-    team_by_user_id = {
-        item.user_id: rating_team_key(game, item)
-        for item in game.players
-    }
+    if team_by_user_id is None:
+        team_by_user_id = {item.user_id: rating_team_key(game, item) for item in game.players}
     if player_team == "citizen":
         candidates = [item.user_id for item in game.players if team_by_user_id[item.user_id] == "mafia"]
     elif player_team == "mafia":
@@ -341,10 +367,11 @@ def rating_change_for_player(
     player: Player,
     entry: dict,
     ratings: dict[int, int],
+    team_by_user_id: dict[int, str] | None = None,
 ) -> dict:
     old_rating = ratings.get(player.user_id, INITIAL_RATING)
     score = 1.0 if player_won_game(running.game, player, winner) else 0.0
-    opponent_average = opponent_average_rating(running.game, player, ratings)
+    opponent_average = opponent_average_rating(running.game, player, ratings, team_by_user_id)
     base_delta = rating_k(entry) * (score - expected_score(old_rating, opponent_average))
     team_delta = round(base_delta * player_count_multiplier(len(running.game.players)))
     role = initial_role_for_stats(running, player)
@@ -374,8 +401,19 @@ def record_game_stats(running: RunningGame, winner: Winner) -> None:
         entry = ensure_player_stats(stats, player.user_id, name)
         entries[player.user_id] = entry
         ratings[player.user_id] = int(entry.get("rating", INITIAL_RATING))
+    team_by_user_id = {
+        player.user_id: rating_team_key(running.game, player)
+        for player in running.game.players
+    }
     rating_changes = {
-        player.user_id: rating_change_for_player(running, winner, player, entries[player.user_id], ratings)
+        player.user_id: rating_change_for_player(
+            running,
+            winner,
+            player,
+            entries[player.user_id],
+            ratings,
+            team_by_user_id,
+        )
         for player in running.game.players
     }
     ended_at = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -428,10 +466,9 @@ def role_stats_text(entry: dict) -> str:
     roles = entry.get("roles", {})
     if not isinstance(roles, dict) or not roles:
         return "없음"
-    ordered_roles = {role.value: index for index, role in enumerate(ROLE_GUIDE_ORDER)}
     items = sorted(
         roles.items(),
-        key=lambda item: (-int(item[1]), ordered_roles.get(item[0], 999), item[0]),
+        key=lambda item: (-int(item[1]), ROLE_ORDER_INDEX.get(item[0], 999), item[0]),
     )
     return ", ".join(f"{role} {count}회" for role, count in items)
 

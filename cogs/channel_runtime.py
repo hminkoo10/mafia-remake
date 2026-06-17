@@ -127,6 +127,9 @@ async def members_with_role(
         if not member.bot and role in member.roles:
             members_by_id[member.id] = member
 
+    if getattr(guild, "chunked", False):
+        return sorted(members_by_id.values(), key=lambda member: display_name(member).casefold())
+
     try:
         async for member in guild.fetch_members(limit=None):
             if not member.bot and role in member.roles:
@@ -415,6 +418,8 @@ async def set_channel_slowmode(
     if running.original_slowmode_delay is None:
         running.original_slowmode_delay = channel.slowmode_delay
         running.original_slowmode_channel_id = channel.id
+    if channel.slowmode_delay == seconds:
+        return
     try:
         await channel.edit(slowmode_delay=seconds, reason=reason)
     except discord.DiscordException:
@@ -1540,8 +1545,11 @@ async def upsert_anonymous_role_status_message(
         if isinstance(key, Role)
         else running.anonymous_role_input_status_message_ids.get(key)
     )
+    status_text = anonymous_role_status_text(running, role)
+    if status_id and running.anonymous_role_status_texts.get(key) == status_text:
+        return
     embed = make_embed(
-        anonymous_role_status_text(running, role),
+        status_text,
         title=f"{role.value} 채팅 현황",
         color=SUCCESS_EMBED_COLOR,
     )
@@ -1549,6 +1557,7 @@ async def upsert_anonymous_role_status_message(
         with suppress(discord.DiscordException):
             message = await channel.fetch_message(status_id)
             await message.edit(embed=embed)
+            running.anonymous_role_status_texts[key] = status_text
             return
     with suppress(discord.DiscordException):
         message = await channel.send(embed=embed)
@@ -1556,6 +1565,7 @@ async def upsert_anonymous_role_status_message(
             running.anonymous_role_status_message_ids[key] = message.id
         else:
             running.anonymous_role_input_status_message_ids[key] = message.id
+        running.anonymous_role_status_texts[key] = status_text
 
 
 async def sync_anonymous_role_statuses(
@@ -1575,8 +1585,14 @@ async def sync_anonymous_role_statuses(
                 continue
             input_channel = guild.get_channel(input_id)
             if isinstance(input_channel, discord.TextChannel):
-                with suppress(discord.DiscordException):
-                    await input_channel.edit(topic=topic[:1024])
+                clipped_topic = topic[:1024]
+                if (
+                    running.anonymous_channel_topics.get(input_channel.id) != clipped_topic
+                    and input_channel.topic != clipped_topic
+                ):
+                    with suppress(discord.DiscordException):
+                        await input_channel.edit(topic=clipped_topic)
+                        running.anonymous_channel_topics[input_channel.id] = clipped_topic
                 if update_messages:
                     await upsert_anonymous_role_status_message(
                         input_channel,
@@ -1597,20 +1613,25 @@ async def upsert_private_role_status_message(
     channel = guild.get_channel(channel_id) if channel_id else None
     if not isinstance(channel, discord.TextChannel):
         return
+    status_text = role_channel_status_text(running, role)
+    status_id = running.private_role_status_message_ids.get(role)
+    if status_id and running.private_role_status_texts.get(role) == status_text:
+        return
     embed = make_embed(
-        role_channel_status_text(running, role),
+        status_text,
         title=f"{role.value} 채팅 현황",
         color=SUCCESS_EMBED_COLOR,
     )
-    status_id = running.private_role_status_message_ids.get(role)
     if status_id:
         with suppress(discord.DiscordException):
             message = await channel.fetch_message(status_id)
             await message.edit(embed=embed)
+            running.private_role_status_texts[role] = status_text
             return
     with suppress(discord.DiscordException):
         message = await channel.send(embed=embed)
         running.private_role_status_message_ids[role] = message.id
+        running.private_role_status_texts[role] = status_text
 
 
 async def sync_role_status_message(
@@ -1889,8 +1910,11 @@ async def upsert_shaman_chat_status(guild: discord.Guild, running: RunningGame) 
     channel = guild.get_channel(running.shaman_channel_id)
     if not isinstance(channel, discord.TextChannel):
         return
+    status_text = shaman_chat_status_text(running)
+    if running.shaman_status_message_id and running.shaman_status_text == status_text:
+        return
     embed = make_embed(
-        shaman_chat_status_text(running),
+        status_text,
         title="영매 채팅 상태",
         color=SUCCESS_EMBED_COLOR,
     )
@@ -1898,10 +1922,12 @@ async def upsert_shaman_chat_status(guild: discord.Guild, running: RunningGame) 
         with suppress(discord.DiscordException):
             message = await channel.fetch_message(running.shaman_status_message_id)
             await message.edit(embed=embed)
+            running.shaman_status_text = status_text
             return
     with suppress(discord.DiscordException):
         message = await channel.send(embed=embed)
         running.shaman_status_message_id = message.id
+        running.shaman_status_text = status_text
 
 
 async def create_shaman_chat_channel(
@@ -2536,6 +2562,8 @@ async def delete_private_role_channels(guild: discord.Guild, running: RunningGam
             except discord.DiscordException:
                 continue
         running.private_channel_ids.pop(role, None)
+        running.private_role_status_message_ids.pop(role, None)
+        running.private_role_status_texts.pop(role, None)
 
 
 async def delete_memo_channels(guild: discord.Guild, running: RunningGame) -> None:
@@ -2571,6 +2599,8 @@ async def delete_anonymous_chat_channels(guild: discord.Guild, running: RunningG
     running.anonymous_role_input_channels.clear()
     running.anonymous_role_status_message_ids.clear()
     running.anonymous_role_input_status_message_ids.clear()
+    running.anonymous_role_status_texts.clear()
+    running.anonymous_channel_topics.clear()
     running.anonymous_aliases.clear()
     running.anonymous_original_names.clear()
     running.anonymous_webhook_urls.clear()
@@ -2595,6 +2625,7 @@ async def delete_shaman_chat_channel(guild: discord.Guild, running: RunningGame)
             return
     running.shaman_channel_id = None
     running.shaman_status_message_id = None
+    running.shaman_status_text = None
 
 
 async def delete_frog_chat_channel(guild: discord.Guild, running: RunningGame) -> None:

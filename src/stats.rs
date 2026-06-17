@@ -1,0 +1,643 @@
+use crate::game::MafiaGame;
+use crate::model::{Player, Role, Winner};
+use anyhow::{Context, Result};
+use chrono::Local;
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, fs, path::Path};
+
+pub const INITIAL_RATING: i64 = 1000;
+const RATING_HISTORY_LIMIT: usize = 20;
+const RATING_DELTA_CAP: i64 = 50;
+const ROLE_STATS_ORDER: &[Role] = &[
+    Role::Mafia,
+    Role::Police,
+    Role::Agent,
+    Role::Vigilante,
+    Role::Doctor,
+    Role::Nurse,
+    Role::Gangster,
+    Role::Prophet,
+    Role::Psychologist,
+    Role::Detective,
+    Role::Shaman,
+    Role::Priest,
+    Role::Graverobber,
+    Role::Politician,
+    Role::Judge,
+    Role::Reporter,
+    Role::Hacker,
+    Role::Terrorist,
+    Role::Lover,
+    Role::Soldier,
+    Role::Spy,
+    Role::Contractor,
+    Role::Thief,
+    Role::Witch,
+    Role::Scientist,
+    Role::Madam,
+    Role::Godfather,
+    Role::CultLeader,
+    Role::Fanatic,
+    Role::Joker,
+    Role::Citizen,
+];
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StatsFile {
+    #[serde(default)]
+    pub users: HashMap<String, PlayerStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerStats {
+    pub name: String,
+    #[serde(default)]
+    pub games: i64,
+    #[serde(default)]
+    pub wins: i64,
+    #[serde(default)]
+    pub losses: i64,
+    #[serde(default)]
+    pub mafia_team_games: i64,
+    #[serde(default)]
+    pub play_seconds: i64,
+    #[serde(default = "initial_rating")]
+    pub rating: i64,
+    #[serde(default)]
+    pub rating_games: i64,
+    #[serde(default = "initial_rating")]
+    pub rating_peak: i64,
+    #[serde(default)]
+    pub rating_history: Vec<RatingHistoryItem>,
+    #[serde(default)]
+    pub roles: HashMap<String, i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RatingHistoryItem {
+    pub ended_at: String,
+    pub before: i64,
+    pub after: i64,
+    pub delta: i64,
+    pub team_delta: i64,
+    pub role_delta: i64,
+    pub role: String,
+    pub team: String,
+    pub winner: String,
+    pub players: usize,
+    pub rating_reasons: Vec<String>,
+}
+
+impl Default for PlayerStats {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            games: 0,
+            wins: 0,
+            losses: 0,
+            mafia_team_games: 0,
+            play_seconds: 0,
+            rating: INITIAL_RATING,
+            rating_games: 0,
+            rating_peak: INITIAL_RATING,
+            rating_history: Vec::new(),
+            roles: HashMap::new(),
+        }
+    }
+}
+
+pub fn load_stats(path: impl AsRef<Path>) -> Result<StatsFile> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(StatsFile::default());
+    }
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("stats 파일을 읽지 못했습니다: {}", path.display()))?;
+    serde_json::from_str(&text)
+        .with_context(|| format!("stats JSON을 파싱하지 못했습니다: {}", path.display()))
+}
+
+pub fn save_stats(path: impl AsRef<Path>, stats: &StatsFile) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("stats 디렉터리를 만들지 못했습니다: {}", parent.display()))?;
+    }
+    let temp_path = path.with_file_name(format!(
+        "{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("stats.json")
+    ));
+    let mut text = serde_json::to_string_pretty(stats)
+        .with_context(|| format!("stats JSON을 만들지 못했습니다: {}", path.display()))?;
+    text.push('\n');
+    fs::write(&temp_path, text)
+        .with_context(|| format!("stats 임시 파일을 쓰지 못했습니다: {}", temp_path.display()))?;
+    if path.exists() {
+        fs::remove_file(path).with_context(|| {
+            format!("기존 stats 파일을 교체하지 못했습니다: {}", path.display())
+        })?;
+    }
+    fs::rename(&temp_path, path)
+        .with_context(|| format!("stats 파일을 저장하지 못했습니다: {}", path.display()))?;
+    Ok(())
+}
+
+pub fn record_game_stats(
+    stats: &mut StatsFile,
+    game: &MafiaGame,
+    initial_roles: &HashMap<u64, Role>,
+    elapsed_seconds: i64,
+    winner: Winner,
+) {
+    let mut ratings = HashMap::new();
+    for player in &game.players {
+        let entry = ensure_player_stats(stats, player.user_id, &player.name);
+        ratings.insert(player.user_id, entry.rating);
+    }
+
+    let team_by_user_id = game
+        .players
+        .iter()
+        .map(|player| (player.user_id, rating_team_key(game, player).to_string()))
+        .collect::<HashMap<_, _>>();
+    let rating_changes = game
+        .players
+        .iter()
+        .map(|player| {
+            (
+                player.user_id,
+                rating_change_for_player(game, player, stats, &ratings, &team_by_user_id, winner),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let ended_at = Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+
+    for player in &game.players {
+        let role = initial_roles
+            .get(&player.user_id)
+            .copied()
+            .unwrap_or(player.role);
+        let won = player_won_game(game, player, winner);
+        let team = rating_team_key(game, player).to_string();
+        let rating_change = rating_changes
+            .get(&player.user_id)
+            .cloned()
+            .unwrap_or_else(|| {
+                RatingChange::unchanged(
+                    ratings
+                        .get(&player.user_id)
+                        .copied()
+                        .unwrap_or(INITIAL_RATING),
+                    won,
+                )
+            });
+        let entry = ensure_player_stats(stats, player.user_id, &player.name);
+        entry.games += 1;
+        entry.play_seconds += elapsed_seconds.max(0);
+        *entry.roles.entry(role.value().to_string()).or_default() += 1;
+        if role.is_mafia_team() {
+            entry.mafia_team_games += 1;
+        }
+        if won {
+            entry.wins += 1;
+        } else {
+            entry.losses += 1;
+        }
+        entry.rating = rating_change.after;
+        entry.rating_games += 1;
+        entry.rating_peak = entry.rating_peak.max(entry.rating);
+        entry.rating_history.push(RatingHistoryItem {
+            ended_at: ended_at.clone(),
+            before: rating_change.before,
+            after: rating_change.after,
+            delta: rating_change.delta,
+            team_delta: rating_change.team_delta,
+            role_delta: 0,
+            role: role.value().to_string(),
+            team,
+            winner: winner.value().to_string(),
+            players: game.players.len(),
+            rating_reasons: rating_change.reasons,
+        });
+        let overflow = entry
+            .rating_history
+            .len()
+            .saturating_sub(RATING_HISTORY_LIMIT);
+        if overflow > 0 {
+            entry.rating_history.drain(..overflow);
+        }
+    }
+}
+
+fn ensure_player_stats<'a>(
+    stats: &'a mut StatsFile,
+    user_id: u64,
+    name: &str,
+) -> &'a mut PlayerStats {
+    let entry = stats.users.entry(user_id.to_string()).or_default();
+    entry.name = name.to_string();
+    entry
+}
+
+#[derive(Debug, Clone)]
+struct RatingChange {
+    before: i64,
+    after: i64,
+    delta: i64,
+    team_delta: i64,
+    reasons: Vec<String>,
+}
+
+impl RatingChange {
+    fn unchanged(before: i64, won: bool) -> Self {
+        Self {
+            before,
+            after: before,
+            delta: 0,
+            team_delta: 0,
+            reasons: vec![if won {
+                "소속 진영 승리".to_string()
+            } else {
+                "소속 진영 패배".to_string()
+            }],
+        }
+    }
+}
+
+fn rating_change_for_player(
+    game: &MafiaGame,
+    player: &Player,
+    stats: &StatsFile,
+    ratings: &HashMap<u64, i64>,
+    team_by_user_id: &HashMap<u64, String>,
+    winner: Winner,
+) -> RatingChange {
+    let old_rating = ratings
+        .get(&player.user_id)
+        .copied()
+        .unwrap_or(INITIAL_RATING);
+    let won = player_won_game(game, player, winner);
+    let score = if won { 1.0 } else { 0.0 };
+    let opponent_average = opponent_average_rating(game, player, ratings, team_by_user_id);
+    let entry = stats.users.get(&player.user_id.to_string());
+    let base_delta =
+        rating_k(entry) as f64 * (score - expected_score(old_rating, opponent_average));
+    let team_delta = clamp(
+        (base_delta * player_count_multiplier(game.players.len())).round() as i64,
+        -RATING_DELTA_CAP,
+        RATING_DELTA_CAP,
+    );
+    let after = (old_rating + team_delta).max(0);
+    RatingChange {
+        before: old_rating,
+        after,
+        delta: after - old_rating,
+        team_delta,
+        reasons: vec![if won {
+            "소속 진영 승리".to_string()
+        } else {
+            "소속 진영 패배".to_string()
+        }],
+    }
+}
+
+fn player_won_game(game: &MafiaGame, player: &Player, winner: Winner) -> bool {
+    match winner {
+        Winner::Mafia => game.is_mafia_team(player),
+        Winner::Cult => game.is_cult_team(player),
+        Winner::Joker => game
+            .joker_winner_id
+            .map_or(player.role == Role::Joker, |winner_id| {
+                player.user_id == winner_id
+            }),
+        Winner::Citizen => game.is_citizen_team(player),
+    }
+}
+
+fn rating_team_key(game: &MafiaGame, player: &Player) -> &'static str {
+    if player.role == Role::Joker {
+        "joker"
+    } else if game.is_cult_team(player) {
+        "cult"
+    } else if game.is_mafia_team(player) {
+        "mafia"
+    } else {
+        "citizen"
+    }
+}
+
+fn opponent_average_rating(
+    game: &MafiaGame,
+    player: &Player,
+    ratings: &HashMap<u64, i64>,
+    team_by_user_id: &HashMap<u64, String>,
+) -> f64 {
+    let player_team = rating_team_key(game, player);
+    let mut candidates = game
+        .players
+        .iter()
+        .filter(|candidate| {
+            let team = team_by_user_id
+                .get(&candidate.user_id)
+                .map(String::as_str)
+                .unwrap_or("citizen");
+            match player_team {
+                "citizen" => team == "mafia",
+                "mafia" => team == "citizen",
+                _ => team != player_team,
+            }
+        })
+        .map(|candidate| candidate.user_id)
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        candidates = game
+            .players
+            .iter()
+            .filter(|candidate| candidate.user_id != player.user_id)
+            .map(|candidate| candidate.user_id)
+            .collect();
+    }
+    if candidates.is_empty() {
+        return ratings
+            .get(&player.user_id)
+            .copied()
+            .unwrap_or(INITIAL_RATING) as f64;
+    }
+    candidates
+        .iter()
+        .map(|user_id| ratings.get(user_id).copied().unwrap_or(INITIAL_RATING))
+        .sum::<i64>() as f64
+        / candidates.len() as f64
+}
+
+fn rating_k(entry: Option<&PlayerStats>) -> i64 {
+    let rating_games = entry.map_or(0, |entry| entry.rating_games);
+    if rating_games < 10 {
+        40
+    } else if rating_games < 30 {
+        32
+    } else {
+        24
+    }
+}
+
+fn player_count_multiplier(player_count: usize) -> f64 {
+    if player_count <= 3 {
+        0.6
+    } else if player_count <= 6 {
+        0.85
+    } else if player_count <= 10 {
+        1.0
+    } else {
+        1.1
+    }
+}
+
+fn expected_score(player_rating: i64, opponent_average: f64) -> f64 {
+    1.0 / (1.0 + 10_f64.powf((opponent_average - player_rating as f64) / 400.0))
+}
+
+fn clamp(value: i64, low: i64, high: i64) -> i64 {
+    value.max(low).min(high)
+}
+
+pub fn win_rate_text(wins: i64, games: i64) -> String {
+    if games <= 0 {
+        return "0.0%".to_string();
+    }
+    format!("{:.1}%", wins as f64 / games as f64 * 100.0)
+}
+
+pub fn role_stats_text(entry: &PlayerStats) -> String {
+    if entry.roles.is_empty() {
+        return "없음".to_string();
+    }
+    let mut items = entry.roles.iter().collect::<Vec<_>>();
+    items.sort_by(|left, right| {
+        right
+            .1
+            .cmp(left.1)
+            .then_with(|| role_order_index(left.0).cmp(&role_order_index(right.0)))
+            .then_with(|| left.0.cmp(right.0))
+    });
+    items
+        .into_iter()
+        .map(|(role, count)| format!("{role} {count}회"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+pub fn leaderboard_text(stats: &StatsFile, metric: &str) -> String {
+    let entries = leaderboard_entries(stats, metric, 10);
+
+    if entries.is_empty() {
+        return "아직 기록된 게임 전적이 없습니다.".to_string();
+    }
+
+    let mut lines = vec![format!("기준: **{}**", leaderboard_metric_name(metric))];
+    for (index, (_user_id, entry)) in entries.into_iter().enumerate() {
+        lines.push(format!(
+            "{}. **{}** - {}승 {}패 / {}판 / 승률 {} / 마피아팀 {}회 / 게임시간 {} / 레이팅 {}점",
+            index + 1,
+            if entry.name.is_empty() {
+                "알 수 없음"
+            } else {
+                &entry.name
+            },
+            entry.wins,
+            entry.losses,
+            entry.games,
+            win_rate_text(entry.wins, entry.games),
+            entry.mafia_team_games,
+            play_duration_text(entry.play_seconds),
+            entry.rating
+        ));
+    }
+    lines.join("\n")
+}
+
+pub fn leaderboard_entries(
+    stats: &StatsFile,
+    metric: &str,
+    limit: usize,
+) -> Vec<(String, PlayerStats)> {
+    let mut entries = stats
+        .users
+        .iter()
+        .filter(|(_user_id, entry)| entry.games > 0)
+        .map(|(user_id, entry)| (user_id.clone(), entry.clone()))
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        let left_value = leaderboard_value(&left.1, metric);
+        let right_value = leaderboard_value(&right.1, metric);
+        right_value
+            .total_cmp(&left_value)
+            .then_with(|| right.1.wins.cmp(&left.1.wins))
+            .then_with(|| right.1.games.cmp(&left.1.games))
+            .then_with(|| left.1.name.cmp(&right.1.name))
+    });
+    entries.truncate(limit);
+    entries
+}
+
+pub fn rating_log_text(
+    stats: &StatsFile,
+    user_id: u64,
+    fallback_name: &str,
+    limit: usize,
+) -> String {
+    let Some(entry) = stats.users.get(&user_id.to_string()) else {
+        return "아직 기록된 레이팅 로그가 없습니다.".to_string();
+    };
+    if entry.rating_history.is_empty() {
+        return "아직 기록된 레이팅 로그가 없습니다.".to_string();
+    }
+    let name = if entry.name.is_empty() {
+        fallback_name
+    } else {
+        &entry.name
+    };
+    let mut lines = vec![format!("{name} 님의 최근 레이팅 로그")];
+    for item in entry.rating_history.iter().rev().take(limit) {
+        let sign = if item.delta >= 0 { "+" } else { "" };
+        let detail = item
+            .rating_reasons
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let detail = if detail.is_empty() {
+            format!("팀 {:+}, 직업 {:+}", item.team_delta, item.role_delta)
+        } else {
+            format!(
+                "팀 {:+}, 직업 {:+} / {detail}",
+                item.team_delta, item.role_delta
+            )
+        };
+        lines.push(format!(
+            "- {}: {} -> {} ({}{}) / {} / 승자 {} / {}",
+            short_time_text(&item.ended_at),
+            item.before,
+            item.after,
+            sign,
+            item.delta,
+            item.role,
+            item.winner,
+            detail
+        ));
+    }
+    lines.join("\n")
+}
+
+pub fn leaderboard_value(entry: &PlayerStats, metric: &str) -> f64 {
+    match metric {
+        "winrate" => {
+            if entry.games > 0 {
+                entry.wins as f64 / entry.games as f64
+            } else {
+                0.0
+            }
+        }
+        "games" => entry.games as f64,
+        "mafia" => entry.mafia_team_games as f64,
+        "playtime" => entry.play_seconds as f64,
+        "rating" => entry.rating as f64,
+        _ => entry.wins as f64,
+    }
+}
+
+pub fn leaderboard_metric_name(metric: &str) -> &'static str {
+    match metric {
+        "winrate" => "승률",
+        "games" => "판수",
+        "mafia" => "마피아팀 플레이",
+        "playtime" => "게임시간",
+        "rating" => "레이팅",
+        _ => "승리수",
+    }
+}
+
+pub fn play_duration_text(seconds: i64) -> String {
+    let minutes = seconds.max(0) / 60;
+    if minutes <= 0 {
+        "1분 미만".to_string()
+    } else {
+        format!("{minutes}분")
+    }
+}
+
+fn role_order_index(role_name: &str) -> usize {
+    ROLE_STATS_ORDER
+        .iter()
+        .position(|role| role.value() == role_name)
+        .unwrap_or(999)
+}
+
+fn short_time_text(value: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(value).map_or_else(
+        |_| {
+            if value.is_empty() {
+                "날짜 없음".to_string()
+            } else {
+                value.to_string()
+            }
+        },
+        |time| time.format("%m/%d %H:%M").to_string(),
+    )
+}
+
+const fn initial_rating() -> i64 {
+    INITIAL_RATING
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn win_rate_handles_zero_games() {
+        assert_eq!(win_rate_text(0, 0), "0.0%");
+        assert_eq!(win_rate_text(3, 4), "75.0%");
+    }
+
+    #[test]
+    fn leaderboard_sorts_by_rating() {
+        let mut stats = StatsFile::default();
+        stats.users.insert(
+            "1".to_string(),
+            PlayerStats {
+                name: "Alpha".to_string(),
+                games: 3,
+                wins: 1,
+                losses: 2,
+                rating: 980,
+                ..Default::default()
+            },
+        );
+        stats.users.insert(
+            "2".to_string(),
+            PlayerStats {
+                name: "Beta".to_string(),
+                games: 2,
+                wins: 2,
+                losses: 0,
+                rating: 1120,
+                ..Default::default()
+            },
+        );
+
+        let text = leaderboard_text(&stats, "rating");
+        assert!(text.starts_with("기준: **레이팅**\n1. **Beta**"));
+        assert!(text.contains("2. **Alpha**"));
+    }
+
+    #[test]
+    fn play_duration_formats_short_and_long_values() {
+        assert_eq!(play_duration_text(12), "1분 미만");
+        assert_eq!(play_duration_text(72), "1분");
+        assert_eq!(play_duration_text(3700), "61분");
+    }
+}

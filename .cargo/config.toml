@@ -1,0 +1,11 @@
+[build]
+target-dir = "C:/rust-mafia/target/mafia-remake"
+jobs = 22
+
+[target.x86_64-pc-windows-gnu]
+linker = "C:/rust-mafia/rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/rust-lld.exe"
+
+[alias]
+fast = "build"
+run-fast = "run --release"
+maxperf = "build --profile maxperf"

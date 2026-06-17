@@ -65,6 +65,7 @@ class MafiaGame:
             Player(user_id=user_id, name=name, role=role)
             for (user_id, name), role in zip(shuffled_players, roles, strict=True)
         ]
+        self._players_by_id = {player.user_id: player for player in self.players}
         self.phase = Phase.NIGHT
         self.day_number = 1
         self.mafia_targets: dict[int, int] = {}
@@ -229,7 +230,7 @@ class MafiaGame:
         return sum(1 for player in self.alive_players() if player.role == role)
 
     def get_player(self, user_id: int) -> Player | None:
-        return next((player for player in self.players if player.user_id == user_id), None)
+        return self._players_by_id.get(user_id)
 
     def is_mafia_team(self, player: Player) -> bool:
         return player.role in MAFIA_TEAM_ROLES
@@ -274,6 +275,8 @@ class MafiaGame:
     def night_action_actors(self) -> list[Player]:
         self.ensure_godfather_auto_contact()
         alive = self.alive_players()
+        has_other_alive = len(alive) > 1
+        unpurified_dead = self.unpurified_dead_players()
         actors: list[Player] = []
         for player in alive:
             if self.is_frog(player):
@@ -286,45 +289,39 @@ class MafiaGame:
                 actors.append(player)
             elif player.role == Role.DOCTOR:
                 actors.append(player)
-            elif player.role == Role.NURSE and self._nurse_can_act(player):
+            elif player.role == Role.NURSE and self._nurse_can_act(player, alive):
                 actors.append(player)
-            elif player.role == Role.GANGSTER and any(
-                target.user_id != player.user_id for target in alive
-            ):
+            elif player.role == Role.GANGSTER and has_other_alive:
                 actors.append(player)
-            elif player.role == Role.THIEF and self._thief_can_act_at_night(player):
+            elif player.role == Role.THIEF and self._thief_can_act_at_night(player, alive, unpurified_dead):
                 actors.append(player)
-            elif player.role in {Role.POLICE, Role.DETECTIVE, Role.SPY, Role.TERRORIST} and any(
-                target.user_id != player.user_id for target in alive
-            ):
+            elif player.role in {Role.POLICE, Role.DETECTIVE, Role.SPY, Role.TERRORIST} and has_other_alive:
                 actors.append(player)
             elif player.role == Role.VIGILANTE and self.vigilante_execution_targets(player):
                 actors.append(player)
-            elif player.role == Role.REPORTER and self._reporter_can_act(player):
+            elif player.role == Role.REPORTER and self._reporter_can_act(player, alive):
                 actors.append(player)
             elif player.role == Role.CONTRACTOR and self._contractor_can_act(player):
                 actors.append(player)
-            elif player.role == Role.WITCH and any(
-                target.user_id != player.user_id for target in alive
-            ):
+            elif player.role == Role.WITCH and has_other_alive:
                 actors.append(player)
-            elif player.role == Role.SHAMAN and self.unpurified_dead_players():
+            elif player.role == Role.SHAMAN and unpurified_dead:
                 actors.append(player)
             elif (
                 player.role == Role.PRIEST
                 and player.user_id not in self.priest_used_ids
-                and self.unpurified_dead_players()
+                and unpurified_dead
             ):
                 actors.append(player)
             elif (
                 player.role == Role.GODFATHER
                 and player.user_id in self.godfather_contacted
-                and any(target.user_id != player.user_id for target in alive)
+                and has_other_alive
             ):
                 actors.append(player)
-            elif player.role == Role.CULT_LEADER and self._cult_leader_can_act(player):
+            elif player.role == Role.CULT_LEADER and self._cult_leader_can_act(player, alive):
                 actors.append(player)
-            elif player.role == Role.FANATIC and any(target.user_id != player.user_id for target in alive):
+            elif player.role == Role.FANATIC and has_other_alive:
                 actors.append(player)
         return actors
 
@@ -372,10 +369,11 @@ class MafiaGame:
             return actor.user_id in self.fanatic_targets
         return True
 
-    def _nurse_can_act(self, player: Player) -> bool:
+    def _nurse_can_act(self, player: Player, alive: list[Player] | None = None) -> bool:
+        alive = alive if alive is not None else self.alive_players()
         if player.user_id in self.nurse_contacted:
-            return not self.alive_role_count(Role.DOCTOR) and bool(self.alive_players())
-        return any(target.user_id != player.user_id for target in self.alive_players())
+            return not any(target.role == Role.DOCTOR for target in alive) and bool(alive)
+        return len(alive) > 1
 
     def thief_night_role(self, player: Player) -> Role | None:
         if player.role != Role.THIEF:
@@ -399,19 +397,28 @@ class MafiaGame:
             return role
         return None
 
-    def _thief_can_act_at_night(self, player: Player) -> bool:
+    def _thief_can_act_at_night(
+        self,
+        player: Player,
+        alive: list[Player] | None = None,
+        unpurified_dead: list[Player] | None = None,
+    ) -> bool:
         role = self.thief_night_role(player)
         if role is None:
             return False
+        alive = alive if alive is not None else self.alive_players()
         if role in {Role.MAFIA, Role.DOCTOR}:
-            return bool(self.alive_players())
+            return bool(alive)
         if role in {Role.SHAMAN, Role.PRIEST}:
-            return bool(self.unpurified_dead_players())
+            unpurified_dead = (
+                unpurified_dead
+                if unpurified_dead is not None
+                else self.unpurified_dead_players()
+            )
+            return bool(unpurified_dead)
         if role == Role.REPORTER:
-            return self._reporter_can_act(player)
-        if role == Role.GODFATHER:
-            return any(target.user_id != player.user_id for target in self.alive_players())
-        return any(target.user_id != player.user_id for target in self.alive_players())
+            return self._reporter_can_act(player, alive)
+        return len(alive) > 1
 
     def _stolen_night_action_submitted(self, actor: Player) -> bool:
         role = self.thief_night_role(actor)
@@ -443,10 +450,11 @@ class MafiaGame:
             return actor.user_id in self.gangster_targets
         return True
 
-    def _cult_leader_can_act(self, player: Player) -> bool:
+    def _cult_leader_can_act(self, player: Player, alive: list[Player] | None = None) -> bool:
+        alive = alive if alive is not None else self.alive_players()
         return self.day_number % 2 == 1 and any(
             target.user_id != player.user_id and target.user_id not in self.culted_ids
-            for target in self.alive_players()
+            for target in alive
         )
 
     def spy_can_use_bonus_action(self, actor_id: int) -> bool:
@@ -481,13 +489,15 @@ class MafiaGame:
     def hacker_day_actors(self) -> list[Player]:
         if self.phase != Phase.DAY:
             return []
+        alive = self.alive_players()
+        if len(alive) <= 1:
+            return []
         return [
             player
-            for player in self.alive_players()
+            for player in alive
             if player.role == Role.HACKER
             and not self.is_madam_seduced(player)
             and player.user_id not in self.hacker_used_ids
-            and any(target.user_id != player.user_id for target in self.alive_players())
         ]
 
     def submit_hacker_action(self, actor_id: int, target_id: int) -> str:
@@ -513,13 +523,15 @@ class MafiaGame:
     def vigilante_day_actors(self) -> list[Player]:
         if self.phase != Phase.DAY:
             return []
+        alive = self.alive_players()
+        if len(alive) <= 1:
+            return []
         return [
             player
-            for player in self.alive_players()
+            for player in alive
             if player.role == Role.VIGILANTE
             and not self.is_madam_seduced(player)
             and player.user_id not in self.vigilante_investigation_used_ids
-            and any(target.user_id != player.user_id for target in self.alive_players())
         ]
 
     def submit_vigilante_investigation(self, actor_id: int, target_id: int) -> str:
@@ -559,13 +571,15 @@ class MafiaGame:
     def psychologist_day_actors(self) -> list[Player]:
         if self.phase != Phase.DAY:
             return []
+        alive = self.alive_players()
+        if len(alive) < 3:
+            return []
         return [
             player
-            for player in self.alive_players()
+            for player in alive
             if player.role == Role.PSYCHOLOGIST
             and not self.is_madam_seduced(player)
             and self.psychologist_used_days.get(player.user_id) != self.day_number
-            and len([target for target in self.alive_players() if target.user_id != player.user_id]) >= 2
         ]
 
     def submit_psychologist_observation(
@@ -597,13 +611,15 @@ class MafiaGame:
     def thief_vote_actors(self) -> list[Player]:
         if self.phase != Phase.VOTE:
             return []
+        alive = self.alive_players()
+        if len(alive) <= 1:
+            return []
         return [
             player
-            for player in self.alive_players()
+            for player in alive
             if player.role == Role.THIEF
             and not self.is_frog(player)
             and self.thief_used_days.get(player.user_id) != self.day_number
-            and any(target.user_id != player.user_id for target in self.alive_players())
         ]
 
     def submit_thief_steal(self, actor_id: int, target_id: int) -> str:
@@ -1759,19 +1775,14 @@ class MafiaGame:
         prophet_winner = self._prophet_winner()
         if prophet_winner:
             return prophet_winner
-        mafia_alive = len(self.alive_known_mafia_team())
-        cult_alive = len(self.alive_cult_team())
-        non_cult_alive = len(self.alive_players()) - cult_alive
-        cult_leader_alive = any(player.alive and player.role == Role.CULT_LEADER for player in self.players)
+        alive = self.alive_players()
+        mafia_alive = sum(1 for player in alive if self.is_known_mafia_team(player))
+        cult_alive = sum(1 for player in alive if self.is_cult_team(player))
+        non_cult_alive = len(alive) - cult_alive
+        cult_leader_alive = any(player.role == Role.CULT_LEADER for player in alive)
         if cult_leader_alive and cult_alive > 0 and cult_alive >= non_cult_alive:
             return Winner.CULT
-        non_mafia_alive = len(
-            [
-                player
-                for player in self.alive_players()
-                if not self.is_known_mafia_team(player)
-            ]
-        )
+        non_mafia_alive = len(alive) - mafia_alive
         if mafia_alive == 0:
             if self.has_pending_scientist_revive():
                 return None
@@ -1825,11 +1836,13 @@ class MafiaGame:
         )
 
     def public_status(self) -> str:
-        alive = ", ".join(player.name for player in self.alive_players())
-        dead = ", ".join(player.name for player in self.dead_players()) or "없음"
+        alive_players = self.alive_players()
+        dead_players = self.dead_players()
+        alive = ", ".join(player.name for player in alive_players)
+        dead = ", ".join(player.name for player in dead_players) or "없음"
         return (
             f"{self.day_number}일차 / 현재 단계: {self.phase.value}\n"
-            f"생존자({len(self.alive_players())}명): {alive}\n"
+            f"생존자({len(alive_players)}명): {alive}\n"
             f"사망자: {dead}"
         )
 
@@ -2204,10 +2217,11 @@ class MafiaGame:
         return count
 
     def ensure_fanatic_reincarnation(self) -> list[int]:
-        if any(player.alive and player.role == Role.CULT_LEADER for player in self.players):
+        alive = self.alive_players()
+        if any(player.role == Role.CULT_LEADER for player in alive):
             return []
         inherited: list[int] = []
-        for player in self.alive_players():
+        for player in alive:
             if player.role == Role.FANATIC and player.user_id in self.culted_ids:
                 player.role = Role.CULT_LEADER
                 self.culted_ids.add(player.user_id)
@@ -2217,13 +2231,14 @@ class MafiaGame:
 
     def _resolve_agent_results(self) -> dict[int, str]:
         results: dict[int, str] = {}
-        for agent in self.alive_players():
+        alive = self.alive_players()
+        for agent in alive:
             if agent.role != Role.AGENT and self.thief_stolen_roles.get(agent.user_id) != Role.AGENT:
                 continue
 
             candidates = [
                 player
-                for player in self.alive_players()
+                for player in alive
                 if player.user_id != agent.user_id
                 and self.is_citizen_team(player)
                 and player.user_id not in self.agent_discovered_ids
@@ -2343,11 +2358,12 @@ class MafiaGame:
     def _contractor_can_act(self, player: Player) -> bool:
         return self.day_number >= 2 and len(self.contractor_contract_targets(player)) >= 2
 
-    def _reporter_can_act(self, player: Player) -> bool:
+    def _reporter_can_act(self, player: Player, alive: list[Player] | None = None) -> bool:
+        alive = alive if alive is not None else self.alive_players()
         return (
             self.day_number >= 2
             and player.user_id not in self.reporter_used_ids
-            and any(target.user_id != player.user_id for target in self.alive_players())
+            and len(alive) > 1
         )
 
     def _vote_weight(self, voter_id: int) -> int:
