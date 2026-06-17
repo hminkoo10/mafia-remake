@@ -12,6 +12,7 @@ target/
 .cargo/bin/
 .cargo/registry/
 .cargo/git/
+.cargo/env
 .cargo/.global-cache
 .cargo/.package-cache
 .cargo/.package-cache-mutate

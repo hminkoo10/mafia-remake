@@ -42,6 +42,8 @@ sudo apt install -y build-essential pkg-config curl git
 ./scripts/build-linux.sh
 ```
 
+Linux에서는 현재 CPU 아키텍처에 맞는 Linux toolchain(`stable-x86_64-unknown-linux-gnu` 또는 `stable-aarch64-unknown-linux-gnu`)으로 빌드하며, 결과물은 `./target/release/mafia-remake`입니다.
+
 기존 Python 구현은 비교/백업용 legacy 코드로 남아 있습니다.
 
 ```powershell
