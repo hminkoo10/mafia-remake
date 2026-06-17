@@ -18,7 +18,7 @@ $env:Path = "$CargoHome\bin;$env:Path"
 
 Push-Location $RepoRoot
 try {
-    cargo run --release --target x86_64-pc-windows-gnullvm
+    cargo run --release --target x86_64-pc-windows-gnullvm --bin mafia
 } finally {
     Pop-Location
 }

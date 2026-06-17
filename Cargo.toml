@@ -3,6 +3,10 @@ name = "mafia-remake"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "mafia"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0"
 ab_glyph = "0.2"

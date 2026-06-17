@@ -18,7 +18,7 @@ Windows에서 처음 부트스트랩하면 `.cargo`, `.rustup`, `.mingw`, `targe
 이미 빌드된 실행 파일을 바로 실행할 수도 있습니다.
 
 ```powershell
-.\target\x86_64-pc-windows-gnullvm\release\mafia-remake.exe
+.\target\x86_64-pc-windows-gnullvm\release\mafia.exe
 ```
 
 Windows 빌드:
@@ -37,12 +37,12 @@ Linux 빌드:
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential pkg-config curl git
+sudo apt install -y build-essential pkg-config curl git musl-tools
 ./scripts/bootstrap-linux-rust.sh
 ./scripts/build-linux.sh
 ```
 
-Linux에서는 현재 CPU 아키텍처에 맞는 Linux toolchain(`stable-x86_64-unknown-linux-gnu` 또는 `stable-aarch64-unknown-linux-gnu`)으로 빌드하며, 결과물은 `./target/release/mafia-remake`입니다.
+Linux에서는 Ubuntu 20에서도 glibc 버전 문제 없이 실행되도록 musl 정적 바이너리로 빌드합니다. x86_64 결과물은 `./target/x86_64-unknown-linux-musl/release/mafia`입니다.
 
 기존 Python 구현은 비교/백업용 legacy 코드로 남아 있습니다.
 
