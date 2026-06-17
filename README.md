@@ -44,6 +44,14 @@ sudo apt install -y build-essential pkg-config curl git musl-tools
 
 Linux에서는 Ubuntu 20에서도 glibc 버전 문제 없이 실행되도록 musl 정적 바이너리로 빌드합니다. x86_64 결과물은 `./target/x86_64-unknown-linux-musl/release/mafia`입니다.
 
+glibc 동적 링크 바이너리가 필요하면 별도 스크립트를 쓰면 됩니다. 이 경우 빌드한 배포판의 glibc 버전에 묶이므로 Ubuntu 22에서 빌드한 파일은 Ubuntu 20에서 실행되지 않을 수 있습니다.
+
+```bash
+./scripts/build-linux-glibc.sh
+```
+
+x86_64 glibc 결과물은 `./target/x86_64-unknown-linux-gnu/release/mafia`입니다.
+
 기존 Python 구현은 비교/백업용 legacy 코드로 남아 있습니다.
 
 ```powershell
