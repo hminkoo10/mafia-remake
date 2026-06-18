@@ -2974,18 +2974,19 @@ async fn ensure_anonymous_dead_input_channel(
     category: Option<serenity::ChannelId>,
     can_chat: bool,
 ) -> Option<serenity::ChannelId> {
-    if !running.read().await.anonymous_enabled {
-        return None;
-    }
     let (guild_id, alias, existing_channel_id) = {
         let running_read = running.read().await;
         (
             running_read.guild_id,
-            running_read
-                .anonymous_aliases
-                .get(&player.user_id)
-                .cloned()
-                .unwrap_or_else(|| player.name.clone()),
+            if running_read.anonymous_enabled {
+                running_read
+                    .anonymous_aliases
+                    .get(&player.user_id)
+                    .cloned()
+                    .unwrap_or_else(|| player.name.clone())
+            } else {
+                player.name.clone()
+            },
             running_read
                 .anonymous_dead_input_channel_ids
                 .get(&player.user_id)
@@ -4262,21 +4263,16 @@ async fn apply_purification_side_effects(
         Ok(roles) => roles,
         Err(_) => return,
     };
-    let category = if anonymous_enabled {
-        source_category(ctx, channel_id).await
-    } else {
-        None
-    };
+    let category = source_category(ctx, channel_id).await;
     for user_id in purified_user_ids {
         let player = running.read().await.game.get_player(*user_id).cloned();
         let Some(player) = player else {
             continue;
         };
         set_shaman_channel_member_access(ctx, running, &player, true, false).await;
+        let _ = ensure_anonymous_dead_input_channel(ctx, running, &player, roles, category, false)
+            .await;
         if anonymous_enabled {
-            let _ =
-                ensure_anonymous_dead_input_channel(ctx, running, &player, roles, category, false)
-                    .await;
             let _ = ensure_anonymous_shaman_input_channel(
                 ctx, running, &player, roles, category, false,
             )
@@ -4852,39 +4848,39 @@ async fn apply_death_side_effects(
         restore_frog_game_channel_permission(ctx, running, player).await;
         disable_private_role_channels_for_player(ctx, running, player).await;
     }
-    if running.read().await.anonymous_enabled {
-        let category = source_category(ctx, channel_id).await;
-        for player in dead_players {
-            let can_chat = {
+    let category = source_category(ctx, channel_id).await;
+    let anonymous_enabled = running.read().await.anonymous_enabled;
+    for player in dead_players {
+        let can_chat = {
+            let running_read = running.read().await;
+            running_read
+                .game
+                .get_player(player.user_id)
+                .is_some_and(|player| can_use_anonymous_dead_chat(&running_read, player))
+        };
+        let _ =
+            ensure_anonymous_dead_input_channel(ctx, running, player, roles, category, can_chat)
+                .await;
+        if anonymous_enabled && running.read().await.shaman_channel_id.is_some() {
+            let can_shaman_chat = {
                 let running_read = running.read().await;
                 running_read
                     .game
                     .get_player(player.user_id)
-                    .is_some_and(|player| can_use_anonymous_dead_chat(&running_read, player))
+                    .is_some_and(|player| can_use_anonymous_shaman_chat(&running_read, player))
             };
-            let _ = ensure_anonymous_dead_input_channel(
-                ctx, running, player, roles, category, can_chat,
+            let _ = ensure_anonymous_shaman_input_channel(
+                ctx,
+                running,
+                player,
+                roles,
+                category,
+                can_shaman_chat,
             )
             .await;
-            if running.read().await.shaman_channel_id.is_some() {
-                let can_shaman_chat = {
-                    let running_read = running.read().await;
-                    running_read
-                        .game
-                        .get_player(player.user_id)
-                        .is_some_and(|player| can_use_anonymous_shaman_chat(&running_read, player))
-                };
-                let _ = ensure_anonymous_shaman_input_channel(
-                    ctx,
-                    running,
-                    player,
-                    roles,
-                    category,
-                    can_shaman_chat,
-                )
-                .await;
-            }
         }
+    }
+    if anonymous_enabled {
         sync_anonymous_general_chat_permissions(ctx, running).await;
     }
 }
@@ -9650,6 +9646,64 @@ async fn send_anonymous_text(
         .await;
 }
 
+async fn send_webhook_text(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    channel_id: serenity::ChannelId,
+    author_label: &str,
+    avatar_url: Option<String>,
+    body: &str,
+) {
+    if let Some(webhook) = anonymous_webhook(ctx, running, channel_id).await {
+        let username = author_label.chars().take(80).collect::<String>();
+        let mut builder = serenity::ExecuteWebhook::new()
+            .content(body)
+            .username(username)
+            .allowed_mentions(no_mentions());
+        if let Some(avatar_url) = avatar_url {
+            builder = builder.avatar_url(avatar_url);
+        }
+        if webhook.execute(&ctx.http, false, builder).await.is_ok() {
+            return;
+        }
+    }
+    let _ = channel_id
+        .send_message(
+            &ctx.http,
+            serenity::CreateMessage::new()
+                .content(format!("{author_label}: {body}"))
+                .allowed_mentions(no_mentions()),
+        )
+        .await;
+}
+
+fn message_author_display_name(message: &serenity::Message) -> String {
+    message
+        .member
+        .as_ref()
+        .and_then(|member| member.nick.clone())
+        .or_else(|| message.author.global_name.clone())
+        .unwrap_or_else(|| message.author.name.clone())
+}
+
+async fn send_message_author_webhook_text(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    channel_id: serenity::ChannelId,
+    message: &serenity::Message,
+    body: &str,
+) {
+    send_webhook_text(
+        ctx,
+        running,
+        channel_id,
+        &message_author_display_name(message),
+        Some(message.author.face()),
+        body,
+    )
+    .await;
+}
+
 fn can_use_anonymous_dead_chat(running: &RunningGame, player: &Player) -> bool {
     !player.alive && !running.game.purified_dead_ids.contains(&player.user_id)
 }
@@ -9675,6 +9729,89 @@ fn anonymous_dead_sender_label(running: &RunningGame, sender: &Player) -> String
             .unwrap_or_else(|| "익명".to_string())
     } else {
         sender.name.clone()
+    }
+}
+
+async fn send_dead_chat_text(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    channel_id: serenity::ChannelId,
+    sender: &Player,
+    body: &str,
+) {
+    let (anonymous_enabled, guild_id, sender_label) = {
+        let running_read = running.read().await;
+        (
+            running_read.anonymous_enabled,
+            running_read.guild_id,
+            anonymous_dead_sender_label(&running_read, sender),
+        )
+    };
+    if anonymous_enabled {
+        send_anonymous_text(ctx, running, channel_id, &sender_label, body).await;
+        return;
+    }
+    if let Ok(member) = guild_id
+        .member(ctx, serenity::UserId::new(sender.user_id))
+        .await
+    {
+        send_webhook_text(
+            ctx,
+            running,
+            channel_id,
+            &display_name(&member),
+            Some(member.face()),
+            body,
+        )
+        .await;
+        return;
+    }
+    send_anonymous_text(ctx, running, channel_id, &sender.name, body).await;
+}
+
+async fn mirror_role_chat_to_dead(
+    ctx: &serenity::Context,
+    data: &Data,
+    running: &Arc<RwLock<RunningGame>>,
+    message: &serenity::Message,
+    role: Role,
+    body: &str,
+) {
+    let Some(roles) = running_channel_roles(ctx, data, running).await else {
+        return;
+    };
+    let (source_channel_id, viewers) = {
+        let running_read = running.read().await;
+        (
+            running_read.channel_id,
+            running_read
+                .game
+                .players
+                .iter()
+                .filter(|player| can_use_anonymous_dead_chat(&running_read, player))
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    };
+    if viewers.is_empty() {
+        return;
+    }
+    let category = source_category(ctx, source_channel_id).await;
+    let body = format!("[{}채팅] {body}", role.value());
+    for viewer in viewers {
+        let can_chat = {
+            let running_read = running.read().await;
+            running_read
+                .game
+                .get_player(viewer.user_id)
+                .is_some_and(|player| can_use_anonymous_dead_chat(&running_read, player))
+        };
+        if let Some(channel_id) =
+            ensure_anonymous_dead_input_channel(ctx, running, &viewer, roles, category, can_chat)
+                .await
+        {
+            send_message_author_webhook_text(ctx, running, channel_id, message, &body).await;
+        }
     }
 }
 
@@ -9769,41 +9906,49 @@ async fn relay_anonymous_role_message(
 
 async fn relay_anonymous_dead_message(
     ctx: &serenity::Context,
+    data: &Data,
     running: &Arc<RwLock<RunningGame>>,
     sender_id: u64,
     body: &str,
 ) {
-    let (deliveries, sender_label) = {
+    let Some(roles) = running_channel_roles(ctx, data, running).await else {
+        return;
+    };
+    let (source_channel_id, sender, viewers) = {
         let running_read = running.read().await;
         let Some(sender) = running_read.game.get_player(sender_id) else {
             return;
         };
-        let deliveries = running_read
-            .game
-            .players
-            .iter()
-            .filter(|viewer| {
-                viewer.user_id != sender.user_id
-                    && !viewer.alive
-                    && !running_read
-                        .game
-                        .purified_dead_ids
-                        .contains(&viewer.user_id)
-            })
-            .filter_map(|viewer| {
-                running_read
-                    .anonymous_dead_input_channel_ids
-                    .get(&viewer.user_id)
-                    .copied()
-            })
-            .collect::<Vec<_>>();
         (
-            deliveries,
-            anonymous_dead_sender_label(&running_read, sender),
+            running_read.channel_id,
+            sender.clone(),
+            running_read
+                .game
+                .players
+                .iter()
+                .filter(|viewer| {
+                    viewer.user_id != sender.user_id
+                        && can_use_anonymous_dead_chat(&running_read, viewer)
+                })
+                .cloned()
+                .collect::<Vec<_>>(),
         )
     };
-    for channel_id in deliveries {
-        send_anonymous_text(ctx, running, channel_id, &sender_label, body).await;
+    let category = source_category(ctx, source_channel_id).await;
+    for viewer in viewers {
+        let can_chat = {
+            let running_read = running.read().await;
+            running_read
+                .game
+                .get_player(viewer.user_id)
+                .is_some_and(|player| can_use_anonymous_dead_chat(&running_read, player))
+        };
+        if let Some(channel_id) =
+            ensure_anonymous_dead_input_channel(ctx, running, &viewer, roles, category, can_chat)
+                .await
+        {
+            send_dead_chat_text(ctx, running, channel_id, &sender, body).await;
+        }
     }
 }
 
@@ -9863,6 +10008,7 @@ async fn relay_anonymous_shaman_message(
 
 async fn handle_anonymous_message(
     ctx: &serenity::Context,
+    data: &Data,
     running: Arc<RwLock<RunningGame>>,
     message: &serenity::Message,
     kind: AnonymousMessageKind,
@@ -9914,13 +10060,14 @@ async fn handle_anonymous_message(
             relay_anonymous_general_message(ctx, &running, owner_id, &body).await;
         }
         AnonymousMessageKind::Dead { .. } => {
-            relay_anonymous_dead_message(ctx, &running, owner_id, &body).await;
+            relay_anonymous_dead_message(ctx, data, &running, owner_id, &body).await;
         }
         AnonymousMessageKind::Shaman { .. } => {
             relay_anonymous_shaman_message(ctx, &running, owner_id, &body).await;
         }
         AnonymousMessageKind::Role { role, .. } => {
             relay_anonymous_role_message(ctx, &running, owner_id, role, &body).await;
+            mirror_role_chat_to_dead(ctx, data, &running, message, role, &body).await;
         }
     }
     Ok(())
@@ -9969,7 +10116,87 @@ async fn handle_message_event(
         }
     };
     if let Some(kind) = kind {
-        handle_anonymous_message(ctx, running, message, kind).await?;
+        handle_anonymous_message(ctx, data, running, message, kind).await?;
+        return Ok(());
+    }
+
+    let private_role = {
+        let running_read = running.read().await;
+        running_read
+            .private_channel_ids
+            .iter()
+            .find_map(|(&role, &channel_id)| (channel_id == message.channel_id).then_some(role))
+    };
+    if let Some(role) = private_role {
+        let player = {
+            let running_read = running.read().await;
+            running_read
+                .game
+                .get_player(message.author.id.get())
+                .cloned()
+        };
+        if let Some(player) = player {
+            if running.read().await.game.is_madam_seduced(&player) {
+                let _ = message.delete(&ctx.http).await;
+                set_private_role_member_access(ctx, &running, role, &player, false).await;
+            } else {
+                let body = anonymous_message_body(message);
+                mirror_role_chat_to_dead(ctx, data, &running, message, role, &body).await;
+            }
+        }
+        return Ok(());
+    }
+
+    let shaman_seduced = {
+        let running_read = running.read().await;
+        if running_read.shaman_channel_id == Some(message.channel_id) {
+            running_read
+                .game
+                .get_player(message.author.id.get())
+                .filter(|player| running_read.game.is_madam_seduced(player))
+                .cloned()
+        } else {
+            None
+        }
+    };
+    if let Some(player) = shaman_seduced {
+        let _ = message.delete(&ctx.http).await;
+        set_shaman_channel_member_access(ctx, &running, &player, true, false).await;
+        return Ok(());
+    }
+
+    let frog_context = {
+        let running_read = running.read().await;
+        if running_read.frog_channel_id != Some(message.channel_id) {
+            None
+        } else {
+            let player = running_read
+                .game
+                .get_player(message.author.id.get())
+                .cloned();
+            let can_croak = player.as_ref().is_some_and(|player| {
+                running_read.game.is_frog(player)
+                    && !running_read.game.is_madam_seduced(player)
+                    && running_read.game.phase == Phase::Day
+                    && running_read.day_chat_open
+            });
+            Some((running_read.channel_id, can_croak))
+        }
+    };
+    if let Some((game_channel_id, can_croak)) = frog_context {
+        let _ = message.delete(&ctx.http).await;
+        if can_croak {
+            let croak_count = message.content.chars().count().max(1);
+            let _ = send_channel_embed(
+                &ctx.http,
+                game_channel_id,
+                format!("개구리 {}", "개굴".repeat(croak_count)),
+                "개구리 채팅",
+                serenity::Colour::DARK_GREEN,
+                vec![],
+            )
+            .await;
+        }
     }
     Ok(())
 }
