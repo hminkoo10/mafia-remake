@@ -1,0 +1,1931 @@
+// 역할: 마피아 게임 루프(game_loop), 밤/낮/투표 단계 진행(run_night, run_day, run_vote),
+//        역할 배분, 야간 행동 DM, 경찰 결과 공지
+
+#![allow(unused_imports, clippy::too_many_arguments, clippy::collapsible_if)]
+
+use super::{
+    Context, Data, Error, RunningGame,
+    DAY_EXTENSION_VOTE_SECONDS, DISCUSSION_EXTENSION_SECONDS, CONFIRM_VOTE_SECONDS,
+    PRIVATE_CHAT_ROLES,
+};
+use crate::channel::*;
+use crate::embed::*;
+use anyhow::{Context as AnyhowContext, Result, bail};
+use mafia_remake::config;
+use mafia_remake::game::MafiaGame;
+use mafia_remake::model::{CONTRACTOR_GUESS_ROLES, NightResult, Phase, Player, Role, VoteResult, Winner};
+use mafia_remake::stats;
+use poise::serenity_prelude as serenity;
+use poise::serenity_prelude::Mentionable;
+use rand::seq::{IndexedRandom, SliceRandom};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::{Notify, RwLock};
+
+pub async fn game_loop(
+    ctx: serenity::Context,
+    data: Data,
+    running: Arc<RwLock<RunningGame>>,
+) -> Result<()> {
+    let config = data.config.read().await.clone();
+    setup_game_channels(&ctx, &data, &running).await?;
+    {
+        let running_read = running.read().await;
+        let game = &running_read.game;
+        send_channel_embed(
+            &ctx.http,
+            running_read.channel_id,
+            public_game_settings_text(game, &config, "게임 방 설정입니다."),
+            "방 설정",
+            serenity::Colour::GOLD,
+            vec![],
+        )
+        .await?;
+        send_channel_embed(
+            &ctx.http,
+            running_read.channel_id,
+            game_rule_text(game, &config, running_read.reveal_death_roles),
+            "게임 설명",
+            serenity::Colour::GOLD,
+            vec![],
+        )
+        .await?;
+    }
+    send_roles(&ctx, &running, &config).await;
+    upsert_game_status(&ctx, &running).await;
+    loop {
+        {
+            let running_read = running.read().await;
+            if running_read.game.phase == Phase::Ended {
+                break;
+            }
+        }
+        run_night(&ctx, &data, &running).await?;
+        if running.read().await.game.phase == Phase::Ended {
+            break;
+        }
+        if announce_winner(&ctx, &data, &running).await? {
+            break;
+        }
+        run_day(&ctx, &data, &running).await?;
+        if running.read().await.game.phase == Phase::Ended {
+            break;
+        }
+        run_vote(&ctx, &data, &running).await?;
+        if running.read().await.game.phase == Phase::Ended {
+            break;
+        }
+        if announce_winner(&ctx, &data, &running).await? {
+            break;
+        }
+    }
+    cleanup_game(&ctx, &data, &running).await;
+    let guild_id = running.read().await.guild_id;
+    data.games.remove(&guild_id);
+    Ok(())
+}
+
+pub async fn send_roles(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    config: &config::BotConfig,
+) {
+    let (channel_id, payloads) = {
+        let running_read = running.read().await;
+        let payloads = running_read
+            .game
+            .players
+            .iter()
+            .map(|player| {
+                let anonymous_notice = if running_read.anonymous_enabled {
+                    let alias = running_read
+                        .anonymous_aliases
+                        .get(&player.user_id)
+                        .cloned()
+                        .unwrap_or_else(|| "익명".to_string());
+                    format!(
+                        "\n\n익명 이름: **{alias}**\n채팅은 서버에 생성된 본인 익명 입력 채널에서만 진행하세요."
+                    )
+                } else {
+                    String::new()
+                };
+                (
+                    player.clone(),
+                    format!(
+                        "{}\n\n방 설정\n{}\n\n게임 설명\n{}\n\n본인 역할 설명은 `/마피아능력`, 전체 역할 설명은 `/역할설명`으로 다시 확인할 수 있습니다.{}",
+                        role_message(&running_read.game, player),
+                        public_game_settings_text(
+                            &running_read.game,
+                            config,
+                            "현재 게임 설정입니다."
+                        ),
+                        game_rule_text(
+                            &running_read.game,
+                            config,
+                            running_read.reveal_death_roles
+                        ),
+                        anonymous_notice
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        (running_read.channel_id, payloads)
+    };
+    let mut failed_names = Vec::new();
+    for (player, message) in payloads {
+        if !send_player_secret(ctx, running, &player, message, vec![]).await {
+            failed_names.push(player.name);
+        }
+    }
+    if !failed_names.is_empty() {
+        let _ = send_channel_embed(
+            &ctx.http,
+            channel_id,
+            format!(
+                "비밀 메시지를 보낼 수 없는 참가자: {}",
+                failed_names.join(", ")
+            ),
+            "마피아 게임",
+            serenity::Colour::RED,
+            vec![],
+        )
+        .await;
+    }
+    let _ = send_channel_embed(
+        &ctx.http,
+        channel_id,
+        "역할 배정이 끝났습니다. 각자 비밀 메시지와 역할별 비공개 채널을 확인하세요.",
+        "역할 배정 완료",
+        serenity::Colour::DARK_GREEN,
+        vec![],
+    )
+    .await;
+}
+
+pub fn role_message(game: &MafiaGame, player: &Player) -> String {
+    let team = if game.is_cult_team(player) {
+        "교주팀"
+    } else if game.is_mafia_team(player) {
+        "마피아팀"
+    } else if player.role == Role::Joker {
+        "중립"
+    } else {
+        "시민팀"
+    };
+    format!(
+        "당신의 역할은 **{}** 입니다.\n진영: **{}**\n\n{}",
+        player.role.value(),
+        team,
+        role_short_guide(player.role)
+    )
+}
+
+pub fn role_short_guide(role: Role) -> &'static str {
+    match role {
+        Role::Mafia => "밤마다 제거할 대상을 선택합니다.",
+        Role::Doctor => "밤마다 보호할 대상을 선택합니다.",
+        Role::Police => "밤마다 한 명을 조사합니다.",
+        Role::Agent => "밤마다 시민팀 지령 정보를 받습니다.",
+        Role::Vigilante => "낮에 조사하고 밤에 숙청할 수 있습니다.",
+        Role::Detective => "밤 행동의 이동 경로를 추적합니다.",
+        Role::Shaman => "사망자를 성불하고 직업을 확인합니다.",
+        Role::Priest => "사망자를 한 번 소생시킬 수 있습니다.",
+        Role::Reporter => "두 번째 밤부터 특종으로 직업을 공개합니다.",
+        Role::Hacker => "낮에 해킹해 직업을 확인하고 능력을 우회합니다.",
+        Role::Terrorist => "지목한 위험 대상을 함께 데려갈 수 있습니다.",
+        Role::Lover => "연인과 정보를 공유하고 서로를 지킵니다.",
+        Role::Soldier => "마피아 공격을 한 번 버팁니다.",
+        Role::Spy => "밤마다 직업을 확인하고 마피아와 접선합니다.",
+        Role::Contractor => "두 명의 직업을 맞히면 암살합니다.",
+        Role::Thief => "투표 시간에 능력을 훔칩니다.",
+        Role::Witch => "밤에 대상을 개구리로 저주합니다.",
+        Role::Scientist => "사망 후 다음 밤 부활합니다.",
+        Role::Madam => "투표로 대상을 유혹합니다.",
+        Role::Godfather => "세 번째 밤부터 확정 처치합니다.",
+        Role::CultLeader => "홀수날 밤마다 포교합니다.",
+        Role::Fanatic => "교주팀 여부를 확인하고 교주를 찾습니다.",
+        Role::Joker => "낮 처형으로 단독 승리합니다.",
+        Role::Politician => "투표가 2표이며 처형 면역이 있습니다.",
+        Role::Judge => "찬반투표 결과를 뒤집을 수 있습니다.",
+        Role::Gangster => "밤에 한 명의 다음 낮 투표권을 빼앗습니다.",
+        Role::Prophet => "4번째 낮까지 생존하면 소속팀이 승리합니다.",
+        Role::Psychologist => "낮에 두 명이 같은 팀인지 봅니다.",
+        Role::Graverobber => "첫날 사망자의 직업을 이어받습니다.",
+        _ => "낮 토론과 투표로 승리를 노리세요.",
+    }
+}
+
+pub fn death_role_text(running: &RunningGame, player: &Player) -> String {
+    if running.reveal_death_roles {
+        format!("직업은 **{}** 입니다.", player.role.value())
+    } else {
+        "직업은 공개되지 않습니다.".to_string()
+    }
+}
+
+pub async fn trigger_timed_night_events(
+    ctx: &serenity::Context,
+    data: &Data,
+    running: &Arc<RwLock<RunningGame>>,
+) -> Result<()> {
+    let (guild_id, cursed_players, witch_contacts, cult_bells, revived_players) = {
+        let mut running_write = running.write().await;
+        if running_write.game.phase != Phase::Night {
+            return Ok(());
+        }
+        let (cursed_players, witch_contacts) = running_write.game.apply_witch_curses();
+        let cult_bells = running_write.game.consume_cult_bells();
+        let revived_players = running_write.game.revive_pending_scientists();
+        (
+            running_write.guild_id,
+            cursed_players,
+            witch_contacts,
+            cult_bells,
+            revived_players,
+        )
+    };
+
+    if cursed_players.is_empty()
+        && witch_contacts.is_empty()
+        && cult_bells == 0
+        && revived_players.is_empty()
+    {
+        return Ok(());
+    }
+
+    for player in &cursed_players {
+        set_frog_channel_member_access(ctx, running, player, true, true).await;
+        set_frog_game_channel_permission(ctx, running, player, false).await;
+        disable_private_role_channels_for_player(ctx, running, player).await;
+    }
+    for user_id in &witch_contacts {
+        let player = running.read().await.game.get_player(*user_id).cloned();
+        if let Some(player) = player {
+            grant_private_role_member_access(ctx, data, running, Role::Mafia, &player).await;
+            let _ = send_player_secret(
+                ctx,
+                running,
+                &player,
+                "저주 대상이 마피아라 마피아와 접선했습니다.",
+                vec![],
+            )
+            .await;
+        }
+    }
+    if !cursed_players.is_empty() {
+        send_game_embed(
+            ctx,
+            running,
+            "마녀의 저주가 발동했습니다.\n누군가 다음 밤까지 개구리가 되었습니다.",
+            "마녀 저주",
+            serenity::Colour::ORANGE,
+            vec![],
+            false,
+            true,
+        )
+        .await?;
+    }
+    if cult_bells > 0 {
+        send_game_embed(
+            ctx,
+            running,
+            std::iter::repeat_n("교주의 종소리가 울렸습니다.", cult_bells as usize)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "교주 포교",
+            serenity::Colour::ORANGE,
+            vec![],
+            false,
+            true,
+        )
+        .await?;
+    }
+    if !revived_players.is_empty() {
+        let config = data.config.read().await.clone();
+        let roles = channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await?;
+        for player in &revived_players {
+            restore_revived_player_roles(ctx, running, roles, player).await;
+        }
+        send_game_embed(
+            ctx,
+            running,
+            revived_players
+                .iter()
+                .map(|player| format!("[과학자 {}님이 부활했습니다.]", player.name))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "과학자 부활",
+            serenity::Colour::DARK_GREEN,
+            vec![],
+            false,
+            true,
+        )
+        .await?;
+    }
+    sync_cult_team_channel_access(ctx, data, running).await;
+    sync_lover_chat_access(ctx, data, running).await;
+    Ok(())
+}
+
+pub async fn run_night(
+    ctx: &serenity::Context,
+    data: &Data,
+    running: &Arc<RwLock<RunningGame>>,
+) -> Result<()> {
+    let (
+        actors,
+        restored_frogs,
+        hacker_results,
+        vigilante_results,
+        godfather_contacts,
+        seconds,
+        notify,
+    ) = {
+        let config = data.config.read().await.clone();
+        let mut running_write = running.write().await;
+        running_write.game.phase = Phase::Night;
+        running_write.day_chat_open = false;
+        running_write.final_defense_user_id = None;
+        running_write.night_timed_events_due = config.night_seconds <= 10;
+        running_write.contractor_contract_drafts.clear();
+        running_write.activity_night_results.clear();
+        let restored_frogs = running_write.game.restore_frogs();
+        let hacker_results = running_write.game.consume_hacker_results();
+        let vigilante_results = running_write.game.consume_vigilante_results();
+        let godfather_contacts = running_write.game.ensure_godfather_auto_contact();
+        let actors = running_write.game.night_action_actors();
+        (
+            actors,
+            restored_frogs,
+            hacker_results,
+            vigilante_results,
+            godfather_contacts,
+            config.night_seconds,
+            running_write.night_notify.clone(),
+        )
+    };
+    upsert_game_status(ctx, running).await;
+    set_game_channel_chat(ctx, data, running, false).await;
+    sync_lover_chat_access(ctx, data, running).await;
+    sync_cult_team_channel_access(ctx, data, running).await;
+    sync_scientist_mafia_permissions(ctx, data, running).await;
+    sync_madam_seduction_permissions(ctx, running).await;
+    sync_anonymous_general_chat_permissions(ctx, running).await;
+    sync_shaman_chat_access(ctx, data, running).await;
+    for player in &restored_frogs {
+        set_frog_channel_member_access(ctx, running, player, false, false).await;
+        restore_frog_game_channel_permission(ctx, running, player).await;
+    }
+    for (user_id, message) in hacker_results.into_iter().chain(vigilante_results) {
+        let player = running.read().await.game.get_player(user_id).cloned();
+        if let Some(player) = player {
+            let _ = send_player_secret(ctx, running, &player, message, vec![]).await;
+        }
+    }
+    for user_id in godfather_contacts {
+        let player = running.read().await.game.get_player(user_id).cloned();
+        if let Some(player) = player {
+            grant_private_role_member_access(ctx, data, running, Role::Mafia, &player).await;
+            let _ = send_player_secret(
+                ctx,
+                running,
+                &player,
+                "세 번째 밤이 되어 마피아 팀과 자동 접선했습니다. 이제 마피아 비밀방을 볼 수 있고 밤마다 확정 처치 대상을 지목합니다.",
+                vec![],
+            )
+            .await;
+        }
+    }
+    send_game_embed(
+        ctx,
+        running,
+        format!(
+            "밤이 되었습니다. {seconds}초 동안 게임 채널 채팅이 비활성화됩니다.\n밤 행동이 있는 역할은 본인 익명 채널 또는 DM에서 선택합니다.\n행동 가능한 역할이 모두 선택하면 남은 시간을 기다리지 않고 바로 아침으로 넘어갑니다."
+        ),
+        "밤",
+        serenity::Colour::GOLD,
+        vec![],
+        false,
+        true,
+    )
+    .await?;
+    let police_can_act = actors.iter().any(|actor| actor.role == Role::Police);
+    let mut failed_names = Vec::new();
+    for actor in actors {
+        if !send_night_action_dm(ctx, running, &actor).await {
+            failed_names.push(actor.name);
+        }
+    }
+    if !failed_names.is_empty() {
+        send_game_embed(
+            ctx,
+            running,
+            format!(
+                "밤 행동 선택지를 보낼 수 없는 참가자: {}",
+                failed_names.join(", ")
+            ),
+            "마피아 게임",
+            serenity::Colour::RED,
+            vec![],
+            false,
+            true,
+        )
+        .await?;
+    }
+    let has_changeable_mafia_action = { running.write().await.game.has_changeable_mafia_action() };
+    if has_changeable_mafia_action {
+        upsert_private_role_status_message(ctx, running, Role::Mafia).await;
+    }
+    if seconds <= 10 {
+        {
+            let mut running_write = running.write().await;
+            running_write.night_timed_events_due = true;
+        }
+        trigger_timed_night_events(ctx, data, running).await?;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(seconds)) => {}
+            _ = notify.notified() => {}
+        }
+    } else {
+        let reached_ten_seconds = tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(seconds - 10)) => true,
+            _ = notify.notified() => false,
+        };
+        if running.read().await.game.phase == Phase::Ended {
+            return Ok(());
+        }
+        {
+            let mut running_write = running.write().await;
+            running_write.night_timed_events_due = true;
+        }
+        if reached_ten_seconds {
+            send_game_embed(
+                ctx,
+                running,
+                "밤 시간이 10초 남았습니다. 아직 행동하지 않았다면 지금 선택하세요.",
+                "밤 10초 전",
+                serenity::Colour::GOLD,
+                vec![],
+                false,
+                true,
+            )
+            .await?;
+            trigger_timed_night_events(ctx, data, running).await?;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+                _ = notify.notified() => {}
+            }
+        } else {
+            trigger_timed_night_events(ctx, data, running).await?;
+        }
+    }
+    if running.read().await.game.phase == Phase::Ended {
+        return Ok(());
+    }
+    {
+        let mut running_write = running.write().await;
+        running_write.night_timed_events_due = true;
+    }
+    trigger_timed_night_events(ctx, data, running).await?;
+    let result = {
+        let mut running_write = running.write().await;
+        running_write.game.resolve_night()?
+    };
+    // Activity 프론트엔드용 밤 행동 결과 저장
+    {
+        let mut running_write = running.write().await;
+        for map in [
+            &result.detective_results,
+            &result.spy_results,
+            &result.contractor_results,
+            &result.witch_results,
+            &result.godfather_results,
+            &result.shaman_results,
+            &result.priest_results,
+            &result.agent_results,
+            &result.reporter_results,
+            &result.vigilante_results,
+            &result.nurse_results,
+            &result.gangster_results,
+            &result.cult_results,
+            &result.fanatic_results,
+            &result.hacker_results,
+        ] {
+            for (user_id, text) in map {
+                running_write.activity_night_results.insert(*user_id, text.clone());
+            }
+        }
+        // 경찰 조사 결과
+        if let Some(target) = &result.police_target {
+            let result_text = if result.police_target_is_mafia.unwrap_or(false) {
+                "마피아"
+            } else {
+                "시민"
+            };
+            let msg = format!("조사 결과: {} 님은 {}.", target.name, result_text);
+            let police_ids: Vec<u64> = running_write
+                .game
+                .alive_players()
+                .iter()
+                .filter(|p| p.role == Role::Police)
+                .map(|p| p.user_id)
+                .collect();
+            for id in police_ids {
+                running_write.activity_night_results.insert(id, msg.clone());
+            }
+        }
+    }
+    let doctor_saved = result
+        .mafia_target
+        .as_ref()
+        .zip(result.protected.as_ref())
+        .is_some_and(|(mafia_target, protected)| mafia_target.user_id == protected.user_id)
+        && result.mafia_target.as_ref().is_none_or(|mafia_target| {
+            !result
+                .killed_players
+                .iter()
+                .any(|player| player.user_id == mafia_target.user_id)
+        })
+        && result.lover_sacrifices.is_empty();
+    apply_death_side_effects(ctx, data, running, &result.killed_players).await;
+    if result.killed_players.is_empty() {
+        if doctor_saved {
+            if let Some(saved_player) = &result.protected {
+                send_game_embed(
+                    ctx,
+                    running,
+                    format!(
+                        "아침이 밝았습니다. **{}**님이 의사의 치료로 살아났습니다.",
+                        saved_player.name
+                    ),
+                    "밤 결과",
+                    serenity::Colour::DARK_GREEN,
+                    vec![],
+                    true,
+                    true,
+                )
+                .await?;
+            }
+        } else {
+            send_game_embed(
+                ctx,
+                running,
+                "아침이 밝았습니다. 아무도 사망하지 않았습니다.",
+                "밤 결과",
+                serenity::Colour::GOLD,
+                vec![],
+                true,
+                true,
+            )
+            .await?;
+        }
+    } else {
+        let mut lines = Vec::new();
+        {
+            let running_read = running.read().await;
+            for killed in &result.killed_players {
+                if result
+                    .contractor_kills
+                    .iter()
+                    .any(|player| player.user_id == killed.user_id)
+                {
+                    lines.push(format!(
+                        "- {} 님이 청부업자에게 정체를 들켜 암살 당했습니다. {}",
+                        killed.name,
+                        death_role_text(&running_read, killed)
+                    ));
+                } else if result
+                    .vigilante_kills
+                    .iter()
+                    .any(|player| player.user_id == killed.user_id)
+                {
+                    lines.push(format!(
+                        "- {} 님이 자경단원에게 숙청당했습니다. {}",
+                        killed.name,
+                        death_role_text(&running_read, killed)
+                    ));
+                } else {
+                    lines.push(format!(
+                        "- {}: {}",
+                        killed.name,
+                        death_role_text(&running_read, killed)
+                    ));
+                }
+            }
+        }
+        let mut message = format!(
+            "아침이 밝았습니다. 밤 사이 사망자가 발생했습니다.\n{}",
+            lines.join("\n")
+        );
+        if !result.lover_sacrifices.is_empty() {
+            let lover_lines = result
+                .lover_sacrifices
+                .iter()
+                .map(|(savior, saved)| {
+                    format!(
+                        "- {}님이 연인 {}님을 살리고 대신 마피아에게 살해 당했습니다!",
+                        savior.name, saved.name
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            message.push_str("\n\n연인 희생\n");
+            message.push_str(&lover_lines);
+        }
+        if !result.terrorist_retaliations.is_empty() {
+            let retaliation_lines = result
+                .terrorist_retaliations
+                .iter()
+                .map(|(terrorist, target)| {
+                    format!(
+                        "- {} 님이 지목 중이던 {} 님도 함께 사망했습니다.",
+                        terrorist.name, target.name
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            message.push_str("\n\n지목 반격\n");
+            message.push_str(&retaliation_lines);
+        }
+        send_game_embed(
+            ctx,
+            running,
+            message,
+            "밤 결과",
+            serenity::Colour::GOLD,
+            vec![],
+            true,
+            true,
+        )
+        .await?;
+    }
+    if !result.killed_players.is_empty()
+        && doctor_saved
+        && let Some(saved_player) = &result.protected
+    {
+        send_game_embed(
+            ctx,
+            running,
+            format!("**{}**님이 의사의 치료로 살아났습니다.", saved_player.name),
+            "의사 치료",
+            serenity::Colour::DARK_GREEN,
+            vec![],
+            true,
+            true,
+        )
+        .await?;
+    }
+    if !result.soldier_blocks.is_empty() {
+        send_game_embed(
+            ctx,
+            running,
+            result
+                .soldier_blocks
+                .iter()
+                .map(|soldier| {
+                    format!(
+                        "군인 **{}**님이 마피아의 공격을 버텨냈습니다!",
+                        soldier.name
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "군인 방탄",
+            serenity::Colour::ORANGE,
+            vec![],
+            true,
+            true,
+        )
+        .await?;
+    }
+    if !result.priest_revives.is_empty() {
+        send_game_embed(
+            ctx,
+            running,
+            result
+                .priest_revives
+                .iter()
+                .map(|player| format!("[{}님이 부활하셨습니다]", player.name))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "성직자 소생",
+            serenity::Colour::DARK_GREEN,
+            vec![],
+            true,
+            true,
+        )
+        .await?;
+    }
+    if !result.reporter_results.is_empty() {
+        send_game_embed(
+            ctx,
+            running,
+            result
+                .reporter_results
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "기자 특종",
+            serenity::Colour::DARK_GREEN,
+            vec![],
+            true,
+            true,
+        )
+        .await?;
+    }
+    if result.cult_bells > 0 {
+        send_game_embed(
+            ctx,
+            running,
+            std::iter::repeat_n("교주의 종소리가 울렸습니다.", result.cult_bells as usize)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "교주 포교",
+            serenity::Colour::ORANGE,
+            vec![],
+            true,
+            true,
+        )
+        .await?;
+    }
+    send_private_result_maps(ctx, running, &result).await;
+    apply_purification_side_effects(ctx, data, running, &result.shaman_purifications).await;
+    if !result.priest_revives.is_empty() {
+        let config = data.config.read().await.clone();
+        let guild_id = running.read().await.guild_id;
+        if let Ok(roles) = channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await {
+            for player in &result.priest_revives {
+                restore_revived_player_roles(ctx, running, roles, player).await;
+            }
+        }
+    }
+    for user_id in result
+        .spy_contacts
+        .iter()
+        .chain(&result.contractor_contacts)
+        .chain(&result.witch_contacts)
+    {
+        let player = running.read().await.game.get_player(*user_id).cloned();
+        if let Some(player) = player.filter(|player| player.alive) {
+            grant_private_role_member_access(ctx, data, running, Role::Mafia, &player).await;
+        }
+    }
+    for user_id in &result.nurse_contacts {
+        let player = running.read().await.game.get_player(*user_id).cloned();
+        if let Some(player) = player.filter(|player| player.alive) {
+            grant_private_role_member_access(ctx, data, running, Role::Doctor, &player).await;
+        }
+    }
+    for (user_id, inherited_role) in &result.graverobber_results {
+        let player = running.read().await.game.get_player(*user_id).cloned();
+        if let Some(player) = player {
+            if PRIVATE_CHAT_ROLES.contains(inherited_role) {
+                grant_private_role_member_access(ctx, data, running, *inherited_role, &player)
+                    .await;
+            }
+            let _ = send_player_secret(
+                ctx,
+                running,
+                &player,
+                format!(
+                    "도굴꾼 능력으로 **{}** 직업을 이어받았습니다.",
+                    inherited_role.value()
+                ),
+                vec![],
+            )
+            .await;
+        }
+    }
+    for user_id in &result.fanatic_inherits {
+        let player = running.read().await.game.get_player(*user_id).cloned();
+        if let Some(player) = player {
+            let _ = send_player_secret(
+                ctx,
+                running,
+                &player,
+                "교주가 사망해 광신도가 교주의 능력을 물려받았습니다.",
+                vec![],
+            )
+            .await;
+        }
+    }
+    sync_cult_team_channel_access(ctx, data, running).await;
+    sync_lover_chat_access(ctx, data, running).await;
+    announce_police_result(ctx, running, &result).await;
+    let config = data.config.read().await.clone();
+    announce_public_police_status(ctx, running, &config, police_can_act, &result).await?;
+    announce_morning_mafia_count(ctx, running, &config).await?;
+    upsert_game_status(ctx, running).await;
+    Ok(())
+}
+
+pub async fn send_night_action_dm(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    actor: &Player,
+) -> bool {
+    let (guild_id, role, targets) = {
+        let running_read = running.read().await;
+        let role = effective_night_role(&running_read.game, actor);
+        let targets = if role == Role::Contractor {
+            running_read.game.contractor_contract_targets(actor)
+        } else {
+            night_targets(&running_read.game, actor)
+        };
+        (running_read.guild_id, role, targets)
+    };
+    if targets.is_empty() && role != Role::Reporter {
+        return true;
+    };
+    if role == Role::Contractor {
+        return send_player_secret(
+            ctx,
+            running,
+            actor,
+            "청부업자 밤 행동을 선택하세요.\n두 명과 각 직업을 추측합니다. 둘 중 한 명이라도 마피아를 정확히 맞히면 접선합니다.\n첫날 밤에는 사용할 수 없고, 수사직과 직업이 공개된 사람은 대상에서 제외됩니다.",
+            contractor_contract_components(guild_id, actor.user_id, &targets),
+        )
+        .await;
+    }
+    send_player_secret(
+        ctx,
+        running,
+        actor,
+        format!("{} 밤 행동을 선택하세요", role.value()),
+        night_action_components(guild_id, actor.user_id, role, &targets),
+    )
+    .await
+}
+
+pub fn night_action_components(
+    guild_id: serenity::GuildId,
+    actor_id: u64,
+    role: Role,
+    targets: &[Player],
+) -> Vec<serenity::CreateActionRow> {
+    let mut options = targets
+        .iter()
+        .take(if role == Role::Reporter { 24 } else { 25 })
+        .map(|target| {
+            serenity::CreateSelectMenuOption::new(
+                target.name.chars().take(100).collect::<String>(),
+                target.user_id.to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if role == Role::Reporter {
+        options.push(serenity::CreateSelectMenuOption::new("사용 안함", "skip"));
+    }
+    let select = serenity::CreateSelectMenu::new(
+        format!("night:{}:{}:{}", guild_id.get(), actor_id, role.value()),
+        serenity::CreateSelectMenuKind::String { options },
+    )
+    .placeholder(night_placeholder(role))
+    .min_values(1)
+    .max_values(1);
+    vec![serenity::CreateActionRow::SelectMenu(select)]
+}
+
+pub fn contractor_contract_components(
+    guild_id: serenity::GuildId,
+    actor_id: u64,
+    targets: &[Player],
+) -> Vec<serenity::CreateActionRow> {
+    (0..2)
+        .flat_map(|slot| {
+            let target_options = targets
+                .iter()
+                .take(25)
+                .map(|target| {
+                    serenity::CreateSelectMenuOption::new(
+                        target.name.chars().take(100).collect::<String>(),
+                        target.user_id.to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let role_options = CONTRACTOR_GUESS_ROLES
+                .iter()
+                .map(|role| serenity::CreateSelectMenuOption::new(role.value(), role.value()))
+                .collect::<Vec<_>>();
+            [
+                serenity::CreateActionRow::SelectMenu(
+                    serenity::CreateSelectMenu::new(
+                        format!("contractor_target:{}:{}:{}", guild_id.get(), actor_id, slot),
+                        serenity::CreateSelectMenuKind::String {
+                            options: target_options,
+                        },
+                    )
+                    .placeholder(format!("{}번째 청부 대상", slot + 1))
+                    .min_values(1)
+                    .max_values(1),
+                ),
+                serenity::CreateActionRow::SelectMenu(
+                    serenity::CreateSelectMenu::new(
+                        format!("contractor_role:{}:{}:{}", guild_id.get(), actor_id, slot),
+                        serenity::CreateSelectMenuKind::String {
+                            options: role_options,
+                        },
+                    )
+                    .placeholder(format!("{}번째 대상 직업 추측", slot + 1))
+                    .min_values(1)
+                    .max_values(1),
+                ),
+            ]
+        })
+        .chain([serenity::CreateActionRow::Buttons(vec![
+            serenity::CreateButton::new(format!(
+                "contractor_submit:{}:{}",
+                guild_id.get(),
+                actor_id
+            ))
+            .label("청부 확정")
+            .style(serenity::ButtonStyle::Danger),
+        ])])
+        .collect()
+}
+
+pub fn night_placeholder(role: Role) -> &'static str {
+    match role {
+        Role::Mafia => "공격할 대상을 선택하세요",
+        Role::Doctor => "보호할 대상을 선택하세요",
+        Role::Nurse => "처방/치료 대상을 선택하세요",
+        Role::Police => "조사할 대상을 선택하세요",
+        Role::Vigilante => "숙청할 대상을 선택하세요",
+        Role::Reporter => "특종 대상 또는 사용 안함을 선택하세요",
+        Role::Detective => "추적할 대상을 선택하세요",
+        Role::Shaman => "성불할 사망자를 선택하세요",
+        Role::Priest => "소생할 사망자를 선택하세요",
+        Role::Spy => "첩보할 대상을 선택하세요",
+        Role::Witch => "저주할 대상을 선택하세요",
+        Role::Godfather => "확정 처치할 대상을 선택하세요",
+        Role::Terrorist => "지목할 대상을 선택하세요",
+        Role::Gangster => "공갈할 대상을 선택하세요",
+        Role::Thief => "도벽으로 훔친 능력의 대상을 선택하세요",
+        Role::CultLeader => "포교할 대상을 선택하세요",
+        Role::Fanatic => "추종할 대상을 선택하세요",
+        _ => "대상을 선택하세요",
+    }
+}
+
+pub fn effective_night_role(game: &MafiaGame, actor: &Player) -> Role {
+    if actor.role == Role::Thief {
+        game.thief_night_role(actor).unwrap_or(actor.role)
+    } else {
+        actor.role
+    }
+}
+
+pub fn night_targets(game: &MafiaGame, actor: &Player) -> Vec<Player> {
+    let role = effective_night_role(game, actor);
+    let mut alive = game
+        .alive_players()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    alive.sort_by_key(|player| player.name.to_lowercase());
+    let mut targets = match role {
+        Role::Mafia => alive
+            .into_iter()
+            .filter(|player| game.can_mafia_attack(player, Some(actor.user_id)))
+            .collect(),
+        Role::Doctor => alive,
+        Role::Nurse => {
+            if game.nurse_contacted.contains(&actor.user_id) {
+                if game.alive_role_count(Role::Doctor) == 0 {
+                    alive
+                } else {
+                    Vec::new()
+                }
+            } else {
+                alive
+                    .into_iter()
+                    .filter(|player| player.user_id != actor.user_id)
+                    .collect()
+            }
+        }
+        Role::Shaman | Role::Priest => game
+            .unpurified_dead_players()
+            .into_iter()
+            .cloned()
+            .collect(),
+        Role::CultLeader => alive
+            .into_iter()
+            .filter(|player| player.user_id != actor.user_id && !game.is_cult_team(player))
+            .collect(),
+        Role::Vigilante => game.vigilante_execution_targets(actor),
+        Role::Contractor => game.contractor_contract_targets(actor),
+        _ => alive
+            .into_iter()
+            .filter(|player| player.user_id != actor.user_id)
+            .collect(),
+    };
+    targets.sort_by_key(|player| player.name.to_lowercase());
+    targets
+}
+
+pub async fn send_private_result_maps(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    result: &NightResult,
+) {
+    let mut maps = vec![
+        result.detective_results.clone(),
+        result.spy_results.clone(),
+        result.contractor_results.clone(),
+        result.witch_results.clone(),
+        result.godfather_results.clone(),
+        result.shaman_results.clone(),
+        result.priest_results.clone(),
+        result.agent_results.clone(),
+        result.reporter_results.clone(),
+        result.vigilante_results.clone(),
+        result.nurse_results.clone(),
+        result.gangster_results.clone(),
+        result.cult_results.clone(),
+        result.fanatic_results.clone(),
+    ];
+    maps.push(result.hacker_results.clone());
+    for map in maps {
+        for (user_id, text) in map {
+            let player = running.read().await.game.get_player(user_id).cloned();
+            if let Some(player) = player {
+                let _ = send_player_secret(ctx, running, &player, text, vec![]).await;
+            }
+        }
+    }
+    let _ = running;
+}
+
+pub async fn announce_police_result(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    result: &NightResult,
+) {
+    let (police_players, message) = {
+        let running_read = running.read().await;
+        if running_read.game.police_result_announced {
+            return;
+        }
+        let police_players = running_read
+            .game
+            .alive_players()
+            .into_iter()
+            .filter(|player| player.role == Role::Police)
+            .cloned()
+            .collect::<Vec<_>>();
+        if police_players.is_empty() {
+            return;
+        }
+        let message = if let Some(target) = &result.police_target {
+            let result_text = if result.police_target_is_mafia.unwrap_or(false) {
+                "마피아입니다"
+            } else {
+                "마피아가 아닙니다"
+            };
+            format!("조사 결과: {} 님은 **{}**.", target.name, result_text)
+        } else {
+            "경찰 조사 대상이 과반을 넘지 못해 이번 밤 조사 결과가 없습니다.".to_string()
+        };
+        (police_players, message)
+    };
+    {
+        let mut running_write = running.write().await;
+        running_write.game.mark_police_result_announced();
+    }
+    for player in police_players {
+        let _ = send_player_secret(ctx, running, &player, message.clone(), vec![]).await;
+    }
+}
+
+pub async fn send_police_result_message(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    message: &str,
+    exclude_user_id: Option<u64>,
+) {
+    let police_players = {
+        let running_read = running.read().await;
+        running_read
+            .game
+            .alive_players()
+            .into_iter()
+            .filter(|player| player.role == Role::Police && Some(player.user_id) != exclude_user_id)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for player in police_players {
+        let _ = send_player_secret(ctx, running, &player, message, vec![]).await;
+    }
+}
+
+pub async fn announce_public_police_status(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    config: &config::BotConfig,
+    police_can_act: bool,
+    result: &NightResult,
+) -> Result<()> {
+    if !config.reveal_public_police_status || !police_can_act {
+        return Ok(());
+    }
+    let (message, color) = if result.police_target.is_none() {
+        (
+            "경찰 조사는 성공하지 못했습니다. 대상이 과반을 넘지 못했거나 선택이 완료되지 않았습니다.",
+            serenity::Colour::ORANGE,
+        )
+    } else if result.police_target_is_mafia.unwrap_or(false) {
+        (
+            "경찰이 마피아를 발견했습니다. 자세한 조사 결과는 경찰 비공개 채널로 전달됩니다.",
+            serenity::Colour::DARK_GREEN,
+        )
+    } else {
+        (
+            "경찰이 마피아를 발견하지 못했습니다. 자세한 조사 결과는 경찰 비공개 채널로 전달됩니다.",
+            serenity::Colour::ORANGE,
+        )
+    };
+    send_game_embed(
+        ctx,
+        running,
+        message,
+        "경찰 조사 결과 공개",
+        color,
+        vec![],
+        true,
+        true,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn announce_morning_mafia_count(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    config: &config::BotConfig,
+) -> Result<()> {
+    if !config.reveal_morning_mafia_count {
+        return Ok(());
+    }
+    let mafia_count = {
+        let running_read = running.read().await;
+        running_read
+            .game
+            .alive_players()
+            .into_iter()
+            .filter(|player| running_read.game.is_known_mafia_team(player))
+            .count()
+    };
+    send_game_embed(
+        ctx,
+        running,
+        format!("현재 생존 마피아: **{mafia_count}명**"),
+        "아침 마피아 현황",
+        serenity::Colour::GOLD,
+        vec![],
+        true,
+        true,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn run_day(
+    ctx: &serenity::Context,
+    data: &Data,
+    running: &Arc<RwLock<RunningGame>>,
+) -> Result<()> {
+    let config = data.config.read().await.clone();
+    let (guild_id, day_notify, discussion_seconds, hackers, vigilantes, psychologists) = {
+        let mut running_write = running.write().await;
+        running_write.game.phase = Phase::Day;
+        running_write.day_chat_open = true;
+        running_write.final_defense_user_id = None;
+        running_write.day_skip_voter_ids.clear();
+        running_write.day_skip_confirmed = false;
+        running_write.day_extension_voter_ids.clear();
+        running_write.day_extension_active = false;
+        running_write.day_extension_confirmed = false;
+        (
+            running_write.guild_id,
+            running_write.day_notify.clone(),
+            config.discussion_seconds,
+            running_write.game.hacker_day_actors(),
+            running_write.game.vigilante_day_actors(),
+            running_write.game.psychologist_day_actors(),
+        )
+    };
+    upsert_game_status(ctx, running).await;
+    set_game_channel_chat(ctx, data, running, true).await;
+    set_channel_slowmode(ctx, running, config.chat_slowmode_seconds).await;
+    sync_lover_chat_access(ctx, data, running).await;
+    sync_cult_team_channel_access(ctx, data, running).await;
+    sync_madam_seduction_permissions(ctx, running).await;
+    sync_anonymous_general_chat_permissions(ctx, running).await;
+    sync_shaman_chat_access(ctx, data, running).await;
+    let discussion_time = duration_text(discussion_seconds);
+    let public_status = running.read().await.game.public_status();
+    let mut day_message = send_game_embed(
+        ctx,
+        running,
+        format!(
+            "{}일차 낮입니다. {discussion_time} 동안 자유롭게 토론하세요.\n생존자 과반이 `바로 투표`를 누르면 토론과 연장을 끝내고 바로 지목 투표로 넘어갑니다.\n시간이 지나면 {DAY_EXTENSION_VOTE_SECONDS}초 동안 1분 연장 투표가 열립니다. 생존자 과반수가 연장을 누르면 1분 연장되고, 연장은 낮마다 1번만 가능합니다. 과반수가 모이지 않으면 바로 투표로 넘어갑니다.\n{public_status}",
+            running.read().await.game.day_number
+        ),
+        "낮 토론",
+        serenity::Colour::GOLD,
+        day_skip_components(guild_id, false, false),
+        false,
+        true,
+    )
+    .await?;
+    let mut failed_hackers = Vec::new();
+    for actor in hackers {
+        if !send_day_single_select(ctx, running, &actor, "hacker", "해킹 대상을 선택하세요").await
+        {
+            failed_hackers.push(actor.name);
+        }
+    }
+    if !failed_hackers.is_empty() {
+        let channel_id = running.read().await.channel_id;
+        let _ = send_channel_embed(
+            &ctx.http,
+            channel_id,
+            format!(
+                "해커 낮 행동 DM을 보낼 수 없는 참가자: {}",
+                failed_hackers.join(", ")
+            ),
+            "마피아 게임",
+            serenity::Colour::RED,
+            vec![],
+        )
+        .await;
+    }
+    let mut failed_vigilantes = Vec::new();
+    for actor in vigilantes {
+        if !send_day_single_select(
+            ctx,
+            running,
+            &actor,
+            "vigilante",
+            "숙청 조사 대상을 선택하세요",
+        )
+        .await
+        {
+            failed_vigilantes.push(actor.name);
+        }
+    }
+    if !failed_vigilantes.is_empty() {
+        let channel_id = running.read().await.channel_id;
+        let _ = send_channel_embed(
+            &ctx.http,
+            channel_id,
+            format!(
+                "자경단원 낮 행동 DM을 보낼 수 없는 참가자: {}",
+                failed_vigilantes.join(", ")
+            ),
+            "마피아 게임",
+            serenity::Colour::RED,
+            vec![],
+        )
+        .await;
+    }
+    let mut failed_psychologists = Vec::new();
+    for actor in psychologists {
+        if !send_day_multi_select(
+            ctx,
+            running,
+            &actor,
+            "psychologist",
+            "관찰할 두 명을 선택하세요",
+            2,
+        )
+        .await
+        {
+            failed_psychologists.push(actor.name);
+        }
+    }
+    if !failed_psychologists.is_empty() {
+        let channel_id = running.read().await.channel_id;
+        let _ = send_channel_embed(
+            &ctx.http,
+            channel_id,
+            format!(
+                "심리학자 낮 행동 선택지를 보낼 수 없는 참가자: {}",
+                failed_psychologists.join(", ")
+            ),
+            "마피아 게임",
+            serenity::Colour::RED,
+            vec![],
+        )
+        .await;
+    }
+    let mut extension_used = false;
+    let mut current_discussion_seconds = discussion_seconds;
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(current_discussion_seconds)) => {}
+            _ = day_notify.notified() => {}
+        }
+        {
+            let running_read = running.read().await;
+            if running_read.game.phase == Phase::Ended || running_read.day_skip_confirmed {
+                let _ = day_message
+                    .edit(
+                        &ctx.http,
+                        serenity::EditMessage::new()
+                            .components(day_skip_components(guild_id, true, true)),
+                    )
+                    .await;
+                return Ok(());
+            }
+        }
+        if extension_used {
+            send_game_embed(
+                ctx,
+                running,
+                "연장된 토론 시간이 종료되었습니다.\n토론 연장은 낮마다 1번만 가능하므로 바로 지목 투표로 넘어갑니다.",
+                "낮 토론 종료",
+                serenity::Colour::GOLD,
+                vec![],
+                false,
+                true,
+            )
+            .await?;
+            let _ = day_message
+                .edit(
+                    &ctx.http,
+                    serenity::EditMessage::new()
+                        .components(day_skip_components(guild_id, true, false)),
+                )
+                .await;
+            return Ok(());
+        }
+
+        let (alive_count, required_votes) = {
+            let mut running_write = running.write().await;
+            let alive_count = running_write.game.alive_players().len();
+            running_write.day_extension_voter_ids.clear();
+            running_write.day_extension_active = true;
+            running_write.day_extension_confirmed = false;
+            (alive_count, alive_count / 2 + 1)
+        };
+        let mut extension_message = send_game_embed(
+            ctx,
+            running,
+            format!(
+                "{} 토론 시간이 지났습니다.\n{DAY_EXTENSION_VOTE_SECONDS}초 안에 생존자 과반수({required_votes}/{alive_count}명)가 `1분 연장`을 누르면 낮 토론을 1분 연장합니다.\n과반수가 모이지 않으면 바로 투표로 넘어갑니다.",
+                duration_text(current_discussion_seconds)
+            ),
+            "낮 토론 연장 투표",
+            serenity::Colour::GOLD,
+            day_extension_components(guild_id, false, false),
+            false,
+            true,
+        )
+        .await?;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(DAY_EXTENSION_VOTE_SECONDS)) => {}
+            _ = day_notify.notified() => {}
+        }
+        let (skip_confirmed, extension_confirmed, extension_votes, phase_ended) = {
+            let mut running_write = running.write().await;
+            running_write.day_extension_active = false;
+            (
+                running_write.day_skip_confirmed,
+                running_write.day_extension_confirmed,
+                running_write.day_extension_voter_ids.len(),
+                running_write.game.phase == Phase::Ended,
+            )
+        };
+        if skip_confirmed {
+            let _ = extension_message
+                .edit(
+                    &ctx.http,
+                    serenity::EditMessage::new()
+                        .embed(make_embed(
+                            "생존자 과반수가 바로 투표를 선택해 연장 투표를 종료합니다.\n바로 지목 투표로 넘어갑니다.",
+                            "바로 투표",
+                            serenity::Colour::DARK_GREEN,
+                        ))
+                        .components(day_extension_components(guild_id, true, false)),
+                )
+                .await;
+            let _ = day_message
+                .edit(
+                    &ctx.http,
+                    serenity::EditMessage::new()
+                        .components(day_skip_components(guild_id, true, true)),
+                )
+                .await;
+            return Ok(());
+        }
+        if phase_ended {
+            return Ok(());
+        }
+        if extension_confirmed {
+            extension_used = true;
+            current_discussion_seconds = DISCUSSION_EXTENSION_SECONDS;
+            continue;
+        }
+        let _ = extension_message
+            .edit(
+                &ctx.http,
+                serenity::EditMessage::new()
+                    .embed(make_embed(
+                        format!(
+                            "{DAY_EXTENSION_VOTE_SECONDS}초 동안 1분 연장 투표가 과반수에 도달하지 못했습니다. ({extension_votes}/{required_votes}명)\n바로 투표로 넘어갑니다."
+                        ),
+                        "낮 토론 종료",
+                        serenity::Colour::GOLD,
+                    ))
+                    .components(day_extension_components(guild_id, true, false)),
+            )
+            .await;
+        let _ = day_message
+            .edit(
+                &ctx.http,
+                serenity::EditMessage::new().components(day_skip_components(guild_id, true, false)),
+            )
+            .await;
+        return Ok(());
+    }
+}
+
+pub async fn send_day_single_select(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    actor: &Player,
+    kind: &str,
+    placeholder: &str,
+) -> bool {
+    send_day_multi_select(ctx, running, actor, kind, placeholder, 1).await
+}
+
+pub fn day_action_secret_text(kind: &str) -> &'static str {
+    match kind {
+        "hacker" => {
+            "해커 낮 행동을 선택하세요.\n해킹은 1회용입니다. 선택한 대상의 직업은 밤이 시작될 때 비밀 메시지로 전달됩니다.\n해킹 사용 후 자신에게 쓰이는 능력은 해킹 대상에게 우회됩니다."
+        }
+        "vigilante" => {
+            "자경단원 낮 행동을 선택하세요.\n숙청 조사는 1회용입니다. 밤이 시작될 때 대상이 마피아팀인지 비밀 메시지로 전달됩니다.\n숙청 처형은 조사와 별개로 밤에 한 번 시도할 수 있고, 마피아팀이 아니어도 기회가 소진됩니다."
+        }
+        "psychologist" => {
+            "심리학자 낮 행동을 선택하세요.\n자신을 제외한 생존자 2명을 선택하면 두 사람이 같은 팀인지 즉시 확인합니다."
+        }
+        "thief" => {
+            "도둑 투표 시간 행동을 선택하세요.\n하루에 한 번 플레이어 한 명의 직업 능력을 훔쳐 다음 밤까지 사용할 수 있습니다."
+        }
+        _ => "낮 능력을 선택하세요.",
+    }
+}
+
+pub async fn send_day_multi_select(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    actor: &Player,
+    kind: &str,
+    placeholder: &str,
+    count: u8,
+) -> bool {
+    let (guild_id, mut targets) = {
+        let running_read = running.read().await;
+        (
+            running_read.guild_id,
+            running_read
+                .game
+                .players
+                .iter()
+                .filter(|player| player.alive && player.user_id != actor.user_id)
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    };
+    targets.sort_by_key(|player| player.name.to_lowercase());
+    let options = targets
+        .iter()
+        .take(25)
+        .map(|target| {
+            serenity::CreateSelectMenuOption::new(
+                target.name.chars().take(100).collect::<String>(),
+                target.user_id.to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let select = serenity::CreateSelectMenu::new(
+        format!("{kind}:{}:{}", guild_id.get(), actor.user_id),
+        serenity::CreateSelectMenuKind::String { options },
+    )
+    .placeholder(placeholder)
+    .min_values(count)
+    .max_values(count);
+    send_player_secret(
+        ctx,
+        running,
+        actor,
+        day_action_secret_text(kind),
+        vec![serenity::CreateActionRow::SelectMenu(select)],
+    )
+    .await
+}
+
+pub async fn run_vote(
+    ctx: &serenity::Context,
+    data: &Data,
+    running: &Arc<RwLock<RunningGame>>,
+) -> Result<()> {
+    let config = data.config.read().await.clone();
+    let (guild_id, vote_notify, seconds, alive) = {
+        let mut running_write = running.write().await;
+        running_write.game.start_vote()?;
+        running_write.day_chat_open = false;
+        running_write.final_defense_user_id = None;
+        (
+            running_write.guild_id,
+            running_write.vote_notify.clone(),
+            config.vote_seconds,
+            running_write
+                .game
+                .alive_players()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    };
+    upsert_game_status(ctx, running).await;
+    set_game_channel_chat(ctx, data, running, false).await;
+    sync_anonymous_general_chat_permissions(ctx, running).await;
+    let mut options = alive
+        .iter()
+        .take(24)
+        .map(|target| {
+            serenity::CreateSelectMenuOption::new(
+                target.name.chars().take(100).collect::<String>(),
+                target.user_id.to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    options.push(serenity::CreateSelectMenuOption::new("스킵", "skip"));
+    let select = serenity::CreateSelectMenu::new(
+        format!("vote:{}", guild_id.get()),
+        serenity::CreateSelectMenuKind::String { options },
+    )
+    .placeholder("처형할 대상 또는 스킵을 선택하세요")
+    .min_values(1)
+    .max_values(1);
+    send_game_embed(
+        ctx,
+        running,
+        format!(
+            "지목 투표를 시작합니다. {seconds}초 안에 최후변론에 세울 사람을 선택하세요.\n투표 중에는 게임 채널 채팅이 비활성화됩니다.\n생존자가 모두 투표하면 남은 시간을 기다리지 않고 바로 정산합니다."
+        ),
+        "지목 투표 시작",
+        serenity::Colour::GOLD,
+        vec![serenity::CreateActionRow::SelectMenu(select)],
+        false,
+        true,
+    )
+    .await?;
+    send_thief_vote_actions(ctx, running).await;
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(seconds)) => {}
+        _ = vote_notify.notified() => {}
+    }
+    if running.read().await.game.phase == Phase::Ended {
+        return Ok(());
+    }
+    let vote_result = {
+        let mut running_write = running.write().await;
+        running_write.game.resolve_nomination_vote()?
+    };
+    handle_madam_seduction_result(ctx, data, running, &vote_result).await;
+    sync_cult_team_channel_access(ctx, data, running).await;
+    sync_lover_chat_access(ctx, data, running).await;
+    let vote_summary = {
+        let running_read = running.read().await;
+        anonymous_vote_summary(&running_read.game, &vote_result)
+    };
+    let blocked_notice = if vote_result.blocked_voters.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n공갈로 투표권을 잃은 참가자: {}",
+            vote_result
+                .blocked_voters
+                .iter()
+                .map(|player| player.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    if vote_result.executed.is_none() {
+        let message = if vote_result.tied {
+            "투표가 동률이라 최후변론 대상이 없습니다."
+        } else if vote_result.skipped {
+            "스킵이 최다 득표하여 최후변론 대상이 없습니다."
+        } else {
+            "투표가 없어 최후변론 대상이 없습니다."
+        };
+        send_game_embed(
+            ctx,
+            running,
+            format!("{message}{blocked_notice}\n\n익명 투표 집계\n{vote_summary}"),
+            "지목 투표 결과",
+            serenity::Colour::GOLD,
+            vec![],
+            false,
+            true,
+        )
+        .await?;
+        return Ok(());
+    }
+    let nominee = vote_result.executed.unwrap();
+    {
+        let mut running_write = running.write().await;
+        running_write.final_defense_user_id = Some(nominee.user_id);
+    }
+    sync_anonymous_general_chat_permissions(ctx, running).await;
+    set_channel_slowmode(ctx, running, 0).await;
+    if !running.read().await.game.is_frog(&nominee)
+        && !running.read().await.game.is_madam_seduced(&nominee)
+    {
+        set_member_game_channel_chat(ctx, running, &nominee, true).await;
+    }
+    send_game_embed(
+        ctx,
+        running,
+        format!(
+            "지목 투표 결과, {} 님이 최후변론 대상이 되었습니다.{blocked_notice}\n\n익명 투표 집계\n{vote_summary}",
+            nominee.name
+        ),
+        "지목 투표 결과",
+        serenity::Colour::GOLD,
+        vec![],
+        false,
+        true,
+    )
+    .await?;
+    send_game_embed(
+        ctx,
+        running,
+        format!(
+            "{} 님의 최후변론 시간입니다. 20초 동안 지목된 사람만 말할 수 있습니다.\n이 시간 동안 슬로우모드는 해제됩니다.",
+            nominee.name
+        ),
+        "최후변론",
+        serenity::Colour::GOLD,
+        vec![],
+        false,
+        true,
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    if running.read().await.game.phase == Phase::Ended {
+        return Ok(());
+    }
+    {
+        let mut running_write = running.write().await;
+        running_write.game.start_confirmation_vote()?;
+        running_write.final_defense_user_id = None;
+    }
+    restore_member_game_channel_chat(ctx, running).await;
+    upsert_game_status(ctx, running).await;
+    set_game_channel_chat(ctx, data, running, false).await;
+    sync_anonymous_general_chat_permissions(ctx, running).await;
+    let confirm_notify = running.read().await.confirm_notify.clone();
+    send_game_embed(
+        ctx,
+        running,
+        format!(
+            "{} 님 처형 여부를 찬반투표합니다. {CONFIRM_VOTE_SECONDS}초 안에 선택하세요.\n찬성이 반대보다 많으면 처형합니다.",
+            nominee.name
+        ),
+        "찬반투표",
+        serenity::Colour::GOLD,
+        vec![serenity::CreateActionRow::Buttons(vec![
+            serenity::CreateButton::new(format!("confirm:{}:1", guild_id.get()))
+                .label("찬성")
+                .style(serenity::ButtonStyle::Success),
+            serenity::CreateButton::new(format!("confirm:{}:0", guild_id.get()))
+                .label("반대")
+                .style(serenity::ButtonStyle::Danger),
+        ])],
+        false,
+        true,
+    )
+    .await?;
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(CONFIRM_VOTE_SECONDS)) => {}
+        _ = confirm_notify.notified() => {}
+    }
+    if running.read().await.game.phase == Phase::Ended {
+        return Ok(());
+    }
+    let confirm_result = {
+        let mut running_write = running.write().await;
+        running_write
+            .game
+            .resolve_confirmation_vote(nominee.user_id)?
+    };
+    set_channel_slowmode(ctx, running, config.chat_slowmode_seconds).await;
+    let counts = &confirm_result.vote_counts;
+    let summary = format!(
+        "찬성 {}표 / 반대 {}표",
+        counts.get(&true).copied().unwrap_or(0),
+        counts.get(&false).copied().unwrap_or(0)
+    );
+    let judge_notice = if confirm_result.decided_by_judge {
+        if let Some(judge) = &confirm_result.judge {
+            let judge_choice = match confirm_result.judge_choice {
+                None => "미투표(처형 없음)",
+                Some(true) => "찬성",
+                Some(false) => "반대",
+            };
+            format!(
+                "\n\n[판사 {}님이 투표 결과를 정했습니다]\n판사의 선택: {judge_choice}",
+                judge.name
+            )
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    let mut dead_players = Vec::new();
+    if let Some(executed) = &confirm_result.executed {
+        dead_players.push(executed.clone());
+    }
+    dead_players.extend(confirm_result.extra_killed.iter().cloned());
+    apply_death_side_effects(ctx, data, running, &dead_players).await;
+    sync_cult_team_channel_access(ctx, data, running).await;
+    sync_lover_chat_access(ctx, data, running).await;
+    upsert_game_status(ctx, running).await;
+    let (message, color, include_dead) = if confirm_result.blocked_by_politician {
+        (
+            format!(
+                "찬반투표 결과, {} 님은 **정치인** 입니다.\n[정치인은 투표로 죽지 않습니다]\n\n{} 님은 처형되지 않고 밤으로 넘어갑니다.{judge_notice}\n\n찬반투표 집계\n{summary}",
+                nominee.name, nominee.name
+            ),
+            serenity::Colour::ORANGE,
+            false,
+        )
+    } else if let Some(executed) = &confirm_result.executed {
+        let killed_lines = {
+            let running_read = running.read().await;
+            dead_players
+                .iter()
+                .map(|killed| {
+                    format!(
+                        "- {}: {}",
+                        killed.name,
+                        death_role_text(&running_read, killed)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut result_message = format!("찬반투표 결과, {} 님이 처형되었습니다.", executed.name);
+        if !confirm_result.extra_killed.is_empty() {
+            if executed.role == Role::Terrorist {
+                result_message.push_str(
+                    "\n테러리스트의 [산화]가 발동해 지목 중이던 적 팀도 함께 사망했습니다.",
+                );
+            } else {
+                result_message.push_str(
+                    "\n처형 대상이 지목하고 있던 시민팀이 아닌 대상도 함께 사망했습니다.",
+                );
+            }
+        }
+        (
+            format!(
+                "{result_message}\n\n사망자\n{killed_lines}{judge_notice}\n\n찬반투표 집계\n{summary}"
+            ),
+            serenity::Colour::GOLD,
+            true,
+        )
+    } else if confirm_result.tied {
+        (
+            format!(
+                "찬반투표가 동률이라 처형하지 않습니다.{judge_notice}\n\n찬반투표 집계\n{summary}"
+            ),
+            serenity::Colour::GOLD,
+            false,
+        )
+    } else {
+        let reject_message = if confirm_result.decided_by_judge {
+            "판사의 선택으로 처형하지 않습니다."
+        } else {
+            "반대가 많아 처형하지 않습니다."
+        };
+        (
+            format!("{reject_message}{judge_notice}\n\n찬반투표 집계\n{summary}"),
+            serenity::Colour::GOLD,
+            false,
+        )
+    };
+    send_game_embed(
+        ctx,
+        running,
+        message,
+        "찬반투표 결과",
+        color,
+        vec![],
+        include_dead,
+        true,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn send_thief_vote_actions(ctx: &serenity::Context, running: &Arc<RwLock<RunningGame>>) {
+    let actors = running.read().await.game.thief_vote_actors();
+    let mut failed_names = Vec::new();
+    for actor in actors {
+        if !send_day_single_select(ctx, running, &actor, "thief", "도벽 대상을 선택하세요").await
+        {
+            failed_names.push(actor.name);
+        }
+    }
+    if !failed_names.is_empty() {
+        let channel_id = running.read().await.channel_id;
+        let _ = send_channel_embed(
+            &ctx.http,
+            channel_id,
+            format!(
+                "도둑 도벽 선택지를 보낼 수 없는 참가자: {}",
+                failed_names.join(", ")
+            ),
+            "마피아 게임",
+            serenity::Colour::RED,
+            vec![],
+        )
+        .await;
+    }
+}
+
+pub async fn announce_winner(
+    ctx: &serenity::Context,
+    data: &Data,
+    running: &Arc<RwLock<RunningGame>>,
+) -> Result<bool> {
+    let winner = running.read().await.game.winner();
+    let Some(winner) = winner else {
+        return Ok(false);
+    };
+    let (roles_text, elapsed_seconds, record_payload) = {
+        let mut running_write = running.write().await;
+        running_write.game.phase = Phase::Ended;
+        let elapsed_seconds = running_write.started_at.elapsed().as_secs() as i64;
+        let record_payload = if running_write.stats_recorded {
+            None
+        } else {
+            running_write.stats_recorded = true;
+            Some((
+                running_write.game.clone(),
+                running_write.initial_roles.clone(),
+                elapsed_seconds,
+            ))
+        };
+        (
+            final_role_reveal_text(&running_write),
+            elapsed_seconds,
+            record_payload,
+        )
+    };
+    upsert_game_status(ctx, running).await;
+    if let Some((game_snapshot, initial_roles, elapsed_seconds)) = record_payload {
+        let mut stats_file = data.stats.write().await;
+        stats::record_game_stats(
+            &mut stats_file,
+            &game_snapshot,
+            &initial_roles,
+            elapsed_seconds,
+            winner,
+        );
+        stats::save_stats(&*data.stats_path, &stats_file)?;
+    }
+    send_game_embed(
+        ctx,
+        running,
+        format!(
+            "{}\n플레이 시간: **{}**\n\n최종 역할 공개\n{}",
+            match winner {
+                Winner::Mafia => "마피아 승리!",
+                Winner::Joker => "조커 승리!",
+                Winner::Cult => "교주팀 승리!",
+                Winner::Citizen => "시민 승리!",
+            },
+            stats::play_duration_text(elapsed_seconds),
+            roles_text
+        ),
+        "게임 종료",
+        serenity::Colour::DARK_GREEN,
+        vec![],
+        true,
+        true,
+    )
+    .await?;
+    Ok(true)
+}
+

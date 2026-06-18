@@ -1,4 +1,4 @@
-discord.py>=2.4,<3
+iscord.py>=2.4,<3
 python-dotenv>=1.0,<2
 fastapi>=0.110,<1
 uvicorn>=0.29,<1

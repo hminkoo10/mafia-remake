@@ -1,5 +1,6 @@
 [build]
 jobs = 22
+rustc-wrapper = "sccache"
 
 [env]
 AR_x86_64_pc_windows_gnu = { value = ".rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/llvm-ar.exe", force = true, relative = true }

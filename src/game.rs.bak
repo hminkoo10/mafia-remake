@@ -450,7 +450,10 @@ impl MafiaGame {
     ) -> bool {
         match self.thief_night_role(player) {
             Some(Role::Mafia | Role::Doctor) => !alive.is_empty(),
-            Some(Role::Shaman | Role::Priest) => !unpurified_dead.is_empty(),
+            Some(Role::Shaman) => !unpurified_dead.is_empty(),
+            Some(Role::Priest) => {
+                !unpurified_dead.is_empty() && !self.priest_used_ids.contains(&player.user_id)
+            }
             Some(Role::Reporter) => self.reporter_can_act(player, alive),
             Some(_) => alive.len() > 1,
             None => false,
@@ -473,7 +476,10 @@ impl MafiaGame {
                 .is_some_and(|targets| !targets.is_empty()),
             Some(Role::Contractor) => self.contractor_contracts.contains_key(&actor.user_id),
             Some(Role::Shaman) => self.shaman_targets.contains_key(&actor.user_id),
-            Some(Role::Priest) => self.priest_targets.contains_key(&actor.user_id),
+            Some(Role::Priest) => {
+                self.priest_targets.contains_key(&actor.user_id)
+                    || self.priest_used_ids.contains(&actor.user_id)
+            }
             Some(Role::Witch) => self.witch_targets.contains_key(&actor.user_id),
             Some(Role::Godfather) => self.godfather_targets.contains_key(&actor.user_id),
             Some(Role::Terrorist) => self.terrorist_action_submitted.contains(&actor.user_id),
@@ -1578,14 +1584,10 @@ impl MafiaGame {
         self.vigilante_targets.remove(&actor_id);
         self.detective_targets.remove(&actor_id);
         self.shaman_targets.remove(&actor_id);
-        if self.priest_targets.remove(&actor_id).is_some() {
-            self.priest_used_ids.remove(&actor_id);
-        }
+        self.priest_targets.remove(&actor_id);
         self.godfather_targets.remove(&actor_id);
         self.terrorist_action_submitted.remove(&actor_id);
-        if self.reporter_targets.remove(&actor_id).is_some() {
-            self.reporter_used_ids.remove(&actor_id);
-        }
+        self.reporter_targets.remove(&actor_id);
         self.reporter_skip_submitted.remove(&actor_id);
         self.spy_targets.remove(&actor_id);
         self.spy_bonus_pending.remove(&actor_id);
