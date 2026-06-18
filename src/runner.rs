@@ -6,13 +6,14 @@
 use super::{
     Context, Data, Error, RunningGame,
     DAY_EXTENSION_VOTE_SECONDS, DISCUSSION_EXTENSION_SECONDS, CONFIRM_VOTE_SECONDS,
+    PRIVATE_CHAT_ROLES,
 };
 use crate::channel::*;
 use crate::embed::*;
 use anyhow::{Context as AnyhowContext, Result, bail};
 use mafia_remake::config;
 use mafia_remake::game::MafiaGame;
-use mafia_remake::model::{NightResult, Phase, Player, Role, VoteResult, Winner};
+use mafia_remake::model::{CONTRACTOR_GUESS_ROLES, NightResult, Phase, Player, Role, VoteResult, Winner};
 use mafia_remake::stats;
 use poise::serenity_prelude as serenity;
 use poise::serenity_prelude::Mentionable;

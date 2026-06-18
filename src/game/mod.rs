@@ -9,9 +9,7 @@ pub mod actions;
 pub mod resolve;
 pub mod vote;
 
-use crate::model::{
-    CONTRACTOR_GUESS_ROLES, ConfirmVoteResult, NightResult, Phase, Player, Role, VoteResult, Winner,
-};
+use crate::model::{Phase, Player, Role, Winner};
 use anyhow::{Result, bail};
 use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
@@ -342,6 +340,7 @@ impl MafiaGame {
             })
             .cloned()
             .collect()
+    }
 
     fn team_key(&self, player: &Player) -> &'static str {
         if self.is_cult_team(player) {
@@ -542,6 +541,51 @@ impl MafiaGame {
             .join("\n")
     }
 
+    /// Activity UI용: 전체 플레이어 슬라이스 (생존 + 사망)
+    pub fn all_players(&self) -> &[Player] {
+        &self.players
+    }
+
+    /// Activity UI용: 플레이어가 오늘 밤 지목한 대상 (아직 미제출이면 None)
+    pub fn get_night_action_target(&self, user_id: u64) -> Option<u64> {
+        let role = self.get_player(user_id)?.role;
+        let maps: &[&HashMap<u64, u64>] = match role {
+            Role::Mafia | Role::Gangster => &[&self.mafia_targets],
+            Role::Doctor => &[&self.doctor_targets],
+            Role::Police => &[&self.police_targets],
+            Role::Agent => &[&self.detective_targets],
+            Role::Vigilante => &[&self.vigilante_targets],
+            Role::Godfather => &[&self.godfather_targets],
+            Role::CultLeader => &[&self.cult_targets],
+            Role::Fanatic => &[&self.fanatic_targets],
+            Role::Shaman => &[&self.shaman_targets],
+            Role::Witch => &[&self.witch_targets],
+            Role::Priest => &[&self.priest_targets],
+            Role::Terrorist => &[&self.terrorist_targets],
+            Role::Spy => return self.spy_targets.get(&user_id).and_then(|v| v.first()).copied(),
+            _ => &[],
+        };
+        maps.iter().find_map(|m| m.get(&user_id).copied())
+    }
+
+    /// Activity UI용: 현재 낮 투표 득표 집계 (targetId → 득표수)
+    pub fn current_vote_counts(&self) -> HashMap<u64, usize> {
+        let mut counts: HashMap<u64, usize> = HashMap::new();
+        for target_opt in self.day_votes.values() {
+            if let Some(&target) = target_opt.as_ref() {
+                *counts.entry(target).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+
+    /// Activity UI용: 찬반 투표 현황 (찬성수, 반대수)
+    pub fn current_confirm_counts(&self) -> (usize, usize) {
+        let yes = self.confirm_votes.values().filter(|&&v| v).count();
+        let no = self.confirm_votes.values().filter(|&&v| !v).count();
+        (yes, no)
+    }
+
     pub fn public_status(&self) -> String {
         let alive_players = self.alive_players();
         let dead_players = self.dead_players();
@@ -571,6 +615,7 @@ impl MafiaGame {
             bail!("사망한 참가자는 행동할 수 없습니다.");
         }
         Ok(player)
+    }
 
     fn require_player(&self, user_id: u64) -> Result<&Player> {
         self.get_player(user_id)

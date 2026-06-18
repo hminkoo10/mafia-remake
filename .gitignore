@@ -21,3 +21,8 @@ target/
 C/
 
 .idea/
+
+# Activity 프론트엔드
+activity/node_modules/
+activity/dist/
+activity/.env

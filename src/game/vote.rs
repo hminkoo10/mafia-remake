@@ -3,7 +3,7 @@
 
 #![allow(clippy::collapsible_if, clippy::too_many_arguments, clippy::type_complexity)]
 
-use crate::model::{ConfirmVoteResult, Phase, Player, Role, VoteResult};
+use crate::model::{ConfirmVoteResult, Phase, Role, VoteResult};
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 
@@ -119,6 +119,7 @@ impl MafiaGame {
         self.phase = Phase::ConfirmVote;
         self.confirm_votes.clear();
         Ok(())
+    }
 
     pub fn submit_confirmation_vote(&mut self, voter_id: u64, approve: bool) -> Result<String> {
         if self.phase != Phase::ConfirmVote {

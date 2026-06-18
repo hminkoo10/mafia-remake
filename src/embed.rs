@@ -3,9 +3,9 @@
 #![allow(unused_imports)]
 
 use super::{Context, Data, Error, RunningGame};
-use anyhow::Result;
+use anyhow::{Context as AnyhowContext, Result};
 use mafia_remake::config;
-use mafia_remake::model::Role;
+use mafia_remake::model::{Player, Role};
 use poise::serenity_prelude as serenity;
 use std::path::PathBuf;
 use std::sync::Arc;

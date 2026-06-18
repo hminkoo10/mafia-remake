@@ -3,9 +3,9 @@
 
 #![allow(clippy::collapsible_if, clippy::too_many_arguments, clippy::type_complexity)]
 
-use crate::model::{NightResult, Player, Role};
+use crate::model::{NightResult, Phase, Player, Role};
 use anyhow::{Result, bail};
-use rand::seq::SliceRandom;
+use rand::prelude::IndexedRandom;
 use std::collections::{HashMap, HashSet};
 
 use super::{MafiaGame, reported_protected_id};
@@ -36,6 +36,7 @@ impl MafiaGame {
             }
         }
         (cursed_players, contacts)
+    }
 
     fn resolve_priest_cult_after_curse(&mut self, target: &Player) {
         if target.role != Role::Priest || self.culted_ids.contains(&target.user_id) {
@@ -867,6 +868,7 @@ impl MafiaGame {
             );
         }
         (results, 0)
+    }
 
     fn resolve_fanatic_results(&mut self) -> (HashMap<u64, String>, u32) {
         let mut results = HashMap::new();

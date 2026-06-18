@@ -1,0 +1,5 @@
+target/
+activity/node_modules/
+activity/dist/
+.git/
+*.md

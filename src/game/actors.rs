@@ -163,6 +163,7 @@ impl MafiaGame {
             Some(_) => alive.len() > 1,
             None => false,
         }
+    }
 
     fn stolen_night_action_submitted(&self, actor: &Player) -> bool {
         match self.thief_night_role(actor) {
@@ -190,12 +191,14 @@ impl MafiaGame {
             Some(Role::Gangster) => self.gangster_targets.contains_key(&actor.user_id),
             _ => true,
         }
+    }
 
     fn cult_leader_can_act(&self, player: &Player, alive: &[Player]) -> bool {
         self.day_number % 2 == 1
             && alive.iter().any(|target| {
                 target.user_id != player.user_id && !self.culted_ids.contains(&target.user_id)
             })
+    }
 
     pub fn hacker_day_actors(&self) -> Vec<Player> {
         if self.phase != Phase::Day || self.alive_players().len() <= 1 {

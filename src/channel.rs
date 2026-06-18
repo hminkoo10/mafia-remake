@@ -7,12 +7,16 @@ use super::{
     Context, Data, Error, RunningGame, Recruitment, ContractorContractDraft,
     PRIVATE_CHAT_ROLES, GAME_NOTIFICATION_ROLE, SPECTATOR_ROLE, DEAD_PLAYER_ROLE,
     SHAMAN_CHAT_CHANNEL_NAME, FROG_CHAT_CHANNEL_NAME,
+    MAX_GAME_PLAYERS, RECRUITMENT_SECONDS,
 };
 use crate::embed::*;
 use anyhow::{Context as AnyhowContext, Result, bail};
 use mafia_remake::config;
 use mafia_remake::game::MafiaGame;
 use mafia_remake::model::{
+    CITIZEN_SPECIAL_ROLES, CONTRACTOR_GUESS_ROLES, MAFIA_SPECIAL_ROLES, NEUTRAL_SPECIAL_ROLES,
+    PUBLIC_CITIZEN_SPECIAL_ROLES, PUBLIC_CULT_SPECIAL_ROLES, PUBLIC_MAFIA_SPECIAL_ROLES,
+    PUBLIC_NEUTRAL_SPECIAL_ROLES,
     ConfirmVoteResult, NightResult, Phase, Player, Role, VoteResult, Winner,
 };
 use mafia_remake::stats;
@@ -88,14 +92,14 @@ const ANIMAL_ALIASES: &[&str] = &[
     "물개",
 ];
 
-const NUMBER_AVATAR_COLORS: &[&str] = &[
+pub const NUMBER_AVATAR_COLORS: &[&str] = &[
     "e11d48", "2563eb", "16a34a", "f59e0b", "7c3aed", "0891b2", "db2777", "65a30d", "dc2626",
     "4f46e5", "0f766e", "ea580c", "9333ea", "0284c7", "ca8a04", "be123c", "1d4ed8", "15803d",
     "b45309", "6d28d9", "0369a1", "a21caf", "047857", "c2410c",
 ];
 
 #[derive(Clone, Copy)]
-struct ChannelRoleIds {
+pub(crate) struct ChannelRoleIds {
     everyone: serenity::RoleId,
     participant: Option<serenity::RoleId>,
     spectator: Option<serenity::RoleId>,
@@ -595,6 +599,20 @@ pub fn can_use_anonymous_role_chat(running: &RunningGame, player: &Player, role:
         return player.alive && running.game.is_known_mafia_team(player);
     }
     player.alive && player.role == role
+}
+
+pub fn can_use_anonymous_dead_chat(running: &RunningGame, player: &Player) -> bool {
+    !player.alive && !running.game.purified_dead_ids.contains(&player.user_id)
+}
+
+pub fn can_use_anonymous_shaman_chat(running: &RunningGame, player: &Player) -> bool {
+    if !player.alive {
+        return !running.game.purified_dead_ids.contains(&player.user_id);
+    }
+    player.role == Role::Shaman
+        && running.game.phase == Phase::Night
+        && !running.game.is_frog(player)
+        && !running.game.is_madam_seduced(player)
 }
 
 pub fn role_chat_player_ids(game: &MafiaGame, role: Role) -> Vec<u64> {
@@ -1104,8 +1122,8 @@ pub fn current_settings_text(config: &config::BotConfig, prefix: &str) -> String
     )
 }
 
-const RECRUITMENT_STATUS_OPEN: &str = "\u{BAA8}\u{C9D1} \u{C911}\u{C785}\u{B2C8}\u{B2E4}.";
-const RECRUITMENT_STATUS_CANCELLED: &str =
+pub const RECRUITMENT_STATUS_OPEN: &str = "\u{BAA8}\u{C9D1} \u{C911}\u{C785}\u{B2C8}\u{B2E4}.";
+pub const RECRUITMENT_STATUS_CANCELLED: &str =
     "\u{BAA8}\u{C9D1}\u{C774} \u{CDE8}\u{C18C}\u{B418}\u{C5C8}\u{C2B5}\u{B2C8}\u{B2E4}.";
 
 pub fn recruitment_embed(

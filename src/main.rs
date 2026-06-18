@@ -1,29 +1,16 @@
-use ab_glyph::{
-    Font, FontArc, GlyphId, OutlinedGlyph, PxScale, Rect as GlyphRect, ScaleFont, point,
-};
-use anyhow::{Context as AnyhowContext, Result, bail};
+use anyhow::{Context as AnyhowContext, Result};
 use dashmap::DashMap;
-use image::{ImageFormat, Rgb, RgbImage};
-use mafia_remake::game::{GameCounts, MafiaGame};
-use mafia_remake::model::{
-    CITIZEN_SPECIAL_ROLES, CONTRACTOR_GUESS_ROLES, MAFIA_SPECIAL_ROLES, NEUTRAL_SPECIAL_ROLES,
-    NightResult, PUBLIC_CITIZEN_SPECIAL_ROLES, PUBLIC_CULT_SPECIAL_ROLES,
-    PUBLIC_MAFIA_SPECIAL_ROLES, PUBLIC_NEUTRAL_SPECIAL_ROLES, Phase, Player, Role, VoteResult,
-    Winner,
-};
+use mafia_remake::game::MafiaGame;
+use mafia_remake::model::Role;
 use mafia_remake::{config, stats};
 use poise::serenity_prelude as serenity;
-use secrecy::ExposeSecret;
-mod web_settings;
+pub(crate) mod web_settings;
 
-use poise::serenity_prelude::Mentionable;
-use rand::seq::{IndexedRandom, SliceRandom};
 use std::collections::{HashMap, HashSet};
 use std::{
-    io::Cursor,
     path::PathBuf,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tokio::sync::{Notify, RwLock};
 
@@ -197,6 +184,7 @@ mod embed;
 mod channel;
 mod runner;
 mod commands;
+mod activity;
 
 async fn event_handler(
     ctx: &serenity::Context,
@@ -315,6 +303,25 @@ async fn main() -> Result<()> {
                         eprintln!("Rust web settings server error: {error:?}");
                     }
                 });
+
+                // Discord Activity 서버 (ACTIVITY_PORT 환경변수, 기본 8802)
+                let activity_port = std::env::var("ACTIVITY_PORT")
+                    .unwrap_or_else(|_| "8802".to_string())
+                    .parse::<u16>()
+                    .unwrap_or(8802);
+                let activity_client_id = std::env::var("DISCORD_CLIENT_ID").unwrap_or_default();
+                let activity_client_secret = std::env::var("DISCORD_CLIENT_SECRET").unwrap_or_default();
+                let activity_static = std::env::var("ACTIVITY_STATIC_DIR").ok();
+                let activity_state = activity::ActivityState::new(
+                    data.games.clone(),
+                    activity_client_id,
+                    activity_client_secret,
+                );
+                let activity_host = web_host.clone();
+                tokio::spawn(async move {
+                    activity::run_activity_server(activity_state, activity_host, activity_port, activity_static).await;
+                });
+
                 Ok(data)
             })
         })

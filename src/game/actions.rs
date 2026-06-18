@@ -3,7 +3,7 @@
 
 #![allow(clippy::collapsible_if, clippy::too_many_arguments, clippy::type_complexity)]
 
-use crate::model::{CONTRACTOR_GUESS_ROLES, Player, Role};
+use crate::model::{CONTRACTOR_GUESS_ROLES, Phase, Player, Role};
 use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 
