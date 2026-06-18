@@ -6,83 +6,65 @@
 
 ## 실행 방법
 
-Rust 고속 런타임입니다.
+### 1. 프론트엔드 빌드
 
-```powershell
-.\scripts\bootstrap-windows-rust.ps1
-.\scripts\run-windows.ps1
-```
-
-Windows에서 처음 부트스트랩하면 `.cargo`, `.rustup`, `.mingw`, `target`이 모두 이 프로젝트 폴더 안에 만들어집니다.
-
-이미 빌드된 실행 파일을 바로 실행할 수도 있습니다.
-
-```powershell
-.\target\x86_64-pc-windows-gnullvm\release\mafia.exe
-```
-
-Windows 빌드:
-
-```powershell
-.\scripts\build-windows.ps1
-```
-
-Windows 테스트:
-
-```powershell
-.\scripts\test-windows.ps1
-```
-
-Linux 빌드:
+Activity 기능을 사용하려면 먼저 프론트엔드를 빌드해야 합니다.
 
 ```bash
-sudo apt update
-sudo apt install -y build-essential pkg-config curl git musl-tools
-./scripts/bootstrap-linux-rust.sh
-./scripts/build-linux.sh
+cd activity
+npm install
+npm run build
+cd ..
 ```
 
-Linux에서는 Ubuntu 20에서도 glibc 버전 문제 없이 실행되도록 musl 정적 바이너리로 빌드합니다. x86_64 결과물은 `./target/x86_64-unknown-linux-musl/release/mafia`입니다.
+빌드 결과물은 `activity/dist/`에 생성됩니다. `.env`의 `ACTIVITY_STATIC_DIR`이 이 경로를 가리켜야 합니다.
 
-glibc 동적 링크 바이너리가 필요하면 별도 스크립트를 쓰면 됩니다. 이 경우 빌드한 배포판의 glibc 버전에 묶이므로 Ubuntu 22에서 빌드한 파일은 Ubuntu 20에서 실행되지 않을 수 있습니다.
+### 2. 봇 실행
 
 ```bash
-./scripts/build-linux-glibc.sh
+cargo run
 ```
 
-x86_64 glibc 결과물은 `./target/x86_64-unknown-linux-gnu/release/mafia`입니다.
-
-AArch64 Linux용 바이너리는 전용 스크립트로 빌드합니다. 기본은 glibc 동적 링크 바이너리입니다.
+프로덕션 배포 시에는 `--release` 플래그를 추가합니다.
 
 ```bash
-./scripts/build-linux-aarch64.sh
+cargo run --release
 ```
 
-결과물은 `./target/aarch64-unknown-linux-gnu/release/mafia`입니다. musl 정적 바이너리가 필요하면 다음처럼 실행합니다.
+`.env.example`을 복사해 `.env`를 만들고 값을 채웁니다.
 
 ```bash
-./scripts/build-linux-aarch64.sh musl
+cp .env.example .env
 ```
-
-musl 결과물은 `./target/aarch64-unknown-linux-musl/release/mafia`입니다. x86_64 머신에서 aarch64 glibc로 크로스 빌드하려면 `sudo apt install -y gcc-aarch64-linux-gnu`가 필요합니다.
-
-기존 Python 구현은 비교/백업용 legacy 코드로 남아 있습니다.
-
-```powershell
-pip install -r requirements.txt
-python bot.py
-```
-
-`.env` 파일에 봇 토큰을 넣어야 합니다.
 
 ```env
 DISCORD_TOKEN=your_bot_token_here
 
-# /마피아웹설정 명령어가 발급하는 설정 편집 페이지 관련 옵션 (선택)
-# WEB_SETTINGS_HOST=0.0.0.0
-# WEB_SETTINGS_PORT=8800
+# 웹 설정 서버 (선택)
+WEB_SETTINGS_HOST=0.0.0.0
+WEB_SETTINGS_PORT=8800
 # 리버스 프록시/도메인을 쓴다면 사용자에게 보여줄 기본 URL을 직접 지정할 수 있습니다.
 # WEB_SETTINGS_BASE_URL=https://your-domain.example.com
+
+# Discord Activity 서버 (선택)
+ACTIVITY_PORT=2053
+ACTIVITY_STATIC_DIR=/path/to/activity/dist
+# HTTPS를 쓰려면 Cloudflare Origin Certificate 등의 인증서 경로를 지정합니다.
+# ACTIVITY_TLS_CERT=/path/to/cert.pub
+# ACTIVITY_TLS_KEY=/path/to/cert.key
+DISCORD_CLIENT_ID=your_client_id_here
+DISCORD_CLIENT_SECRET=your_client_secret_here
+```
+
+Activity 프론트엔드(`activity/`)도 별도의 `.env`가 필요합니다.
+
+```bash
+cp activity/.env.example activity/.env
+```
+
+```env
+VITE_CLIENT_ID=your_client_id_here
+VITE_MOCK_GUILD_ID=your_guild_id_here  # 로컬 개발용
 ```
 
 ## 설정

@@ -155,6 +155,8 @@ struct RunningGame {
     day_extension_confirmed: bool,
     night_timed_events_due: bool,
     contractor_contract_drafts: HashMap<u64, ContractorContractDraft>,
+    /// Activity 프론트엔드에 표시할 밤 행동 결과 (user_id → 결과 텍스트)
+    activity_night_results: HashMap<u64, String>,
     night_notify: Arc<Notify>,
     vote_notify: Arc<Notify>,
     confirm_notify: Arc<Notify>,
@@ -212,6 +214,7 @@ async fn event_handler(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     dotenvy::dotenv().ok();
     let token =
         std::env::var("DISCORD_TOKEN").context(".env 파일에 DISCORD_TOKEN을 설정하세요.")?;
@@ -225,10 +228,48 @@ async fn main() -> Result<()> {
         .parse::<u16>()
         .context("WEB_SETTINGS_PORT는 1~65535 사이 숫자여야 합니다.")?;
     let web_base_url = web_settings::base_url(&web_host, web_port);
+
+    // 공유 상태를 Discord 연결 전에 먼저 생성
+    let games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>> = Arc::new(DashMap::new());
+    let recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>> = Arc::new(DashMap::new());
+    let config_arc = Arc::new(RwLock::new(config));
+    let stats_arc = Arc::new(RwLock::new(stats));
+    let web_sessions: Arc<DashMap<String, web_settings::WebSettingsSession>> = Arc::new(DashMap::new());
+    let config_path_arc = Arc::new(config_path);
+    let stats_path_arc = Arc::new(stats_path);
+
+    // Activity 서버를 Discord 연결 전에 즉시 시작 (Fly.io health check 통과용)
+    let activity_port = std::env::var("ACTIVITY_PORT")
+        .unwrap_or_else(|_| "8802".to_string())
+        .parse::<u16>()
+        .unwrap_or(8802);
+    let activity_client_id = std::env::var("DISCORD_CLIENT_ID").unwrap_or_default();
+    let activity_client_secret = std::env::var("DISCORD_CLIENT_SECRET").unwrap_or_default();
+    let activity_static = std::env::var("ACTIVITY_STATIC_DIR").ok();
+    let activity_tls_cert = std::env::var("ACTIVITY_TLS_CERT").ok();
+    let activity_tls_key = std::env::var("ACTIVITY_TLS_KEY").ok();
+    let activity_state = activity::ActivityState::new(
+        games.clone(),
+        activity_client_id,
+        activity_client_secret,
+    );
+    let activity_host = web_host.clone();
+    tokio::spawn(async move {
+        activity::run_activity_server(activity_state, activity_host, activity_port, activity_static, activity_tls_cert, activity_tls_key).await;
+    });
+
     let intents = serenity::GatewayIntents::non_privileged()
         | serenity::GatewayIntents::GUILD_MEMBERS
         | serenity::GatewayIntents::MESSAGE_CONTENT
         | serenity::GatewayIntents::GUILD_PRESENCES;
+
+    let games_setup = games.clone();
+    let recruitments_setup = recruitments.clone();
+    let config_setup = config_arc.clone();
+    let stats_setup = stats_arc.clone();
+    let web_sessions_setup = web_sessions.clone();
+    let config_path_setup = config_path_arc.clone();
+    let stats_path_setup = stats_path_arc.clone();
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -266,33 +307,29 @@ async fn main() -> Result<()> {
         })
         .setup(move |ctx, ready, framework| {
             Box::pin(async move {
-                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+                // Entry Point 커맨드(Activity용)가 있으면 bulk 등록이 실패하므로 에러 무시
+                if let Err(e) = poise::builtins::register_globally(ctx, &framework.options().commands).await {
+                    eprintln!("커맨드 등록 경고 (무시됨): {e}");
+                }
                 println!("Rust Mafia bot ready: {}", ready.user.name);
-                let config = Arc::new(RwLock::new(config));
-                let config_path = Arc::new(config_path);
-                let stats = Arc::new(RwLock::new(stats));
-                let stats_path = Arc::new(stats_path);
-                let web_sessions = Arc::new(DashMap::new());
-                let games = Arc::new(DashMap::new());
-                let recruitments = Arc::new(DashMap::new());
                 let data = Data {
-                    config: config.clone(),
-                    config_path: config_path.clone(),
-                    stats: stats.clone(),
-                    stats_path,
-                    games: games.clone(),
-                    recruitments: recruitments.clone(),
-                    web_sessions: web_sessions.clone(),
+                    config: config_setup.clone(),
+                    config_path: config_path_setup.clone(),
+                    stats: stats_setup.clone(),
+                    stats_path: stats_path_setup,
+                    games: games_setup.clone(),
+                    recruitments: recruitments_setup.clone(),
+                    web_sessions: web_sessions_setup.clone(),
                     web_base_url: Arc::new(web_base_url.clone()),
                     bot_user_id: ready.user.id,
                 };
                 let web_state = web_settings::WebSettingsState {
-                    config,
-                    config_path,
-                    stats,
-                    games,
-                    recruitments,
-                    sessions: web_sessions,
+                    config: config_setup,
+                    config_path: config_path_setup,
+                    stats: stats_setup,
+                    games: games_setup,
+                    recruitments: recruitments_setup,
+                    sessions: web_sessions_setup,
                     started_at: Instant::now(),
                     bot_name: ready.user.name.clone(),
                     guild_count: ready.guilds.len(),
@@ -302,24 +339,6 @@ async fn main() -> Result<()> {
                     if let Err(error) = web_settings::run_server(web_state, host, web_port).await {
                         eprintln!("Rust web settings server error: {error:?}");
                     }
-                });
-
-                // Discord Activity 서버 (ACTIVITY_PORT 환경변수, 기본 8802)
-                let activity_port = std::env::var("ACTIVITY_PORT")
-                    .unwrap_or_else(|_| "8802".to_string())
-                    .parse::<u16>()
-                    .unwrap_or(8802);
-                let activity_client_id = std::env::var("DISCORD_CLIENT_ID").unwrap_or_default();
-                let activity_client_secret = std::env::var("DISCORD_CLIENT_SECRET").unwrap_or_default();
-                let activity_static = std::env::var("ACTIVITY_STATIC_DIR").ok();
-                let activity_state = activity::ActivityState::new(
-                    data.games.clone(),
-                    activity_client_id,
-                    activity_client_secret,
-                );
-                let activity_host = web_host.clone();
-                tokio::spawn(async move {
-                    activity::run_activity_server(activity_state, activity_host, activity_port, activity_static).await;
                 });
 
                 Ok(data)

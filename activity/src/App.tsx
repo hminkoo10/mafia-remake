@@ -26,7 +26,7 @@ export default function App() {
         setGuildId(auth.guildId);
         setAuthStatus("ready");
       } catch (e) {
-        setErrorMsg(String(e));
+        setErrorMsg(e instanceof Error ? e.message : JSON.stringify(e));
         setAuthStatus("error");
       }
     })();
@@ -74,7 +74,8 @@ export default function App() {
   }
 
   const showVotePanel = ["Vote", "FinalDefense", "ConfirmVote"].includes(gameState.phase);
-  const showActionPanel = gameState.phase === "Night" || gameState.phase === "Day";
+  // ActionPanel은 낮/밤 행동 + 결과 배너 + 스킵 버튼을 모두 담당
+  const showActionPanel = ["Night", "Day", "Vote", "FinalDefense", "ConfirmVote"].includes(gameState.phase);
   const isEnded = gameState.phase === "Ended";
 
   return (
@@ -178,11 +179,11 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: "column",
     gap: 10,
     padding: "12px 14px",
-    overflow: "hidden",
-  },
+    overflow: "hidden",  },
   centered: {
     alignItems: "center",
     justifyContent: "center",
     textAlign: "center",
   },
 };
+

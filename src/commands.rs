@@ -267,6 +267,7 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         day_extension_confirmed: false,
         night_timed_events_due: false,
         contractor_contract_drafts: HashMap::new(),
+        activity_night_results: HashMap::new(),
         night_notify: Arc::new(Notify::new()),
         vote_notify: Arc::new(Notify::new()),
         confirm_notify: Arc::new(Notify::new()),

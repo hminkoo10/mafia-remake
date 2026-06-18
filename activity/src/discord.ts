@@ -1,8 +1,7 @@
 import { DiscordSDK, DiscordSDKMock } from "@discord/embedded-app-sdk";
 
-// 개발 환경에선 Mock SDK 사용
-const isEmbedded = window.location.href.includes("discord.com") ||
-  window.location.href.includes("discordsays.com");
+// Discord Activity iframe 안에서는 URL에 frame_id 파라미터가 붙음
+const isEmbedded = new URLSearchParams(window.location.search).has("frame_id");
 
 export let discordSdk: DiscordSDK | DiscordSDKMock;
 
@@ -34,7 +33,7 @@ export async function authenticateWithDiscord(): Promise<AuthResult> {
     response_type: "code",
     state: "",
     prompt: "none",
-    scope: ["identify", "guilds"],
+    scope: ["identify"],
   });
 
   const guild = discordSdk.guildId ?? "";

@@ -7,7 +7,7 @@ COPY activity/ ./
 RUN npm run build
 
 # ─── Stage 2: Rust 빌드 ──────────────────────────────────────
-FROM rust:1.82-slim AS builder
+FROM rust:1.88-slim AS builder
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
@@ -32,13 +32,14 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/mafia ./mafia
+COPY --from=builder /app/config.example.json ./config.example.json
 COPY --from=frontend /app/activity/dist ./activity/dist
 
 ENV ACTIVITY_STATIC_DIR=/app/activity/dist
-ENV ACTIVITY_PORT=8802
+ENV ACTIVITY_PORT=2053
 ENV WEB_SETTINGS_PORT=8800
 ENV WEB_SETTINGS_HOST=0.0.0.0
 
-EXPOSE 8802
+EXPOSE 2053
 
 CMD ["./mafia"]

@@ -17,6 +17,11 @@ export interface PlayerDto {
   role_team: RoleTeam | null;
 }
 
+export interface ContractorTarget {
+  id: string;
+  name: string;
+}
+
 export interface GameState {
   in_game: boolean;
   phase: Phase;
@@ -27,25 +32,34 @@ export interface GameState {
   my_team: RoleTeam | null;
   can_act: boolean;
   my_night_target: string | null;
+  my_action_result: string | null;    // 밤 행동 결과 (낮에 표시)
   vote_targets: Record<string, number>;
   nominee: string | null;
   confirm_yes: number;
   confirm_no: number;
   winner: string | null;
   public_status: string;
+  day_skip_count: number;
+  day_skip_threshold: number;
+  contractor_can_act: boolean;
+  contractor_targets: ContractorTarget[];
+  contractor_guess_roles: string[];
 }
 
 export type ActionType =
   | "night_action"
   | "day_vote"
   | "confirm_vote"
-  | "skip_vote";
+  | "skip_vote"
+  | "contractor_action";
 
 export interface ActionRequest {
   guild_id: string;
   action: ActionType;
   target_id?: string;
   confirm?: boolean;
+  contract_target_ids?: [string, string];
+  contract_roles?: [string, string];
 }
 
 export const PHASE_LABELS: Record<Phase, string> = {

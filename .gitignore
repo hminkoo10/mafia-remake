@@ -1,13 +1,15 @@
+# ─── 환경 설정 ───────────────────────────────────────
 .env
+.env.local
+
+# ─── 게임 데이터 ─────────────────────────────────────
 config.json
 stats.json
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.venv/
-venv/
-simulate_game.py
+
+# ─── Rust 빌드 ───────────────────────────────────────
 target/
+
+# ─── Rust 로컬 툴체인 (Windows 전용 bootstrap 잔재) ──
 .rustup/
 .cargo/bin/
 .cargo/registry/
@@ -18,11 +20,28 @@ target/
 .cargo/.package-cache-mutate
 .mingw/
 .rustup-init.exe
-C/
+C/
 
-.idea/
-
-# Activity 프론트엔드
+# ─── Activity 프론트엔드 ─────────────────────────────
 activity/node_modules/
 activity/dist/
 activity/.env
+activity/.env.local
+
+# ─── Python (legacy) ────────────────────────────────
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+simulate_game.py
+
+# ─── 에디터 ─────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ─── OS ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db

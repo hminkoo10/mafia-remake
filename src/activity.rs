@@ -92,22 +92,34 @@ pub struct PlayerDto {
 }
 
 #[derive(Serialize)]
+pub struct ContractorTargetDto {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Serialize)]
 pub struct GameStateDto {
     pub phase: String,
     pub day_number: u32,
-    pub phase_ends_at: Option<u64>, // unix ms (추후 phase 타이머 연동 시 채울 것)
+    pub phase_ends_at: Option<u64>,
     pub players: Vec<PlayerDto>,
     pub my_role: Option<String>,
     pub my_team: Option<String>,
     pub can_act: bool,
-    pub my_night_target: Option<String>,    // 내가 오늘 밤 지목한 대상
-    pub vote_targets: HashMap<String, u32>, // targetId → 득표수
+    pub my_night_target: Option<String>,
+    pub my_action_result: Option<String>,   // 밤 행동 결과 텍스트
+    pub vote_targets: HashMap<String, u32>,
     pub nominee: Option<String>,
     pub confirm_yes: u32,
     pub confirm_no: u32,
     pub winner: Option<String>,
     pub public_status: String,
     pub in_game: bool,
+    pub day_skip_count: u32,            // 낮 스킵 투표 현황
+    pub day_skip_threshold: u32,        // 과반 기준 인원수
+    pub contractor_can_act: bool,       // 청부업자 청부 가능 여부
+    pub contractor_targets: Vec<ContractorTargetDto>, // 청부 가능 대상 목록
+    pub contractor_guess_roles: Vec<String>, // 추측 가능 직업 목록
 }
 
 #[derive(Deserialize)]
@@ -137,9 +149,12 @@ pub struct WsQuery {
 #[derive(Deserialize)]
 pub struct ActionRequest {
     pub guild_id: String,
-    pub action: String,         // "night_action" | "day_vote" | "confirm_vote" | "skip_vote"
+    pub action: String,         // "night_action" | "day_vote" | "confirm_vote" | "skip_vote" | "contractor_action"
     pub target_id: Option<String>,
     pub confirm: Option<bool>,  // confirm_vote용
+    // contractor_action용
+    pub contract_target_ids: Option<[String; 2]>,
+    pub contract_roles: Option<[String; 2]>,
 }
 
 #[derive(Serialize)]
@@ -168,25 +183,56 @@ pub fn activity_router(state: ActivityState, static_dir: Option<String>) -> Rout
     let mut router = Router::new().nest("/activity/api", api).layer(cors);
 
     if let Some(dir) = static_dir {
-        router = router.nest_service("/", ServeDir::new(dir));
+        router = router.fallback_service(ServeDir::new(dir));
     }
 
     router
 }
 
-pub async fn run_activity_server(state: ActivityState, host: String, port: u16, static_dir: Option<String>) {
+pub async fn run_activity_server(
+    state: ActivityState,
+    host: String,
+    port: u16,
+    static_dir: Option<String>,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+) {
     let router = activity_router(state, static_dir);
-    let addr = format!("{host}:{port}");
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
-        Ok(l) => l,
+    let addr: std::net::SocketAddr = match format!("{host}:{port}").parse() {
+        Ok(a) => a,
         Err(e) => {
-            eprintln!("Activity 서버 시작 실패 ({addr}): {e}");
+            eprintln!("Activity 서버 주소 파싱 실패: {e}");
             return;
         }
     };
-    println!("Discord Activity 서버 시작: http://{addr}");
-    if let Err(e) = axum::serve(listener, router).await {
-        eprintln!("Activity 서버 오류: {e}");
+
+    if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
+        let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("TLS 인증서 로드 실패 ({cert}, {key}): {e}");
+                return;
+            }
+        };
+        println!("Discord Activity 서버 시작 (HTTPS): https://{addr}");
+        if let Err(e) = axum_server::bind_rustls(addr, config)
+            .serve(router.into_make_service())
+            .await
+        {
+            eprintln!("Activity 서버 오류: {e}");
+        }
+    } else {
+        let listener = match tokio::net::TcpListener::bind(&addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("Activity 서버 시작 실패 ({addr}): {e}");
+                return;
+            }
+        };
+        println!("Discord Activity 서버 시작 (HTTP): http://{addr}");
+        if let Err(e) = axum::serve(listener, router).await {
+            eprintln!("Activity 서버 오류: {e}");
+        }
     }
 }
 
@@ -198,12 +244,24 @@ async fn auth_handler(
     State(state): State<ActivityState>,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
+    println!("[auth] code={:?} guild_id={:?}", query.code, query.guild_id);
+
     let guild_id: u64 = match query.guild_id.parse() {
         Ok(id) => id,
         Err(_) => {
             return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid guild_id" }))).into_response();
         }
     };
+
+    // mock_code: 로컬 개발용 (DiscordSDKMock)
+    if query.code == "mock_code" {
+        println!("[auth] mock mode → returning dummy session_token");
+        return Json(serde_json::json!({
+            "session_token": "mock_session_token",
+            "user_id": "0",
+            "username": "Mock User",
+        })).into_response();
+    }
 
     // Discord OAuth2 코드 → access_token
     let token_res = reqwest::Client::new()
@@ -222,8 +280,15 @@ async fn auth_handler(
             let body: serde_json::Value = res.json().await.unwrap_or_default();
             body["access_token"].as_str().unwrap_or("").to_string()
         }
-        _ => {
-            return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "token exchange failed" }))).into_response();
+        Ok(res) => {
+            let status = res.status();
+            let body: serde_json::Value = res.json().await.unwrap_or_default();
+            eprintln!("Discord token exchange failed: status={status}, body={body}");
+            return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "token exchange failed", "detail": body }))).into_response();
+        }
+        Err(e) => {
+            eprintln!("Discord token exchange error: {e}");
+            return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "token exchange failed", "detail": e.to_string() }))).into_response();
         }
     };
 
@@ -316,12 +381,18 @@ async fn state_handler(
             my_team: None,
             can_act: false,
             my_night_target: None,
+            my_action_result: None,
             vote_targets: HashMap::new(),
             nominee: None,
             confirm_yes: 0,
             confirm_no: 0,
             winner: None,
             public_status: "진행 중인 게임이 없습니다.".into(),
+            day_skip_count: 0,
+            day_skip_threshold: 0,
+            contractor_can_act: false,
+            contractor_targets: vec![],
+            contractor_guess_roles: vec![],
         },
     };
 
@@ -406,6 +477,35 @@ async fn action_handler(
             running.day_notify.notify_one();
             Ok(())
         }
+        "contractor_action" => {
+            let (ids, roles) = match (&body.contract_target_ids, &body.contract_roles) {
+                (Some(ids), Some(roles)) => (ids, roles),
+                _ => return Json(ActionResponse { ok: false, message: Some("contract_target_ids, contract_roles 필요".into()) }).into_response(),
+            };
+            let t1: u64 = match ids[0].parse() {
+                Ok(v) => v,
+                Err(_) => return Json(ActionResponse { ok: false, message: Some("잘못된 target_id".into()) }).into_response(),
+            };
+            let t2: u64 = match ids[1].parse() {
+                Ok(v) => v,
+                Err(_) => return Json(ActionResponse { ok: false, message: Some("잘못된 target_id".into()) }).into_response(),
+            };
+            let r1 = match role_from_str(&roles[0]) {
+                Some(r) => r,
+                None => return Json(ActionResponse { ok: false, message: Some(format!("알 수 없는 직업: {}", roles[0])) }).into_response(),
+            };
+            let r2 = match role_from_str(&roles[1]) {
+                Some(r) => r,
+                None => return Json(ActionResponse { ok: false, message: Some(format!("알 수 없는 직업: {}", roles[1])) }).into_response(),
+            };
+            running.game.submit_contractor_contract(user_id, t1, r1, t2, r2)
+                .map_err(|e| e.to_string())
+                .map(|_| {
+                    if running.game.all_night_actions_submitted() {
+                        running.night_notify.notify_one();
+                    }
+                })
+        }
         _ => Err(format!("알 수 없는 액션: {}", body.action)),
     };
 
@@ -465,12 +565,18 @@ async fn handle_ws(
                         my_team: None,
                         can_act: false,
                         my_night_target: None,
+                        my_action_result: None,
                         vote_targets: HashMap::new(),
                         nominee: None,
                         confirm_yes: 0,
                         confirm_no: 0,
                         winner: None,
                         public_status: "진행 중인 게임이 없습니다.".into(),
+                        day_skip_count: 0,
+                        day_skip_threshold: 0,
+                        contractor_can_act: false,
+                        contractor_targets: vec![],
+                        contractor_guess_roles: vec![],
                     },
                 };
 
@@ -511,6 +617,9 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
     let me = game.get_player(user_id);
     let game_ended = matches!(game.phase, Phase::Ended);
     let reveal_roles = running.reveal_death_roles;
+    // me 레퍼런스가 살아있으면 game 뮤터블 메서드를 못 쓰므로 필요한 값을 미리 복사
+    let me_alive = me.map(|p| p.alive).unwrap_or(false);
+    let me_role_for_targets = me.map(|p| p.clone());
 
     // 플레이어 목록
     let players = game.all_players().iter().map(|p| {
@@ -544,10 +653,10 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         None => (None, None),
     };
 
-    // 행동 가능 여부
-    let can_act = me.map(|p| p.alive).unwrap_or(false) && match game.phase {
+    // 행동 가능 여부 (me 레퍼런스 해제 후 game 뮤터블 메서드 호출)
+    let can_act = me_alive && match game.phase {
         Phase::Night => game.night_action_actors().iter().any(|a| a.user_id == user_id),
-        Phase::Vote => true,
+        Phase::Day | Phase::Vote => true,
         Phase::ConfirmVote => game.alive_players().iter().any(|p| p.user_id == user_id),
         _ => false,
     };
@@ -555,6 +664,13 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
     // 밤 지목 대상
     let my_night_target = if matches!(game.phase, Phase::Night) {
         game.get_night_action_target(user_id).map(|id| id.to_string())
+    } else {
+        None
+    };
+
+    // 밤 행동 결과 (낮에만 표시)
+    let my_action_result = if matches!(game.phase, Phase::Day | Phase::Vote | Phase::FinalDefense | Phase::ConfirmVote) {
+        running.activity_night_results.get(&user_id).cloned()
     } else {
         None
     };
@@ -584,22 +700,55 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
     // 공개 상태 텍스트
     let public_status = game.public_status();
 
+    // 낮 스킵 현황
+    let alive_count = game.alive_players().len() as u32;
+    let day_skip_count = running.day_skip_voter_ids.len() as u32;
+    let day_skip_threshold = (alive_count / 2) + 1;
+
+    // 청부업자 정보
+    let contractor_can_act = me_alive
+        && game.contractor_can_use_contract(user_id)
+        && matches!(game.phase, Phase::Night);
+    let contractor_targets = if contractor_can_act {
+        if let Some(me_player) = &me_role_for_targets {
+            game.contractor_contract_targets(me_player)
+                .iter()
+                .map(|p| ContractorTargetDto { id: p.user_id.to_string(), name: p.name.clone() })
+                .collect()
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
+    let contractor_guess_roles = if contractor_can_act {
+        mafia_remake::model::CONTRACTOR_GUESS_ROLES.iter().map(|r| r.value().to_string()).collect()
+    } else {
+        vec![]
+    };
+
     GameStateDto {
         in_game: true,
         phase: phase_str.to_string(),
         day_number: game.day_number,
-        phase_ends_at: None, // TODO: 타이머 연동
+        phase_ends_at: None,
         players,
         my_role,
         my_team,
         can_act,
         my_night_target,
+        my_action_result,
         vote_targets,
         nominee,
         confirm_yes: confirm_yes as u32,
         confirm_no: confirm_no as u32,
         winner,
         public_status,
+        day_skip_count,
+        day_skip_threshold,
+        contractor_can_act,
+        contractor_targets,
+        contractor_guess_roles,
     }
 }
 
@@ -651,4 +800,21 @@ fn role_team(role: Role) -> String {
         _ => "Citizen",
     }
     .to_string()
+}
+
+fn role_from_str(s: &str) -> Option<Role> {
+    use Role::*;
+    Some(match s {
+        "마피아" => Mafia, "의사" => Doctor, "간호사" => Nurse, "경찰" => Police,
+        "요원" => Agent, "자경단원" => Vigilante, "기자" => Reporter, "해커" => Hacker,
+        "탐정" | "사립탐정" => Detective, "영매" => Shaman, "성직자" => Priest,
+        "군인" => Soldier, "건달" => Gangster, "예언자" => Prophet,
+        "심리학자" => Psychologist, "스파이" => Spy, "청부업자" => Contractor,
+        "도둑" => Thief, "마녀" => Witch, "과학자" => Scientist, "마담" => Madam,
+        "도굴꾼" => Graverobber, "대부" => Godfather, "조커" => Joker,
+        "정치인" => Politician, "판사" => Judge, "테러리스트" => Terrorist,
+        "연인" => Lover, "교주" => CultLeader, "광신도" => Fanatic,
+        "개구리" => Frog, "악인" => Villain, "시민" => Citizen,
+        _ => return None,
+    })
 }

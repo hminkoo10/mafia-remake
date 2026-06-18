@@ -349,6 +349,7 @@ pub async fn run_night(
         running_write.final_defense_user_id = None;
         running_write.night_timed_events_due = config.night_seconds <= 10;
         running_write.contractor_contract_drafts.clear();
+        running_write.activity_night_results.clear();
         let restored_frogs = running_write.game.restore_frogs();
         let hacker_results = running_write.game.consume_hacker_results();
         let vigilante_results = running_write.game.consume_vigilante_results();
@@ -491,6 +492,50 @@ pub async fn run_night(
         let mut running_write = running.write().await;
         running_write.game.resolve_night()?
     };
+    // Activity 프론트엔드용 밤 행동 결과 저장
+    {
+        let mut running_write = running.write().await;
+        for map in [
+            &result.detective_results,
+            &result.spy_results,
+            &result.contractor_results,
+            &result.witch_results,
+            &result.godfather_results,
+            &result.shaman_results,
+            &result.priest_results,
+            &result.agent_results,
+            &result.reporter_results,
+            &result.vigilante_results,
+            &result.nurse_results,
+            &result.gangster_results,
+            &result.cult_results,
+            &result.fanatic_results,
+            &result.hacker_results,
+        ] {
+            for (user_id, text) in map {
+                running_write.activity_night_results.insert(*user_id, text.clone());
+            }
+        }
+        // 경찰 조사 결과
+        if let Some(target) = &result.police_target {
+            let result_text = if result.police_target_is_mafia.unwrap_or(false) {
+                "마피아"
+            } else {
+                "시민"
+            };
+            let msg = format!("조사 결과: {} 님은 {}.", target.name, result_text);
+            let police_ids: Vec<u64> = running_write
+                .game
+                .alive_players()
+                .iter()
+                .filter(|p| p.role == Role::Police)
+                .map(|p| p.user_id)
+                .collect();
+            for id in police_ids {
+                running_write.activity_night_results.insert(id, msg.clone());
+            }
+        }
+    }
     let doctor_saved = result
         .mafia_target
         .as_ref()
