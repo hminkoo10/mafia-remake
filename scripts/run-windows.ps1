@@ -3,8 +3,10 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $CargoHome = Join-Path $RepoRoot ".cargo"
 $RustupHome = Join-Path $RepoRoot ".rustup"
+$Rustup = Join-Path $CargoHome "bin\rustup.exe"
+$Toolchain = "stable-x86_64-pc-windows-gnu"
 
-if (!(Test-Path (Join-Path $CargoHome "bin\cargo.exe"))) {
+if (!(Test-Path $Rustup)) {
     throw "Repo-local Rust missing. Run scripts\bootstrap-windows-rust.ps1 first."
 }
 
@@ -18,7 +20,7 @@ $env:Path = "$CargoHome\bin;$env:Path"
 
 Push-Location $RepoRoot
 try {
-    cargo run --release --target x86_64-pc-windows-gnullvm --bin mafia
+    & $Rustup run $Toolchain cargo run --release --target x86_64-pc-windows-gnullvm --bin mafia
 } finally {
     Pop-Location
 }

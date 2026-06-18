@@ -1538,6 +1538,8 @@ fn current_settings_text(config: &config::BotConfig, prefix: &str) -> String {
 }
 
 const RECRUITMENT_STATUS_OPEN: &str = "\u{BAA8}\u{C9D1} \u{C911}\u{C785}\u{B2C8}\u{B2E4}.";
+const RECRUITMENT_STATUS_CANCELLED: &str =
+    "\u{BAA8}\u{C9D1}\u{C774} \u{CDE8}\u{C18C}\u{B418}\u{C5C8}\u{C2B5}\u{B2C8}\u{B2E4}.";
 
 fn recruitment_embed(
     recruitment: &Recruitment,
@@ -1656,6 +1658,8 @@ async fn update_recruitment_message(
     component: &serenity::ComponentInteraction,
     guild_id: serenity::GuildId,
     recruitment: &Recruitment,
+    status: &str,
+    disabled: bool,
 ) {
     let config = data.config.read().await.clone();
     if let Err(error) = component
@@ -1664,12 +1668,8 @@ async fn update_recruitment_message(
             &ctx.http,
             component.message.id,
             serenity::EditMessage::new()
-                .embed(recruitment_embed(
-                    recruitment,
-                    &config,
-                    RECRUITMENT_STATUS_OPEN,
-                ))
-                .components(recruitment_components(guild_id, false)),
+                .embed(recruitment_embed(recruitment, &config, status))
+                .components(recruitment_components(guild_id, disabled)),
         )
         .await
     {
@@ -3629,6 +3629,73 @@ async fn set_shaman_channel_member_access(
     upsert_shaman_chat_status(ctx, running).await;
 }
 
+async fn sync_shaman_chat_access(
+    ctx: &serenity::Context,
+    data: &Data,
+    running: &Arc<RwLock<RunningGame>>,
+) {
+    let (has_shaman_channel, anonymous_enabled, source_channel_id, players) = {
+        let running_read = running.read().await;
+        (
+            running_read.shaman_channel_id.is_some(),
+            running_read.anonymous_enabled,
+            running_read.channel_id,
+            running_read
+                .game
+                .players
+                .iter()
+                .filter(|player| {
+                    player.role == Role::Shaman
+                        || running_read
+                            .anonymous_shaman_input_channel_ids
+                            .contains_key(&player.user_id)
+                })
+                .cloned()
+                .collect::<Vec<_>>(),
+        )
+    };
+    if !has_shaman_channel {
+        return;
+    }
+    let anonymous_context = if anonymous_enabled {
+        let roles = running_channel_roles(ctx, data, running).await;
+        let category = source_category(ctx, source_channel_id).await;
+        roles.map(|roles| (roles, category))
+    } else {
+        None
+    };
+    for player in players {
+        let can_shaman_chat = {
+            let running_read = running.read().await;
+            running_read
+                .game
+                .get_player(player.user_id)
+                .is_some_and(|player| can_use_anonymous_shaman_chat(&running_read, player))
+        };
+        if player.role == Role::Shaman {
+            set_shaman_channel_member_access(
+                ctx,
+                running,
+                &player,
+                true,
+                !anonymous_enabled && can_shaman_chat,
+            )
+            .await;
+        }
+        if let Some((roles, category)) = anonymous_context {
+            let _ = ensure_anonymous_shaman_input_channel(
+                ctx,
+                running,
+                &player,
+                roles,
+                category,
+                can_shaman_chat,
+            )
+            .await;
+        }
+    }
+}
+
 async fn set_anonymous_role_channel_access(
     ctx: &serenity::Context,
     running: &Arc<RwLock<RunningGame>>,
@@ -5170,6 +5237,7 @@ async fn run_night(
     sync_scientist_mafia_permissions(ctx, data, running).await;
     sync_madam_seduction_permissions(ctx, running).await;
     sync_anonymous_general_chat_permissions(ctx, running).await;
+    sync_shaman_chat_access(ctx, data, running).await;
     for player in &restored_frogs {
         set_frog_channel_member_access(ctx, running, player, false, false).await;
         restore_frog_game_channel_permission(ctx, running, player).await;
@@ -5976,6 +6044,7 @@ async fn run_day(
     sync_cult_team_channel_access(ctx, data, running).await;
     sync_madam_seduction_permissions(ctx, running).await;
     sync_anonymous_general_chat_permissions(ctx, running).await;
+    sync_shaman_chat_access(ctx, data, running).await;
     let discussion_time = duration_text(discussion_seconds);
     let public_status = running.read().await.game.public_status();
     let mut day_message = send_game_embed(
@@ -7189,7 +7258,16 @@ async fn handle_join(
     let updated = rec.clone();
     drop(rec);
     send_component_private(ctx, component, "참가 완료!").await?;
-    update_recruitment_message(ctx, data, component, guild_id, &updated).await;
+    update_recruitment_message(
+        ctx,
+        data,
+        component,
+        guild_id,
+        &updated,
+        RECRUITMENT_STATUS_OPEN,
+        false,
+    )
+    .await;
     Ok(())
 }
 
@@ -7230,7 +7308,16 @@ async fn handle_spectate(
     let updated = rec.clone();
     drop(rec);
     send_component_private(ctx, component, "관전 등록 완료!").await?;
-    update_recruitment_message(ctx, data, component, guild_id, &updated).await;
+    update_recruitment_message(
+        ctx,
+        data,
+        component,
+        guild_id,
+        &updated,
+        RECRUITMENT_STATUS_OPEN,
+        false,
+    )
+    .await;
     Ok(())
 }
 
@@ -7266,8 +7353,24 @@ async fn handle_recruitment_finish(
     }
     rec.cancelled = cancelled;
     rec.accepting = false;
+    let updated = rec.clone();
     rec.done.notify_waiters();
-    ack_component(ctx, component).await;
+    drop(rec);
+    if cancelled {
+        ack_component(ctx, component).await;
+        update_recruitment_message(
+            ctx,
+            data,
+            component,
+            guild_id,
+            &updated,
+            RECRUITMENT_STATUS_CANCELLED,
+            true,
+        )
+        .await;
+    } else {
+        ack_component(ctx, component).await;
+    }
     Ok(())
 }
 
@@ -7648,8 +7751,13 @@ async fn handle_psychologist(
         send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
         return Ok(());
     };
-    let first = values[0].parse()?;
-    let second = values[1].parse()?;
+    let (Some(first), Some(second)) = (
+        values.first().and_then(|value| value.parse().ok()),
+        values.get(1).and_then(|value| value.parse().ok()),
+    ) else {
+        ack_component(ctx, component).await;
+        return Ok(());
+    };
     let message = {
         let mut running_write = running.write().await;
         match running_write
@@ -7663,18 +7771,19 @@ async fn handle_psychologist(
             }
         }
     };
+    ack_component(ctx, component).await;
     component
-        .create_response(
-            ctx,
-            serenity::CreateInteractionResponse::UpdateMessage(
-                serenity::CreateInteractionResponseMessage::new()
-                    .embed(make_embed(
-                        message,
-                        "심리학자 관찰 완료",
-                        serenity::Colour::DARK_GREEN,
-                    ))
-                    .components(vec![]),
-            ),
+        .channel_id
+        .edit_message(
+            &ctx.http,
+            component.message.id,
+            serenity::EditMessage::new()
+                .embed(make_embed(
+                    message,
+                    "심리학자 관찰 완료",
+                    serenity::Colour::DARK_GREEN,
+                ))
+                .components(vec![]),
         )
         .await?;
     Ok(())
