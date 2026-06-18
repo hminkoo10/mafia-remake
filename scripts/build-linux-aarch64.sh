@@ -6,7 +6,7 @@ export CARGO_HOME="$repo_root/.cargo"
 export RUSTUP_HOME="$repo_root/.rustup"
 export PATH="$CARGO_HOME/bin:$PATH"
 
-linkage="${1:-musl}"
+linkage="${1:-glibc}"
 
 case "$(uname -m)" in
   x86_64 | amd64)
