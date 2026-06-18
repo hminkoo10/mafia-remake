@@ -9,11 +9,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/activity/api": {
-        target: "http://localhost:8802",
+        target: "http://localhost:2053",
         changeOrigin: true,
       },
       "/activity/ws": {
-        target: "ws://localhost:8802",
+        target: "ws://localhost:2053",
         ws: true,
         changeOrigin: true,
       },
