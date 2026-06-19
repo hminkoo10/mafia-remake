@@ -1,12 +1,31 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createWebSocket, fetchState, sendAction, setSession } from "./api";
 import { authenticateWithDiscord } from "./discord";
 import type { ActionRequest, GameState, Phase, PlayerDto, RoleTeam } from "./types";
 
 type AuthStatus = "loading" | "ready" | "error";
 type ConnectionStatus = "connecting" | "live" | "offline";
-type PlayerFilter = "all" | "alive" | "dead" | "marked";
+type PlayerFilter = "all" | "alive" | "dead" | "marked" | "voted";
 type PlayerMark = "none" | "trust" | "suspect" | "watch";
+type PlayerSort = "status" | "votes" | "name" | "mark";
+type EventTone = "phase" | "vote" | "action";
+
+interface ActivityEvent {
+  id: string;
+  at: string;
+  text: string;
+  tone: EventTone;
+}
+
+interface GameSnapshot {
+  phase: Phase;
+  dayNumber: number;
+  nominee: string | null;
+  confirmYes: number;
+  confirmNo: number;
+  actionResult: string | null;
+  votes: Record<string, number>;
+}
 
 const PHASE_META: Record<Phase, { label: string; tone: string; summary: string }> = {
   Night: { label: "밤", tone: "night", summary: "비공개 행동" },
@@ -29,6 +48,22 @@ const MARK_META: Record<PlayerMark, { label: string; short: string; className: s
   trust: { label: "신뢰", short: "신", className: "mark-trust" },
   suspect: { label: "의심", short: "의", className: "mark-suspect" },
   watch: { label: "관찰", short: "관", className: "mark-watch" },
+};
+
+const SORT_LABELS: Record<PlayerSort, string> = {
+  status: "상태순",
+  votes: "득표순",
+  name: "이름순",
+  mark: "표시순",
+};
+
+const PHASE_CHECKS: Record<Phase, string[]> = {
+  Night: ["밤 행동 제출", "대상 메모", "결과 대기"],
+  Day: ["결과 확인", "발언 비교", "스킵 판단"],
+  Vote: ["득표 선두 확인", "확정 정보 대조", "기권/지목"],
+  FinalDefense: ["변론 기록", "라인 재계산", "찬반 준비"],
+  ConfirmVote: ["찬반 수 확인", "팀 손익 계산", "최종 제출"],
+  Ended: ["승리팀 확인", "메모 정리", "다음 판 준비"],
 };
 
 const ROLE_HELP: Record<string, string> = {
@@ -68,9 +103,14 @@ export default function App() {
   const [guildId, setGuildId] = useState("");
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null);
+  const [focusedPlayerId, setFocusedPlayerId] = useState<string | null>(null);
   const [playerFilter, setPlayerFilter] = useState<PlayerFilter>("alive");
+  const [playerSort, setPlayerSort] = useState<PlayerSort>("status");
   const [playerMarks, setPlayerMarks] = useState<Record<string, PlayerMark>>({});
+  const [playerNotes, setPlayerNotes] = useState<Record<string, string>>({});
+  const [activityLog, setActivityLog] = useState<ActivityEvent[]>([]);
   const [notes, setNotes] = useState("");
+  const snapshotRef = useRef<GameSnapshot | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -115,6 +155,8 @@ export default function App() {
   useEffect(() => {
     if (!guildId) return;
     setPlayerMarks(readJson<Record<string, PlayerMark>>(`mafia-activity:${guildId}:marks`, {}));
+    setPlayerNotes(readJson<Record<string, string>>(`mafia-activity:${guildId}:player-notes`, {}));
+    setActivityLog(readJson<ActivityEvent[]>(`mafia-activity:${guildId}:log`, []));
     setNotes(localStorage.getItem(`mafia-activity:${guildId}:notes`) ?? "");
   }, [guildId]);
 
@@ -125,8 +167,38 @@ export default function App() {
 
   useEffect(() => {
     if (!guildId) return;
+    localStorage.setItem(`mafia-activity:${guildId}:player-notes`, JSON.stringify(playerNotes));
+  }, [guildId, playerNotes]);
+
+  useEffect(() => {
+    if (!guildId) return;
+    localStorage.setItem(`mafia-activity:${guildId}:log`, JSON.stringify(activityLog.slice(0, 32)));
+  }, [activityLog, guildId]);
+
+  useEffect(() => {
+    if (!guildId) return;
     localStorage.setItem(`mafia-activity:${guildId}:notes`, notes);
   }, [guildId, notes]);
+
+  useEffect(() => {
+    if (!guildId || !gameState?.in_game) {
+      snapshotRef.current = null;
+      return;
+    }
+
+    const next = snapshotGame(gameState);
+    const previous = snapshotRef.current;
+    if (!previous) {
+      snapshotRef.current = next;
+      return;
+    }
+
+    const events = diffGameEvents(previous, next, gameState);
+    if (events.length > 0) {
+      setActivityLog((prev) => [...events, ...prev].slice(0, 32));
+    }
+    snapshotRef.current = next;
+  }, [gameState, guildId]);
 
   const handleActionSent = useCallback(() => {
     refreshState().catch((error) => {
@@ -138,6 +210,33 @@ export default function App() {
   const setMark = useCallback((playerId: string, mark: PlayerMark) => {
     setPlayerMarks((prev) => ({ ...prev, [playerId]: mark }));
   }, []);
+
+  const setPlayerNote = useCallback((playerId: string, value: string) => {
+    setPlayerNotes((prev) => {
+      if (value) return { ...prev, [playerId]: value };
+      const next = { ...prev };
+      delete next[playerId];
+      return next;
+    });
+  }, []);
+
+  const selectTarget = useCallback((id: string | null) => {
+    setSelectedTarget(id);
+    if (id) setFocusedPlayerId(id);
+  }, []);
+
+  const focusPlayer = useCallback(
+    (id: string) => {
+      setFocusedPlayerId(id);
+      const player = gameState?.players.find((item) => item.id === id);
+      if (player?.alive && !player.is_you) {
+        setSelectedTarget(id);
+      } else if (selectedTarget === id) {
+        setSelectedTarget(null);
+      }
+    },
+    [gameState?.players, selectedTarget],
+  );
 
   if (authStatus === "loading") return <LoadingScreen text="Discord 연결 중" />;
   if (authStatus === "error") return <ErrorScreen msg={errorMsg} />;
@@ -158,6 +257,7 @@ export default function App() {
   const aliveCount = gameState.players.filter((p) => p.alive).length;
   const deadCount = gameState.players.length - aliveCount;
   const me = gameState.players.find((p) => p.is_you);
+  const focusedPlayer = gameState.players.find((p) => p.id === focusedPlayerId) ?? me;
 
   return (
     <div className={`activity-shell phase-${phase.tone}`}>
@@ -172,10 +272,17 @@ export default function App() {
       <main className="activity-layout">
         <section className="primary-column">
           <RoleFocus player={me} state={gameState} />
+          <RoundBrief
+            state={gameState}
+            focusedPlayer={focusedPlayer}
+            selectedTarget={selectedTarget}
+            marks={playerMarks}
+            notes={playerNotes}
+          />
           <ActionConsole
             state={gameState}
             selectedTarget={selectedTarget}
-            onSelectTarget={setSelectedTarget}
+            onSelectTarget={selectTarget}
             onActionSent={handleActionSent}
           />
           <VoteIntel state={gameState} />
@@ -186,13 +293,19 @@ export default function App() {
           <PlayerDesk
             state={gameState}
             selectedTarget={selectedTarget}
+            focusedPlayerId={focusedPlayer?.id ?? null}
             filter={playerFilter}
+            sort={playerSort}
             marks={playerMarks}
+            notes={playerNotes}
             onFilter={setPlayerFilter}
-            onSelectTarget={setSelectedTarget}
+            onSort={setPlayerSort}
+            onFocusPlayer={focusPlayer}
             onMark={setMark}
+            onNote={setPlayerNote}
           />
           <NotesPanel notes={notes} onNotes={setNotes} marks={playerMarks} />
+          <EventLog events={activityLog} onClear={() => setActivityLog([])} />
         </section>
       </main>
     </div>
@@ -270,6 +383,71 @@ function RoleFocus({ player, state }: { player?: PlayerDto; state: GameState }) 
         </div>
       )}
       {result && <div className="result-alert">{result}</div>}
+    </section>
+  );
+}
+
+function RoundBrief({
+  state,
+  focusedPlayer,
+  selectedTarget,
+  marks,
+  notes,
+}: {
+  state: GameState;
+  focusedPlayer?: PlayerDto;
+  selectedTarget: string | null;
+  marks: Record<string, PlayerMark>;
+  notes: Record<string, string>;
+}) {
+  const leader = voteLeader(state);
+  const checks = PHASE_CHECKS[state.phase];
+  const targetName = state.players.find((player) => player.id === selectedTarget)?.name;
+  const focusedMark = focusedPlayer ? MARK_META[marks[focusedPlayer.id] ?? "none"] : null;
+  const focusedNote = focusedPlayer ? notes[focusedPlayer.id] : "";
+
+  return (
+    <section className="panel round-brief">
+      <div className="brief-grid">
+        <div className="brief-card is-primary">
+          <span>현재 대상</span>
+          <b>{targetName ?? "없음"}</b>
+        </div>
+        <div className="brief-card">
+          <span>득표 선두</span>
+          <b>{leader ? `${leader.player.name} ${leader.votes}표` : "없음"}</b>
+        </div>
+        <div className="brief-card">
+          <span>스킵</span>
+          <b>
+            {state.day_skip_count}/{state.day_skip_threshold}
+          </b>
+        </div>
+      </div>
+
+      <div className="phase-checks">
+        {checks.map((item, index) => (
+          <span key={item} className={index === 0 ? "active" : ""}>
+            {item}
+          </span>
+        ))}
+      </div>
+
+      {focusedPlayer && (
+        <div className="focus-strip">
+          <div>
+            <span className="section-kicker">선택</span>
+            <strong>{focusedPlayer.name}</strong>
+            <small>
+              {focusedPlayer.alive ? "생존" : "사망"} · {focusedPlayer.role ?? "직업 미공개"}
+            </small>
+          </div>
+          {focusedMark && focusedMark.label !== "표시 없음" && (
+            <span className={`mark-badge inline ${focusedMark.className}`}>{focusedMark.label}</span>
+          )}
+          {focusedNote && <p>{focusedNote}</p>}
+        </div>
+      )}
     </section>
   );
 }
@@ -535,19 +713,29 @@ function TargetGrid({
 function PlayerDesk({
   state,
   selectedTarget,
+  focusedPlayerId,
   filter,
+  sort,
   marks,
+  notes,
   onFilter,
-  onSelectTarget,
+  onSort,
+  onFocusPlayer,
   onMark,
+  onNote,
 }: {
   state: GameState;
   selectedTarget: string | null;
+  focusedPlayerId: string | null;
   filter: PlayerFilter;
+  sort: PlayerSort;
   marks: Record<string, PlayerMark>;
+  notes: Record<string, string>;
   onFilter: (filter: PlayerFilter) => void;
-  onSelectTarget: (id: string | null) => void;
+  onSort: (sort: PlayerSort) => void;
+  onFocusPlayer: (id: string) => void;
   onMark: (id: string, mark: PlayerMark) => void;
+  onNote: (id: string, value: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const players = useMemo(() => {
@@ -557,11 +745,12 @@ function PlayerDesk({
         if (filter === "alive" && !player.alive) return false;
         if (filter === "dead" && player.alive) return false;
         if (filter === "marked" && (!marks[player.id] || marks[player.id] === "none")) return false;
+        if (filter === "voted" && (state.vote_targets[player.id] ?? 0) === 0) return false;
         if (!normalized) return true;
-        return `${player.name} ${player.role ?? ""}`.toLowerCase().includes(normalized);
+        return `${player.name} ${player.role ?? ""} ${notes[player.id] ?? ""}`.toLowerCase().includes(normalized);
       })
-      .sort((a, b) => Number(b.is_you) - Number(a.is_you) || Number(b.alive) - Number(a.alive));
-  }, [filter, marks, query, state.players]);
+      .sort((a, b) => comparePlayers(a, b, sort, marks, state.vote_targets));
+  }, [filter, marks, notes, query, sort, state.players, state.vote_targets]);
 
   return (
     <section className="panel player-desk">
@@ -570,10 +759,19 @@ function PlayerDesk({
           <div className="section-kicker">플레이어 보드</div>
           <h2>{state.players.length}명</h2>
         </div>
-        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="검색" />
+        <div className="desk-tools">
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="검색" />
+          <select value={sort} onChange={(e) => onSort(e.target.value as PlayerSort)} title="정렬">
+            {(["status", "votes", "name", "mark"] as PlayerSort[]).map((item) => (
+              <option key={item} value={item}>
+                {SORT_LABELS[item]}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
       <div className="segmented">
-        {(["alive", "all", "dead", "marked"] as PlayerFilter[]).map((item) => (
+        {(["alive", "all", "dead", "marked", "voted"] as PlayerFilter[]).map((item) => (
           <button
             key={item}
             className={filter === item ? "active" : ""}
@@ -590,10 +788,13 @@ function PlayerDesk({
             key={player.id}
             player={player}
             votes={state.vote_targets[player.id] ?? 0}
-            selected={selectedTarget === player.id}
+            selected={focusedPlayerId === player.id}
+            actionSelected={selectedTarget === player.id}
             mark={marks[player.id] ?? "none"}
-            onSelect={() => onSelectTarget(player.alive && !player.is_you ? player.id : null)}
+            note={notes[player.id] ?? ""}
+            onSelect={() => onFocusPlayer(player.id)}
             onMark={(mark) => onMark(player.id, mark)}
+            onNote={(value) => onNote(player.id, value)}
           />
         ))}
       </div>
@@ -605,22 +806,32 @@ function PlayerRow({
   player,
   votes,
   selected,
+  actionSelected,
   mark,
+  note,
   onSelect,
   onMark,
+  onNote,
 }: {
   player: PlayerDto;
   votes: number;
   selected: boolean;
+  actionSelected: boolean;
   mark: PlayerMark;
+  note: string;
   onSelect: () => void;
   onMark: (mark: PlayerMark) => void;
+  onNote: (value: string) => void;
 }) {
   const team = player.role_team ? TEAM_META[player.role_team] : null;
   const markMeta = MARK_META[mark];
 
   return (
-    <div className={`player-row ${selected ? "selected" : ""} ${player.alive ? "" : "dead"}`}>
+    <div
+      className={`player-row ${selected ? "selected" : ""} ${actionSelected ? "action-selected" : ""} ${
+        player.alive ? "" : "dead"
+      }`}
+    >
       <button className="player-main" onClick={onSelect} type="button">
         <span className={`status-pin ${team?.className ?? "team-unknown"}`} />
         <span className="player-name">
@@ -644,6 +855,14 @@ function PlayerRow({
         ))}
       </div>
       {mark !== "none" && <span className={`mark-badge ${markMeta.className}`}>{markMeta.label}</span>}
+      {(selected || note) && (
+        <input
+          className="row-note"
+          value={note}
+          onChange={(event) => onNote(event.target.value)}
+          placeholder="개인 메모"
+        />
+      )}
     </div>
   );
 }
@@ -712,6 +931,15 @@ function NotesPanel({
   onNotes: (value: string) => void;
 }) {
   const markedCount = Object.values(marks).filter((mark) => mark !== "none").length;
+  const appendNote = (label: string) => {
+    const stamp = new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+    onNotes(`${notes}${notes ? "\n" : ""}[${stamp}] ${label}: `);
+  };
+  const copyNotes = () => {
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(notes).catch(() => undefined);
+  };
+
   return (
     <section className="panel notes-panel">
       <div className="panel-heading">
@@ -719,11 +947,56 @@ function NotesPanel({
           <div className="section-kicker">판 메모</div>
           <h2>표시 {markedCount}</h2>
         </div>
-        <button className="icon-command" onClick={() => onNotes("")} title="메모 지우기" type="button">
+        <div className="note-actions">
+          <button
+            className="icon-command"
+            onClick={copyNotes}
+            title="복사"
+            type="button"
+          >
+            ⧉
+          </button>
+          <button className="icon-command" onClick={() => onNotes("")} title="메모 지우기" type="button">
+            ×
+          </button>
+        </div>
+      </div>
+      <div className="quick-notes">
+        {["밤결과", "확정", "의심", "투표", "라인"].map((item) => (
+          <button key={item} onClick={() => appendNote(item)} type="button">
+            {item}
+          </button>
+        ))}
+      </div>
+      <textarea value={notes} onChange={(e) => onNotes(e.target.value)} placeholder="메모" />
+    </section>
+  );
+}
+
+function EventLog({ events, onClear }: { events: ActivityEvent[]; onClear: () => void }) {
+  return (
+    <section className="panel event-log">
+      <div className="panel-heading">
+        <div>
+          <div className="section-kicker">최근 흐름</div>
+          <h2>{events.length}개</h2>
+        </div>
+        <button className="icon-command" onClick={onClear} title="기록 지우기" type="button">
           ×
         </button>
       </div>
-      <textarea value={notes} onChange={(e) => onNotes(e.target.value)} placeholder="메모" />
+      <div className="event-list">
+        {events.length === 0 ? (
+          <div className="muted-line">기록 없음</div>
+        ) : (
+          events.map((event) => (
+            <div className={`event-item ${event.tone}`} key={event.id}>
+              <span>{event.at}</span>
+              <b>{event.text}</b>
+            </div>
+          ))
+        )}
+      </div>
     </section>
   );
 }
@@ -815,8 +1088,103 @@ function filterLabel(filter: PlayerFilter) {
     alive: "생존",
     dead: "사망",
     marked: "표시",
+    voted: "득표",
   };
   return labels[filter];
+}
+
+function comparePlayers(
+  a: PlayerDto,
+  b: PlayerDto,
+  sort: PlayerSort,
+  marks: Record<string, PlayerMark>,
+  votes: Record<string, number>,
+) {
+  const selfFirst = Number(b.is_you) - Number(a.is_you);
+  if (selfFirst !== 0) return selfFirst;
+
+  if (sort === "votes") {
+    const byVotes = (votes[b.id] ?? 0) - (votes[a.id] ?? 0);
+    if (byVotes !== 0) return byVotes;
+  }
+
+  if (sort === "name") {
+    return a.name.localeCompare(b.name, "ko-KR");
+  }
+
+  if (sort === "mark") {
+    const byMark = markRank(marks[b.id]) - markRank(marks[a.id]);
+    if (byMark !== 0) return byMark;
+  }
+
+  return Number(b.alive) - Number(a.alive) || (votes[b.id] ?? 0) - (votes[a.id] ?? 0);
+}
+
+function markRank(mark?: PlayerMark) {
+  if (mark === "suspect") return 3;
+  if (mark === "watch") return 2;
+  if (mark === "trust") return 1;
+  return 0;
+}
+
+function voteLeader(state: GameState) {
+  return Object.entries(state.vote_targets)
+    .map(([id, votes]) => ({ player: state.players.find((item) => item.id === id), votes }))
+    .filter((entry): entry is { player: PlayerDto; votes: number } => Boolean(entry.player) && entry.votes > 0)
+    .sort((a, b) => b.votes - a.votes)[0];
+}
+
+function snapshotGame(state: GameState): GameSnapshot {
+  return {
+    phase: state.phase,
+    dayNumber: state.day_number,
+    nominee: state.nominee,
+    confirmYes: state.confirm_yes,
+    confirmNo: state.confirm_no,
+    actionResult: state.my_action_result,
+    votes: { ...state.vote_targets },
+  };
+}
+
+function diffGameEvents(previous: GameSnapshot, next: GameSnapshot, state: GameState): ActivityEvent[] {
+  const events: ActivityEvent[] = [];
+  const phase = PHASE_META[next.phase];
+
+  if (previous.phase !== next.phase || previous.dayNumber !== next.dayNumber) {
+    events.push(makeEvent(`${next.dayNumber}일차 ${phase.label}`, "phase"));
+  }
+
+  if (next.actionResult && next.actionResult !== previous.actionResult) {
+    events.push(makeEvent(`결과: ${next.actionResult}`, "action"));
+  }
+
+  for (const [id, votes] of Object.entries(next.votes)) {
+    const previousVotes = previous.votes[id] ?? 0;
+    if (votes > previousVotes) {
+      const player = state.players.find((item) => item.id === id);
+      events.push(makeEvent(`${player?.name ?? "대상"} ${votes}표`, "vote"));
+    }
+  }
+
+  if (next.nominee && next.nominee !== previous.nominee) {
+    const nominee = state.players.find((item) => item.id === next.nominee);
+    events.push(makeEvent(`처형 후보 ${nominee?.name ?? "알 수 없음"}`, "vote"));
+  }
+
+  if (next.confirmYes !== previous.confirmYes || next.confirmNo !== previous.confirmNo) {
+    events.push(makeEvent(`찬반 ${next.confirmYes}/${next.confirmNo}`, "vote"));
+  }
+
+  return events;
+}
+
+function makeEvent(text: string, tone: EventTone): ActivityEvent {
+  return {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    at: new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" }),
+    text,
+    tone,
+  };
 }
 
 function formatClock(seconds: number) {

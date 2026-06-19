@@ -1,6 +1,7 @@
 :root {
   color-scheme: dark;
   --bg: #101116;
+  --bg-soft: #151820;
   --panel: #181b22;
   --panel-strong: #20242d;
   --line: rgba(255, 255, 255, 0.09);
@@ -13,8 +14,10 @@
   --cult: #b46df5;
   --neutral: #f2a64b;
   --blue: #6da8ff;
+  --cyan: #6edfd6;
   --amber: #f7d060;
   --danger: #ff6b70;
+  --shadow: 0 14px 36px rgba(0, 0, 0, 0.22);
 }
 
 * {
@@ -24,6 +27,16 @@
 body {
   min-width: 0;
   background: var(--bg);
+  margin: 0;
+  font-family:
+    Inter,
+    Pretendard,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 }
 
 button,
@@ -35,6 +48,12 @@ textarea {
 
 button {
   -webkit-tap-highlight-color: transparent;
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease,
+    opacity 0.16s ease;
 }
 
 .activity-shell {
@@ -45,7 +64,8 @@ button {
   gap: 10px;
   padding: 10px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 34%),
+    linear-gradient(135deg, rgba(110, 223, 214, 0.08), transparent 28%),
+    linear-gradient(220deg, rgba(247, 208, 96, 0.06), transparent 34%),
     var(--bg);
   color: var(--text);
 }
@@ -64,7 +84,9 @@ button {
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(24, 27, 34, 0.92);
+  background: rgba(24, 27, 34, 0.9);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
 }
 
 .phase-label {
@@ -158,8 +180,11 @@ button {
 .panel {
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(24, 27, 34, 0.94);
+  background: rgba(24, 27, 34, 0.88);
   padding: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+  animation: panel-in 0.28s ease both;
+  backdrop-filter: blur(12px);
 }
 
 .panel-heading {
@@ -182,6 +207,9 @@ button {
 
 .role-focus {
   border-color: var(--line-strong);
+  background:
+    linear-gradient(135deg, rgba(53, 201, 135, 0.09), transparent 36%),
+    rgba(24, 27, 34, 0.9);
 }
 
 .role-main {
@@ -251,6 +279,94 @@ button {
 .team-neutral { color: var(--neutral); }
 .team-unknown { color: var(--soft); }
 
+.round-brief {
+  display: grid;
+  gap: 10px;
+}
+
+.brief-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.brief-card {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.brief-card.is-primary {
+  border-color: rgba(110, 223, 214, 0.36);
+  background: rgba(110, 223, 214, 0.08);
+}
+
+.brief-card span,
+.focus-strip small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.brief-card b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+}
+
+.phase-checks {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.phase-checks span {
+  min-height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.phase-checks span.active {
+  color: var(--text);
+  border-color: rgba(247, 208, 96, 0.42);
+  background: rgba(247, 208, 96, 0.08);
+}
+
+.focus-strip {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.focus-strip strong,
+.focus-strip small {
+  display: block;
+}
+
+.focus-strip p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #cbd3df;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .action-console {
   display: flex;
   flex-direction: column;
@@ -273,6 +389,7 @@ button {
 .player-main,
 .segmented button,
 .mark-controls button,
+.quick-notes button,
 .icon-command,
 .primary-command,
 .secondary-command,
@@ -282,6 +399,18 @@ button {
   background: rgba(255, 255, 255, 0.045);
   color: var(--text);
   cursor: pointer;
+}
+
+.target-button:hover,
+.segmented button:hover,
+.mark-controls button:hover,
+.quick-notes button:hover,
+.icon-command:hover,
+.primary-command:hover:not(:disabled),
+.secondary-command:hover:not(:disabled),
+.danger-command:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(255, 255, 255, 0.24);
 }
 
 .target-button {
@@ -308,9 +437,14 @@ button {
 }
 
 .target-button.selected,
-.player-row.selected {
+.player-row.selected,
+.player-row.action-selected {
   border-color: rgba(109, 168, 255, 0.78);
   background: rgba(109, 168, 255, 0.14);
+}
+
+.player-row.action-selected {
+  box-shadow: inset 0 0 0 1px rgba(110, 223, 214, 0.28);
 }
 
 .command-row {
@@ -434,7 +568,7 @@ input {
 
 .segmented {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 6px;
   margin-bottom: 10px;
 }
@@ -454,6 +588,16 @@ input {
   width: min(150px, 42vw);
 }
 
+.desk-tools {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.desk-tools select {
+  width: 88px;
+}
+
 .player-list {
   display: grid;
   gap: 7px;
@@ -470,6 +614,16 @@ input {
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.035);
   padding: 6px;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.player-row:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  transform: translateY(-1px);
 }
 
 .player-row.dead {
@@ -559,13 +713,25 @@ input {
   background: #11141b;
 }
 
+.mark-badge.inline {
+  position: static;
+}
+
+.row-note {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 32px;
+  font-size: 12px;
+}
+
 .mark-trust { color: var(--citizen); }
 .mark-suspect { color: var(--danger); }
 .mark-watch { color: var(--amber); }
 
 .vote-intel,
 .public-status,
-.notes-panel {
+.notes-panel,
+.event-log {
   display: grid;
   gap: 9px;
 }
@@ -616,6 +782,67 @@ input {
   resize: vertical;
   padding: 10px;
   line-height: 1.45;
+}
+
+.note-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.quick-notes {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.quick-notes button {
+  min-height: 30px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.event-list {
+  display: grid;
+  gap: 7px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.event-item {
+  display: grid;
+  grid-template-columns: 46px 1fr;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.event-item span {
+  color: var(--soft);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.event-item b {
+  color: #d8dee8;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.event-item.phase {
+  border-color: rgba(109, 168, 255, 0.34);
+}
+
+.event-item.vote {
+  border-color: rgba(255, 107, 112, 0.3);
+}
+
+.event-item.action {
+  border-color: rgba(53, 201, 135, 0.3);
 }
 
 .icon-command {
@@ -678,8 +905,22 @@ input {
   }
 }
 
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 760px) {
   .activity-shell {
+    height: auto;
+    min-height: 100vh;
+    overflow: auto;
     padding: 8px;
   }
 
@@ -696,7 +937,14 @@ input {
   }
 
   .activity-layout {
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
+    min-height: auto;
+  }
+
+  .primary-column,
+  .secondary-column {
+    overflow: visible;
   }
 
   .role-main h1 {
@@ -706,5 +954,56 @@ input {
   .confirm-box,
   .contractor-grid {
     grid-template-columns: 1fr;
+  }
+
+  .brief-grid,
+  .phase-checks {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .desk-tools {
+    width: 100%;
+  }
+
+  .player-desk input,
+  .desk-tools select {
+    width: 100%;
+  }
+
+  .player-row {
+    grid-template-columns: 1fr;
+  }
+
+  .mark-controls {
+    grid-template-columns: repeat(3, minmax(42px, 1fr));
+  }
+
+  .mark-controls button {
+    width: 100%;
+  }
+
+  .mark-badge {
+    position: static;
+    justify-self: start;
+  }
+
+  .quick-notes {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }
