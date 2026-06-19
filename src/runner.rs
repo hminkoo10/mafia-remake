@@ -368,6 +368,7 @@ pub async fn run_night(
     };
     upsert_game_status(ctx, running).await;
     set_game_channel_chat(ctx, data, running, false).await;
+    sync_private_role_chat_permissions(ctx, data, running).await;
     sync_lover_chat_access(ctx, data, running).await;
     sync_cult_team_channel_access(ctx, data, running).await;
     sync_scientist_mafia_permissions(ctx, data, running).await;
@@ -1222,6 +1223,7 @@ pub async fn run_day(
     upsert_game_status(ctx, running).await;
     set_game_channel_chat(ctx, data, running, true).await;
     set_channel_slowmode(ctx, running, config.chat_slowmode_seconds).await;
+    sync_private_role_chat_permissions(ctx, data, running).await;
     sync_lover_chat_access(ctx, data, running).await;
     sync_cult_team_channel_access(ctx, data, running).await;
     sync_madam_seduction_permissions(ctx, running).await;
@@ -1326,10 +1328,20 @@ pub async fn run_day(
     }
     let mut extension_used = false;
     let mut current_discussion_seconds = discussion_seconds;
+    let mut discussion_deadline = Instant::now() + Duration::from_secs(current_discussion_seconds);
     loop {
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(current_discussion_seconds)) => {}
-            _ = day_notify.notified() => {}
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(discussion_deadline)) => {
+                    break;
+                }
+                _ = day_notify.notified() => {
+                    let running_read = running.read().await;
+                    if running_read.game.phase == Phase::Ended || running_read.day_skip_confirmed {
+                        break;
+                    }
+                }
+            }
         }
         {
             let running_read = running.read().await;
@@ -1390,9 +1402,23 @@ pub async fn run_day(
             true,
         )
         .await?;
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(DAY_EXTENSION_VOTE_SECONDS)) => {}
-            _ = day_notify.notified() => {}
+        let extension_deadline =
+            Instant::now() + Duration::from_secs(DAY_EXTENSION_VOTE_SECONDS);
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(extension_deadline)) => {
+                    break;
+                }
+                _ = day_notify.notified() => {
+                    let running_read = running.read().await;
+                    if running_read.game.phase == Phase::Ended
+                        || running_read.day_skip_confirmed
+                        || running_read.day_extension_confirmed
+                    {
+                        break;
+                    }
+                }
+            }
         }
         let (skip_confirmed, extension_confirmed, extension_votes, phase_ended) = {
             let mut running_write = running.write().await;
@@ -1432,8 +1458,9 @@ pub async fn run_day(
         if extension_confirmed {
             extension_used = true;
             current_discussion_seconds = DISCUSSION_EXTENSION_SECONDS;
-            running.write().await.phase_deadline =
-                Some(Instant::now() + Duration::from_secs(DISCUSSION_EXTENSION_SECONDS));
+            discussion_deadline =
+                Instant::now() + Duration::from_secs(DISCUSSION_EXTENSION_SECONDS);
+            running.write().await.phase_deadline = Some(discussion_deadline);
             continue;
         }
         let _ = extension_message

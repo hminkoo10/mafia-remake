@@ -582,6 +582,9 @@ pub fn can_use_anonymous_general_chat(running: &RunningGame, player: &Player) ->
 }
 
 pub fn can_use_anonymous_role_chat(running: &RunningGame, player: &Player, role: Role) -> bool {
+    if running.game.phase != Phase::Night {
+        return false;
+    }
     if running.game.is_frog(player) || running.game.is_madam_seduced(player) {
         return false;
     }
@@ -599,6 +602,23 @@ pub fn can_use_anonymous_role_chat(running: &RunningGame, player: &Player, role:
         return player.alive && running.game.is_known_mafia_team(player);
     }
     player.alive && player.role == role
+}
+
+pub fn private_role_member_can_chat(game: &MafiaGame, role: Role, player: &Player) -> bool {
+    if game.phase != Phase::Night
+        || !player.alive
+        || game.is_frog(player)
+        || game.is_madam_seduced(player)
+    {
+        return false;
+    }
+    if role == Role::Lover {
+        return player.role == Role::Lover && lover_chat_is_open(game);
+    }
+    if role == Role::CultLeader {
+        return player.role == Role::CultLeader;
+    }
+    true
 }
 
 pub fn can_use_anonymous_dead_chat(running: &RunningGame, player: &Player) -> bool {
@@ -3285,14 +3305,101 @@ pub async fn grant_private_role_member_access(
                 && !running_read.game.is_frog(player)
                 && !running_read.game.is_madam_seduced(player)
         };
+        let can_chat = {
+            let running_read = running.read().await;
+            can_access && private_role_member_can_chat(&running_read.game, role, player)
+        };
         set_anonymous_role_channel_access(
-            ctx, running, roles, role, player, can_access, can_access,
+            ctx, running, roles, role, player, can_access, can_chat,
         )
         .await;
         sync_anonymous_role_statuses(ctx, running, true).await;
         return;
     }
-    set_private_role_member_access(ctx, running, role, player, true).await;
+    let can_chat = {
+        let running_read = running.read().await;
+        private_role_member_can_chat(&running_read.game, role, player)
+    };
+    set_private_role_member_view_access(ctx, running, role, player, true, can_chat).await;
+}
+
+pub async fn sync_private_role_chat_permissions(
+    ctx: &serenity::Context,
+    data: &Data,
+    running: &Arc<RwLock<RunningGame>>,
+) {
+    let anonymous_enabled = running.read().await.anonymous_enabled;
+    if anonymous_enabled {
+        let Some(roles) = running_channel_roles(ctx, data, running).await else {
+            return;
+        };
+        let updates = {
+            let running_read = running.read().await;
+            running_read
+                .anonymous_role_input_channel_ids
+                .keys()
+                .filter_map(|(user_id, role)| {
+                    let player = running_read.game.get_player(*user_id)?.clone();
+                    let can_view = player.alive
+                        && !running_read.game.is_frog(&player)
+                        && !running_read.game.is_madam_seduced(&player);
+                    let can_chat =
+                        can_view && private_role_member_can_chat(&running_read.game, *role, &player);
+                    Some((*role, player, can_view, can_chat))
+                })
+                .collect::<Vec<_>>()
+        };
+        for (role, player, can_view, can_chat) in updates {
+            set_anonymous_role_channel_access(
+                ctx, running, roles, role, &player, can_view, can_chat,
+            )
+            .await;
+        }
+        sync_anonymous_role_statuses(ctx, running, true).await;
+        return;
+    }
+
+    let channel_ids = running.read().await.private_channel_ids.clone();
+    for (role, channel_id) in channel_ids {
+        let Some(channel) = channel_id
+            .to_channel(&ctx.http)
+            .await
+            .ok()
+            .and_then(|channel| channel.guild())
+        else {
+            continue;
+        };
+        let member_overwrites = channel
+            .permission_overwrites
+            .iter()
+            .filter_map(|overwrite| match overwrite.kind {
+                serenity::PermissionOverwriteType::Member(user_id) => {
+                    let can_view = overwrite.allow.contains(serenity::Permissions::VIEW_CHANNEL)
+                        && !overwrite.deny.contains(serenity::Permissions::VIEW_CHANNEL);
+                    Some((user_id.get(), can_view))
+                }
+                serenity::PermissionOverwriteType::Role(_) => None,
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for (user_id, can_view) in member_overwrites {
+            let update = {
+                let running_read = running.read().await;
+                let player = running_read.game.get_player(user_id).cloned();
+                player.map(|player| {
+                    let can_chat =
+                        can_view && private_role_member_can_chat(&running_read.game, role, &player);
+                    (player, can_chat)
+                })
+            };
+            if let Some((player, can_chat)) = update {
+                set_private_role_member_view_access(
+                    ctx, running, role, &player, can_view, can_chat,
+                )
+                .await;
+            }
+        }
+    }
 }
 
 pub async fn running_channel_roles(
@@ -3394,8 +3501,7 @@ pub async fn sync_cult_team_channel_access(
                     && !running_read.game.is_frog(player)
                     && running_read.game.is_cult_team(player);
                 let can_chat = can_view
-                    && player.role == Role::CultLeader
-                    && !running_read.game.is_madam_seduced(player);
+                    && private_role_member_can_chat(&running_read.game, Role::CultLeader, player);
                 (can_view, can_chat)
             };
             set_anonymous_role_channel_access(
@@ -3419,8 +3525,7 @@ pub async fn sync_cult_team_channel_access(
                 && !running_read.game.is_frog(player)
                 && running_read.game.is_cult_team(player);
             let can_chat = can_view
-                && player.role == Role::CultLeader
-                && !running_read.game.is_madam_seduced(player);
+                && private_role_member_can_chat(&running_read.game, Role::CultLeader, player);
             (can_view, can_chat)
         };
         set_private_role_member_view_access(
@@ -3470,14 +3575,31 @@ pub async fn sync_scientist_mafia_permissions(
             return;
         };
         for player in &scientist_players {
-            set_anonymous_role_channel_access(ctx, running, roles, Role::Mafia, player, true, true)
-                .await;
+            let can_chat = {
+                let running_read = running.read().await;
+                private_role_member_can_chat(&running_read.game, Role::Mafia, player)
+            };
+            set_anonymous_role_channel_access(
+                ctx,
+                running,
+                roles,
+                Role::Mafia,
+                player,
+                true,
+                can_chat,
+            )
+            .await;
         }
         sync_anonymous_role_statuses(ctx, running, true).await;
         return;
     }
     for player in &scientist_players {
-        set_private_role_member_access(ctx, running, Role::Mafia, player, true).await;
+        let can_chat = {
+            let running_read = running.read().await;
+            private_role_member_can_chat(&running_read.game, Role::Mafia, player)
+        };
+        set_private_role_member_view_access(ctx, running, Role::Mafia, player, true, can_chat)
+            .await;
     }
 }
 
@@ -3552,12 +3674,20 @@ pub async fn restore_revived_player_roles(
                     && !running_read.game.is_frog(player)
                     && !running_read.game.is_madam_seduced(player)
             };
+            let can_chat = {
+                let running_read = running.read().await;
+                can_access && private_role_member_can_chat(&running_read.game, role, player)
+            };
             set_anonymous_role_channel_access(
-                ctx, running, roles, role, player, can_access, can_access,
+                ctx, running, roles, role, player, can_access, can_chat,
             )
             .await;
         } else {
-            set_private_role_member_access(ctx, running, role, player, true).await;
+            let can_chat = {
+                let running_read = running.read().await;
+                private_role_member_can_chat(&running_read.game, role, player)
+            };
+            set_private_role_member_view_access(ctx, running, role, player, true, can_chat).await;
         }
     }
     sync_anonymous_general_chat_permissions(ctx, running).await;
@@ -4026,37 +4156,8 @@ pub async fn restore_game_channel_chat(ctx: &serenity::Context, running: &Arc<Rw
     }
 }
 
-pub fn push_unique_channel_id(ids: &mut Vec<serenity::ChannelId>, channel_id: serenity::ChannelId) {
-    if !ids.contains(&channel_id) {
-        ids.push(channel_id);
-    }
-}
-
 pub fn slowmode_channel_ids(running: &RunningGame) -> Vec<serenity::ChannelId> {
-    let mut ids = Vec::new();
-    push_unique_channel_id(&mut ids, running.channel_id);
-    for channel_id in running.anonymous_input_channel_ids.values() {
-        push_unique_channel_id(&mut ids, *channel_id);
-    }
-    for channel_id in running.anonymous_dead_input_channel_ids.values() {
-        push_unique_channel_id(&mut ids, *channel_id);
-    }
-    for channel_id in running.anonymous_shaman_input_channel_ids.values() {
-        push_unique_channel_id(&mut ids, *channel_id);
-    }
-    for channel_id in running.anonymous_role_input_channel_ids.values() {
-        push_unique_channel_id(&mut ids, *channel_id);
-    }
-    for channel_id in running.private_channel_ids.values() {
-        push_unique_channel_id(&mut ids, *channel_id);
-    }
-    if let Some(channel_id) = running.shaman_channel_id {
-        push_unique_channel_id(&mut ids, channel_id);
-    }
-    if let Some(channel_id) = running.frog_channel_id {
-        push_unique_channel_id(&mut ids, channel_id);
-    }
-    ids
+    vec![running.channel_id]
 }
 
 pub async fn set_one_channel_slowmode(
@@ -4208,3 +4309,51 @@ pub async fn apply_death_side_effects(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn role_chat_test_game() -> MafiaGame {
+        MafiaGame::new(
+            vec![
+                (1, "p1".to_string()),
+                (2, "p2".to_string()),
+                (3, "p3".to_string()),
+                (4, "p4".to_string()),
+            ],
+            1,
+            1,
+            1,
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn private_role_chat_closed_during_day() {
+        let mut game = role_chat_test_game();
+        let doctor = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Doctor)
+            .cloned()
+            .unwrap();
+
+        game.phase = Phase::Day;
+
+        assert!(!private_role_member_can_chat(&game, Role::Doctor, &doctor));
+    }
+
+    #[test]
+    fn private_role_chat_open_during_night() {
+        let game = role_chat_test_game();
+        let doctor = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Doctor)
+            .cloned()
+            .unwrap();
+
+        assert!(private_role_member_can_chat(&game, Role::Doctor, &doctor));
+    }
+}

@@ -528,8 +528,33 @@ async fn action_handler(
                 })
         }
         "skip_vote" => {
+            if running.game.phase != Phase::Day {
+                return Json(ActionResponse {
+                    ok: false,
+                    message: Some("지금 진행 중인 낮 토론이 없습니다.".into()),
+                })
+                .into_response();
+            }
+            let alive_ids = running
+                .game
+                .alive_players()
+                .into_iter()
+                .map(|player| player.user_id)
+                .collect::<std::collections::HashSet<_>>();
+            if !alive_ids.contains(&user_id) {
+                return Json(ActionResponse {
+                    ok: false,
+                    message: Some("생존 중인 참가자만 바로 투표를 선택할 수 있습니다.".into()),
+                })
+                .into_response();
+            }
             running.day_skip_voter_ids.insert(user_id);
-            running.day_notify.notify_one();
+            let required_votes = alive_ids.len() / 2 + 1;
+            if running.day_skip_voter_ids.len() >= required_votes {
+                running.day_skip_confirmed = true;
+                running.day_extension_active = false;
+                running.day_notify.notify_waiters();
+            }
             Ok(())
         }
         "contractor_action" => {
