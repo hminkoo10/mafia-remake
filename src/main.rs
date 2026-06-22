@@ -307,8 +307,10 @@ async fn main() -> Result<()> {
     let token =
         std::env::var("DISCORD_TOKEN").context(".env 파일에 DISCORD_TOKEN을 설정하세요.")?;
     let config_path = workspace_root.join("config.json");
+    let api_keys_path = workspace_root.join("api_keys.json");
     let stats_path = workspace_root.join("stats.json");
     let config = config::load_config(&config_path)?;
+    let api_keys = web_settings::load_api_key_store(&api_keys_path)?;
     let stats = stats::load_stats(&stats_path).unwrap_or_default();
     let web_host = std::env::var("WEB_SETTINGS_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let web_port = std::env::var("WEB_SETTINGS_PORT")
@@ -336,9 +338,11 @@ async fn main() -> Result<()> {
     let games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>> = Arc::new(DashMap::new());
     let recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>> = Arc::new(DashMap::new());
     let config_arc = Arc::new(RwLock::new(config));
+    let api_keys_arc = Arc::new(RwLock::new(api_keys));
     let stats_arc = Arc::new(RwLock::new(stats));
     let web_sessions: Arc<DashMap<String, web_settings::WebSettingsSession>> = Arc::new(DashMap::new());
     let config_path_arc = Arc::new(config_path);
+    let api_keys_path_arc = Arc::new(api_keys_path);
     let stats_path_arc = Arc::new(stats_path);
 
     // Activity 서버를 Discord 연결 전에 즉시 시작 (Fly.io health check 통과용)
@@ -369,9 +373,11 @@ async fn main() -> Result<()> {
     let games_setup = games.clone();
     let recruitments_setup = recruitments.clone();
     let config_setup = config_arc.clone();
+    let api_keys_setup = api_keys_arc.clone();
     let stats_setup = stats_arc.clone();
     let web_sessions_setup = web_sessions.clone();
     let config_path_setup = config_path_arc.clone();
+    let api_keys_path_setup = api_keys_path_arc.clone();
     let stats_path_setup = stats_path_arc.clone();
 
     let framework = poise::Framework::builder()
@@ -429,6 +435,8 @@ async fn main() -> Result<()> {
                 let web_state = web_settings::WebSettingsState {
                     config: config_setup,
                     config_path: config_path_setup,
+                    api_keys: api_keys_setup,
+                    api_keys_path: api_keys_path_setup,
                     stats: stats_setup,
                     games: games_setup,
                     recruitments: recruitments_setup,

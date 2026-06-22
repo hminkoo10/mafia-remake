@@ -321,6 +321,32 @@ Discord 앱 내 임베디드 UI에서 게임을 진행할 수 있습니다.
 
 `/마피아웹설정` 명령어로 관리자 전용 설정 편집 페이지의 1회용 링크를 발급받을 수 있습니다 (10분 유효, 1회 사용).
 
+### 보호 API
+
+웹 설정 페이지의 **API 키 관리**에서 서버별 API 키를 발급하거나 폐기할 수 있습니다. 키 원문은 발급 직후 한 번만 표시되며, 서버에는 해시만 저장됩니다. 키는 발급한 Discord 서버 범위에서만 사용할 수 있습니다.
+
+보호 API는 `X-API-Key: <key>` 또는 `Authorization: Bearer <key>` 헤더가 필요합니다.
+
+| 엔드포인트 | 설명 |
+|-----|-----|
+| `GET /api/v1/me` | 현재 API 키 정보 |
+| `GET /api/v1/config` | 게임 설정 요약 |
+| `GET /api/v1/stats` | 전적 요약 |
+| `GET /api/v1/leaderboard/{metric}` | 보호 리더보드 조회 |
+| `GET /api/v1/games` | 키 발급 서버의 진행 중 게임 목록 |
+| `GET /api/v1/games/{guild_id}` | 참가자·직업·단계·타이머를 포함한 게임 상세 |
+| `POST /api/v1/games/{guild_id}/actions` | `skip_day`, `extend_day`, `stop` 작업 |
+| `GET /api/v1/recruitments/{guild_id}` | 모집 인원·역할 구성·관전자 상세 |
+| `POST /api/v1/recruitments/{guild_id}/actions` | `start` 또는 `cancel` 작업 |
+
+예시:
+
+```bash
+curl -H "X-API-Key: mfr_..." https://example.com/api/v1/games/123456789
+curl -X POST -H "Authorization: Bearer mfr_..." -H "Content-Type: application/json" \
+  -d '{"action":"skip_day"}' https://example.com/api/v1/games/123456789/actions
+```
+
 외부에서 접속하려면 방화벽/리버스 프록시로 `WEB_SETTINGS_PORT`를 노출하고, `WEB_SETTINGS_BASE_URL`로 공개 주소를 지정하세요.
 
 ---

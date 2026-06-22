@@ -1,26 +1,30 @@
 use crate::{Recruitment, RunningGame};
 use anyhow::{Context, Result, bail};
+use chrono::{SecondsFormat, Utc};
 use dashmap::DashMap;
 use mafia_remake::config::{self, BotConfig};
 use mafia_remake::model::{
-    CITIZEN_SPECIAL_ROLES, MAFIA_SPECIAL_ROLES, NEUTRAL_SPECIAL_ROLES, Role,
+    CITIZEN_SPECIAL_ROLES, MAFIA_SPECIAL_ROLES, NEUTRAL_SPECIAL_ROLES, Phase, Role,
 };
 use mafia_remake::stats::{self, StatsFile};
 use poise::serenity_prelude as serenity;
 use rand::RngCore;
 use rustls::ServerConfig;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tokio_rustls::TlsAcceptor;
+use uuid::Uuid;
 
 const WEB_SETTINGS_PATH: &str = "/web-settings";
 const WEB_SETTINGS_SESSION_TTL_SECONDS: u64 = 600;
@@ -36,10 +40,30 @@ pub struct WebSettingsSession {
     pub expires_at: Instant,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ApiKeyStore {
+    #[serde(default)]
+    keys: Vec<ApiKeyRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ApiKeyRecord {
+    id: String,
+    label: String,
+    guild_id: u64,
+    created_by_user_id: u64,
+    created_at: String,
+    key_hash: String,
+    #[serde(default)]
+    revoked: bool,
+}
+
 #[derive(Clone)]
 pub struct WebSettingsState {
     pub config: Arc<RwLock<BotConfig>>,
     pub config_path: Arc<PathBuf>,
+    pub api_keys: Arc<RwLock<ApiKeyStore>>,
+    pub api_keys_path: Arc<PathBuf>,
     pub stats: Arc<RwLock<StatsFile>>,
     pub games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>>,
     pub recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>>,
@@ -47,6 +71,64 @@ pub struct WebSettingsState {
     pub started_at: Instant,
     pub bot_name: String,
     pub guild_count: usize,
+}
+
+pub fn load_api_key_store(path: impl AsRef<Path>) -> Result<ApiKeyStore> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(ApiKeyStore::default());
+    }
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("API 키 파일을 읽지 못했습니다: {}", path.display()))?;
+    serde_json::from_str(&text)
+        .with_context(|| format!("API 키 JSON을 파싱하지 못했습니다: {}", path.display()))
+}
+
+fn save_api_key_store(path: impl AsRef<Path>, store: &ApiKeyStore) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("API 키 디렉터리를 만들지 못했습니다: {}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(store).context("API 키 JSON 직렬화 실패")?;
+    let temp_path = path.with_file_name(format!(
+        "{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("api_keys.json")
+    ));
+    fs::write(&temp_path, format!("{text}\n"))
+        .with_context(|| format!("API 키 임시 파일을 쓰지 못했습니다: {}", temp_path.display()))?;
+    if path.exists() {
+        fs::remove_file(path)
+            .with_context(|| format!("기존 API 키 파일을 교체하지 못했습니다: {}", path.display()))?;
+    }
+    fs::rename(&temp_path, path)
+        .with_context(|| format!("API 키 파일을 교체하지 못했습니다: {}", path.display()))?;
+    Ok(())
+}
+
+fn api_key_hash(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn issue_api_key(store: &mut ApiKeyStore, guild_id: u64, user_id: u64, label: String) -> String {
+    let key = format!(
+        "mfr_{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    );
+    store.keys.push(ApiKeyRecord {
+        id: Uuid::new_v4().simple().to_string(),
+        label,
+        guild_id,
+        created_by_user_id: user_id,
+        created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        key_hash: api_key_hash(&key),
+        revoked: false,
+    });
+    key
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -442,22 +524,39 @@ where
 
 async fn route_request(state: &WebSettingsState, request: HttpRequest) -> String {
     let (path, query) = request.path.split_once('?').unwrap_or((&request.path, ""));
+    if request.method == "OPTIONS" && path.starts_with("/api/") {
+        return api_options_response();
+    }
+    if let Some(response) = route_protected_api_request(state, &request, path, query).await {
+        return response;
+    }
     if request.method == "GET"
         && let Some(response) = route_public_request(state, path, query).await
     {
         return response;
     }
-    let Some(token) = path.strip_prefix(&format!("{WEB_SETTINGS_PATH}/")) else {
+    let Some(session_path) = path.strip_prefix(&format!("{WEB_SETTINGS_PATH}/")) else {
         return http_response(
             "404 Not Found",
             &render_message_page("404", "요청한 페이지를 찾을 수 없습니다."),
         );
     };
+    let (token, subpath) = session_path.split_once('/').unwrap_or((session_path, ""));
     purge_expired_sessions(&state.sessions);
     let Some(session) = state.sessions.get(token).map(|entry| entry.clone()) else {
         return http_response("410 Gone", &expired_page());
     };
     let _session_scope = (session.guild_id, session.user_id);
+
+    if subpath == "api-keys" {
+        return route_api_key_management(state, &session, token, &request).await;
+    }
+    if !subpath.is_empty() {
+        return http_response(
+            "404 Not Found",
+            &render_message_page("404", "요청한 페이지를 찾을 수 없습니다."),
+        );
+    }
 
     match request.method.as_str() {
         "GET" => {
@@ -541,6 +640,367 @@ fn purge_expired_sessions(sessions: &DashMap<String, WebSettingsSession>) {
     sessions.retain(|_token, session| session.expires_at > now);
 }
 
+#[derive(Debug)]
+enum ApiAuthError {
+    Missing,
+    Invalid,
+    Forbidden,
+}
+
+impl ApiAuthError {
+    fn response(&self) -> String {
+        match self {
+            Self::Missing => json_error("401 Unauthorized", "missing API key"),
+            Self::Invalid => json_error("401 Unauthorized", "invalid API key"),
+            Self::Forbidden => json_error("403 Forbidden", "API key is not authorized for this guild"),
+        }
+    }
+}
+
+fn request_api_key(request: &HttpRequest) -> Option<&str> {
+    request
+        .headers
+        .get("x-api-key")
+        .map(String::as_str)
+        .or_else(|| {
+            request
+                .headers
+                .get("authorization")
+                .and_then(|value| value.strip_prefix("Bearer "))
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+async fn authenticate_api_key(
+    state: &WebSettingsState,
+    request: &HttpRequest,
+) -> std::result::Result<ApiKeyRecord, ApiAuthError> {
+    let key = request_api_key(request).ok_or(ApiAuthError::Missing)?;
+    let key_hash = api_key_hash(key);
+    state
+        .api_keys
+        .read()
+        .await
+        .keys
+        .iter()
+        .find(|record| !record.revoked && record.key_hash == key_hash)
+        .cloned()
+        .ok_or(ApiAuthError::Invalid)
+}
+
+fn require_key_guild(record: &ApiKeyRecord, guild_id: u64) -> std::result::Result<(), ApiAuthError> {
+    if record.guild_id == guild_id {
+        Ok(())
+    } else {
+        Err(ApiAuthError::Forbidden)
+    }
+}
+
+fn api_key_value(record: &ApiKeyRecord) -> Value {
+    json!({
+        "id": record.id,
+        "label": record.label,
+        "guild_id": record.guild_id,
+        "created_at": record.created_at,
+        "revoked": record.revoked,
+    })
+}
+
+fn parse_api_guild_path<'a>(path: &'a str, prefix: &str) -> Option<(u64, Option<&'a str>)> {
+    let rest = path.strip_prefix(prefix)?;
+    let (guild_id, suffix) = rest.split_once('/').map_or((rest, None), |(id, suffix)| (id, Some(suffix)));
+    Some((guild_id.parse().ok()?, suffix))
+}
+
+async fn api_game_value(state: &WebSettingsState, guild_id: u64) -> Option<Value> {
+    let running = state
+        .games
+        .get(&serenity::GuildId::new(guild_id))
+        .map(|entry| entry.value().clone())?;
+    let running = running.read().await;
+    let mut players = running
+        .game
+        .players
+        .iter()
+        .map(|player| {
+            json!({
+                "user_id": player.user_id,
+                "name": player.name,
+                "alive": player.alive,
+                "role": player.role.value(),
+            })
+        })
+        .collect::<Vec<_>>();
+    players.sort_by_key(|player| player["name"].as_str().unwrap_or_default().to_lowercase());
+    Some(json!({
+        "guild_id": guild_id,
+        "channel_id": running.channel_id.get(),
+        "phase": running.game.phase.value(),
+        "day_number": running.game.day_number,
+        "participant_count": running.game.players.len(),
+        "alive_count": running.game.alive_players().len(),
+        "dead_count": running.game.dead_players().len(),
+        "spectator_count": running.spectator_user_ids.len(),
+        "anonymous_enabled": running.anonymous_enabled,
+        "phase_remaining_seconds": running.phase_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()).as_secs()),
+        "day_skip_votes": running.day_skip_voter_ids.len(),
+        "day_skip_confirmed": running.day_skip_confirmed,
+        "players": players,
+    }))
+}
+
+async fn api_recruitment_value(state: &WebSettingsState, guild_id: u64) -> Option<Value> {
+    let recruitment = state
+        .recruitments
+        .get(&serenity::GuildId::new(guild_id))
+        .map(|entry| entry.value().clone())?;
+    let recruitment = recruitment.read().await;
+    let mut participants = recruitment
+        .joined_ids
+        .iter()
+        .map(|user_id| {
+            json!({
+                "user_id": user_id,
+                "name": recruitment.joined_names.get(user_id).cloned().unwrap_or_else(|| user_id.to_string()),
+            })
+        })
+        .collect::<Vec<_>>();
+    participants.sort_by_key(|player| player["name"].as_str().unwrap_or_default().to_lowercase());
+    let mut spectators = recruitment
+        .spectator_ids
+        .iter()
+        .map(|user_id| {
+            json!({
+                "user_id": user_id,
+                "name": recruitment.spectator_names.get(user_id).cloned().unwrap_or_else(|| user_id.to_string()),
+            })
+        })
+        .collect::<Vec<_>>();
+    spectators.sort_by_key(|player| player["name"].as_str().unwrap_or_default().to_lowercase());
+    let mut role_counts = recruitment
+        .role_counts
+        .iter()
+        .map(|(role, count)| json!({"role": role.value(), "count": count}))
+        .collect::<Vec<_>>();
+    role_counts.sort_by_key(|item| item["role"].as_str().unwrap_or_default().to_string());
+    Some(json!({
+        "guild_id": guild_id,
+        "host_user_id": recruitment.host_user_id.get(),
+        "accepting": recruitment.accepting,
+        "cancelled": recruitment.cancelled,
+        "minimum_players": recruitment.minimum_players,
+        "max_players": recruitment.max_players,
+        "participant_count": participants.len(),
+        "spectator_count": spectators.len(),
+        "participants": participants,
+        "spectators": spectators,
+        "role_counts": role_counts,
+        "special_roles": recruitment.special_roles.iter().map(|role| role.value()).collect::<Vec<_>>(),
+    }))
+}
+
+async fn control_game(
+    state: &WebSettingsState,
+    guild_id: u64,
+    action: &str,
+) -> std::result::Result<Value, String> {
+    let Some(running) = state
+        .games
+        .get(&serenity::GuildId::new(guild_id))
+        .map(|entry| entry.value().clone())
+    else {
+        return Err("game not found".to_string());
+    };
+    let notifications = {
+        let mut running = running.write().await;
+        match action {
+            "stop" => {
+                if running.game.phase == Phase::Ended {
+                    return Err("game is already ending".to_string());
+                }
+                running.game.phase = Phase::Ended;
+                running.phase_deadline = None;
+                vec![
+                    running.night_notify.clone(),
+                    running.vote_notify.clone(),
+                    running.confirm_notify.clone(),
+                    running.day_notify.clone(),
+                ]
+            }
+            "skip_day" => {
+                if running.game.phase != Phase::Day {
+                    return Err("skip_day is only available during day discussion".to_string());
+                }
+                running.day_skip_confirmed = true;
+                running.day_extension_active = false;
+                vec![running.day_notify.clone()]
+            }
+            "extend_day" => {
+                if running.game.phase != Phase::Day || !running.day_extension_active {
+                    return Err("extend_day is only available during the day extension vote".to_string());
+                }
+                running.day_extension_confirmed = true;
+                vec![running.day_notify.clone()]
+            }
+            _ => return Err("unsupported game action".to_string()),
+        }
+    };
+    for notify in notifications {
+        notify.notify_waiters();
+    }
+    Ok(json!({"ok": true, "guild_id": guild_id, "action": action}))
+}
+
+async fn cancel_recruitment(
+    state: &WebSettingsState,
+    guild_id: u64,
+) -> std::result::Result<Value, String> {
+    let Some(recruitment) = state
+        .recruitments
+        .get(&serenity::GuildId::new(guild_id))
+        .map(|entry| entry.value().clone())
+    else {
+        return Err("recruitment not found".to_string());
+    };
+    let notify = {
+        let mut recruitment = recruitment.write().await;
+        if !recruitment.accepting {
+            return Err("recruitment is no longer accepting players".to_string());
+        }
+        recruitment.cancelled = true;
+        recruitment.accepting = false;
+        recruitment.done.clone()
+    };
+    notify.notify_waiters();
+    Ok(json!({"ok": true, "guild_id": guild_id, "action": "cancel"}))
+}
+
+async fn start_recruitment(
+    state: &WebSettingsState,
+    guild_id: u64,
+) -> std::result::Result<Value, String> {
+    let Some(recruitment) = state
+        .recruitments
+        .get(&serenity::GuildId::new(guild_id))
+        .map(|entry| entry.value().clone())
+    else {
+        return Err("recruitment not found".to_string());
+    };
+    let notify = {
+        let mut recruitment = recruitment.write().await;
+        if !recruitment.accepting {
+            return Err("recruitment is no longer accepting players".to_string());
+        }
+        if recruitment.joined_ids.len() < recruitment.minimum_players {
+            return Err("not enough players to start".to_string());
+        }
+        recruitment.accepting = false;
+        recruitment.done.clone()
+    };
+    notify.notify_waiters();
+    Ok(json!({"ok": true, "guild_id": guild_id, "action": "start"}))
+}
+
+async fn route_protected_api_request(
+    state: &WebSettingsState,
+    request: &HttpRequest,
+    path: &str,
+    query: &str,
+) -> Option<String> {
+    if !path.starts_with("/api/v1/") {
+        return None;
+    }
+    let key = match authenticate_api_key(state, request).await {
+        Ok(key) => key,
+        Err(error) => return Some(error.response()),
+    };
+    let query = parse_urlencoded(query);
+    let response = match (request.method.as_str(), path) {
+        ("GET", "/api/v1/me") => json_response(json!({"key": api_key_value(&key)})),
+        ("GET", "/api/v1/config") => {
+            let status = web_status_values(state).await;
+            json_response(json!({"settings": status["settings"].clone()}))
+        }
+        ("GET", "/api/v1/stats") => json_response(web_stats_summary(state).await),
+        ("GET", "/api/v1/games") => {
+            let games = api_game_value(state, key.guild_id).await.into_iter().collect::<Vec<_>>();
+            json_response(json!({"games": games}))
+        }
+        ("GET", "/api/v1/leaderboard") => {
+            let limit = query
+                .get("limit")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(10);
+            json_response(web_leaderboard_values(state, "rating", limit).await)
+        }
+        _ => {
+            if let Some(metric) = path.strip_prefix("/api/v1/leaderboard/") {
+                if !WEB_LEADERBOARD_METRICS.contains(&metric) {
+                    json_error("400 Bad Request", "unsupported leaderboard metric")
+                } else {
+                    let limit = query
+                        .get("limit")
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(10);
+                    json_response(web_leaderboard_values(state, metric, limit).await)
+                }
+            } else if let Some((guild_id, suffix)) = parse_api_guild_path(path, "/api/v1/games/") {
+                if let Err(error) = require_key_guild(&key, guild_id) {
+                    error.response()
+                } else if suffix.is_none() && request.method == "GET" {
+                    api_game_value(state, guild_id)
+                        .await
+                        .map(json_response)
+                        .unwrap_or_else(|| json_error("404 Not Found", "game not found"))
+                } else if suffix == Some("actions") && request.method == "POST" {
+                    let action = serde_json::from_str::<Value>(&request.body)
+                        .ok()
+                        .and_then(|body| body.get("action").and_then(Value::as_str).map(str::to_string));
+                    let Some(action) = action else {
+                        return Some(json_error("400 Bad Request", "JSON body requires action"));
+                    };
+                    control_game(state, guild_id, &action)
+                        .await
+                        .map(json_response)
+                        .unwrap_or_else(|message| json_error("409 Conflict", &message))
+                } else {
+                    json_error("404 Not Found", "API endpoint not found")
+                }
+            } else if let Some((guild_id, suffix)) = parse_api_guild_path(path, "/api/v1/recruitments/") {
+                if let Err(error) = require_key_guild(&key, guild_id) {
+                    error.response()
+                } else if suffix.is_none() && request.method == "GET" {
+                    api_recruitment_value(state, guild_id)
+                        .await
+                        .map(json_response)
+                        .unwrap_or_else(|| json_error("404 Not Found", "recruitment not found"))
+                } else if suffix == Some("actions") && request.method == "POST" {
+                    let action = serde_json::from_str::<Value>(&request.body)
+                        .ok()
+                        .and_then(|body| body.get("action").and_then(Value::as_str).map(str::to_string));
+                    match action.as_deref() {
+                        Some("cancel") => cancel_recruitment(state, guild_id)
+                            .await
+                            .map(json_response)
+                            .unwrap_or_else(|message| json_error("409 Conflict", &message)),
+                        Some("start") => start_recruitment(state, guild_id)
+                            .await
+                            .map(json_response)
+                            .unwrap_or_else(|message| json_error("409 Conflict", &message)),
+                        _ => json_error("400 Bad Request", "supported recruitment actions: start, cancel"),
+                    }
+                } else {
+                    json_error("404 Not Found", "API endpoint not found")
+                }
+            } else {
+                json_error("404 Not Found", "API endpoint not found")
+            }
+        }
+    };
+    Some(response)
+}
+
 async fn route_public_request(state: &WebSettingsState, path: &str, query: &str) -> Option<String> {
     let query = parse_urlencoded(query);
     match path {
@@ -605,6 +1065,131 @@ async fn route_public_request(state: &WebSettingsState, path: &str, query: &str)
             }
         }
     }
+}
+
+fn valid_api_key_label(value: &str) -> std::result::Result<String, String> {
+    let label = value.trim();
+    if label.is_empty() || label.chars().count() > 64 || label.chars().any(char::is_control) {
+        return Err("API 키 이름은 제어 문자 없이 1~64자여야 합니다.".to_string());
+    }
+    Ok(label.to_string())
+}
+
+fn api_key_records_for_guild(store: &ApiKeyStore, guild_id: u64) -> Vec<ApiKeyRecord> {
+    let mut records = store
+        .keys
+        .iter()
+        .filter(|record| record.guild_id == guild_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    records.sort_by_key(|record| std::cmp::Reverse(record.created_at.clone()));
+    records
+}
+
+async fn route_api_key_management(
+    state: &WebSettingsState,
+    session: &WebSettingsSession,
+    token: &str,
+    request: &HttpRequest,
+) -> String {
+    let action = format!("{WEB_SETTINGS_PATH}/{token}/api-keys");
+    match request.method.as_str() {
+        "GET" => {
+            let store = state.api_keys.read().await;
+            let records = api_key_records_for_guild(&store, session.guild_id);
+            http_response(
+                "200 OK",
+                &render_api_key_page(session, &action, &records, None, None),
+            )
+        }
+        "POST" => {
+            let form = parse_urlencoded(&request.body);
+            let result = match form.get("action").map(String::as_str) {
+                Some("create") => {
+                    let label = form
+                        .get("label")
+                        .ok_or_else(|| "API 키 이름을 입력하세요.".to_string())
+                        .and_then(|value| valid_api_key_label(value));
+                    let label = match label {
+                        Ok(label) => label,
+                        Err(error) => return api_key_management_error(state, session, &action, error).await,
+                    };
+                    let mut store = state.api_keys.write().await;
+                    let previous = store.clone();
+                    let key = issue_api_key(&mut store, session.guild_id, session.user_id, label);
+                    if let Err(error) = save_api_key_store(&*state.api_keys_path, &store) {
+                        *store = previous;
+                        let error = error.to_string();
+                        drop(store);
+                        return api_key_management_error(state, session, &action, error).await;
+                    }
+                    Ok(Some(key))
+                }
+                Some("revoke") => {
+                    let Some(key_id) = form.get("key_id") else {
+                        return api_key_management_error(
+                            state,
+                            session,
+                            &action,
+                            "폐기할 API 키를 선택하세요.".to_string(),
+                        )
+                        .await;
+                    };
+                    let mut store = state.api_keys.write().await;
+                    let previous = store.clone();
+                    let Some(record) = store
+                        .keys
+                        .iter_mut()
+                        .find(|record| record.id == *key_id && record.guild_id == session.guild_id)
+                    else {
+                        drop(store);
+                        return api_key_management_error(
+                            state,
+                            session,
+                            &action,
+                            "API 키를 찾을 수 없습니다.".to_string(),
+                        )
+                        .await;
+                    };
+                    record.revoked = true;
+                    if let Err(error) = save_api_key_store(&*state.api_keys_path, &store) {
+                        *store = previous;
+                        let error = error.to_string();
+                        drop(store);
+                        return api_key_management_error(state, session, &action, error).await;
+                    }
+                    Ok(None)
+                }
+                _ => Err("지원하지 않는 API 키 작업입니다.".to_string()),
+            };
+            match result {
+                Ok(issued_key) => {
+                    let store = state.api_keys.read().await;
+                    let records = api_key_records_for_guild(&store, session.guild_id);
+                    http_response(
+                        "200 OK",
+                        &render_api_key_page(session, &action, &records, issued_key.as_deref(), None),
+                    )
+                }
+                Err(error) => api_key_management_error(state, session, &action, error).await,
+            }
+        }
+        _ => json_error("405 Method Not Allowed", "GET or POST is required"),
+    }
+}
+
+async fn api_key_management_error(
+    state: &WebSettingsState,
+    session: &WebSettingsSession,
+    action: &str,
+    error: String,
+) -> String {
+    let store = state.api_keys.read().await;
+    let records = api_key_records_for_guild(&store, session.guild_id);
+    http_response(
+        "400 Bad Request",
+        &render_api_key_page(session, action, &records, None, Some(&error)),
+    )
 }
 
 async fn web_status_values(state: &WebSettingsState) -> Value {
@@ -798,11 +1383,85 @@ fn render_settings_page(
   </fieldset>
   <button type="submit">저장하기</button>
 </form>
+<p><a href="{}/api-keys">API 키 관리</a></p>
 </body>
 </html>"#,
         html_escape(&session.user_label),
         status_html,
+        html_escape(action),
         html_escape(action)
+    )
+}
+
+fn render_api_key_page(
+    session: &WebSettingsSession,
+    action: &str,
+    records: &[ApiKeyRecord],
+    issued_key: Option<&str>,
+    error: Option<&str>,
+) -> String {
+    let message_html = error.map_or_else(String::new, |message| {
+        format!(r#"<p class="message error">⚠️ {}</p>"#, html_escape(message))
+    });
+    let issued_html = issued_key.map_or_else(String::new, |key| {
+        format!(
+            r#"<section class="panel"><h2>새 API 키</h2><p class="message error">이 키는 지금 한 번만 표시됩니다. 안전한 곳에 보관하세요.</p><pre>{}</pre></section>"#,
+            html_escape(key)
+        )
+    });
+    let rows = records
+        .iter()
+        .map(|record| {
+            let state = if record.revoked { "폐기됨" } else { "활성" };
+            let action = if record.revoked {
+                String::new()
+            } else {
+                format!(
+                    r#"<form method="post" action="{action}"><input type="hidden" name="action" value="revoke"><input type="hidden" name="key_id" value="{}"><button type="submit">폐기</button></form>"#,
+                    html_escape(&record.id)
+                )
+            };
+            format!(
+                r#"<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{action}</td></tr>"#,
+                html_escape(&record.label),
+                html_escape(&record.id),
+                html_escape(&record.created_at),
+                state,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let table = if rows.is_empty() {
+        "<p class=\"meta\">발급된 API 키가 없습니다.</p>".to_string()
+    } else {
+        format!(
+            r#"<table><thead><tr><th>이름</th><th>키 ID</th><th>발급 시각</th><th>상태</th><th></th></tr></thead><tbody>{rows}</tbody></table>"#
+        )
+    };
+    let settings_path = action.trim_end_matches("/api-keys");
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>마피아 API 키 관리</title>
+{WEB_PAGE_STYLE}
+</head>
+<body>
+<h1>마피아 API 키 관리</h1>
+<p class="meta">{} 서버 전용 키입니다. 발급된 키는 이 서버의 보호 API만 사용할 수 있습니다.</p>
+{message_html}
+{issued_html}
+<section class="panel"><h2>키 발급</h2><form method="post" action="{action}"><input type="hidden" name="action" value="create"><label class="row" for="label"><span>키 이름</span><input type="text" id="label" name="label" maxlength="64" required></label><button type="submit">키 발급</button></form></section>
+<section class="panel"><h2>발급된 키</h2>{table}</section>
+<p><a href="{settings_path}">설정으로 돌아가기</a></p>
+</body>
+</html>"#,
+        html_escape(&session.user_label),
+        action = html_escape(action),
+        settings_path = html_escape(settings_path),
     )
 }
 
@@ -1101,6 +1760,25 @@ fn render_api_docs_page() -> String {
             "GET /api/leaderboard/{metric}",
             "wins, winrate, games, mafia, playtime, rating 기준 리더보드를 반환합니다.",
         ),
+        ("GET /api/v1/me", "API 키 정보와 서버 범위를 반환합니다. API 키 필요."),
+        ("GET /api/v1/config", "게임 설정 요약을 반환합니다. API 키 필요."),
+        ("GET /api/v1/games", "키 발급 서버의 진행 중 게임을 반환합니다. API 키 필요."),
+        (
+            "GET /api/v1/games/{guild_id}",
+            "참가자, 직업, 단계, 타이머를 포함한 게임 상세를 반환합니다. API 키 필요.",
+        ),
+        (
+            "POST /api/v1/games/{guild_id}/actions",
+            "JSON action: skip_day, extend_day 또는 stop. API 키 필요.",
+        ),
+        (
+            "GET /api/v1/recruitments/{guild_id}",
+            "모집 인원과 역할 구성을 반환합니다. API 키 필요.",
+        ),
+        (
+            "POST /api/v1/recruitments/{guild_id}/actions",
+            "JSON action: start 또는 cancel. API 키 필요.",
+        ),
     ];
     let rows = endpoints
         .into_iter()
@@ -1114,10 +1792,12 @@ fn render_api_docs_page() -> String {
         .collect::<Vec<_>>()
         .join("");
     let body = format!(
-        r#"<p class="meta">웹 상태판에서 사용하는 공개 API입니다. 모든 응답은 JSON입니다.</p>
+        r#"<p class="meta">모든 응답은 JSON입니다. `/api/v1/*`는 웹 설정의 API 키 관리에서 발급한 서버별 키가 필요합니다.</p>
 <section class="panel"><h2>엔드포인트</h2>{rows}</section>
 <section class="panel"><h2>예시</h2><pre>GET /api/leaderboard/rating?limit=20
-GET /api/status</pre></section>"#
+GET /api/status
+GET /api/v1/games/123 (X-API-Key: mfr_...)
+POST /api/v1/games/123/actions {{"action":"skip_day"}}</pre></section>"#
     );
     base_html("마피아 봇 API 문서", &body, false)
 }
@@ -1536,6 +2216,7 @@ fn minimum_player_count(config: &BotConfig) -> usize {
 struct HttpRequest {
     method: String,
     path: String,
+    headers: HashMap<String, String>,
     body: String,
 }
 
@@ -1572,8 +2253,8 @@ where
     let Some(index) = header_end else {
         bail!("HTTP 헤더를 찾지 못했습니다.");
     };
-    let headers = String::from_utf8_lossy(&buffer[..index]).to_string();
-    let mut first_line = headers
+    let raw_headers = String::from_utf8_lossy(&buffer[..index]).to_string();
+    let mut first_line = raw_headers
         .lines()
         .next()
         .unwrap_or_default()
@@ -1583,7 +2264,12 @@ where
     let body_start = index + 4;
     let body_end = (body_start + content_length).min(buffer.len());
     let body = String::from_utf8_lossy(&buffer[body_start..body_end]).to_string();
-    Ok(HttpRequest { method, path, body })
+    Ok(HttpRequest {
+        method,
+        path,
+        headers: parse_http_headers(&raw_headers),
+        body,
+    })
 }
 
 fn http_response(status: &str, body: &str) -> String {
@@ -1594,11 +2280,23 @@ fn http_response(status: &str, body: &str) -> String {
 }
 
 fn json_response(value: Value) -> String {
+    json_response_with_status("200 OK", value)
+}
+
+fn json_error(status: &str, message: &str) -> String {
+    json_response_with_status(status, json!({"error": message}))
+}
+
+fn json_response_with_status(status: &str, value: Value) -> String {
     let body = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
     format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, X-API-Key\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
+}
+
+fn api_options_response() -> String {
+    "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, X-API-Key\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Max-Age: 600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string()
 }
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
@@ -1614,6 +2312,17 @@ fn parse_content_length(headers: &str) -> Option<usize> {
             None
         }
     })
+}
+
+fn parse_http_headers(headers: &str) -> HashMap<String, String> {
+    headers
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect()
 }
 
 fn parse_urlencoded(body: &str) -> HashMap<String, String> {
@@ -1718,6 +2427,35 @@ mod tests {
         }
     }
 
+    fn test_state() -> WebSettingsState {
+        WebSettingsState {
+            config: Arc::new(RwLock::new(test_config())),
+            config_path: Arc::new(PathBuf::from("unused-config.json")),
+            api_keys: Arc::new(RwLock::new(ApiKeyStore::default())),
+            api_keys_path: Arc::new(PathBuf::from("unused-api-keys.json")),
+            stats: Arc::new(RwLock::new(StatsFile::default())),
+            games: Arc::new(DashMap::new()),
+            recruitments: Arc::new(DashMap::new()),
+            sessions: Arc::new(DashMap::new()),
+            started_at: Instant::now(),
+            bot_name: "bot".to_string(),
+            guild_count: 1,
+        }
+    }
+
+    fn api_request(method: &str, path: &str, key: Option<(&str, &str)>) -> HttpRequest {
+        let mut headers = HashMap::new();
+        if let Some((name, value)) = key {
+            headers.insert(name.to_ascii_lowercase(), value.to_string());
+        }
+        HttpRequest {
+            method: method.to_string(),
+            path: path.to_string(),
+            headers,
+            body: String::new(),
+        }
+    }
+
     fn updates_for(config: &BotConfig) -> HashMap<String, String> {
         WEB_CONFIG_FIELDS
             .iter()
@@ -1765,9 +2503,9 @@ mod tests {
     #[tokio::test]
     async fn invalid_post_returns_error_without_lock_deadlock() {
         let config = test_config();
-        let sessions = Arc::new(DashMap::new());
+        let state = test_state();
         let token = "test-token".to_string();
-        sessions.insert(
+        state.sessions.insert(
             token.clone(),
             WebSettingsSession {
                 guild_id: 1,
@@ -1776,17 +2514,6 @@ mod tests {
                 expires_at: Instant::now() + Duration::from_secs(60),
             },
         );
-        let state = WebSettingsState {
-            config: Arc::new(RwLock::new(config.clone())),
-            config_path: Arc::new(PathBuf::from("unused-config.json")),
-            stats: Arc::new(RwLock::new(StatsFile::default())),
-            games: Arc::new(DashMap::new()),
-            recruitments: Arc::new(DashMap::new()),
-            sessions,
-            started_at: Instant::now(),
-            bot_name: "bot".to_string(),
-            guild_count: 1,
-        };
         let body = form_body_for(&config)
             .replace("default_mafia_count=2", "default_mafia_count=1")
             .replace("mafia_special_count=0", "mafia_special_count=1");
@@ -1798,6 +2525,7 @@ mod tests {
                 HttpRequest {
                     method: "POST".to_string(),
                     path: format!("{WEB_SETTINGS_PATH}/{token}"),
+                    headers: HashMap::new(),
                     body,
                 },
             ),
@@ -1806,5 +2534,157 @@ mod tests {
         .expect("invalid settings POST should not deadlock");
 
         assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+    }
+
+    #[tokio::test]
+    async fn public_status_api_returns_json() {
+        let state = test_state();
+        let response = route_request(&state, api_request("GET", "/api/status", None)).await;
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Content-Type: application/json"));
+    }
+
+    #[tokio::test]
+    async fn protected_api_requires_key() {
+        let state = test_state();
+        let response = route_request(&state, api_request("GET", "/api/v1/me", None)).await;
+
+        assert!(response.starts_with("HTTP/1.1 401 Unauthorized"));
+        assert!(response.contains("missing API key"));
+    }
+
+    #[tokio::test]
+    async fn protected_api_accepts_bearer_key() {
+        let state = test_state();
+        let raw_key = {
+            let mut store = state.api_keys.write().await;
+            issue_api_key(&mut store, 1, 2, "integration".to_string())
+        };
+        let response = route_request(
+            &state,
+            api_request("GET", "/api/v1/me", Some(("Authorization", &format!("Bearer {raw_key}")))),
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("integration"));
+    }
+
+    #[tokio::test]
+    async fn protected_api_blocks_other_guild() {
+        let state = test_state();
+        let raw_key = {
+            let mut store = state.api_keys.write().await;
+            issue_api_key(&mut store, 1, 2, "guild-one".to_string())
+        };
+        let response = route_request(
+            &state,
+            api_request("GET", "/api/v1/games/2", Some(("X-API-Key", &raw_key))),
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 403 Forbidden"));
+    }
+
+    #[tokio::test]
+    async fn api_key_management_issues_and_revokes_key() {
+        let mut state = test_state();
+        let key_path = std::env::temp_dir().join(format!("mafia-api-keys-{}.json", Uuid::new_v4()));
+        state.api_keys_path = Arc::new(key_path.clone());
+        let token = "api-key-test";
+        state.sessions.insert(
+            token.to_string(),
+            WebSettingsSession {
+                guild_id: 1,
+                user_id: 2,
+                user_label: "tester".to_string(),
+                expires_at: Instant::now() + Duration::from_secs(60),
+            },
+        );
+        let create_response = route_request(
+            &state,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: format!("{WEB_SETTINGS_PATH}/{token}/api-keys"),
+                headers: HashMap::new(),
+                body: "action=create&label=integration".to_string(),
+            },
+        )
+        .await;
+        assert!(create_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(create_response.contains("mfr_"));
+        let key_id = state.api_keys.read().await.keys[0].id.clone();
+
+        let revoke_response = route_request(
+            &state,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: format!("{WEB_SETTINGS_PATH}/{token}/api-keys"),
+                headers: HashMap::new(),
+                body: format!("action=revoke&key_id={key_id}"),
+            },
+        )
+        .await;
+        assert!(revoke_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(state.api_keys.read().await.keys[0].revoked);
+        let _ = std::fs::remove_file(key_path);
+    }
+
+    #[tokio::test]
+    async fn protected_api_starts_ready_recruitment() {
+        let state = test_state();
+        let raw_key = {
+            let mut store = state.api_keys.write().await;
+            issue_api_key(&mut store, 1, 2, "host".to_string())
+        };
+        let recruitment = Arc::new(RwLock::new(Recruitment {
+            host_user_id: serenity::UserId::new(2),
+            participant_role_id: serenity::RoleId::new(3),
+            role_counts: HashMap::new(),
+            special_roles: Vec::new(),
+            max_players: 8,
+            minimum_players: 2,
+            joined_ids: std::collections::HashSet::from([2, 3]),
+            joined_names: HashMap::new(),
+            spectator_ids: std::collections::HashSet::new(),
+            spectator_names: HashMap::new(),
+            accepting: true,
+            cancelled: false,
+            done: Arc::new(tokio::sync::Notify::new()),
+        }));
+        state
+            .recruitments
+            .insert(serenity::GuildId::new(1), recruitment.clone());
+        let response = route_request(
+            &state,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/api/v1/recruitments/1/actions".to_string(),
+                headers: HashMap::from([("x-api-key".to_string(), raw_key)]),
+                body: r#"{"action":"start"}"#.to_string(),
+            },
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(!recruitment.read().await.accepting);
+    }
+
+    #[test]
+    fn api_key_store_never_serializes_raw_key() {
+        let mut store = ApiKeyStore::default();
+        let raw_key = issue_api_key(&mut store, 1, 2, "test".to_string());
+        let serialized = serde_json::to_string(&store).unwrap();
+
+        assert!(!serialized.contains(&raw_key));
+        assert!(serialized.contains("key_hash"));
+    }
+
+    #[test]
+    fn parses_api_key_headers_case_insensitively() {
+        let headers = parse_http_headers("GET / HTTP/1.1\r\nX-API-Key: key-value\r\n");
+
+        assert_eq!(headers.get("x-api-key").map(String::as_str), Some("key-value"));
     }
 }

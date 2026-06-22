@@ -1,6 +1,7 @@
 .env
 .env.local
 config.json
+api_keys.json
 stats.json
 target/
 .sccache/
