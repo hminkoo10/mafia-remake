@@ -2319,6 +2319,9 @@ pub async fn ensure_anonymous_dead_input_channel(
 ) -> Option<serenity::ChannelId> {
     let (guild_id, alias, existing_channel_id) = {
         let running_read = running.read().await;
+        if !is_game_channel_creation_allowed(running_read.game.phase) {
+            return None;
+        }
         (
             running_read.guild_id,
             if running_read.anonymous_enabled {
@@ -2376,14 +2379,28 @@ pub async fn ensure_anonymous_dead_input_channel(
         None,
     )
     .await?;
-    {
+    let cleanup_started = {
         let mut running_write = running.write().await;
-        running_write
-            .anonymous_dead_input_channel_ids
-            .insert(player.user_id, channel.id);
-        running_write
-            .anonymous_dead_input_channel_owners
-            .insert(channel.id, player.user_id);
+        if !is_game_channel_creation_allowed(running_write.game.phase) {
+            true
+        } else {
+            running_write
+                .anonymous_dead_input_channel_ids
+                .insert(player.user_id, channel.id);
+            running_write
+                .anonymous_dead_input_channel_owners
+                .insert(channel.id, player.user_id);
+            false
+        }
+    };
+    if cleanup_started {
+        if let Err(error) = channel.id.delete(&ctx.http).await {
+            eprintln!(
+                "failed to delete a dead-player channel created during cleanup ({}): {error:?}",
+                channel.id.get()
+            );
+        }
+        return None;
     }
     let _ = send_channel_embed(
         &ctx.http,
@@ -2395,6 +2412,10 @@ pub async fn ensure_anonymous_dead_input_channel(
     )
     .await;
     Some(channel.id)
+}
+
+fn is_game_channel_creation_allowed(phase: Phase) -> bool {
+    phase != Phase::Ended
 }
 
 pub async fn ensure_anonymous_shaman_input_channel(
@@ -3826,6 +3847,8 @@ pub async fn handle_madam_seduction_result(
 }
 
 pub async fn cleanup_game(ctx: &serenity::Context, data: &Data, running: &Arc<RwLock<RunningGame>>) {
+    // Block in-flight personal dead-chat creation before collecting channels to delete.
+    running.write().await.game.phase = Phase::Ended;
     restore_channel_slowmode(ctx, running).await;
     restore_member_game_channel_chat(ctx, running).await;
     restore_game_channel_chat(ctx, running).await;
@@ -3867,7 +3890,9 @@ pub async fn cleanup_game(ctx: &serenity::Context, data: &Data, running: &Arc<Rw
     let mut seen = HashSet::new();
     for channel_id in channel_ids {
         if seen.insert(channel_id) {
-            let _ = channel_id.delete(&ctx.http).await;
+            if let Err(error) = channel_id.delete(&ctx.http).await {
+                eprintln!("failed to delete game channel {}: {error:?}", channel_id.get());
+            }
         }
     }
 
@@ -4355,5 +4380,11 @@ mod tests {
             .unwrap();
 
         assert!(private_role_member_can_chat(&game, Role::Doctor, &doctor));
+    }
+
+    #[test]
+    fn ended_game_cannot_create_personal_dead_chat() {
+        assert!(!is_game_channel_creation_allowed(Phase::Ended));
+        assert!(is_game_channel_creation_allowed(Phase::Night));
     }
 }
