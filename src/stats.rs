@@ -8,6 +8,8 @@ use std::{collections::HashMap, fs, path::Path};
 pub const INITIAL_RATING: i64 = 1000;
 const RATING_HISTORY_LIMIT: usize = 20;
 const RATING_DELTA_CAP: i64 = 50;
+const ROLE_DELTA_CAP: i64 = 10;
+const LOSING_RATING_GAIN_CAP: i64 = 3;
 const ROLE_STATS_ORDER: &[Role] = &[
     Role::Mafia,
     Role::Police,
@@ -166,9 +168,21 @@ pub fn record_game_stats(
         .players
         .iter()
         .map(|player| {
+            let role = initial_roles
+                .get(&player.user_id)
+                .copied()
+                .unwrap_or(player.role);
             (
                 player.user_id,
-                rating_change_for_player(game, player, stats, &ratings, &team_by_user_id, winner),
+                rating_change_for_player(
+                    game,
+                    player,
+                    role,
+                    stats,
+                    &ratings,
+                    &team_by_user_id,
+                    winner,
+                ),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -214,7 +228,7 @@ pub fn record_game_stats(
             after: rating_change.after,
             delta: rating_change.delta,
             team_delta: rating_change.team_delta,
-            role_delta: 0,
+            role_delta: rating_change.role_delta,
             role: role.value().to_string(),
             team,
             winner: winner.value().to_string(),
@@ -247,6 +261,7 @@ struct RatingChange {
     after: i64,
     delta: i64,
     team_delta: i64,
+    role_delta: i64,
     reasons: Vec<String>,
 }
 
@@ -257,6 +272,7 @@ impl RatingChange {
             after: before,
             delta: 0,
             team_delta: 0,
+            role_delta: 0,
             reasons: vec![if won {
                 "소속 진영 승리".to_string()
             } else {
@@ -269,6 +285,7 @@ impl RatingChange {
 fn rating_change_for_player(
     game: &MafiaGame,
     player: &Player,
+    initial_role: Role,
     stats: &StatsFile,
     ratings: &HashMap<u64, i64>,
     team_by_user_id: &HashMap<u64, String>,
@@ -289,17 +306,104 @@ fn rating_change_for_player(
         -RATING_DELTA_CAP,
         RATING_DELTA_CAP,
     );
-    let after = (old_rating + team_delta).max(0);
+    let (role_delta, mut role_reasons) = role_rating_adjustment(game, player, initial_role);
+    let combined_delta = clamp(
+        team_delta + role_delta,
+        -RATING_DELTA_CAP,
+        RATING_DELTA_CAP,
+    );
+    let final_delta = final_rating_delta(team_delta, role_delta, won);
+    let after = (old_rating + final_delta).max(0);
+    let mut reasons = vec![if won {
+        "소속 진영 승리".to_string()
+    } else {
+        "소속 진영 패배".to_string()
+    }];
+    reasons.append(&mut role_reasons);
+    if combined_delta != team_delta + role_delta {
+        reasons.push("전체 레이팅 변동 상한 적용".to_string());
+    }
+    if !won && final_delta != combined_delta {
+        reasons.push("패배팀 상승 제한 적용".to_string());
+    }
     RatingChange {
         before: old_rating,
         after,
         delta: after - old_rating,
         team_delta,
-        reasons: vec![if won {
-            "소속 진영 승리".to_string()
-        } else {
-            "소속 진영 패배".to_string()
-        }],
+        role_delta,
+        reasons,
+    }
+}
+
+fn role_rating_adjustment(game: &MafiaGame, player: &Player, role: Role) -> (i64, Vec<String>) {
+    let mut points = 0;
+    let mut reasons = Vec::new();
+    for event in game
+        .rating_events
+        .get(&player.user_id)
+        .into_iter()
+        .flatten()
+    {
+        points += event.points;
+        reasons.push(format!("{} {:+}", event.reason, event.points));
+    }
+    let action_count = game
+        .rating_action_counts
+        .get(&player.user_id)
+        .copied()
+        .unwrap_or(0);
+    if action_count == 0
+        && player.alive
+        && game.day_number >= 2
+        && role_has_core_action(role)
+    {
+        points -= 2;
+        reasons.push("핵심 능력 미사용 -2".to_string());
+    }
+    let role_delta = clamp(points, -ROLE_DELTA_CAP, ROLE_DELTA_CAP);
+    if role_delta != points {
+        reasons.push("직업 보정 상한 적용".to_string());
+    }
+    (role_delta, reasons)
+}
+
+fn role_has_core_action(role: Role) -> bool {
+    matches!(
+        role,
+        Role::Mafia
+            | Role::Doctor
+            | Role::Nurse
+            | Role::Gangster
+            | Role::Police
+            | Role::Vigilante
+            | Role::Reporter
+            | Role::Hacker
+            | Role::Psychologist
+            | Role::Detective
+            | Role::Shaman
+            | Role::Priest
+            | Role::Spy
+            | Role::Contractor
+            | Role::Thief
+            | Role::Witch
+            | Role::Godfather
+            | Role::Terrorist
+            | Role::CultLeader
+            | Role::Fanatic
+    )
+}
+
+fn final_rating_delta(team_delta: i64, role_delta: i64, won: bool) -> i64 {
+    let combined_delta = clamp(
+        team_delta + role_delta,
+        -RATING_DELTA_CAP,
+        RATING_DELTA_CAP,
+    );
+    if won {
+        combined_delta
+    } else {
+        combined_delta.min(LOSING_RATING_GAIN_CAP)
     }
 }
 
@@ -597,6 +701,29 @@ const fn initial_rating() -> i64 {
 mod tests {
     use super::*;
 
+    fn rating_test_game() -> MafiaGame {
+        MafiaGame::new(
+            vec![
+                (1, "Alpha".to_string()),
+                (2, "Beta".to_string()),
+                (3, "Gamma".to_string()),
+                (4, "Delta".to_string()),
+            ],
+            1,
+            1,
+            1,
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    fn initial_roles(game: &MafiaGame) -> HashMap<u64, Role> {
+        game.players
+            .iter()
+            .map(|player| (player.user_id, player.role))
+            .collect()
+    }
+
     #[test]
     fn win_rate_handles_zero_games() {
         assert_eq!(win_rate_text(0, 0), "0.0%");
@@ -639,5 +766,71 @@ mod tests {
         assert_eq!(play_duration_text(12), "1분 미만");
         assert_eq!(play_duration_text(72), "1분");
         assert_eq!(play_duration_text(3700), "61분");
+    }
+
+    #[test]
+    fn successful_role_event_is_recorded_in_rating_history() {
+        let mut game = rating_test_game();
+        let doctor = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Doctor)
+            .cloned()
+            .unwrap();
+        game.record_rating_event(doctor.user_id, 5, "마피아 공격 치료 성공");
+        let mut stats = StatsFile::default();
+
+        record_game_stats(&mut stats, &game, &initial_roles(&game), 120, Winner::Citizen);
+
+        let history = stats
+            .users
+            .get(&doctor.user_id.to_string())
+            .unwrap()
+            .rating_history
+            .last()
+            .unwrap();
+        assert_eq!(history.role_delta, 5);
+        assert!(history.rating_reasons.iter().any(|reason| reason.contains("치료 성공")));
+    }
+
+    #[test]
+    fn role_rating_adjustment_is_capped() {
+        let mut game = rating_test_game();
+        let doctor = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Doctor)
+            .cloned()
+            .unwrap();
+        game.record_rating_event(doctor.user_id, 7, "첫 번째 기여");
+        game.record_rating_event(doctor.user_id, 6, "두 번째 기여");
+
+        let (role_delta, reasons) = role_rating_adjustment(&game, &doctor, Role::Doctor);
+
+        assert_eq!(role_delta, ROLE_DELTA_CAP);
+        assert!(reasons.iter().any(|reason| reason == "직업 보정 상한 적용"));
+    }
+
+    #[test]
+    fn inactive_surviving_role_receives_small_penalty() {
+        let mut game = rating_test_game();
+        game.day_number = 2;
+        let doctor = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Doctor)
+            .cloned()
+            .unwrap();
+
+        let (role_delta, reasons) = role_rating_adjustment(&game, &doctor, Role::Doctor);
+
+        assert_eq!(role_delta, -2);
+        assert!(reasons.iter().any(|reason| reason.contains("미사용")));
+    }
+
+    #[test]
+    fn losing_team_cannot_gain_more_than_three_rating() {
+        assert_eq!(final_rating_delta(-2, 10, false), LOSING_RATING_GAIN_CAP);
+        assert_eq!(final_rating_delta(-40, 10, false), -30);
     }
 }

@@ -223,11 +223,7 @@ impl MafiaGame {
             }
         }
 
-        self.clear_night_maps();
-        self.phase = Phase::Day;
-        self.expire_madam_seductions();
-
-        Ok(NightResult {
+        let result = NightResult {
             killed: killed_players.first().cloned(),
             protected,
             mafia_target,
@@ -265,7 +261,165 @@ impl MafiaGame {
             gangster_results,
             cult_bells: timed_cult_bells + cult_bells + fanatic_bells,
             ..Default::default()
-        })
+        };
+        self.record_night_rating_events(&result);
+        self.clear_night_maps();
+        self.phase = Phase::Day;
+        self.expire_madam_seductions();
+
+        Ok(result)
+    }
+
+    fn record_night_rating_events(&mut self, result: &NightResult) {
+        let killed_ids = result
+            .killed_players
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        if let (Some(mafia_target), Some(protected)) = (&result.mafia_target, &result.protected)
+            && mafia_target.user_id == protected.user_id
+            && !killed_ids.contains(&mafia_target.user_id)
+        {
+            let doctors = self
+                .doctor_targets
+                .iter()
+                .filter_map(|(&actor_id, &target_id)| (target_id == protected.user_id).then_some(actor_id))
+                .collect::<Vec<_>>();
+            for actor_id in doctors {
+                self.record_rating_event(actor_id, 5, "마피아 공격 치료 성공");
+            }
+        }
+
+        if result.police_target_is_mafia == Some(true)
+            && let Some(target) = &result.police_target
+        {
+            let police = self
+                .police_targets
+                .iter()
+                .filter_map(|(&actor_id, &target_id)| (target_id == target.user_id).then_some(actor_id))
+                .collect::<Vec<_>>();
+            for actor_id in police {
+                self.record_rating_event(actor_id, 4, "경찰 조사로 마피아팀 확인");
+            }
+        }
+
+        let vigilante_kills = result
+            .vigilante_kills
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        let vigilantes = self
+            .vigilante_targets
+            .iter()
+            .filter_map(|(&actor_id, &target_id)| {
+                let target = self.get_player(target_id)?;
+                (vigilante_kills.contains(&target_id) && self.is_mafia_team(target)).then_some(actor_id)
+            })
+            .collect::<Vec<_>>();
+        for actor_id in vigilantes {
+            self.record_rating_event(actor_id, 6, "숙청으로 마피아팀 처형");
+        }
+
+        for actor_id in &result.spy_contacts {
+            self.record_rating_event(*actor_id, 4, "첩보로 마피아팀 접선");
+        }
+        for actor_id in &result.contractor_contacts {
+            self.record_rating_event(*actor_id, 4, "청부 추측으로 마피아팀 접선");
+        }
+        for actor_id in &result.witch_contacts {
+            self.record_rating_event(*actor_id, 4, "저주로 마피아팀 접선");
+        }
+        for actor_id in &result.nurse_contacts {
+            self.record_rating_event(*actor_id, 3, "처방으로 의사 접선");
+        }
+        for actor_id in &result.fanatic_inherits {
+            self.record_rating_event(*actor_id, 5, "광신도 재림으로 교주 능력 승계");
+        }
+        for player in &result.soldier_blocks {
+            self.record_rating_event(player.user_id, 5, "군인 방탄 발동");
+        }
+        for (terrorist, target) in &result.terrorist_retaliations {
+            if self.rating_team_key(terrorist) != self.rating_team_key(target) {
+                self.record_rating_event(terrorist.user_id, 6, "테러리스트 반격으로 적팀 처치");
+            }
+        }
+        for (lover, _) in &result.lover_sacrifices {
+            self.record_rating_event(lover.user_id, 5, "연인 희생으로 상대 보호");
+        }
+        for actor_id in result.gangster_results.keys() {
+            self.record_rating_event(*actor_id, 3, "공갈 성공");
+        }
+        for actor_id in result.agent_results.keys() {
+            self.record_rating_event(*actor_id, 3, "요원 지령으로 시민 직업 확인");
+        }
+        for (actor_id, text) in &result.cult_results {
+            if text.contains("포교했습니다") {
+                self.record_rating_event(*actor_id, 5, "포교 성공");
+            }
+        }
+        for (actor_id, text) in &result.fanatic_results {
+            if text.contains("포교했습니다") {
+                self.record_rating_event(*actor_id, 4, "광신도 추종으로 포교 성공");
+            }
+        }
+        let shamans = self
+            .shaman_targets
+            .iter()
+            .filter_map(|(&actor_id, target_id)| {
+                result
+                    .shaman_purifications
+                    .contains(target_id)
+                    .then_some(actor_id)
+            })
+            .collect::<Vec<_>>();
+        for actor_id in shamans {
+            self.record_rating_event(actor_id, 3, "성불로 직업 정보 확보");
+        }
+        let revived_ids = result
+            .priest_revives
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        let priests = self
+            .priest_targets
+            .iter()
+            .filter_map(|(&actor_id, &target_id)| revived_ids.contains(&target_id).then_some(actor_id))
+            .collect::<Vec<_>>();
+        for actor_id in priests {
+            self.record_rating_event(actor_id, 6, "성직자 소생 성공");
+        }
+        let contractor_kill_ids = result
+            .contractor_kills
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        let contractors = self
+            .contractor_contracts
+            .iter()
+            .filter_map(|(&actor_id, &((first_target, _), (second_target, _)))| {
+                (contractor_kill_ids.contains(&first_target)
+                    || contractor_kill_ids.contains(&second_target))
+                .then_some(actor_id)
+            })
+            .collect::<Vec<_>>();
+        for actor_id in contractors {
+            self.record_rating_event(actor_id, 7, "청부 암살 성공");
+        }
+        for actor_id in result.graverobber_results.keys() {
+            self.record_rating_event(*actor_id, 2, "도굴 성공");
+        }
+    }
+
+    fn rating_team_key(&self, player: &Player) -> &'static str {
+        if self.is_cult_team(player) {
+            "cult"
+        } else if self.is_mafia_team(player) {
+            "mafia"
+        } else if player.role == Role::Joker {
+            "joker"
+        } else {
+            "citizen"
+        }
     }
 
     fn clear_night_maps(&mut self) {

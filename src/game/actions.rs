@@ -32,6 +32,8 @@ impl MafiaGame {
         self.hacker_pending_results.insert(actor_id, target_id);
         self.hacker_proxy_targets.insert(actor_id, target_id);
         self.hacker_used_ids.insert(actor_id);
+        self.mark_rating_action(actor_id);
+        self.record_rating_event(actor_id, 2, "해킹 실행");
         Ok(format!("해킹 대상: {}", target.name))
     }
 
@@ -59,6 +61,7 @@ impl MafiaGame {
         }
         self.vigilante_pending_results.insert(actor_id, target_id);
         self.vigilante_investigation_used_ids.insert(actor_id);
+        self.mark_rating_action(actor_id);
         Ok(format!("숙청 조사 대상: {}", target.name))
     }
 
@@ -80,6 +83,7 @@ impl MafiaGame {
                     .entry(actor_id)
                     .or_default()
                     .insert(target_id);
+                self.record_rating_event(actor_id, 3, "숙청 조사로 마피아팀 확인");
                 "마피아팀입니다"
             } else {
                 "마피아팀이 아닙니다"
@@ -121,6 +125,8 @@ impl MafiaGame {
         let second = self.require_alive(second_target_id)?.clone();
         self.psychologist_used_days
             .insert(actor_id, self.day_number);
+        self.mark_rating_action(actor_id);
+        self.record_rating_event(actor_id, 2, "심리학자 관찰 실행");
         let relation = if self.team_key(&first) == self.team_key(&second) {
             "같은 팀입니다"
         } else {
@@ -152,6 +158,8 @@ impl MafiaGame {
         }
         self.thief_used_days.insert(actor_id, self.day_number);
         self.thief_stolen_roles.insert(actor_id, target.role);
+        self.mark_rating_action(actor_id);
+        self.record_rating_event(actor_id, 3, "도벽 실행");
         let contacted_now = self.is_mafia_team(&target) && self.thief_contacted.insert(actor_id);
         let mut lines = vec![
             format!("[도벽] {} 님의 직업 능력을 훔쳤습니다.", target.name),
@@ -161,6 +169,7 @@ impl MafiaGame {
             ),
         ];
         if contacted_now {
+            self.record_rating_event(actor_id, 2, "도벽으로 마피아팀 접선");
             lines.push("[교련] 마피아 직업을 훔쳐 마피아팀과 접선했습니다.".to_string());
         }
         Ok(lines.join("\n"))
@@ -178,10 +187,14 @@ impl MafiaGame {
             bail!("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.");
         }
         if actor.role == Role::Thief {
-            return self.submit_stolen_night_action(&actor, target_id);
+            let result = self.submit_stolen_night_action(&actor, target_id);
+            if result.is_ok() {
+                self.mark_rating_action(actor_id);
+            }
+            return result;
         }
 
-        match actor.role {
+        let result = match actor.role {
             Role::Mafia => self.submit_target_action(
                 actor_id,
                 target_id,
@@ -274,7 +287,11 @@ impl MafiaGame {
             Role::CultLeader => self.submit_cult_action(actor_id, target_id),
             Role::Fanatic => self.submit_fanatic_action(actor_id, target_id),
             _ => bail!("{}은/는 밤 행동이 없습니다.", actor.role.value()),
+        };
+        if result.is_ok() {
+            self.mark_rating_action(actor_id);
         }
+        result
     }
 
     fn submit_target_action<F>(
@@ -744,6 +761,7 @@ impl MafiaGame {
             actor_id,
             ((first.user_id, first_role), (second.user_id, second_role)),
         );
+        self.mark_rating_action(actor_id);
         Ok(format!(
             "[청부] 암살 대상을 선택했습니다.\n- {}: {}\n- {}: {}",
             first.name,

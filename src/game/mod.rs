@@ -87,6 +87,8 @@ pub struct MafiaGame {
     pub cult_bells_this_night: u32,
     pub joker_won: bool,
     pub joker_winner_id: Option<u64>,
+    pub rating_events: HashMap<u64, Vec<RatingEvent>>,
+    pub rating_action_counts: HashMap<u64, u32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -98,6 +100,12 @@ pub struct GameCounts {
     pub vigilante_count: usize,
     pub joker_count: usize,
     pub special_roles: Vec<Role>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RatingEvent {
+    pub points: i64,
+    pub reason: String,
 }
 
 impl MafiaGame {
@@ -224,7 +232,26 @@ impl MafiaGame {
             cult_bells_this_night: 0,
             joker_won: false,
             joker_winner_id: None,
+            rating_events: HashMap::new(),
+            rating_action_counts: HashMap::new(),
         })
+    }
+
+    pub fn mark_rating_action(&mut self, user_id: u64) {
+        *self.rating_action_counts.entry(user_id).or_default() += 1;
+    }
+
+    pub fn record_rating_event(&mut self, user_id: u64, points: i64, reason: impl Into<String>) {
+        if points == 0 {
+            return;
+        }
+        self.rating_events
+            .entry(user_id)
+            .or_default()
+            .push(RatingEvent {
+                points,
+                reason: reason.into(),
+            });
     }
 
     pub fn get_player(&self, user_id: u64) -> Option<&Player> {
@@ -983,5 +1010,9 @@ mod tests {
         let result = game.resolve_night().unwrap();
         assert!(result.killed.is_none());
         assert_eq!(result.protected.unwrap().user_id, target);
+        let events = game.rating_events.get(&doctor).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.points == 5 && event.reason.contains("치료 성공")));
     }
 }

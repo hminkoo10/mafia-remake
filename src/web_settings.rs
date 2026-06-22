@@ -1743,7 +1743,7 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
 }
 
 fn render_api_docs_page() -> String {
-    let endpoints = [
+    let public_endpoints = [
         ("GET /health", "봇 웹 서버가 살아 있는지 확인합니다."),
         (
             "GET /api/status",
@@ -1760,8 +1760,15 @@ fn render_api_docs_page() -> String {
             "GET /api/leaderboard/{metric}",
             "wins, winrate, games, mafia, playtime, rating 기준 리더보드를 반환합니다.",
         ),
+    ];
+    let protected_endpoints = [
         ("GET /api/v1/me", "API 키 정보와 서버 범위를 반환합니다. API 키 필요."),
         ("GET /api/v1/config", "게임 설정 요약을 반환합니다. API 키 필요."),
+        ("GET /api/v1/stats", "전적 요약을 반환합니다. API 키 필요."),
+        (
+            "GET /api/v1/leaderboard/{metric}",
+            "보호 리더보드를 반환합니다. API 키 필요.",
+        ),
         ("GET /api/v1/games", "키 발급 서버의 진행 중 게임을 반환합니다. API 키 필요."),
         (
             "GET /api/v1/games/{guild_id}",
@@ -1780,8 +1787,8 @@ fn render_api_docs_page() -> String {
             "JSON action: start 또는 cancel. API 키 필요.",
         ),
     ];
-    let rows = endpoints
-        .into_iter()
+    let render_rows = |endpoints: &[(&str, &str)]| endpoints
+        .iter()
         .map(|(path, desc)| {
             format!(
                 r#"<div class="endpoint"><code>{}</code><span>{}</span></div>"#,
@@ -1791,13 +1798,27 @@ fn render_api_docs_page() -> String {
         })
         .collect::<Vec<_>>()
         .join("");
+    let public_rows = render_rows(&public_endpoints);
+    let protected_rows = render_rows(&protected_endpoints);
     let body = format!(
-        r#"<p class="meta">모든 응답은 JSON입니다. `/api/v1/*`는 웹 설정의 API 키 관리에서 발급한 서버별 키가 필요합니다.</p>
-<section class="panel"><h2>엔드포인트</h2>{rows}</section>
-<section class="panel"><h2>예시</h2><pre>GET /api/leaderboard/rating?limit=20
-GET /api/status
-GET /api/v1/games/123 (X-API-Key: mfr_...)
-POST /api/v1/games/123/actions {{"action":"skip_day"}}</pre></section>"#
+        r#"<p class="meta">기본 주소는 이 페이지와 같은 도메인입니다. 모든 응답은 JSON이며, `limit`은 1~50 범위입니다.</p>
+<section class="panel"><h2>인증</h2><p>관리자는 `/마피아웹설정`에서 서버 전용 API 키를 발급합니다. 보호 API는 키 발급 서버의 데이터와 작업만 허용합니다.</p><pre>X-API-Key: mfr_...
+Authorization: Bearer mfr_...</pre></section>
+<section class="panel"><h2>공개 조회 API</h2>{public_rows}</section>
+<section class="panel"><h2>보호 관리 API</h2>{protected_rows}</section>
+<section class="panel"><h2>관리 작업 본문</h2><pre>POST /api/v1/games/{{guild_id}}/actions
+{{"action":"skip_day"}}   # 낮 토론 즉시 종료
+{{"action":"extend_day"}} # 연장 투표 중 1분 연장 승인
+{{"action":"stop"}}       # 게임 종료
+
+POST /api/v1/recruitments/{{guild_id}}/actions
+{{"action":"start"}}      # 최소 인원 충족 시 즉시 시작
+{{"action":"cancel"}}     # 모집 취소</pre></section>
+<section class="panel"><h2>응답 코드</h2><pre>200 성공 · 400 잘못된 요청 · 401 키 없음/오류 · 403 다른 서버 키 · 404 대상 없음 · 409 현재 상태에서 작업 불가</pre></section>
+<section class="panel"><h2>호출 예시</h2><pre>curl -H "X-API-Key: mfr_..." https://example.com/api/v1/games/123
+
+curl -X POST -H "Authorization: Bearer mfr_..." -H "Content-Type: application/json" \
+  -d '{{"action":"skip_day"}}' https://example.com/api/v1/games/123/actions</pre></section>"#
     );
     base_html("마피아 봇 API 문서", &body, false)
 }
@@ -2686,5 +2707,15 @@ mod tests {
         let headers = parse_http_headers("GET / HTTP/1.1\r\nX-API-Key: key-value\r\n");
 
         assert_eq!(headers.get("x-api-key").map(String::as_str), Some("key-value"));
+    }
+
+    #[test]
+    fn api_docs_separate_public_and_protected_endpoints() {
+        let html = render_api_docs_page();
+
+        assert!(html.contains("공개 조회 API"));
+        assert!(html.contains("보호 관리 API"));
+        assert!(html.contains("/api/v1/games/{guild_id}/actions"));
+        assert!(html.contains("응답 코드"));
     }
 }
