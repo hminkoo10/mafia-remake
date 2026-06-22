@@ -71,6 +71,7 @@ pub struct WebSettingsState {
     pub started_at: Instant,
     pub bot_name: String,
     pub guild_count: usize,
+    pub base_url: String,
 }
 
 pub fn load_api_key_store(path: impl AsRef<Path>) -> Result<ApiKeyStore> {
@@ -343,53 +344,70 @@ const fn field(
 
 const WEB_PAGE_STYLE: &str = r#"
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: -apple-system, "Segoe UI", "Apple SD Gothic Neo", sans-serif;
-         max-width: 720px; margin: 32px auto; padding: 0 16px; line-height: 1.5; }
-  h1 { font-size: 1.4rem; }
-  h2 { font-size: 1.1rem; margin: 0 0 12px; }
-  a { color: #5865F2; }
-  .meta { color: #888; font-size: 0.9rem; margin-bottom: 24px; }
-  .nav { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0 20px; }
-  .nav a { text-decoration: none; padding: 8px 12px; border: 1px solid #8884; border-radius: 8px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 16px 0; }
-  .split { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 16px; }
-  .card { border: 1px solid #8884; border-radius: 8px; padding: 14px; background: #8881; }
-  .card strong { display: block; font-size: 1.4rem; margin-top: 4px; }
-  .panel { border: 1px solid #8884; border-radius: 8px; padding: 16px; margin: 16px 0; }
-  .pill { display: inline-block; padding: 3px 9px; border: 1px solid #8884; border-radius: 999px; }
-  .metric-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 18px; }
-  .metric-tabs a { text-decoration: none; border: 1px solid #8884; border-radius: 999px; padding: 7px 12px; }
-  .metric-tabs a.active { background: #5865F2; color: white; border-color: #5865F2; }
-  .podium { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
-  .podium-card { border: 1px solid #8884; border-radius: 8px; padding: 14px; background: #8881; }
-  .podium-card .rank { font-size: 0.9rem; color: #888; }
-  .podium-card .name { font-size: 1.15rem; font-weight: 800; margin: 6px 0; }
-  .podium-card .rating { font-size: 1.45rem; font-weight: 800; }
-  .endpoint { display: grid; grid-template-columns: minmax(210px, 0.7fr) 1fr; gap: 10px; padding: 10px 0; border-bottom: 1px solid #8883; }
-  code { background: #8882; padding: 2px 6px; border-radius: 6px; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { padding: 8px 6px; border-bottom: 1px solid #8883; text-align: left; }
+  :root { color-scheme: dark; --bg: #0d1210; --surface: #151c19; --surface-strong: #1c2622; --line: #33423d; --text: #eef5ef; --muted: #a9b8b0; --accent: #30bf9d; --accent-strong: #159576; --warm: #e4ad4a; --danger: #ee7870; }
+  * { box-sizing: border-box; }
+  html { min-width: 320px; background: var(--bg); }
+  body { min-width: 320px; margin: 0; padding: 28px 20px 48px; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", sans-serif; font-size: 15px; line-height: 1.55; }
+  .site-shell { width: min(1120px, 100%); margin: 0 auto; }
+  .site-header { display: flex; align-items: center; gap: 12px; padding: 0 0 18px; border-bottom: 1px solid var(--line); }
+  .site-mark { display: grid; place-items: center; width: 34px; height: 34px; flex: 0 0 34px; border: 1px solid var(--accent); color: var(--accent); text-decoration: none; font-weight: 800; letter-spacing: 0; }
+  .eyebrow { margin: 0 0 2px; color: var(--accent); font-size: 0.72rem; font-weight: 750; letter-spacing: 0.08em; }
+  h1, h2, h3 { color: var(--text); letter-spacing: 0; }
+  h1 { margin: 0; font-size: 1.5rem; line-height: 1.2; }
+  h2 { margin: 0 0 12px; font-size: 1.05rem; line-height: 1.3; }
+  h3 { margin: 0 0 8px; font-size: 0.95rem; }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:hover { color: #8ee8d2; }
+  main { min-width: 0; }
+  .meta { margin: 0 0 20px; color: var(--muted); font-size: 0.92rem; }
+  .nav { display: flex; flex-wrap: wrap; gap: 4px; margin: 14px 0 20px; padding: 5px; border: 1px solid var(--line); background: var(--surface); }
+  .nav a { padding: 7px 10px; border: 1px solid transparent; color: var(--muted); text-decoration: none; }
+  .nav a:hover { border-color: var(--line); background: var(--surface-strong); color: var(--text); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 10px; margin: 16px 0; }
+  .split { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); gap: 14px; }
+  .card, .podium-card { min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 14px; background: var(--surface); }
+  .card span, .podium-card .rank { color: var(--muted); font-size: 0.82rem; }
+  .card strong { display: block; margin-top: 5px; color: var(--accent); font-size: 1.45rem; line-height: 1.1; overflow-wrap: anywhere; }
+  .panel { min-width: 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; padding: 16px; margin: 14px 0; background: var(--surface); }
+  .panel > :last-child { margin-bottom: 0; }
+  .pill { display: inline-block; padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 0.82rem; }
+  .metric-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 18px; }
+  .metric-tabs a { padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); text-decoration: none; }
+  .metric-tabs a:hover, .metric-tabs a.active { border-color: var(--accent-strong); background: var(--accent-strong); color: #fff; }
+  .podium { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); gap: 10px; margin-bottom: 16px; }
+  .podium-card .name { margin: 7px 0; font-size: 1.05rem; font-weight: 800; overflow-wrap: anywhere; }
+  .podium-card .rating { color: var(--warm); font-size: 1.35rem; font-weight: 800; }
+  .endpoint { display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .endpoint:last-child { border-bottom: 0; padding-bottom: 0; }
+  code { display: inline; max-width: 100%; padding: 2px 5px; border: 1px solid #3b4d46; border-radius: 4px; background: #0e1512; color: #baf3dd; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.88em; overflow-wrap: anywhere; word-break: break-word; }
+  pre { max-width: 100%; margin: 10px 0 0; padding: 12px; overflow-x: auto; border: 1px solid #2d3b36; border-radius: 4px; background: #0b100e; color: #c9ddd2; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.82rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+  table { width: 100%; min-width: 560px; border-collapse: collapse; }
+  th, td { padding: 9px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+  th { color: var(--muted); font-size: 0.78rem; font-weight: 700; letter-spacing: 0.04em; }
   td.num, th.num { text-align: right; }
-  fieldset { border: 1px solid #8884; border-radius: 10px; padding: 8px 16px; margin-bottom: 16px; }
-  legend { padding: 0 6px; font-weight: 600; }
-  .row { display: flex; align-items: center; justify-content: space-between;
-         gap: 16px; padding: 8px 0; border-bottom: 1px solid #8882; }
+  fieldset { min-width: 0; margin: 0 0 16px; padding: 4px 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+  legend { padding: 0 6px; color: var(--accent); font-weight: 700; }
+  .row { display: flex; align-items: center; justify-content: space-between; min-width: 0; gap: 16px; padding: 10px 0; border-bottom: 1px solid #293731; }
   .row:last-child { border-bottom: none; }
-  .row span { flex: 1; }
-  input[type="text"], input[type="number"], textarea { padding: 6px 10px; border-radius: 6px;
-         border: 1px solid #8886; min-width: 160px; font-size: 0.95rem; }
-  textarea { min-height: 72px; width: min(360px, 100%); resize: vertical; }
-  input[type="checkbox"] { width: 20px; height: 20px; }
-  button { margin-top: 16px; padding: 10px 22px; border: none; border-radius: 8px;
-           background: #5865F2; color: white; font-size: 1rem; cursor: pointer; }
-  button:hover { background: #4752c4; }
-  .message { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; }
-  .message.error { background: #f8d7da; color: #842029; }
+  .row span { min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
+  input[type="text"], input[type="number"], textarea { width: min(400px, 100%); min-width: 0; padding: 8px 10px; border: 1px solid #45574f; border-radius: 4px; background: #0d1411; color: var(--text); font: inherit; font-size: 0.92rem; }
+  input[type="text"]:focus, input[type="number"]:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  textarea { min-height: 88px; resize: vertical; }
+  input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+  button { margin-top: 14px; padding: 9px 14px; border: 1px solid var(--accent-strong); border-radius: 4px; background: var(--accent-strong); color: #fff; font: inherit; font-weight: 700; cursor: pointer; transition: background 140ms ease, border-color 140ms ease, transform 140ms ease; }
+  button:hover { border-color: var(--accent); background: var(--accent); transform: translateY(-1px); }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--warm); outline-offset: 2px; }
+  .message { margin: 0 0 16px; padding: 11px 12px; border: 1px solid var(--line); border-left: 3px solid var(--warm); border-radius: 4px; background: #252319; }
+  .message.error { border-color: #73423e; border-left-color: var(--danger); background: #291a19; color: #ffd7d3; }
+  small { color: var(--muted); }
   @media (max-width: 760px) {
-    .split { grid-template-columns: 1fr; }
-    .endpoint { grid-template-columns: 1fr; }
-    table { font-size: 0.92rem; }
+    body { padding: 18px 12px 32px; }
+    .site-header { align-items: flex-start; }
+    .nav { margin-bottom: 14px; }
+    .split, .endpoint { grid-template-columns: minmax(0, 1fr); }
+    .row { align-items: stretch; flex-direction: column; gap: 8px; }
+    input[type="text"], input[type="number"], textarea { width: 100%; }
+    table { font-size: 0.88rem; }
   }
 </style>
 "#;
@@ -1026,7 +1044,10 @@ async fn route_public_request(state: &WebSettingsState, path: &str, query: &str)
                 &render_leaderboard_page(&leaderboard, &stats),
             ))
         }
-        "/api" | "/api/docs" => Some(http_response("200 OK", &render_api_docs_page())),
+        "/api" | "/api/docs" => Some(http_response(
+            "200 OK",
+            &render_api_docs_page(&state.base_url),
+        )),
         "/health" => Some(json_response(
             json!({"ok": true, "service": "mafia-discord-bot"}),
         )),
@@ -1231,6 +1252,9 @@ async fn web_status_values(state: &WebSettingsState) -> Value {
             "user_count": 0,
             "uptime": stats::play_duration_text(now.duration_since(state.started_at).as_secs() as i64),
         },
+        "api": {
+            "base_url": format!("{}/api", state.base_url.trim_end_matches('/')),
+        },
         "games": games,
         "recruiting_guild_count": state.recruitments.len(),
         "settings": {
@@ -1372,7 +1396,8 @@ fn render_settings_page(
 {WEB_PAGE_STYLE}
 </head>
 <body>
-<h1>🕵️ 마피아 게임 웹 설정</h1>
+<div class="site-shell">
+{}
 <p class="meta">{} 님 전용 1회용 링크입니다. 저장하면 이 링크는 더 이상 사용할 수 없습니다.</p>
 {}
 {message_html}
@@ -1384,8 +1409,11 @@ fn render_settings_page(
   <button type="submit">저장하기</button>
 </form>
 <p><a href="{}/api-keys">API 키 관리</a></p>
+</main>
+</div>
 </body>
 </html>"#,
+        render_page_header("🕵️ 마피아 게임 웹 설정", false),
         html_escape(&session.user_label),
         status_html,
         html_escape(action),
@@ -1450,15 +1478,19 @@ fn render_api_key_page(
 {WEB_PAGE_STYLE}
 </head>
 <body>
-<h1>마피아 API 키 관리</h1>
+<div class="site-shell">
+{}
 <p class="meta">{} 서버 전용 키입니다. 발급된 키는 이 서버의 보호 API만 사용할 수 있습니다.</p>
 {message_html}
 {issued_html}
 <section class="panel"><h2>키 발급</h2><form method="post" action="{action}"><input type="hidden" name="action" value="create"><label class="row" for="label"><span>키 이름</span><input type="text" id="label" name="label" maxlength="64" required></label><button type="submit">키 발급</button></form></section>
 <section class="panel"><h2>발급된 키</h2>{table}</section>
 <p><a href="{settings_path}">설정으로 돌아가기</a></p>
+</main>
+</div>
 </body>
 </html>"#,
+        render_page_header("마피아 API 키 관리", false),
         html_escape(&session.user_label),
         action = html_escape(action),
         settings_path = html_escape(settings_path),
@@ -1560,10 +1592,17 @@ fn base_html(title: &str, body: &str, auto_refresh: bool) -> String {
         ""
     };
     format!(
-        r#"<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">{refresh}<title>{}</title>{WEB_PAGE_STYLE}</head><body><h1>{}</h1>{}{body}</body></html>"#,
+        r#"<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">{refresh}<title>{}</title>{WEB_PAGE_STYLE}</head><body><div class="site-shell">{}{body}</main></div></body></html>"#,
         html_escape(title),
+        render_page_header(title, true),
+    )
+}
+
+fn render_page_header(title: &str, with_nav: bool) -> String {
+    let nav = if with_nav { render_nav() } else { "" };
+    format!(
+        r#"<header class="site-header"><a class="site-mark" href="/" aria-label="마피아 봇 홈">M</a><div><p class="eyebrow">MAFIA REMAKE</p><h1>{}</h1></div></header>{nav}<main>"#,
         html_escape(title),
-        render_nav(),
     )
 }
 
@@ -1742,7 +1781,10 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
     )
 }
 
-fn render_api_docs_page() -> String {
+fn render_api_docs_page(base_url: &str) -> String {
+    let base_url = base_url.trim_end_matches('/');
+    let api_url = format!("{base_url}/api");
+    let protected_api_url = format!("{api_url}/v1");
     let public_endpoints = [
         ("GET /health", "봇 웹 서버가 살아 있는지 확인합니다."),
         (
@@ -1801,24 +1843,26 @@ fn render_api_docs_page() -> String {
     let public_rows = render_rows(&public_endpoints);
     let protected_rows = render_rows(&protected_endpoints);
     let body = format!(
-        r#"<p class="meta">기본 주소는 이 페이지와 같은 도메인입니다. 모든 응답은 JSON이며, `limit`은 1~50 범위입니다.</p>
-<section class="panel"><h2>인증</h2><p>관리자는 `/마피아웹설정`에서 서버 전용 API 키를 발급합니다. 보호 API는 키 발급 서버의 데이터와 작업만 허용합니다.</p><pre>X-API-Key: mfr_...
+        r#"<p class="meta">기본 API 주소는 <code>{api_url}</code>입니다. 모든 응답은 JSON이며, <code>limit</code>은 1~50 범위입니다.</p>
+<section class="panel"><h2>인증</h2><p>관리자는 <code>/마피아웹설정</code>에서 서버 전용 API 키를 발급합니다. 보호 API는 키 발급 서버의 데이터와 작업만 허용합니다.</p><pre>X-API-Key: mfr_...
 Authorization: Bearer mfr_...</pre></section>
 <section class="panel"><h2>공개 조회 API</h2>{public_rows}</section>
 <section class="panel"><h2>보호 관리 API</h2>{protected_rows}</section>
-<section class="panel"><h2>관리 작업 본문</h2><pre>POST /api/v1/games/{{guild_id}}/actions
+<section class="panel"><h2>관리 작업 본문</h2><pre>POST {protected_api_url}/games/{{guild_id}}/actions
 {{"action":"skip_day"}}   # 낮 토론 즉시 종료
 {{"action":"extend_day"}} # 연장 투표 중 1분 연장 승인
 {{"action":"stop"}}       # 게임 종료
 
-POST /api/v1/recruitments/{{guild_id}}/actions
+POST {protected_api_url}/recruitments/{{guild_id}}/actions
 {{"action":"start"}}      # 최소 인원 충족 시 즉시 시작
 {{"action":"cancel"}}     # 모집 취소</pre></section>
 <section class="panel"><h2>응답 코드</h2><pre>200 성공 · 400 잘못된 요청 · 401 키 없음/오류 · 403 다른 서버 키 · 404 대상 없음 · 409 현재 상태에서 작업 불가</pre></section>
-<section class="panel"><h2>호출 예시</h2><pre>curl -H "X-API-Key: mfr_..." https://example.com/api/v1/games/123
+<section class="panel"><h2>호출 예시</h2><pre>curl -H "X-API-Key: mfr_..." {protected_api_url}/games/123
 
 curl -X POST -H "Authorization: Bearer mfr_..." -H "Content-Type: application/json" \
-  -d '{{"action":"skip_day"}}' https://example.com/api/v1/games/123/actions</pre></section>"#
+  -d '{{"action":"skip_day"}}' {protected_api_url}/games/123/actions</pre></section>"#,
+        api_url = html_escape(&api_url),
+        protected_api_url = html_escape(&protected_api_url),
     );
     base_html("마피아 봇 API 문서", &body, false)
 }
@@ -1882,12 +1926,15 @@ fn render_message_page(title: &str, message: &str) -> String {
 {WEB_PAGE_STYLE}
 </head>
 <body>
-<h1>{}</h1>
+<div class="site-shell">
+{}
 <p>{}</p>
+</main>
+</div>
 </body>
 </html>"#,
         html_escape(title),
-        html_escape(title),
+        render_page_header(title, false),
         html_escape(message)
     )
 }
@@ -2461,6 +2508,7 @@ mod tests {
             started_at: Instant::now(),
             bot_name: "bot".to_string(),
             guild_count: 1,
+            base_url: "https://mafia.example".to_string(),
         }
     }
 
@@ -2564,6 +2612,7 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("Content-Type: application/json"));
+        assert!(response.contains(r#""base_url":"https://mafia.example/api""#));
     }
 
     #[tokio::test]
@@ -2711,11 +2760,16 @@ mod tests {
 
     #[test]
     fn api_docs_separate_public_and_protected_endpoints() {
-        let html = render_api_docs_page();
+        let html = render_api_docs_page("https://mafia.example/");
 
         assert!(html.contains("공개 조회 API"));
         assert!(html.contains("보호 관리 API"));
         assert!(html.contains("/api/v1/games/{guild_id}/actions"));
+        assert!(html.contains("https://mafia.example/api/v1/games/123"));
+        assert!(!html.contains("example.com"));
+        assert!(html.contains("overflow-wrap: anywhere"));
+        assert!(html.contains("word-break: break-word"));
+        assert!(html.contains("site-shell"));
         assert!(html.contains("응답 코드"));
     }
 }

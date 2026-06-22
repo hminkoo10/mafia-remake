@@ -444,6 +444,7 @@ async fn main() -> Result<()> {
                     started_at: Instant::now(),
                     bot_name: ready.user.name.clone(),
                     guild_count: ready.guilds.len(),
+                    base_url: web_base_url.clone(),
                 };
                 let host = web_host.clone();
                 tokio::spawn(async move {
