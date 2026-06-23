@@ -791,8 +791,21 @@ pub fn enabled_special_roles(config: &config::BotConfig, pool: &[Role]) -> Vec<R
 pub fn choose_special_roles(config: &config::BotConfig) -> Result<Vec<Role>> {
     let mut rng = rand::rng();
     let mut selected = Vec::new();
+    let mut citizen_candidates = enabled_special_roles(config, CITIZEN_SPECIAL_ROLES);
+    citizen_candidates.shuffle(&mut rng);
+    let mut citizen_selected = Vec::new();
+    if !select_special_roles_for_slots(
+        &citizen_candidates,
+        config.citizen_special_count as usize,
+        &mut citizen_selected,
+    ) {
+        bail!(
+            "활성화된 시민 특수 역할로 설정한 인원 수를 구성할 수 없습니다. 연인은 2명으로 계산됩니다."
+        );
+    }
+    selected.extend(citizen_selected);
+
     for (pool, count) in [
-        (CITIZEN_SPECIAL_ROLES, config.citizen_special_count as usize),
         (MAFIA_SPECIAL_ROLES, config.mafia_special_count as usize),
         (NEUTRAL_SPECIAL_ROLES, config.neutral_special_count as usize),
     ] {
@@ -809,6 +822,32 @@ pub fn choose_special_roles(config: &config::BotConfig) -> Result<Vec<Role>> {
         selected.extend(candidates.choose_multiple(&mut rng, count).copied());
     }
     Ok(selected)
+}
+
+fn select_special_roles_for_slots(
+    candidates: &[Role],
+    remaining_slots: usize,
+    selected: &mut Vec<Role>,
+) -> bool {
+    if remaining_slots == 0 {
+        return true;
+    }
+    for (index, role) in candidates.iter().enumerate() {
+        let slots = special_role_player_count(*role);
+        if slots > remaining_slots {
+            continue;
+        }
+        selected.push(*role);
+        if select_special_roles_for_slots(&candidates[index + 1..], remaining_slots - slots, selected) {
+            return true;
+        }
+        selected.pop();
+    }
+    false
+}
+
+fn special_role_player_count(role: Role) -> usize {
+    if role == Role::Lover { 2 } else { 1 }
 }
 
 pub fn expand_special_roles(roles: &[Role]) -> Vec<Role> {

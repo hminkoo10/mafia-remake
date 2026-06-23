@@ -2168,9 +2168,15 @@ fn validate_config(config: &BotConfig) -> std::result::Result<(), String> {
     if config.default_mafia_count < 1 {
         return Err("마피아는 최소 1명이어야 합니다.".to_string());
     }
-    let citizen_enabled = enabled_special_count(config, CITIZEN_SPECIAL_ROLES);
-    if config.citizen_special_count as usize > citizen_enabled {
-        return Err("시민 특수룰 수가 활성화된 시민 특수 역할보다 많습니다.".to_string());
+    if !can_fill_special_slots(
+        config,
+        CITIZEN_SPECIAL_ROLES,
+        config.citizen_special_count as usize,
+    ) {
+        return Err(
+            "활성화된 시민 특수 역할로 설정한 인원 수를 구성할 수 없습니다. 연인은 2명으로 계산됩니다."
+                .to_string(),
+        );
     }
     let mafia_enabled = enabled_special_count(config, MAFIA_SPECIAL_ROLES);
     if config.mafia_special_count as usize > mafia_enabled {
@@ -2247,6 +2253,24 @@ fn special_role_player_count(role: Role) -> usize {
     if role == Role::Lover { 2 } else { 1 }
 }
 
+fn can_fill_special_slots(config: &BotConfig, roles: &[Role], target_slots: usize) -> bool {
+    let mut possible = vec![false; target_slots + 1];
+    possible[0] = true;
+    for slots in roles
+        .iter()
+        .filter(|role| special_role_enabled(config, **role))
+        .map(|role| special_role_player_count(*role))
+    {
+        if slots > target_slots {
+            continue;
+        }
+        for total in (slots..=target_slots).rev() {
+            possible[total] |= possible[total - slots];
+        }
+    }
+    possible[target_slots]
+}
+
 fn selected_special_player_count(config: &BotConfig, roles: &[Role], count: u32) -> usize {
     let mut candidates = roles
         .iter()
@@ -2264,11 +2288,7 @@ fn minimum_player_count(config: &BotConfig) -> usize {
         .saturating_sub(config.mafia_special_count) as usize
         + config.default_doctor_count as usize
         + config.default_police_count as usize
-        + selected_special_player_count(
-            config,
-            CITIZEN_SPECIAL_ROLES,
-            config.citizen_special_count,
-        )
+        + config.citizen_special_count as usize
         + selected_special_player_count(config, MAFIA_SPECIAL_ROLES, config.mafia_special_count)
         + selected_special_player_count(
             config,
@@ -2560,13 +2580,40 @@ mod tests {
     }
 
     #[test]
-    fn counts_two_player_special_roles_for_web_minimum() {
+    fn lover_does_not_inflate_web_minimum() {
         let mut config = test_config();
         config.default_mafia_count = 1;
         config.citizen_special_count = 1;
         config.max_player_count = 4;
 
-        assert!(validate_config(&config).is_err());
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn lover_uses_two_citizen_special_slots() {
+        let mut config = test_config();
+        config.citizen_special_count = 2;
+        config.enable_detective = false;
+        config.enable_graverobber = false;
+        config.enable_politician = false;
+        config.enable_judge = false;
+        config.enable_reporter = false;
+        config.enable_hacker = false;
+        config.enable_terrorist = false;
+        config.enable_shaman = false;
+        config.enable_priest = false;
+        config.enable_soldier = false;
+        config.enable_nurse = false;
+        config.enable_gangster = false;
+        config.enable_prophet = false;
+        config.enable_psychologist = false;
+
+        let roles = crate::channel::choose_special_roles(&config).unwrap();
+        let role_counts = crate::channel::selected_role_counts(&config, &roles).unwrap();
+
+        assert_eq!(roles, vec![Role::Lover]);
+        assert_eq!(role_counts.get(&Role::Lover), Some(&2));
+        assert_eq!(crate::channel::minimum_player_count(&role_counts), 6);
     }
 
     #[tokio::test]
