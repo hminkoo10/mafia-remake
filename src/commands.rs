@@ -4047,7 +4047,7 @@ pub async fn handle_message_event(
             let relay = send_channel_embed(
                 &ctx.http,
                 game_channel_id,
-                format!("개구리 {}", "개굴".repeat(croak_count)),
+                format!("개구리: {}", "개굴".repeat(croak_count)),
                 "개구리 채팅",
                 serenity::Colour::DARK_GREEN,
                 vec![],
