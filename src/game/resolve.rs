@@ -456,8 +456,12 @@ impl MafiaGame {
         self.police_result_announced = false;
     }
 
-    pub(super) fn apply_madam_seduction(&mut self, live_votes: &HashMap<u64, Option<u64>>) -> Vec<Player> {
+    pub(super) fn apply_madam_seduction(
+        &mut self,
+        live_votes: &HashMap<u64, Option<u64>>,
+    ) -> (Vec<Player>, Vec<Player>) {
         let mut seduced = Vec::new();
+        let mut newly_contacted = Vec::new();
         for (voter_id, target_id) in live_votes {
             let Some(target_id) = target_id else {
                 continue;
@@ -482,10 +486,12 @@ impl MafiaGame {
                 .insert(target.user_id, self.day_number + 1);
             if self.is_mafia_team(&target) {
                 self.contact_mafia_team_member(&target);
-                self.madam_contacted.insert(voter.user_id);
+                if self.madam_contacted.insert(voter.user_id) {
+                    newly_contacted.push(voter);
+                }
             }
         }
-        seduced
+        (seduced, newly_contacted)
     }
 
     fn resolve_detective_results(

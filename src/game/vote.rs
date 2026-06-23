@@ -58,12 +58,13 @@ impl MafiaGame {
             .filter(|player| player.alive && self.vote_blocked(player.user_id))
             .cloned()
             .collect::<Vec<_>>();
-        let madam_seduced = self.apply_madam_seduction(&live_votes);
+        let (madam_seduced, madam_newly_contacted) = self.apply_madam_seduction(&live_votes);
         if live_votes.is_empty() {
             self.advance_to_next_night();
             return Ok(VoteResult {
                 blocked_voters,
                 madam_seduced,
+                madam_newly_contacted,
                 ..Default::default()
             });
         }
@@ -83,6 +84,7 @@ impl MafiaGame {
                 tied: true,
                 vote_counts: counts,
                 madam_seduced,
+                madam_newly_contacted,
                 blocked_voters,
                 ..Default::default()
             });
@@ -93,6 +95,7 @@ impl MafiaGame {
                 skipped: true,
                 vote_counts: counts,
                 madam_seduced,
+                madam_newly_contacted,
                 blocked_voters,
                 ..Default::default()
             });
@@ -103,6 +106,7 @@ impl MafiaGame {
             executed: nominated,
             vote_counts: counts,
             madam_seduced,
+            madam_newly_contacted,
             blocked_voters,
             ..Default::default()
         })

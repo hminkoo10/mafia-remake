@@ -3792,7 +3792,7 @@ pub async fn handle_madam_seduction_result(
     running: &Arc<RwLock<RunningGame>>,
     result: &VoteResult,
 ) {
-    if result.madam_seduced.is_empty() {
+    if result.madam_seduced.is_empty() && result.madam_newly_contacted.is_empty() {
         return;
     }
     for player in &result.madam_seduced {
@@ -3819,25 +3819,16 @@ pub async fn handle_madam_seduction_result(
     for player in known_mafia_players {
         grant_private_role_member_access(ctx, data, running, Role::Mafia, &player).await;
     }
-    let contacted_madams = {
-        let running_read = running.read().await;
-        running_read
-            .game
-            .alive_players()
-            .into_iter()
-            .filter(|player| {
-                player.role == Role::Madam
-                    && running_read.game.madam_contacted.contains(&player.user_id)
-            })
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    for madam in contacted_madams {
-        grant_private_role_member_access(ctx, data, running, Role::Mafia, &madam).await;
+    for madam in result
+        .madam_newly_contacted
+        .iter()
+        .filter(|player| player.alive)
+    {
+        grant_private_role_member_access(ctx, data, running, Role::Mafia, madam).await;
         let _ = send_player_secret(
             ctx,
             running,
-            &madam,
+            madam,
             "[접대] 마피아팀과 접선했습니다. 이제 마피아 비밀방에서 밤 대화가 가능합니다.",
             vec![],
         )

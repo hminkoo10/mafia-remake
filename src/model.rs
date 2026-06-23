@@ -317,6 +317,7 @@ pub struct VoteResult {
     pub skipped: bool,
     pub vote_counts: std::collections::HashMap<Option<u64>, i32>,
     pub madam_seduced: Vec<Player>,
+    pub madam_newly_contacted: Vec<Player>,
     pub blocked_voters: Vec<Player>,
 }
 
