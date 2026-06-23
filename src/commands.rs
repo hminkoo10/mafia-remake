@@ -4040,18 +4040,22 @@ pub async fn handle_message_event(
         }
     };
     if let Some((game_channel_id, can_croak)) = frog_context {
-        let _ = message.delete(&ctx.http).await;
         if can_croak {
             let croak_count = message.content.chars().count().max(1);
-            let _ = send_channel_embed(
+            // Start both Discord requests together: waiting for deletion first made every croak
+            // pay for two sequential API round trips before it appeared in the main channel.
+            let relay = send_channel_embed(
                 &ctx.http,
                 game_channel_id,
                 format!("개구리 {}", "개굴".repeat(croak_count)),
                 "개구리 채팅",
                 serenity::Colour::DARK_GREEN,
                 vec![],
-            )
-            .await;
+            );
+            let delete = message.delete(&ctx.http);
+            let _ = tokio::join!(relay, delete);
+        } else {
+            let _ = message.delete(&ctx.http).await;
         }
     }
     Ok(())
