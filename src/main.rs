@@ -385,6 +385,7 @@ async fn main() -> Result<()> {
             commands: vec![
                 commands::start_game(),
                 commands::stop_game(),
+                commands::cleanup_stuck_game(),
                 commands::disable_mafia_game(),
                 commands::enable_mafia_game(),
                 commands::add_to_blacklist(),

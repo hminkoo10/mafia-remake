@@ -11,6 +11,7 @@ use super::{
 use crate::channel::*;
 use crate::embed::*;
 use anyhow::{Context as AnyhowContext, Result, bail};
+use dashmap::{DashMap, mapref::entry::Entry};
 use mafia_remake::config;
 use mafia_remake::game::MafiaGame;
 use mafia_remake::model::{CONTRACTOR_GUESS_ROLES, NightResult, Phase, Player, Role, VoteResult, Winner};
@@ -19,6 +20,7 @@ use poise::serenity_prelude as serenity;
 use poise::serenity_prelude::Mentionable;
 use rand::seq::{IndexedRandom, SliceRandom};
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
@@ -28,8 +30,23 @@ pub async fn game_loop(
     data: Data,
     running: Arc<RwLock<RunningGame>>,
 ) -> Result<()> {
+    let result = game_loop_inner(&ctx, &data, &running).await;
+    if let Err(error) = &result {
+        eprintln!("game loop failed; forcing cleanup: {error:?}");
+    }
+    cleanup_game(&ctx, &data, &running).await;
+    let guild_id = running.read().await.guild_id;
+    remove_current_entry(&data.games, guild_id, &running);
+    result
+}
+
+async fn game_loop_inner(
+    ctx: &serenity::Context,
+    data: &Data,
+    running: &Arc<RwLock<RunningGame>>,
+) -> Result<()> {
     let config = data.config.read().await.clone();
-    setup_game_channels(&ctx, &data, &running).await?;
+    setup_game_channels(ctx, data, running).await?;
     {
         let running_read = running.read().await;
         let game = &running_read.game;
@@ -52,8 +69,8 @@ pub async fn game_loop(
         )
         .await?;
     }
-    send_roles(&ctx, &running, &config).await;
-    upsert_game_status(&ctx, &running).await;
+    send_roles(ctx, running, &config).await;
+    upsert_game_status(ctx, running).await;
     loop {
         {
             let running_read = running.read().await;
@@ -61,29 +78,43 @@ pub async fn game_loop(
                 break;
             }
         }
-        run_night(&ctx, &data, &running).await?;
+        run_night(ctx, data, running).await?;
         if running.read().await.game.phase == Phase::Ended {
             break;
         }
-        if announce_winner(&ctx, &data, &running).await? {
+        if announce_winner(ctx, data, running).await? {
             break;
         }
-        run_day(&ctx, &data, &running).await?;
+        run_day(ctx, data, running).await?;
         if running.read().await.game.phase == Phase::Ended {
             break;
         }
-        run_vote(&ctx, &data, &running).await?;
+        run_vote(ctx, data, running).await?;
         if running.read().await.game.phase == Phase::Ended {
             break;
         }
-        if announce_winner(&ctx, &data, &running).await? {
+        if announce_winner(ctx, data, running).await? {
             break;
         }
     }
-    cleanup_game(&ctx, &data, &running).await;
-    let guild_id = running.read().await.guild_id;
-    data.games.remove(&guild_id);
     Ok(())
+}
+
+fn remove_current_entry<K, T>(
+    entries: &DashMap<K, Arc<T>>,
+    key: K,
+    current: &Arc<T>,
+) -> bool
+where
+    K: Eq + Hash,
+{
+    match entries.entry(key) {
+        Entry::Occupied(entry) if Arc::ptr_eq(entry.get(), current) => {
+            entry.remove();
+            true
+        }
+        Entry::Occupied(_) | Entry::Vacant(_) => false,
+    }
 }
 
 pub async fn send_roles(
@@ -1941,9 +1972,11 @@ pub async fn announce_winner(
             elapsed_seconds,
             winner,
         );
-        stats::save_stats(&*data.stats_path, &stats_file)?;
+        if let Err(error) = stats::save_stats(&*data.stats_path, &stats_file) {
+            eprintln!("failed to save stats after game end: {error:?}");
+        }
     }
-    send_game_embed(
+    if let Err(error) = send_game_embed(
         ctx,
         running,
         format!(
@@ -1963,6 +1996,27 @@ pub async fn announce_winner(
         true,
         true,
     )
-    .await?;
+    .await
+    {
+        eprintln!("failed to announce game winner: {error:?}");
+    }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_game_loop_cannot_remove_new_game_entry() {
+        let games = DashMap::new();
+        let stale = Arc::new(());
+        let current = Arc::new(());
+        games.insert(1_u64, current.clone());
+
+        assert!(!remove_current_entry(&games, 1, &stale));
+        assert!(Arc::ptr_eq(games.get(&1).unwrap().value(), &current));
+        assert!(remove_current_entry(&games, 1, &current));
+        assert!(games.is_empty());
+    }
 }

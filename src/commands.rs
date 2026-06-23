@@ -1409,6 +1409,26 @@ where
     Ok(())
 }
 
+async fn halt_running_game(running: &Arc<RwLock<RunningGame>>) -> String {
+    let (roles, notifies) = {
+        let mut running_write = running.write().await;
+        running_write.game.phase = Phase::Ended;
+        (
+            running_write.game.reveal_roles(),
+            [
+                running_write.night_notify.clone(),
+                running_write.vote_notify.clone(),
+                running_write.confirm_notify.clone(),
+                running_write.day_notify.clone(),
+            ],
+        )
+    };
+    for notify in notifies {
+        notify.notify_waiters();
+    }
+    roles
+}
+
 #[poise::command(
     slash_command,
     rename = "마피아중지",
@@ -1422,23 +1442,8 @@ pub async fn stop_game(ctx: Context<'_>) -> Result<(), Error> {
         return Ok(());
     };
     if let Some((_id, running)) = ctx.data().games.remove(&guild_id) {
-        let (roles, notifies) = {
-            let mut running_write = running.write().await;
-            running_write.game.phase = Phase::Ended;
-            (
-                running_write.game.reveal_roles(),
-                [
-                    running_write.night_notify.clone(),
-                    running_write.vote_notify.clone(),
-                    running_write.confirm_notify.clone(),
-                    running_write.day_notify.clone(),
-                ],
-            )
-        };
-        for notify in notifies {
-            notify.notify_waiters();
-        }
-        send_game_embed(
+        let roles = halt_running_game(&running).await;
+        if let Err(error) = send_game_embed(
             ctx.serenity_context(),
             &running,
             format!("관리자가 게임을 중지했습니다.\n\n최종 역할\n{roles}"),
@@ -1448,7 +1453,10 @@ pub async fn stop_game(ctx: Context<'_>) -> Result<(), Error> {
             true,
             true,
         )
-        .await?;
+        .await
+        {
+            eprintln!("failed to announce stopped game: {error:?}");
+        }
         cleanup_game(ctx.serenity_context(), ctx.data(), &running).await;
         reply_embed(
             ctx,
@@ -1468,6 +1476,43 @@ pub async fn stop_game(ctx: Context<'_>) -> Result<(), Error> {
         )
         .await?;
     }
+    Ok(())
+}
+
+#[poise::command(
+    slash_command,
+    rename = "마피아정리",
+    description_localized("ko", "비정상 종료된 마피아 게임 채널과 역할을 강제로 정리합니다.")
+)]
+pub async fn cleanup_stuck_game(ctx: Context<'_>) -> Result<(), Error> {
+    if !require_manager(ctx).await? {
+        return Ok(());
+    }
+    let Some(guild_id) = ctx.guild_id() else {
+        return Ok(());
+    };
+    let Some((_id, running)) = ctx.data().games.remove(&guild_id) else {
+        reply_embed(
+            ctx,
+            "정리할 게임 상태가 없습니다. 봇 재시작 뒤에는 이전 게임의 임시 채널 정보를 알 수 없습니다.",
+            "마피아 정리",
+            serenity::Colour::RED,
+            true,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    halt_running_game(&running).await;
+    cleanup_game(ctx.serenity_context(), ctx.data(), &running).await;
+    reply_embed(
+        ctx,
+        "남아 있던 게임 채널, 역할, 권한, 슬로우모드를 정리했습니다.",
+        "마피아 정리 완료",
+        serenity::Colour::DARK_GREEN,
+        false,
+    )
+    .await?;
     Ok(())
 }
 
