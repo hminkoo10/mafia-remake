@@ -20,7 +20,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use mafia_remake::{
-    game::MafiaGame,
+    game::{MafiaGame, majority_required},
     model::{Phase, Player, Role},
 };
 use poise::serenity_prelude as serenity;
@@ -567,7 +567,7 @@ async fn action_handler(
                 .into_response();
             }
             running.day_skip_voter_ids.insert(user_id);
-            let required_votes = alive_ids.len() / 2 + 1;
+            let required_votes = majority_required(alive_ids.len());
             if running.day_skip_voter_ids.len() >= required_votes {
                 running.day_skip_confirmed = true;
                 running.day_extension_active = false;
@@ -903,7 +903,7 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
     // 낮 스킵 현황
     let alive_count = game.alive_players().len() as u32;
     let day_skip_count = running.day_skip_voter_ids.len() as u32;
-    let day_skip_threshold = (alive_count / 2) + 1;
+    let day_skip_threshold = majority_required(alive_count as usize) as u32;
 
     let contractor_targets = if contractor_can_act {
         if let Some(me_player) = &me_role_for_targets {

@@ -13,7 +13,7 @@ use crate::embed::*;
 use anyhow::{Context as AnyhowContext, Result, bail};
 use dashmap::{DashMap, mapref::entry::Entry};
 use mafia_remake::config;
-use mafia_remake::game::MafiaGame;
+use mafia_remake::game::{MafiaGame, majority_required};
 use mafia_remake::model::{CONTRACTOR_GUESS_ROLES, NightResult, Phase, Player, Role, VoteResult, Winner};
 use mafia_remake::stats;
 use poise::serenity_prelude as serenity;
@@ -1119,7 +1119,7 @@ pub async fn announce_police_result(
             };
             format!("조사 결과: {} 님은 **{}**.", target.name, result_text)
         } else {
-            "경찰 조사 대상이 과반을 넘지 못해 이번 밤 조사 결과가 없습니다.".to_string()
+            "경찰 조사 대상이 과반에 도달하지 못해 이번 밤 조사 결과가 없습니다.".to_string()
         };
         (police_players, message)
     };
@@ -1165,7 +1165,7 @@ pub async fn announce_public_police_status(
     }
     let (message, color) = if result.police_target.is_none() {
         (
-            "경찰 조사는 성공하지 못했습니다. 대상이 과반을 넘지 못했거나 선택이 완료되지 않았습니다.",
+            "경찰 조사는 성공하지 못했습니다. 대상이 과반에 도달하지 못했거나 선택이 완료되지 않았습니다.",
             serenity::Colour::ORANGE,
         )
     } else if result.police_target_is_mafia.unwrap_or(false) {
@@ -1417,7 +1417,7 @@ pub async fn run_day(
             running_write.day_extension_confirmed = false;
             running_write.phase_deadline =
                 Some(Instant::now() + Duration::from_secs(DAY_EXTENSION_VOTE_SECONDS));
-            (alive_count, alive_count / 2 + 1)
+            (alive_count, majority_required(alive_count))
         };
         let mut extension_message = send_game_embed(
             ctx,

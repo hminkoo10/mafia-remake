@@ -20,7 +20,7 @@ use anyhow::{Context as AnyhowContext, Result, bail};
 use dashmap::DashMap;
 use image::{ImageFormat, Rgb, RgbImage};
 use mafia_remake::config;
-use mafia_remake::game::{GameCounts, MafiaGame};
+use mafia_remake::game::{GameCounts, MafiaGame, majority_required};
 use mafia_remake::model::{
     CITIZEN_SPECIAL_ROLES, CONTRACTOR_GUESS_ROLES, MAFIA_SPECIAL_ROLES, NEUTRAL_SPECIAL_ROLES,
     NightResult, PUBLIC_CITIZEN_SPECIAL_ROLES, PUBLIC_CULT_SPECIAL_ROLES,
@@ -597,7 +597,7 @@ pub async fn handle_skip_day(
             .await
             .map_err(Into::into);
         }
-        let required_votes = alive_ids.len() / 2 + 1;
+        let required_votes = majority_required(alive_ids.len());
         if running_write.day_skip_voter_ids.contains(&user_id) {
             return send_component_private(
                 ctx,
@@ -693,7 +693,7 @@ pub async fn handle_day_extension(
             .await
             .map_err(Into::into);
         }
-        let required_votes = alive_ids.len() / 2 + 1;
+        let required_votes = majority_required(alive_ids.len());
         if running_write.day_extension_voter_ids.contains(&user_id) {
             return send_component_private(
                 ctx,

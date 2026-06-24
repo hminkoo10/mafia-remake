@@ -7,7 +7,7 @@ use crate::model::{ConfirmVoteResult, Phase, Role, VoteResult};
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 
-use super::MafiaGame;
+use super::{MafiaGame, majority_required};
 
 impl MafiaGame {
     pub fn start_vote(&mut self) -> Result<()> {
@@ -155,9 +155,10 @@ impl MafiaGame {
         let yes = *counts.get(&true).unwrap_or(&0);
         let no = *counts.get(&false).unwrap_or(&0);
         let target = self.get_player(target_id).cloned();
+        let required_yes = majority_required(self.alive_players().len()) as i32;
         let normal_approved = target
             .as_ref()
-            .is_some_and(|target| target.alive && yes > no);
+            .is_some_and(|target| target.alive && yes >= required_yes);
         let mut approved = normal_approved;
         let judge = self.active_judge();
         let judge_choice = judge

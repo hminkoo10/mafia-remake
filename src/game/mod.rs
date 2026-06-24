@@ -701,7 +701,7 @@ impl MafiaGame {
             .filter(|(_, count)| **count == highest)
             .map(|(target_id, _)| *target_id)
             .collect::<Vec<_>>();
-        if tied.len() != 1 || highest <= voter_count / 2 {
+        if tied.len() != 1 || highest < majority_required(voter_count) {
             None
         } else {
             Some(tied[0])
@@ -911,6 +911,10 @@ fn validate_counts(players: &[(u64, String)], counts: &GameCounts) -> Result<()>
     Ok(())
 }
 
+
+pub const fn majority_required(voter_count: usize) -> usize {
+    (voter_count + 1) / 2
+}
 
 fn count_values(values: impl IntoIterator<Item = u64>) -> HashMap<u64, usize> {
     let mut counts = HashMap::new();

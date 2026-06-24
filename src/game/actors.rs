@@ -6,7 +6,7 @@
 use crate::model::{Phase, Player, Role};
 use std::collections::{HashMap, HashSet};
 
-use super::{MafiaGame, count_values};
+use super::{MafiaGame, count_values, majority_required};
 
 impl MafiaGame {
     pub fn night_action_actors(&mut self) -> Vec<Player> {
@@ -343,7 +343,7 @@ impl MafiaGame {
         }
         count_values(live_targets.values().copied())
             .values()
-            .any(|count| *count > actors.len() / 2)
+            .any(|count| *count >= majority_required(actors.len()))
     }
 
     pub fn current_police_result(&self) -> (Option<Player>, Option<bool>) {
@@ -358,7 +358,7 @@ impl MafiaGame {
     pub fn police_result_message(&self) -> String {
         let (target, is_mafia) = self.current_police_result();
         let Some(target) = target else {
-            return "경찰 조사 대상이 과반을 넘지 못해 이번 밤 조사 결과가 없습니다.".to_string();
+            return "경찰 조사 대상이 과반에 도달하지 못해 이번 밤 조사 결과가 없습니다.".to_string();
         };
         let result_text = if is_mafia.unwrap_or(false) {
             "마피아입니다"
