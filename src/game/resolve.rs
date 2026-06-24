@@ -123,7 +123,7 @@ impl MafiaGame {
         if let Some(id) = majority_protected_id {
             protected_ids.insert(id);
         }
-        let police_target_id = self.majority_target(&self.police_targets);
+        let police_target_id = self.current_police_result().0.map(|player| player.user_id);
         let godfather_target_id = self.majority_target(&godfather_attackers);
         let protected_id = reported_protected_id(
             &protected_ids,
@@ -136,6 +136,7 @@ impl MafiaGame {
         let protected = protected_id.and_then(|id| self.get_player(id).cloned());
         let police_target = police_target_id.and_then(|id| self.get_player(id).cloned());
         let godfather_target = godfather_target_id.and_then(|id| self.get_player(id).cloned());
+        let thief_police_results = self.thief_police_results();
 
         let detective_results = self.resolve_detective_results(
             mafia_target_id,
@@ -231,6 +232,7 @@ impl MafiaGame {
                 .as_ref()
                 .map(|target| self.is_known_mafia_team(target)),
             police_target,
+            thief_police_results,
             killed_players,
             detective_results,
             spy_results,

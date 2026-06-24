@@ -277,6 +277,7 @@ pub struct NightResult {
     pub mafia_target: Option<Player>,
     pub police_target: Option<Player>,
     pub police_target_is_mafia: Option<bool>,
+    pub thief_police_results: std::collections::HashMap<u64, String>,
     pub killed_players: Vec<Player>,
     pub detective_results: std::collections::HashMap<u64, String>,
     pub spy_results: std::collections::HashMap<u64, String>,

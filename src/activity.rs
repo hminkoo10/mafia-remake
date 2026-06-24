@@ -513,14 +513,23 @@ async fn action_handler(
         "night_action" => {
             let target = body.target_id.as_deref()
                 .and_then(|s| s.parse::<u64>().ok());
-            running.game.submit_night_action(user_id, target)
-                .map_err(|e| e.to_string())
-                .map(|_| {
+            match running.game.submit_night_action(user_id, target) {
+                Ok(_) => {
+                    let message = running
+                        .game
+                        .get_player(user_id)
+                        .filter(|player| {
+                            player.role == Role::Thief
+                                && running.game.thief_night_role(player) == Some(Role::Police)
+                        })
+                        .and_then(|_| running.game.police_result_for_actor(user_id));
                     if running.game.all_night_actions_submitted() {
                         running.night_notify.notify_one();
                     }
-                    None
-                })
+                    Ok(message)
+                }
+                Err(error) => Err(error.to_string()),
+            }
         }
         "day_vote" => {
             let target = body.target_id.as_deref()
@@ -1071,6 +1080,10 @@ mod tests {
 
         game.culted_ids.insert(99);
         assert_eq!(
+            player_team(&game, &Player::new(99, "test", Role::Thief)),
+            "Mafia"
+        );
+        assert_eq!(
             player_team(&game, &Player::new(99, "test", Role::Fanatic)),
             "Cult"
         );
@@ -1117,7 +1130,9 @@ fn role_name(role: Role) -> String {
 }
 
 fn player_team(game: &MafiaGame, player: &Player) -> String {
-    if game.is_cult_team(player) {
+    if player.role == Role::Thief {
+        "Mafia"
+    } else if game.is_cult_team(player) {
         "Cult"
     } else if game.is_mafia_team(player) {
         "Mafia"

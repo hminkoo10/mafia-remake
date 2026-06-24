@@ -455,6 +455,20 @@ pub async fn create_text_channel_safe(
     }
 }
 
+async fn find_text_channel_by_name(
+    ctx: &serenity::Context,
+    guild_id: serenity::GuildId,
+    name: &str,
+    category: Option<serenity::ChannelId>,
+) -> Option<serenity::GuildChannel> {
+    let channels = guild_id.channels(&ctx.http).await.ok()?;
+    channels.into_values().find(|channel| {
+        channel.kind == serenity::ChannelType::Text
+            && channel.name == name
+            && category.is_none_or(|category| channel.parent_id == Some(category))
+    })
+}
+
 pub fn status_display_name(running: &RunningGame, player: &Player) -> String {
     if running.anonymous_enabled {
         running
@@ -2381,6 +2395,7 @@ pub async fn ensure_anonymous_dead_input_channel(
     {
         return None;
     }
+    let channel_name = format!("{}-사망자-채팅", sanitize_channel_part(&alias));
     let mut running_write = running.write().await;
     if !is_game_channel_creation_allowed(running_write.game.phase) {
         return None;
@@ -2406,6 +2421,30 @@ pub async fn ensure_anonymous_dead_input_channel(
         return Some(channel_id);
     }
 
+    if let Some(channel) = find_text_channel_by_name(ctx, guild_id, &channel_name, category).await {
+        let channel_id = channel.id;
+        running_write
+            .anonymous_dead_input_channel_ids
+            .insert(player.user_id, channel_id);
+        running_write
+            .anonymous_dead_input_channel_owners
+            .insert(channel_id, player.user_id);
+        drop(running_write);
+        let _ = channel_id
+            .create_permission(
+                &ctx.http,
+                anonymous_input_overwrite(
+                    serenity::PermissionOverwriteType::Member(serenity::UserId::new(
+                        player.user_id,
+                    )),
+                    true,
+                    can_chat,
+                ),
+            )
+            .await;
+        return Some(channel_id);
+    }
+
     let mut overwrites = anonymous_base_overwrites(roles, false, false, false, false);
     overwrites.push(anonymous_input_overwrite(
         serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
@@ -2415,7 +2454,7 @@ pub async fn ensure_anonymous_dead_input_channel(
     let channel = create_text_channel_safe(
         ctx,
         guild_id,
-        &format!("{}-사망자-채팅", sanitize_channel_part(&alias)),
+        &channel_name,
         overwrites,
         category,
         "마피아 게임 사망자 개인 채팅 채널 생성",
@@ -2475,6 +2514,7 @@ pub async fn ensure_anonymous_shaman_input_channel(
     {
         return None;
     }
+    let channel_name = format!("{}-영매-채팅", sanitize_channel_part(&alias));
     let mut running_write = running.write().await;
     if !is_game_channel_creation_allowed(running_write.game.phase) {
         return None;
@@ -2500,6 +2540,30 @@ pub async fn ensure_anonymous_shaman_input_channel(
         return Some(channel_id);
     }
 
+    if let Some(channel) = find_text_channel_by_name(ctx, guild_id, &channel_name, category).await {
+        let channel_id = channel.id;
+        running_write
+            .anonymous_shaman_input_channel_ids
+            .insert(player.user_id, channel_id);
+        running_write
+            .anonymous_shaman_input_channel_owners
+            .insert(channel_id, player.user_id);
+        drop(running_write);
+        let _ = channel_id
+            .create_permission(
+                &ctx.http,
+                anonymous_input_overwrite(
+                    serenity::PermissionOverwriteType::Member(serenity::UserId::new(
+                        player.user_id,
+                    )),
+                    true,
+                    can_chat,
+                ),
+            )
+            .await;
+        return Some(channel_id);
+    }
+
     let mut overwrites = anonymous_base_overwrites(roles, false, false, false, false);
     overwrites.push(anonymous_input_overwrite(
         serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
@@ -2509,7 +2573,7 @@ pub async fn ensure_anonymous_shaman_input_channel(
     let channel = create_text_channel_safe(
         ctx,
         guild_id,
-        &format!("{}-영매-채팅", sanitize_channel_part(&alias)),
+        &channel_name,
         overwrites,
         category,
         "마피아 게임 익명 영매 입력 채널 생성",
@@ -4018,6 +4082,109 @@ pub async fn cleanup_game(ctx: &serenity::Context, data: &Data, running: &Arc<Rw
     running_write.frog_channel_id = None;
     running_write.frog_game_channel_overwrites.clear();
     running_write.madam_seduction_channel_overwrites.clear();
+}
+
+#[derive(Default)]
+pub(crate) struct ForcedCleanupSummary {
+    pub channels_deleted: usize,
+    pub role_removals: usize,
+}
+
+pub async fn cleanup_orphaned_game_artifacts(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+) -> ForcedCleanupSummary {
+    let config = data.config.read().await.clone();
+    let roles = channel_role_ids(ctx, guild_id, &config, data.bot_user_id)
+        .await
+        .ok();
+    let mut summary = ForcedCleanupSummary::default();
+
+    if let Ok(channels) = guild_id.channels(&ctx.http).await {
+        let mut channel_ids = channels
+            .into_values()
+            .filter(|channel| should_force_delete_game_channel(channel, roles))
+            .map(|channel| channel.id)
+            .collect::<Vec<_>>();
+        channel_ids.sort_by_key(|id| id.get());
+        channel_ids.dedup();
+        for channel_id in channel_ids {
+            if channel_id.delete(&ctx.http).await.is_ok() {
+                summary.channels_deleted += 1;
+            }
+        }
+    }
+
+    let Some(roles) = roles else {
+        return summary;
+    };
+    let role_ids = [roles.participant, roles.dead, roles.spectator]
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<_>>();
+    if role_ids.is_empty() {
+        return summary;
+    }
+
+    let mut after = None;
+    loop {
+        let Ok(members) = guild_id.members(&ctx.http, Some(1000), after).await else {
+            break;
+        };
+        if members.is_empty() {
+            break;
+        }
+        for member in &members {
+            for role_id in &role_ids {
+                if member.roles.contains(role_id) && member.remove_role(ctx, *role_id).await.is_ok()
+                {
+                    summary.role_removals += 1;
+                }
+            }
+        }
+        let count = members.len();
+        after = members.last().map(|member| member.user.id);
+        if count < 1000 {
+            break;
+        }
+    }
+
+    summary
+}
+
+fn should_force_delete_game_channel(
+    channel: &serenity::GuildChannel,
+    roles: Option<ChannelRoleIds>,
+) -> bool {
+    if channel.kind != serenity::ChannelType::Text {
+        return false;
+    }
+    let name = channel.name.as_str();
+    if name == SHAMAN_CHAT_CHANNEL_NAME
+        || name == FROG_CHAT_CHANNEL_NAME
+        || PRIVATE_CHAT_ROLES
+            .iter()
+            .any(|role| name == private_channel_name(*role))
+    {
+        return true;
+    }
+    if name.ends_with(&format!("-{}-채팅", DEAD_PLAYER_ROLE))
+        || name.ends_with(&format!("-{}-채팅", Role::Shaman.value()))
+        || name.ends_with("-메모")
+        || PRIVATE_CHAT_ROLES
+            .iter()
+            .any(|role| name.ends_with(&format!("-{}-채팅", role.value())))
+    {
+        return true;
+    }
+    roles.is_some_and(|roles| {
+        name.ends_with("-채팅")
+            && channel.permission_overwrites.iter().any(|overwrite| {
+                overwrite.kind == serenity::PermissionOverwriteType::Role(roles.everyone)
+                    && overwrite.deny.contains(serenity::Permissions::VIEW_CHANNEL)
+            })
+    })
 }
 
 pub async fn sync_anonymous_general_chat_permissions(

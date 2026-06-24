@@ -972,12 +972,16 @@ pub async fn handle_night_action(
         };
         let cult_bells = running_write.game.consume_cult_bells();
         let actor = running_write.game.get_player(actor_id).cloned();
-        let is_police_action = actor.as_ref().is_some_and(|actor| {
-            actor.role == Role::Police
-                || (actor.role == Role::Thief
-                    && running_write.game.thief_night_role(actor) == Some(Role::Police))
+        let is_police_action = actor
+            .as_ref()
+            .is_some_and(|actor| actor.role == Role::Police);
+        let is_thief_police_action = actor.as_ref().is_some_and(|actor| {
+            actor.role == Role::Thief
+                && running_write.game.thief_night_role(actor) == Some(Role::Police)
         });
-        let (immediate_police_result, broadcast_police_result) = if is_police_action {
+        let (immediate_police_result, broadcast_police_result) = if is_thief_police_action {
+            (running_write.game.police_result_for_actor(actor_id), None)
+        } else if is_police_action {
             if let Some(result) = running_write.game.consume_ready_police_result() {
                 (Some(result.clone()), Some(result))
             } else {
@@ -1491,23 +1495,17 @@ pub async fn cleanup_stuck_game(ctx: Context<'_>) -> Result<(), Error> {
     let Some(guild_id) = ctx.guild_id() else {
         return Ok(());
     };
-    let Some((_id, running)) = ctx.data().games.remove(&guild_id) else {
-        reply_embed(
-            ctx,
-            "정리할 게임 상태가 없습니다. 봇 재시작 뒤에는 이전 게임의 임시 채널 정보를 알 수 없습니다.",
-            "마피아 정리",
-            serenity::Colour::RED,
-            true,
-        )
-        .await?;
-        return Ok(());
-    };
-
-    halt_running_game(&running).await;
-    cleanup_game(ctx.serenity_context(), ctx.data(), &running).await;
+    if let Some((_id, running)) = ctx.data().games.remove(&guild_id) {
+        halt_running_game(&running).await;
+        cleanup_game(ctx.serenity_context(), ctx.data(), &running).await;
+    }
+    let summary = cleanup_orphaned_game_artifacts(ctx.serenity_context(), ctx.data(), guild_id).await;
     reply_embed(
         ctx,
-        "남아 있던 게임 채널, 역할, 권한, 슬로우모드를 정리했습니다.",
+        format!(
+            "남아 있던 게임 채널, 역할, 권한, 슬로우모드를 정리했습니다.\n추가 삭제 채널: {}개\n역할 제거: {}개",
+            summary.channels_deleted, summary.role_removals
+        ),
         "마피아 정리 완료",
         serenity::Colour::DARK_GREEN,
         false,

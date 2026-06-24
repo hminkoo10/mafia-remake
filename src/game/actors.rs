@@ -308,11 +308,7 @@ impl MafiaGame {
     fn police_action_actors(&mut self) -> Vec<Player> {
         self.night_action_actors()
             .into_iter()
-            .filter(|player| {
-                player.role == Role::Police
-                    || (player.role == Role::Thief
-                        && self.thief_night_role(player) == Some(Role::Police))
-            })
+            .filter(|player| player.role == Role::Police)
             .collect()
     }
 
@@ -347,7 +343,15 @@ impl MafiaGame {
     }
 
     pub fn current_police_result(&self) -> (Option<Player>, Option<bool>) {
-        let target_id = self.majority_target(&self.police_targets);
+        let police_targets = self
+            .police_targets
+            .iter()
+            .filter_map(|(&actor_id, &target_id)| {
+                let actor = self.get_player(actor_id)?;
+                (actor.role == Role::Police).then_some((actor_id, target_id))
+            })
+            .collect::<HashMap<_, _>>();
+        let target_id = self.majority_target(&police_targets);
         let target = target_id.and_then(|id| self.get_player(id).cloned());
         let is_mafia = target
             .as_ref()
@@ -366,6 +370,40 @@ impl MafiaGame {
             "마피아가 아닙니다"
         };
         format!("조사 결과: {} 님은 **{}**.", target.name, result_text)
+    }
+
+    pub fn police_result_for_actor(&self, actor_id: u64) -> Option<String> {
+        let actor = self.get_player(actor_id)?;
+        if !actor.alive {
+            return None;
+        }
+        let target_id = *self.police_targets.get(&actor_id)?;
+        let target = self.get_player(target_id)?;
+        if !target.alive {
+            return None;
+        }
+        let result_text = if self.is_known_mafia_team(target) {
+            "마피아팀입니다"
+        } else {
+            "마피아팀이 아닙니다"
+        };
+        Some(format!("조사 결과: {} 님은 **{}**.", target.name, result_text))
+    }
+
+    pub fn thief_police_results(&self) -> HashMap<u64, String> {
+        self.police_targets
+            .keys()
+            .filter_map(|actor_id| {
+                let actor = self.get_player(*actor_id)?;
+                if actor.role == Role::Thief && self.thief_night_role(actor) == Some(Role::Police)
+                {
+                    self.police_result_for_actor(*actor_id)
+                        .map(|message| (*actor_id, message))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub fn consume_ready_police_result(&mut self) -> Option<String> {

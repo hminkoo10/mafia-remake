@@ -984,6 +984,61 @@ mod tests {
     }
 
     #[test]
+    fn stolen_police_result_is_independent_from_police_vote() {
+        let mut game = MafiaGame::new(
+            vec![
+                (1, "One".to_string()),
+                (2, "Two".to_string()),
+                (3, "Three".to_string()),
+                (4, "Four".to_string()),
+                (5, "Five".to_string()),
+                (6, "Six".to_string()),
+            ],
+            1,
+            0,
+            1,
+            vec![Role::Thief],
+        )
+        .unwrap();
+        let thief_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Thief)
+            .unwrap()
+            .user_id;
+        let police_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Police)
+            .unwrap()
+            .user_id;
+        let targets = game
+            .players
+            .iter()
+            .filter(|player| player.user_id != thief_id && player.user_id != police_id)
+            .take(2)
+            .map(|player| (player.user_id, player.name.clone()))
+            .collect::<Vec<_>>();
+        let (police_target_id, police_target_name) = targets[0].clone();
+        let (thief_target_id, thief_target_name) = targets[1].clone();
+
+        game.phase = Phase::Vote;
+        game.submit_thief_steal(thief_id, police_id).unwrap();
+        game.phase = Phase::Night;
+        game.submit_night_action(police_id, Some(police_target_id))
+            .unwrap();
+        game.submit_night_action(thief_id, Some(thief_target_id))
+            .unwrap();
+
+        let result = game.resolve_night().unwrap();
+
+        assert_eq!(result.police_target.unwrap().user_id, police_target_id);
+        let thief_result = result.thief_police_results.get(&thief_id).unwrap();
+        assert!(thief_result.contains(&thief_target_name));
+        assert!(!thief_result.contains(&police_target_name));
+    }
+
+    #[test]
     fn citizen_wins_when_known_mafia_dead() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
         let mafia_id = game

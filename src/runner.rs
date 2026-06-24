@@ -544,6 +544,7 @@ pub async fn run_night(
             &result.cult_results,
             &result.fanatic_results,
             &result.hacker_results,
+            &result.thief_police_results,
         ] {
             for (user_id, text) in map {
                 running_write.activity_night_results.insert(*user_id, text.clone());
@@ -1072,6 +1073,7 @@ pub async fn send_private_result_maps(
         result.shaman_results.clone(),
         result.priest_results.clone(),
         result.agent_results.clone(),
+        result.thief_police_results.clone(),
         result.reporter_results.clone(),
         result.vigilante_results.clone(),
         result.nurse_results.clone(),
