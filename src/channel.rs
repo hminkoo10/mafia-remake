@@ -2356,7 +2356,7 @@ pub async fn ensure_anonymous_dead_input_channel(
     category: Option<serenity::ChannelId>,
     can_chat: bool,
 ) -> Option<serenity::ChannelId> {
-    let (guild_id, alias, existing_channel_id) = {
+    let (guild_id, alias) = {
         let running_read = running.read().await;
         if !is_game_channel_creation_allowed(running_read.game.phase) {
             return None;
@@ -2372,10 +2372,6 @@ pub async fn ensure_anonymous_dead_input_channel(
             } else {
                 player.name.clone()
             },
-            running_read
-                .anonymous_dead_input_channel_ids
-                .get(&player.user_id)
-                .copied(),
         )
     };
     if guild_id
@@ -2385,7 +2381,16 @@ pub async fn ensure_anonymous_dead_input_channel(
     {
         return None;
     }
-    if let Some(channel_id) = existing_channel_id {
+    let mut running_write = running.write().await;
+    if !is_game_channel_creation_allowed(running_write.game.phase) {
+        return None;
+    }
+    if let Some(channel_id) = running_write
+        .anonymous_dead_input_channel_ids
+        .get(&player.user_id)
+        .copied()
+    {
+        drop(running_write);
         let _ = channel_id
             .create_permission(
                 &ctx.http,
@@ -2418,29 +2423,13 @@ pub async fn ensure_anonymous_dead_input_channel(
         None,
     )
     .await?;
-    let cleanup_started = {
-        let mut running_write = running.write().await;
-        if !is_game_channel_creation_allowed(running_write.game.phase) {
-            true
-        } else {
-            running_write
-                .anonymous_dead_input_channel_ids
-                .insert(player.user_id, channel.id);
-            running_write
-                .anonymous_dead_input_channel_owners
-                .insert(channel.id, player.user_id);
-            false
-        }
-    };
-    if cleanup_started {
-        if let Err(error) = channel.id.delete(&ctx.http).await {
-            eprintln!(
-                "failed to delete a dead-player channel created during cleanup ({}): {error:?}",
-                channel.id.get()
-            );
-        }
-        return None;
-    }
+    running_write
+        .anonymous_dead_input_channel_ids
+        .insert(player.user_id, channel.id);
+    running_write
+        .anonymous_dead_input_channel_owners
+        .insert(channel.id, player.user_id);
+    drop(running_write);
     let _ = send_channel_embed(
         &ctx.http,
         channel.id,
@@ -2465,11 +2454,11 @@ pub async fn ensure_anonymous_shaman_input_channel(
     category: Option<serenity::ChannelId>,
     can_chat: bool,
 ) -> Option<serenity::ChannelId> {
-    if !running.read().await.anonymous_enabled {
-        return None;
-    }
-    let (guild_id, alias, existing_channel_id) = {
+    let (guild_id, alias) = {
         let running_read = running.read().await;
+        if !running_read.anonymous_enabled {
+            return None;
+        }
         (
             running_read.guild_id,
             running_read
@@ -2477,10 +2466,6 @@ pub async fn ensure_anonymous_shaman_input_channel(
                 .get(&player.user_id)
                 .cloned()
                 .unwrap_or_else(|| player.user_id.to_string()),
-            running_read
-                .anonymous_shaman_input_channel_ids
-                .get(&player.user_id)
-                .copied(),
         )
     };
     if guild_id
@@ -2490,7 +2475,16 @@ pub async fn ensure_anonymous_shaman_input_channel(
     {
         return None;
     }
-    if let Some(channel_id) = existing_channel_id {
+    let mut running_write = running.write().await;
+    if !is_game_channel_creation_allowed(running_write.game.phase) {
+        return None;
+    }
+    if let Some(channel_id) = running_write
+        .anonymous_shaman_input_channel_ids
+        .get(&player.user_id)
+        .copied()
+    {
+        drop(running_write);
         let _ = channel_id
             .create_permission(
                 &ctx.http,
@@ -2523,15 +2517,13 @@ pub async fn ensure_anonymous_shaman_input_channel(
         None,
     )
     .await?;
-    {
-        let mut running_write = running.write().await;
-        running_write
-            .anonymous_shaman_input_channel_ids
-            .insert(player.user_id, channel.id);
-        running_write
-            .anonymous_shaman_input_channel_owners
-            .insert(channel.id, player.user_id);
-    }
+    running_write
+        .anonymous_shaman_input_channel_ids
+        .insert(player.user_id, channel.id);
+    running_write
+        .anonymous_shaman_input_channel_owners
+        .insert(channel.id, player.user_id);
+    drop(running_write);
     let _ = send_channel_embed(
         &ctx.http,
         channel.id,

@@ -431,7 +431,7 @@ impl MafiaGame {
     fn mark_dead(&mut self, user_id: u64) -> Option<Player> {
         let index = *self.players_by_id.get(&user_id)?;
         if !self.players[index].alive {
-            return Some(self.players[index].clone());
+            return None;
         }
         self.players[index].alive = false;
         self.frog_user_ids.remove(&user_id);
@@ -973,6 +973,14 @@ mod tests {
         assert!(status.contains("1일차 / 현재 단계: 밤"));
         assert!(status.contains("생존자(4명)"));
         assert!(status.contains("사망자: Two"));
+    }
+
+    #[test]
+    fn mark_dead_reports_a_player_once() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+
+        assert_eq!(game.mark_dead(1).map(|player| player.user_id), Some(1));
+        assert!(game.mark_dead(1).is_none());
     }
 
     #[test]
