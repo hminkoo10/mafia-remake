@@ -1,7 +1,10 @@
 // 역할: Discord Activity용 REST API + WebSocket 서버
 //        프론트엔드에 게임 상태 제공, 플레이어 액션 수신·처리
 
-use crate::RunningGame;
+use crate::{
+    runner::{effective_night_role, night_targets},
+    RunningGame,
+};
 use anyhow::Result;
 use axum::{
     body::Body,
@@ -16,7 +19,10 @@ use axum::{
     Json,
 };
 use dashmap::DashMap;
-use mafia_remake::model::{Phase, Role};
+use mafia_remake::{
+    game::MafiaGame,
+    model::{Phase, Player, Role},
+};
 use poise::serenity_prelude as serenity;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -112,6 +118,10 @@ pub struct GameStateDto {
     pub can_act: bool,
     pub my_night_target: Option<String>,
     pub my_action_result: Option<String>,   // 밤 행동 결과 텍스트
+    pub night_target_ids: Vec<String>,
+    pub night_action_can_skip: bool,
+    pub special_action: Option<String>,
+    pub special_action_target_ids: Vec<String>,
     pub vote_targets: HashMap<String, u32>,
     pub nominee: Option<String>,
     pub confirm_yes: u32,
@@ -155,6 +165,7 @@ pub struct ActionRequest {
     pub guild_id: String,
     pub action: String,         // "night_action" | "day_vote" | "confirm_vote" | "skip_vote" | "contractor_action"
     pub target_id: Option<String>,
+    pub secondary_target_id: Option<String>,
     pub confirm: Option<bool>,  // confirm_vote용
     // contractor_action용
     pub contract_target_ids: Option<[String; 2]>,
@@ -437,6 +448,10 @@ async fn state_handler(
             can_act: false,
             my_night_target: None,
             my_action_result: None,
+            night_target_ids: vec![],
+            night_action_can_skip: false,
+            special_action: None,
+            special_action_target_ids: vec![],
             vote_targets: HashMap::new(),
             nominee: None,
             confirm_yes: 0,
@@ -494,7 +509,7 @@ async fn action_handler(
     let mut running = running_arc.write().await;
     let user_id = session.user_id;
 
-    let result: Result<(), String> = match body.action.as_str() {
+    let result: Result<Option<String>, String> = match body.action.as_str() {
         "night_action" => {
             let target = body.target_id.as_deref()
                 .and_then(|s| s.parse::<u64>().ok());
@@ -504,6 +519,7 @@ async fn action_handler(
                     if running.game.all_night_actions_submitted() {
                         running.night_notify.notify_one();
                     }
+                    None
                 })
         }
         "day_vote" => {
@@ -515,6 +531,7 @@ async fn action_handler(
                     if running.game.all_day_votes_submitted() {
                         running.vote_notify.notify_one();
                     }
+                    None
                 })
         }
         "confirm_vote" => {
@@ -525,6 +542,7 @@ async fn action_handler(
                     if running.game.all_confirm_votes_submitted() {
                         running.confirm_notify.notify_one();
                     }
+                    None
                 })
         }
         "skip_vote" => {
@@ -555,7 +573,7 @@ async fn action_handler(
                 running.day_extension_active = false;
                 running.day_notify.notify_waiters();
             }
-            Ok(())
+            Ok(None)
         }
         "contractor_action" => {
             let (ids, roles) = match (&body.contract_target_ids, &body.contract_roles) {
@@ -584,13 +602,41 @@ async fn action_handler(
                     if running.game.all_night_actions_submitted() {
                         running.night_notify.notify_one();
                     }
+                    None
                 })
+        }
+        "hacker_action" => {
+            let Some(target_id) = body.target_id.as_deref().and_then(|id| id.parse().ok()) else {
+                return Json(ActionResponse { ok: false, message: Some("target_id 필요".into()) }).into_response();
+            };
+            running.game.submit_hacker_action(user_id, target_id).map(Some).map_err(|e| e.to_string())
+        }
+        "vigilante_action" => {
+            let Some(target_id) = body.target_id.as_deref().and_then(|id| id.parse().ok()) else {
+                return Json(ActionResponse { ok: false, message: Some("target_id 필요".into()) }).into_response();
+            };
+            running.game.submit_vigilante_investigation(user_id, target_id).map(Some).map_err(|e| e.to_string())
+        }
+        "psychologist_action" => {
+            let (Some(first_target_id), Some(second_target_id)) = (
+                body.target_id.as_deref().and_then(|id| id.parse().ok()),
+                body.secondary_target_id.as_deref().and_then(|id| id.parse().ok()),
+            ) else {
+                return Json(ActionResponse { ok: false, message: Some("서로 다른 두 target_id 필요".into()) }).into_response();
+            };
+            running.game.submit_psychologist_observation(user_id, first_target_id, second_target_id).map(Some).map_err(|e| e.to_string())
+        }
+        "thief_action" => {
+            let Some(target_id) = body.target_id.as_deref().and_then(|id| id.parse().ok()) else {
+                return Json(ActionResponse { ok: false, message: Some("target_id 필요".into()) }).into_response();
+            };
+            running.game.submit_thief_steal(user_id, target_id).map(Some).map_err(|e| e.to_string())
         }
         _ => Err(format!("알 수 없는 액션: {}", body.action)),
     };
 
     match result {
-        Ok(()) => Json(ActionResponse { ok: true, message: None }).into_response(),
+        Ok(message) => Json(ActionResponse { ok: true, message }).into_response(),
         Err(msg) => Json(ActionResponse { ok: false, message: Some(msg) }).into_response(),
     }
 }
@@ -646,6 +692,10 @@ async fn handle_ws(
                         can_act: false,
                         my_night_target: None,
                         my_action_result: None,
+                        night_target_ids: vec![],
+                        night_action_can_skip: false,
+                        special_action: None,
+                        special_action_target_ids: vec![],
                         vote_targets: HashMap::new(),
                         nominee: None,
                         confirm_yes: 0,
@@ -694,12 +744,79 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         Phase::Ended => "Ended",
     };
 
-    let me = game.get_player(user_id);
+    let me = game.get_player(user_id).cloned();
     let game_ended = matches!(game.phase, Phase::Ended);
     let reveal_roles = running.reveal_death_roles;
     // me 레퍼런스가 살아있으면 game 뮤터블 메서드를 못 쓰므로 필요한 값을 미리 복사
-    let me_alive = me.map(|p| p.alive).unwrap_or(false);
-    let me_role_for_targets = me.map(|p| p.clone());
+    let me_alive = me.as_ref().is_some_and(|player| player.alive);
+    let me_role_for_targets = me.clone();
+
+    let special_action = if me_alive
+        && game
+            .hacker_day_actors()
+            .iter()
+            .any(|player| player.user_id == user_id)
+    {
+        Some("hacker".to_string())
+    } else if me_alive
+        && game
+            .vigilante_day_actors()
+            .iter()
+            .any(|player| player.user_id == user_id)
+    {
+        Some("vigilante".to_string())
+    } else if me_alive
+        && game
+            .psychologist_day_actors()
+            .iter()
+            .any(|player| player.user_id == user_id)
+    {
+        Some("psychologist".to_string())
+    } else if me_alive
+        && game
+            .thief_vote_actors()
+            .iter()
+            .any(|player| player.user_id == user_id)
+    {
+        Some("thief".to_string())
+    } else {
+        None
+    };
+
+    let contractor_can_act = me_alive
+        && game.contractor_can_use_contract(user_id)
+        && matches!(game.phase, Phase::Night);
+    let night_action_available = me_alive
+        && matches!(game.phase, Phase::Night)
+        && game
+            .night_action_actors()
+            .iter()
+            .any(|player| player.user_id == user_id);
+    let (night_target_ids, night_action_can_skip) = if night_action_available && !contractor_can_act {
+        if let Some(player) = &me_role_for_targets {
+            let role = effective_night_role(game, player);
+            (
+                night_targets(game, player)
+                    .into_iter()
+                    .map(|target| target.user_id.to_string())
+                    .collect(),
+                role == Role::Reporter,
+            )
+        } else {
+            (vec![], false)
+        }
+    } else {
+        (vec![], false)
+    };
+    let special_action_target_ids = if special_action.is_some() {
+        game.alive_players()
+            .into_iter()
+            .filter(|player| player.user_id != user_id)
+            .map(|player| player.user_id.to_string())
+            .collect()
+    } else {
+        vec![]
+    };
 
     // 플레이어 목록
     let players = game.all_players().iter().map(|p| {
@@ -722,20 +839,23 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
             name: display_name,
             alive: p.alive,
             is_you,
-            role: if role_visible { Some(role_name(p.role)) } else { None },
-            role_team: if role_visible { Some(role_team(p.role)) } else { None },
+            role: role_visible.then(|| role_name(game.visible_role(p))),
+            role_team: role_visible.then(|| player_team(game, p)),
         }
     }).collect();
 
     // 내 역할 / 팀
-    let (my_role, my_team) = match me {
-        Some(p) => (Some(role_name(p.role)), Some(role_team(p.role))),
+    let (my_role, my_team) = match me.as_ref() {
+        Some(player) => (
+            Some(role_name(game.visible_role(player))),
+            Some(player_team(game, player)),
+        ),
         None => (None, None),
     };
 
     // 행동 가능 여부 (me 레퍼런스 해제 후 game 뮤터블 메서드 호출)
     let can_act = me_alive && match game.phase {
-        Phase::Night => game.night_action_actors().iter().any(|a| a.user_id == user_id),
+        Phase::Night => night_action_available && !contractor_can_act,
         Phase::Day | Phase::Vote => true,
         Phase::ConfirmVote => game.alive_players().iter().any(|p| p.user_id == user_id),
         _ => false,
@@ -785,10 +905,6 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
     let day_skip_count = running.day_skip_voter_ids.len() as u32;
     let day_skip_threshold = (alive_count / 2) + 1;
 
-    // 청부업자 정보
-    let contractor_can_act = me_alive
-        && game.contractor_can_use_contract(user_id)
-        && matches!(game.phase, Phase::Night);
     let contractor_targets = if contractor_can_act {
         if let Some(me_player) = &me_role_for_targets {
             game.contractor_contract_targets(me_player)
@@ -820,6 +936,10 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         can_act,
         my_night_target,
         my_action_result,
+        night_target_ids,
+        night_action_can_skip,
+        special_action,
+        special_action_target_ids,
         vote_targets,
         nominee,
         confirm_yes: confirm_yes as u32,
@@ -865,6 +985,96 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(30);
         assert_eq!(phase_deadline_unix_ms(Some(deadline), Phase::Ended), None);
     }
+
+    #[test]
+    fn activity_role_names_round_trip() {
+        let roles = [
+            Role::Mafia,
+            Role::Doctor,
+            Role::Nurse,
+            Role::Police,
+            Role::Agent,
+            Role::Vigilante,
+            Role::Reporter,
+            Role::Hacker,
+            Role::Detective,
+            Role::Shaman,
+            Role::Priest,
+            Role::Soldier,
+            Role::Gangster,
+            Role::Prophet,
+            Role::Psychologist,
+            Role::Spy,
+            Role::Contractor,
+            Role::Thief,
+            Role::Witch,
+            Role::Scientist,
+            Role::Madam,
+            Role::Graverobber,
+            Role::Godfather,
+            Role::Joker,
+            Role::Politician,
+            Role::Judge,
+            Role::Terrorist,
+            Role::Lover,
+            Role::CultLeader,
+            Role::Fanatic,
+            Role::Frog,
+            Role::Villain,
+            Role::Citizen,
+        ];
+
+        for role in roles {
+            assert_eq!(role_from_str(&role_name(role)), Some(role));
+        }
+    }
+
+    #[test]
+    fn activity_team_uses_game_team_rules() {
+        let mut game = MafiaGame::new(
+            vec![
+                (1, "p1".to_string()),
+                (2, "p2".to_string()),
+                (3, "p3".to_string()),
+            ],
+            1,
+            0,
+            0,
+            vec![],
+        )
+        .unwrap();
+
+        for role in [
+            Role::Mafia,
+            Role::Spy,
+            Role::Contractor,
+            Role::Thief,
+            Role::Witch,
+            Role::Scientist,
+            Role::Madam,
+            Role::Godfather,
+            Role::Villain,
+        ] {
+            assert_eq!(player_team(&game, &Player::new(99, "test", role)), "Mafia");
+        }
+        for role in [Role::Gangster, Role::Fanatic, Role::Citizen] {
+            assert_eq!(player_team(&game, &Player::new(99, "test", role)), "Citizen");
+        }
+        assert_eq!(
+            player_team(&game, &Player::new(99, "test", Role::CultLeader)),
+            "Cult"
+        );
+        assert_eq!(
+            player_team(&game, &Player::new(99, "test", Role::Joker)),
+            "Neutral"
+        );
+
+        game.culted_ids.insert(99);
+        assert_eq!(
+            player_team(&game, &Player::new(99, "test", Role::Fanatic)),
+            "Cult"
+        );
+    }
 }
 
 fn role_name(role: Role) -> String {
@@ -906,13 +1116,15 @@ fn role_name(role: Role) -> String {
     .to_string()
 }
 
-fn role_team(role: Role) -> String {
-    match role {
-        Role::Mafia | Role::Godfather | Role::Gangster | Role::Spy
-        | Role::Madam | Role::Witch => "Mafia",
-        Role::CultLeader | Role::Fanatic => "Cult",
-        Role::Joker | Role::Contractor | Role::Villain => "Neutral",
-        _ => "Citizen",
+fn player_team(game: &MafiaGame, player: &Player) -> String {
+    if game.is_cult_team(player) {
+        "Cult"
+    } else if game.is_mafia_team(player) {
+        "Mafia"
+    } else if player.role == Role::Joker {
+        "Neutral"
+    } else {
+        "Citizen"
     }
     .to_string()
 }
@@ -921,7 +1133,7 @@ fn role_from_str(s: &str) -> Option<Role> {
     use Role::*;
     Some(match s {
         "마피아" => Mafia, "의사" => Doctor, "간호사" => Nurse, "경찰" => Police,
-        "요원" => Agent, "자경단원" => Vigilante, "기자" => Reporter, "해커" => Hacker,
+        "요원" => Agent, "자경단" | "자경단원" => Vigilante, "기자" => Reporter, "해커" => Hacker,
         "탐정" | "사립탐정" => Detective, "영매" => Shaman, "성직자" => Priest,
         "군인" => Soldier, "건달" => Gangster, "예언자" => Prophet,
         "심리학자" => Psychologist, "스파이" => Spy, "청부업자" => Contractor,

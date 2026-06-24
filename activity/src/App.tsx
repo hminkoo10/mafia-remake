@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createWebSocket, fetchState, sendAction, setSession } from "./api";
 import { authenticateWithDiscord } from "./discord";
-import type { ActionRequest, GameState, Phase, PlayerDto, RoleTeam } from "./types";
+import type {
+  ActionRequest,
+  ActionType,
+  ActivitySpecialAction,
+  GameState,
+  Phase,
+  PlayerDto,
+  RoleTeam,
+} from "./types";
 
 type AuthStatus = "loading" | "ready" | "error";
 type ConnectionStatus = "connecting" | "live" | "offline";
@@ -43,6 +51,16 @@ const TEAM_META: Record<RoleTeam, { label: string; className: string }> = {
   Neutral: { label: "중립", className: "team-neutral" },
 };
 
+const SPECIAL_ACTION_META: Record<
+  ActivitySpecialAction,
+  { label: string; action: ActionType; requiresPair: boolean }
+> = {
+  hacker: { label: "해킹", action: "hacker_action", requiresPair: false },
+  vigilante: { label: "자경단원 조사", action: "vigilante_action", requiresPair: false },
+  psychologist: { label: "심리학자 관찰", action: "psychologist_action", requiresPair: true },
+  thief: { label: "도벽", action: "thief_action", requiresPair: false },
+};
+
 const MARK_META: Record<PlayerMark, { label: string; short: string; className: string }> = {
   none: { label: "표시 없음", short: "-", className: "mark-none" },
   trust: { label: "신뢰", short: "신", className: "mark-trust" },
@@ -72,8 +90,8 @@ const ROLE_HELP: Record<string, string> = {
   경찰: "조사 결과와 발언 모순을 함께 기록하세요.",
   의사: "킬 가능성이 높은 확직과 핵심 발언자를 우선 보호하세요.",
   요원: "조사 결과를 낮 토론 흐름과 맞춰 공개하세요.",
-  자경단원: "확신 없는 처단은 시민 수를 크게 줄입니다.",
-  사립탐정: "대상 이동과 밤 행동 루트를 메모하세요.",
+  자경단: "확신 없는 처단은 시민 수를 크게 줄입니다.",
+  탐정: "대상 이동과 밤 행동 루트를 메모하세요.",
   기자: "공개 타이밍이 판 흐름을 바꿉니다.",
   해커: "상대 행동 정보는 다음 낮 지목 근거가 됩니다.",
   영매: "사망자 정보와 산 사람 발언을 연결하세요.",
@@ -94,6 +112,10 @@ const ROLE_HELP: Record<string, string> = {
   테러리스트: "처형과 폭발 대상의 교환 가치를 계산하세요.",
   정치인: "2표 영향력이 큰 최종 투표를 관리하세요.",
   판사: "찬반 동률과 막판 뒤집기를 의식하세요.",
+  건달: "밤에 한 명을 공갈해 다음 낮 투표권을 막을 수 있습니다.",
+  연인: "밤 대화로 정보를 맞추고 서로의 생존을 지키세요.",
+  개구리: "밤 능력은 사용할 수 없고 낮에는 개구리 채팅으로만 말할 수 있습니다.",
+  악인: "마피아팀으로 승리합니다. 정체 노출 전 마피아와 접선을 노리세요.",
 };
 
 export default function App() {
@@ -467,8 +489,13 @@ function ActionConsole({
   const [message, setMessage] = useState("");
   const [contractTargets, setContractTargets] = useState<[string, string]>(["", ""]);
   const [contractRoles, setContractRoles] = useState<[string, string]>(["", ""]);
+  const [psychologistTargets, setPsychologistTargets] = useState<[string, string]>(["", ""]);
   const me = state.players.find((p) => p.is_you);
   const aliveTargets = state.players.filter((p) => p.alive && !p.is_you);
+  const nightTargets = state.players.filter((p) => state.night_target_ids.includes(p.id));
+  const specialAction = state.special_action;
+  const specialMeta = specialAction ? SPECIAL_ACTION_META[specialAction] : null;
+  const specialTargets = state.players.filter((p) => state.special_action_target_ids.includes(p.id));
   const selectedPlayer = state.players.find((p) => p.id === selectedTarget);
 
   async function run(req: Omit<ActionRequest, "guild_id">, successText: string) {
@@ -476,7 +503,7 @@ function ActionConsole({
     setMessage("");
     try {
       const res = await sendAction(req);
-      setMessage(res.ok ? successText : res.message ?? "요청 실패");
+      setMessage(res.ok ? res.message ?? successText : res.message ?? "요청 실패");
       if (res.ok) onActionSent();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "요청 실패");
@@ -493,7 +520,13 @@ function ActionConsole({
     setContractRoles((prev) => (slot === 0 ? [value, prev[1]] : [prev[0], value]));
   }
 
+  function setPsychologistTarget(slot: 0 | 1, value: string) {
+    setPsychologistTargets((prev) => (slot === 0 ? [value, prev[1]] : [prev[0], value]));
+  }
+
   const canNightAction = state.phase === "Night" && me?.alive && state.can_act;
+  const nightTargetSelected = Boolean(selectedTarget && nightTargets.some((player) => player.id === selectedTarget));
+  const specialTargetSelected = Boolean(selectedTarget && specialTargets.some((player) => player.id === selectedTarget));
   const canSkip = state.phase === "Day" && me?.alive;
   const canVote = (state.phase === "Vote" || state.phase === "FinalDefense") && me?.alive;
   const canConfirm = state.phase === "ConfirmVote" && me?.alive;
@@ -512,7 +545,7 @@ function ActionConsole({
       {canNightAction && (
         <div className="action-group">
           <TargetGrid
-            players={aliveTargets}
+            players={nightTargets}
             selectedTarget={selectedTarget}
             voteTargets={state.vote_targets}
             onSelect={onSelectTarget}
@@ -520,7 +553,7 @@ function ActionConsole({
           <div className="command-row">
             <button
               className="primary-command"
-              disabled={busy || !selectedTarget}
+              disabled={busy || !nightTargetSelected}
               onClick={() =>
                 run({ action: "night_action", target_id: selectedTarget ?? undefined }, "밤 행동 제출 완료")
               }
@@ -528,14 +561,16 @@ function ActionConsole({
             >
               대상 제출
             </button>
-            <button
-              className="secondary-command"
-              disabled={busy}
-              onClick={() => run({ action: "night_action" }, "밤 행동 스킵 완료")}
-              type="button"
-            >
-              스킵
-            </button>
+            {state.night_action_can_skip && (
+              <button
+                className="secondary-command"
+                disabled={busy}
+                onClick={() => run({ action: "night_action" }, "밤 행동 스킵 완료")}
+                type="button"
+              >
+                스킵
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -595,6 +630,80 @@ function ActionConsole({
           >
             청부 제출
           </button>
+        </div>
+      )}
+
+      {specialAction && specialMeta && (
+        <div className="action-group">
+          <div className="section-kicker">{specialMeta.label}</div>
+          {specialMeta.requiresPair ? (
+            <div className="contractor-grid">
+              {[0, 1].map((slot) => (
+                <div className="contract-slot" key={slot}>
+                  <span>대상 {slot + 1}</span>
+                  <select
+                    value={psychologistTargets[slot as 0 | 1]}
+                    onChange={(event) => setPsychologistTarget(slot as 0 | 1, event.target.value)}
+                  >
+                    <option value="">대상 선택</option>
+                    {specialTargets
+                      .filter((target) => target.id !== psychologistTargets[slot === 0 ? 1 : 0])
+                      .map((target) => (
+                        <option key={target.id} value={target.id}>
+                          {target.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              ))}
+              <button
+                className="primary-command wide"
+                disabled={
+                  busy ||
+                  !psychologistTargets[0] ||
+                  !psychologistTargets[1] ||
+                  psychologistTargets[0] === psychologistTargets[1]
+                }
+                onClick={() =>
+                  run(
+                    {
+                      action: specialMeta.action,
+                      target_id: psychologistTargets[0],
+                      secondary_target_id: psychologistTargets[1],
+                    },
+                    "관찰 완료",
+                  )
+                }
+                type="button"
+              >
+                관찰 실행
+              </button>
+            </div>
+          ) : (
+            <>
+              <TargetGrid
+                players={specialTargets}
+                selectedTarget={selectedTarget}
+                voteTargets={state.vote_targets}
+                onSelect={onSelectTarget}
+              />
+              <div className="command-row">
+                <button
+                  className="primary-command"
+                  disabled={busy || !specialTargetSelected}
+                  onClick={() =>
+                    run(
+                      { action: specialMeta.action, target_id: selectedTarget ?? undefined },
+                      `${specialMeta.label} 완료`,
+                    )
+                  }
+                  type="button"
+                >
+                  {specialMeta.label} 실행
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -672,7 +781,7 @@ function ActionConsole({
         </div>
       )}
 
-      {!canNightAction && !state.contractor_can_act && !canSkip && !canVote && !canConfirm && (
+      {!canNightAction && !state.contractor_can_act && !specialAction && !canSkip && !canVote && !canConfirm && (
         <div className="idle-box">{state.phase === "Ended" ? "게임 종료" : "제출할 행동 없음"}</div>
       )}
 

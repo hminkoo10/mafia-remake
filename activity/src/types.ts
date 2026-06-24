@@ -7,6 +7,7 @@ export type Phase =
   | "Ended";
 
 export type RoleTeam = "Citizen" | "Mafia" | "Cult" | "Neutral";
+export type ActivitySpecialAction = "hacker" | "vigilante" | "psychologist" | "thief";
 
 export interface PlayerDto {
   id: string;
@@ -33,6 +34,10 @@ export interface GameState {
   can_act: boolean;
   my_night_target: string | null;
   my_action_result: string | null;    // 밤 행동 결과 (낮에 표시)
+  night_target_ids: string[];
+  night_action_can_skip: boolean;
+  special_action: ActivitySpecialAction | null;
+  special_action_target_ids: string[];
   vote_targets: Record<string, number>;
   nominee: string | null;
   confirm_yes: number;
@@ -51,12 +56,17 @@ export type ActionType =
   | "day_vote"
   | "confirm_vote"
   | "skip_vote"
-  | "contractor_action";
+  | "contractor_action"
+  | "hacker_action"
+  | "vigilante_action"
+  | "psychologist_action"
+  | "thief_action";
 
 export interface ActionRequest {
   guild_id: string;
   action: ActionType;
   target_id?: string;
+  secondary_target_id?: string;
   confirm?: boolean;
   contract_target_ids?: [string, string];
   contract_roles?: [string, string];
