@@ -355,7 +355,7 @@ impl MafiaGame {
         let target = target_id.and_then(|id| self.get_player(id).cloned());
         let is_mafia = target
             .as_ref()
-            .map(|player| self.is_known_mafia_team(player));
+            .map(|player| self.is_police_detected_mafia_team(player));
         (target, is_mafia)
     }
 
@@ -388,7 +388,7 @@ impl MafiaGame {
         if !target.alive {
             return None;
         }
-        let result_text = if self.is_known_mafia_team(target) {
+        let result_text = if self.is_police_detected_mafia_team(target) {
             "마피아팀입니다"
         } else {
             "마피아팀이 아닙니다"

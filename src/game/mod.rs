@@ -311,6 +311,10 @@ impl MafiaGame {
         }
     }
 
+    pub fn is_police_detected_mafia_team(&self, player: &Player) -> bool {
+        self.is_mafia_team(player) && player.role != Role::Godfather
+    }
+
     pub fn is_citizen_team(&self, player: &Player) -> bool {
         !self.is_mafia_team(player) && !self.is_cult_team(player) && player.role != Role::Joker
     }
@@ -1076,6 +1080,42 @@ mod tests {
         let thief_result = result.thief_police_results.get(&thief_id).unwrap();
         assert!(thief_result.contains(&thief_target_name));
         assert!(!thief_result.contains(&police_target_name));
+    }
+
+    #[test]
+    fn police_detects_spy_as_mafia_team() {
+        let mut game = MafiaGame::new(
+            vec![
+                (1, "One".to_string()),
+                (2, "Two".to_string()),
+                (3, "Three".to_string()),
+                (4, "Four".to_string()),
+                (5, "Five".to_string()),
+            ],
+            1,
+            0,
+            1,
+            vec![Role::Spy],
+        )
+        .unwrap();
+        let police_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Police)
+            .unwrap()
+            .user_id;
+        let spy_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Spy)
+            .unwrap()
+            .user_id;
+
+        game.submit_night_action(police_id, Some(spy_id)).unwrap();
+
+        assert!(game.police_result_ready());
+        assert_eq!(game.current_police_result().1, Some(true));
+        assert_eq!(game.resolve_night().unwrap().police_target_is_mafia, Some(true));
     }
 
     #[test]

@@ -231,7 +231,7 @@ impl MafiaGame {
             mafia_target,
             police_target_is_mafia: police_target
                 .as_ref()
-                .map(|target| self.is_known_mafia_team(target)),
+                .map(|target| self.is_police_detected_mafia_team(target)),
             police_target,
             thief_police_results,
             killed_players,
