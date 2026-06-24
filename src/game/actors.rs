@@ -169,7 +169,7 @@ impl MafiaGame {
         match self.thief_night_role(actor) {
             Some(Role::Mafia) => self.mafia_targets.contains_key(&actor.user_id),
             Some(Role::Doctor) => self.doctor_targets.contains_key(&actor.user_id),
-            Some(Role::Police) => self.police_targets.contains_key(&actor.user_id),
+            Some(Role::Police) => self.thief_police_targets.contains_key(&actor.user_id),
             Some(Role::Reporter) => {
                 self.reporter_targets.contains_key(&actor.user_id)
                     || self.reporter_skip_submitted.contains(&actor.user_id)
@@ -377,7 +377,13 @@ impl MafiaGame {
         if !actor.alive {
             return None;
         }
-        let target_id = *self.police_targets.get(&actor_id)?;
+        let targets = match actor.role {
+            Role::Thief if self.thief_night_role(actor) == Some(Role::Police) => {
+                &self.thief_police_targets
+            }
+            _ => &self.police_targets,
+        };
+        let target_id = *targets.get(&actor_id)?;
         let target = self.get_player(target_id)?;
         if !target.alive {
             return None;
@@ -391,17 +397,11 @@ impl MafiaGame {
     }
 
     pub fn thief_police_results(&self) -> HashMap<u64, String> {
-        self.police_targets
+        self.thief_police_targets
             .keys()
             .filter_map(|actor_id| {
-                let actor = self.get_player(*actor_id)?;
-                if actor.role == Role::Thief && self.thief_night_role(actor) == Some(Role::Police)
-                {
-                    self.police_result_for_actor(*actor_id)
-                        .map(|message| (*actor_id, message))
-                } else {
-                    None
-                }
+                self.police_result_for_actor(*actor_id)
+                    .map(|message| (*actor_id, message))
             })
             .collect()
     }

@@ -653,7 +653,7 @@ impl MafiaGame {
                 target_id,
                 "조사 대상을 선택해야 합니다.",
                 "이미 이번 밤 행동을 선택했습니다.",
-                RoleActionMap::Police,
+                RoleActionMap::ThiefPolice,
                 Some("자기 자신은 조사할 수 없습니다."),
                 &format!("{prefix}조사 대상"),
             ),

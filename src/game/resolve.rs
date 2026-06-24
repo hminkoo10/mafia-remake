@@ -62,6 +62,7 @@ impl MafiaGame {
         self.nurse_prescription_targets.remove(&actor_id);
         self.gangster_targets.remove(&actor_id);
         self.police_targets.remove(&actor_id);
+        self.thief_police_targets.remove(&actor_id);
         self.vigilante_targets.remove(&actor_id);
         self.detective_targets.remove(&actor_id);
         self.shaman_targets.remove(&actor_id);
@@ -433,6 +434,7 @@ impl MafiaGame {
         self.nurse_contacts_this_night.clear();
         self.gangster_targets.clear();
         self.police_targets.clear();
+        self.thief_police_targets.clear();
         self.vigilante_targets.clear();
         self.reporter_targets.clear();
         self.reporter_skip_submitted.clear();
@@ -601,7 +603,7 @@ impl MafiaGame {
         match self.thief_night_role(watched) {
             Some(Role::Mafia) => self.mafia_targets.get(&watched.user_id).copied(),
             Some(Role::Doctor) => self.doctor_targets.get(&watched.user_id).copied(),
-            Some(Role::Police) => self.police_targets.get(&watched.user_id).copied(),
+            Some(Role::Police) => self.thief_police_targets.get(&watched.user_id).copied(),
             Some(Role::Reporter) => self.reporter_targets.get(&watched.user_id).copied(),
             Some(Role::Detective) => self.detective_targets.get(&watched.user_id).copied(),
             Some(Role::Spy) => self

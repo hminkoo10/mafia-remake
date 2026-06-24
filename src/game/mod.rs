@@ -31,6 +31,7 @@ pub struct MafiaGame {
     pub gangster_used_ids: HashSet<u64>,
     pub gangster_blocked_vote_days: HashMap<u64, u32>,
     pub police_targets: HashMap<u64, u64>,
+    pub thief_police_targets: HashMap<u64, u64>,
     pub vigilante_targets: HashMap<u64, u64>,
     pub vigilante_pending_results: HashMap<u64, u64>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
@@ -176,6 +177,7 @@ impl MafiaGame {
             gangster_used_ids: HashSet::new(),
             gangster_blocked_vote_days: HashMap::new(),
             police_targets: HashMap::new(),
+            thief_police_targets: HashMap::new(),
             vigilante_targets: HashMap::new(),
             vigilante_pending_results: HashMap::new(),
             vigilante_known_enemy_ids: HashMap::new(),
@@ -575,10 +577,17 @@ impl MafiaGame {
 
     /// Activity UI용: 플레이어가 오늘 밤 지목한 대상 (아직 미제출이면 None)
     pub fn get_night_action_target(&self, user_id: u64) -> Option<u64> {
-        let role = self.get_player(user_id)?.role;
+        let player = self.get_player(user_id)?;
+        let role = if player.role == Role::Thief {
+            self.thief_night_role(player)?
+        } else {
+            player.role
+        };
         let maps: &[&HashMap<u64, u64>] = match role {
-            Role::Mafia | Role::Gangster => &[&self.mafia_targets],
+            Role::Mafia => &[&self.mafia_targets],
             Role::Doctor => &[&self.doctor_targets],
+            Role::Gangster => &[&self.gangster_targets],
+            Role::Police if player.role == Role::Thief => &[&self.thief_police_targets],
             Role::Police => &[&self.police_targets],
             Role::Agent => &[&self.detective_targets],
             Role::Vigilante => &[&self.vigilante_targets],
@@ -777,6 +786,7 @@ impl MafiaGame {
             RoleActionMap::Doctor => self.doctor_targets.contains_key(&actor_id),
             RoleActionMap::Gangster => self.gangster_targets.contains_key(&actor_id),
             RoleActionMap::Police => self.police_targets.contains_key(&actor_id),
+            RoleActionMap::ThiefPolice => self.thief_police_targets.contains_key(&actor_id),
             RoleActionMap::Detective => self.detective_targets.contains_key(&actor_id),
             RoleActionMap::Shaman => self.shaman_targets.contains_key(&actor_id),
             RoleActionMap::Priest => self.priest_targets.contains_key(&actor_id),
@@ -795,6 +805,9 @@ impl MafiaGame {
             }
             RoleActionMap::Police => {
                 self.police_targets.insert(actor_id, target_id);
+            }
+            RoleActionMap::ThiefPolice => {
+                self.thief_police_targets.insert(actor_id, target_id);
             }
             RoleActionMap::Detective => {
                 self.detective_targets.insert(actor_id, target_id);
@@ -821,6 +834,7 @@ enum RoleActionMap {
     Doctor,
     Gangster,
     Police,
+    ThiefPolice,
     Detective,
     Shaman,
     Priest,
@@ -1029,6 +1043,32 @@ mod tests {
             .unwrap();
         game.submit_night_action(thief_id, Some(thief_target_id))
             .unwrap();
+
+        assert_eq!(game.police_targets.get(&police_id), Some(&police_target_id));
+        assert!(!game.police_targets.contains_key(&thief_id));
+        assert_eq!(
+            game.thief_police_targets.get(&thief_id),
+            Some(&thief_target_id)
+        );
+        assert_eq!(
+            game.get_night_action_target(police_id),
+            Some(police_target_id)
+        );
+        assert_eq!(
+            game.get_night_action_target(thief_id),
+            Some(thief_target_id)
+        );
+        assert!(
+            game.police_result_for_actor(thief_id)
+                .unwrap()
+                .contains(&thief_target_name)
+        );
+        assert!(
+            !game
+                .police_result_for_actor(thief_id)
+                .unwrap()
+                .contains(&police_target_name)
+        );
 
         let result = game.resolve_night().unwrap();
 
