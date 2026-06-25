@@ -244,6 +244,7 @@ impl MafiaGame {
                 "조사 투표 대상",
             ),
             Role::Vigilante => self.submit_vigilante_night_action(actor_id, target_id),
+            Role::Mercenary => self.submit_mercenary_action(actor_id, target_id),
             Role::Reporter => self.submit_reporter_action(actor_id, target_id, ""),
             Role::Detective => self.once_target_action(
                 actor_id,
@@ -411,6 +412,21 @@ impl MafiaGame {
         self.vigilante_targets.insert(actor_id, proxy);
         self.vigilante_execution_used_ids.insert(actor_id);
         Ok(format!("숙청 대상: {}", selected.name))
+    }
+
+    fn submit_mercenary_action(&mut self, actor_id: u64, target_id: Option<u64>) -> Result<String> {
+        if !self.mercenary_armed_ids.contains(&actor_id) {
+            bail!("용병은 아직 처형 의뢰를 수행할 수 없습니다.");
+        }
+        self.once_target_action(
+            actor_id,
+            target_id,
+            "처형 대상을 선택해야 합니다.",
+            "이미 이번 밤 행동을 선택했습니다.",
+            RoleActionMap::Mercenary,
+            Some("용병은 자기 자신을 처형할 수 없습니다."),
+            "처형 대상",
+        )
     }
 
     fn submit_reporter_action(

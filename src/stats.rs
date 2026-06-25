@@ -20,6 +20,7 @@ const ROLE_STATS_ORDER: &[Role] = &[
     Role::Gangster,
     Role::Prophet,
     Role::Psychologist,
+    Role::Mercenary,
     Role::Detective,
     Role::Shaman,
     Role::Priest,
@@ -393,6 +394,7 @@ fn role_has_core_action(role: Role) -> bool {
             | Role::Reporter
             | Role::Hacker
             | Role::Psychologist
+            | Role::Mercenary
             | Role::Detective
             | Role::Shaman
             | Role::Priest

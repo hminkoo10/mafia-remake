@@ -204,11 +204,17 @@ pub fn role_message(game: &MafiaGame, player: &Player) -> String {
     } else {
         "시민팀"
     };
+    let mut guide = role_short_guide(player.role).to_string();
+    if player.role == Role::Mercenary
+        && let Some(client) = game.mercenary_client(player.user_id)
+    {
+        guide.push_str(&format!("\n의뢰인: **{}**", client.name));
+    }
     format!(
         "당신의 역할은 **{}** 입니다.\n진영: **{}**\n\n{}",
         player.role.value(),
         team,
-        role_short_guide(player.role)
+        guide
     )
 }
 
@@ -242,6 +248,7 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Gangster => "밤에 한 명의 다음 낮 투표권을 빼앗습니다.",
         Role::Prophet => "4번째 낮까지 생존하면 소속팀이 승리합니다.",
         Role::Psychologist => "낮에 두 명이 같은 팀인지 봅니다.",
+        Role::Mercenary => "의뢰인이 밤에 사망한 뒤 밤마다 한 명을 처형할 수 있습니다.",
         Role::Graverobber => "첫날 사망자의 직업을 이어받습니다.",
         _ => "낮 토론과 투표로 승리를 노리세요.",
     }
@@ -539,6 +546,7 @@ pub async fn run_night(
             &result.agent_results,
             &result.reporter_results,
             &result.vigilante_results,
+            &result.mercenary_results,
             &result.nurse_results,
             &result.gangster_results,
             &result.cult_results,
@@ -620,6 +628,16 @@ pub async fn run_night(
             let running_read = running.read().await;
             for killed in &result.killed_players {
                 if result
+                    .mercenary_kills
+                    .iter()
+                    .any(|player| player.user_id == killed.user_id)
+                {
+                    lines.push(format!(
+                        "- [{}님이 살해당했습니다.] {}",
+                        killed.name,
+                        death_role_text(&running_read, killed)
+                    ));
+                } else if result
                     .contractor_kills
                     .iter()
                     .any(|player| player.user_id == killed.user_id)
@@ -987,6 +1005,7 @@ pub fn night_placeholder(role: Role) -> &'static str {
         Role::Nurse => "처방/치료 대상을 선택하세요",
         Role::Police => "조사할 대상을 선택하세요",
         Role::Vigilante => "숙청할 대상을 선택하세요",
+        Role::Mercenary => "처형할 대상을 선택하세요",
         Role::Reporter => "특종 대상 또는 사용 안함을 선택하세요",
         Role::Detective => "추적할 대상을 선택하세요",
         Role::Shaman => "성불할 사망자를 선택하세요",
@@ -1076,6 +1095,7 @@ pub async fn send_private_result_maps(
         result.thief_police_results.clone(),
         result.reporter_results.clone(),
         result.vigilante_results.clone(),
+        result.mercenary_results.clone(),
         result.nurse_results.clone(),
         result.gangster_results.clone(),
         result.cult_results.clone(),
@@ -1232,7 +1252,15 @@ pub async fn run_day(
     running: &Arc<RwLock<RunningGame>>,
 ) -> Result<()> {
     let config = data.config.read().await.clone();
-    let (guild_id, day_notify, discussion_seconds, hackers, vigilantes, psychologists) = {
+    let (
+        guild_id,
+        day_notify,
+        discussion_seconds,
+        hackers,
+        vigilantes,
+        psychologists,
+        mercenary_contracts,
+    ) = {
         let mut running_write = running.write().await;
         running_write.game.phase = Phase::Day;
         running_write.phase_deadline =
@@ -1251,6 +1279,7 @@ pub async fn run_day(
             running_write.game.hacker_day_actors(),
             running_write.game.vigilante_day_actors(),
             running_write.game.psychologist_day_actors(),
+            running_write.game.receive_mercenary_contracts(),
         )
     };
     upsert_game_status(ctx, running).await;
@@ -1262,6 +1291,27 @@ pub async fn run_day(
     sync_madam_seduction_permissions(ctx, running).await;
     sync_anonymous_general_chat_permissions(ctx, running).await;
     sync_shaman_chat_access(ctx, data, running).await;
+    for (mercenary, client) in &mercenary_contracts {
+        let _ = send_player_secret(
+            ctx,
+            running,
+            mercenary,
+            format!("[의뢰] 의뢰인은 **{}** 님입니다.", client.name),
+            vec![],
+        )
+        .await;
+        let _ = send_player_secret(
+            ctx,
+            running,
+            client,
+            format!(
+                "[의뢰] 당신은 용병에게 의뢰했습니다. 용병은 **{}** 님입니다.",
+                mercenary.name
+            ),
+            vec![],
+        )
+        .await;
+    }
     let discussion_time = duration_text(discussion_seconds);
     let public_status = running.read().await.game.public_status();
     let mut day_message = send_game_embed(

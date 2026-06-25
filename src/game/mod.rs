@@ -45,6 +45,10 @@ pub struct MafiaGame {
     pub hacker_used_ids: HashSet<u64>,
     pub hacker_proxy_targets: HashMap<u64, u64>,
     pub psychologist_used_days: HashMap<u64, u32>,
+    pub mercenary_client_ids: HashMap<u64, u64>,
+    pub mercenary_contract_received_ids: HashSet<u64>,
+    pub mercenary_armed_ids: HashSet<u64>,
+    pub mercenary_targets: HashMap<u64, u64>,
     pub detective_targets: HashMap<u64, u64>,
     pub shaman_targets: HashMap<u64, u64>,
     pub priest_targets: HashMap<u64, u64>,
@@ -161,7 +165,7 @@ impl MafiaGame {
             .map(|(index, player)| (player.user_id, index))
             .collect();
 
-        Ok(Self {
+        let mut game = Self {
             players,
             players_by_id,
             phase: Phase::Night,
@@ -191,6 +195,10 @@ impl MafiaGame {
             hacker_used_ids: HashSet::new(),
             hacker_proxy_targets: HashMap::new(),
             psychologist_used_days: HashMap::new(),
+            mercenary_client_ids: HashMap::new(),
+            mercenary_contract_received_ids: HashSet::new(),
+            mercenary_armed_ids: HashSet::new(),
+            mercenary_targets: HashMap::new(),
             detective_targets: HashMap::new(),
             shaman_targets: HashMap::new(),
             priest_targets: HashMap::new(),
@@ -236,7 +244,9 @@ impl MafiaGame {
             joker_winner_id: None,
             rating_events: HashMap::new(),
             rating_action_counts: HashMap::new(),
-        })
+        };
+        game.assign_mercenary_clients();
+        Ok(game)
     }
 
     pub fn mark_rating_action(&mut self, user_id: u64) {
@@ -321,6 +331,77 @@ impl MafiaGame {
 
     pub fn is_frog(&self, player: &Player) -> bool {
         player.alive && self.frog_user_ids.contains(&player.user_id)
+    }
+
+    pub fn mercenary_client(&self, mercenary_id: u64) -> Option<&Player> {
+        let client_id = self.mercenary_client_ids.get(&mercenary_id)?;
+        self.get_player(*client_id)
+    }
+
+    pub fn mercenary_for_client(&self, client_id: u64) -> Option<&Player> {
+        self.mercenary_client_ids
+            .iter()
+            .find_map(|(mercenary_id, mapped_client_id)| {
+                (*mapped_client_id == client_id)
+                    .then(|| self.get_player(*mercenary_id))
+                    .flatten()
+            })
+    }
+
+    pub fn receive_mercenary_contracts(&mut self) -> Vec<(Player, Player)> {
+        let pairs = self
+            .mercenary_client_ids
+            .iter()
+            .filter_map(|(mercenary_id, client_id)| {
+                let mercenary = self.get_player(*mercenary_id)?;
+                let client = self.get_player(*client_id)?;
+                (mercenary.alive && client.alive).then(|| (mercenary.clone(), client.clone()))
+            })
+            .collect::<Vec<_>>();
+        let mut newly_received = Vec::new();
+        for (mercenary, client) in pairs {
+            if self
+                .mercenary_contract_received_ids
+                .insert(mercenary.user_id)
+            {
+                newly_received.push((mercenary, client));
+            }
+        }
+        newly_received
+    }
+
+    fn assign_mercenary_clients(&mut self) {
+        let mercenary_ids = self
+            .players
+            .iter()
+            .filter(|player| player.role == Role::Mercenary)
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        let mut rng = rand::rng();
+        for mercenary_id in mercenary_ids {
+            let mut candidates = self
+                .players
+                .iter()
+                .filter(|player| player.user_id != mercenary_id && self.is_citizen_team(player))
+                .map(|player| player.user_id)
+                .collect::<Vec<_>>();
+            candidates.shuffle(&mut rng);
+            if let Some(client_id) = candidates.into_iter().next() {
+                self.mercenary_client_ids.insert(mercenary_id, client_id);
+            }
+        }
+    }
+
+    fn mercenary_can_block_mafia_win(&self) -> bool {
+        self.players.iter().any(|player| {
+            player.alive
+                && player.role == Role::Mercenary
+                && self.mercenary_armed_ids.contains(&player.user_id)
+                && self
+                    .players
+                    .iter()
+                    .any(|target| target.alive && target.user_id != player.user_id)
+        })
     }
 
     pub fn is_madam_seduced(&self, player: &Player) -> bool {
@@ -508,6 +589,9 @@ impl MafiaGame {
             if self.revealed_judge_alive() {
                 return None;
             }
+            if self.mercenary_can_block_mafia_win() {
+                return None;
+            }
             return Some(Winner::Mafia);
         }
         None
@@ -595,6 +679,7 @@ impl MafiaGame {
             Role::Police => &[&self.police_targets],
             Role::Agent => &[&self.detective_targets],
             Role::Vigilante => &[&self.vigilante_targets],
+            Role::Mercenary => &[&self.mercenary_targets],
             Role::Godfather => &[&self.godfather_targets],
             Role::CultLeader => &[&self.cult_targets],
             Role::Fanatic => &[&self.fanatic_targets],
@@ -796,6 +881,7 @@ impl MafiaGame {
             RoleActionMap::Priest => self.priest_targets.contains_key(&actor_id),
             RoleActionMap::Witch => self.witch_targets.contains_key(&actor_id),
             RoleActionMap::Terrorist => self.terrorist_action_submitted.contains(&actor_id),
+            RoleActionMap::Mercenary => self.mercenary_targets.contains_key(&actor_id),
         }
     }
 
@@ -828,6 +914,9 @@ impl MafiaGame {
             RoleActionMap::Terrorist => {
                 self.terrorist_targets.insert(actor_id, target_id);
             }
+            RoleActionMap::Mercenary => {
+                self.mercenary_targets.insert(actor_id, target_id);
+            }
         };
     }
 
@@ -844,6 +933,7 @@ enum RoleActionMap {
     Priest,
     Witch,
     Terrorist,
+    Mercenary,
 }
 
 
@@ -911,6 +1001,27 @@ fn validate_counts(players: &[(u64, String)], counts: &GameCounts) -> Result<()>
         + counts.vigilante_count
         + counts.joker_count
         + counts.special_roles.len();
+    let mercenary_count = counts
+        .special_roles
+        .iter()
+        .filter(|role| **role == Role::Mercenary)
+        .count();
+    if mercenary_count > 0 {
+        let citizen_fill_count = players.len().saturating_sub(special_count);
+        let citizen_team_count = counts.doctor_count
+            + counts.police_count
+            + counts.agent_count
+            + counts.vigilante_count
+            + citizen_fill_count
+            + counts
+                .special_roles
+                .iter()
+                .filter(|role| !role.is_mafia_team() && **role != Role::Joker)
+                .count();
+        if citizen_team_count <= mercenary_count {
+            bail!("용병 의뢰인이 될 시민팀 플레이어가 부족합니다.");
+        }
+    }
     if special_count > players.len() {
         bail!("직업 수의 합계가 참가자 수보다 많습니다.");
     }
@@ -999,6 +1110,85 @@ mod tests {
 
         assert_eq!(game.mark_dead(1).map(|player| player.user_id), Some(1));
         assert!(game.mark_dead(1).is_none());
+    }
+
+    fn mercenary_test_game() -> MafiaGame {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Mercenary),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.mercenary_client_ids.clear();
+        game.assign_mercenary_clients();
+        game
+    }
+
+    #[test]
+    fn mercenary_client_is_citizen_team_player() {
+        let game = mercenary_test_game();
+        let client = game.mercenary_client(2).unwrap();
+
+        assert_ne!(client.user_id, 2);
+        assert!(game.is_citizen_team(client));
+    }
+
+    #[test]
+    fn mercenary_does_not_arm_when_client_dies_before_contract() {
+        let mut game = mercenary_test_game();
+        let mafia_id = 1;
+        let client_id = game.mercenary_client(2).unwrap().user_id;
+
+        game.submit_night_action(mafia_id, Some(client_id)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(result.killed_players.iter().any(|p| p.user_id == client_id));
+        assert!(!game.mercenary_armed_ids.contains(&2));
+    }
+
+    #[test]
+    fn mercenary_arms_after_contracted_client_dies_at_night() {
+        let mut game = mercenary_test_game();
+        let mafia_id = 1;
+        let client_id = game.mercenary_client(2).unwrap().user_id;
+        assert_eq!(game.receive_mercenary_contracts().len(), 1);
+        game.phase = Phase::Night;
+        game.day_number = 2;
+
+        game.submit_night_action(mafia_id, Some(client_id)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(result.killed_players.iter().any(|p| p.user_id == client_id));
+        assert!(game.mercenary_armed_ids.contains(&2));
+        assert!(result.mercenary_results.get(&2).is_some_and(|text| text.contains("의뢰인")));
+    }
+
+    #[test]
+    fn armed_mercenary_blocks_mafia_majority_win() {
+        let mut game = mercenary_test_game();
+        for id in [3, 4, 5] {
+            game.get_player_mut(id).unwrap().alive = false;
+        }
+
+        assert_eq!(game.winner(), Some(Winner::Mafia));
+        game.mercenary_armed_ids.insert(2);
+        assert_eq!(game.winner(), None);
+    }
+
+    #[test]
+    fn mercenary_executes_independently_at_night() {
+        let mut game = mercenary_test_game();
+        game.mercenary_armed_ids.insert(2);
+
+        game.submit_night_action(2, Some(1)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(result.mercenary_kills.iter().any(|p| p.user_id == 1));
+        assert!(result.killed_players.iter().any(|p| p.user_id == 1));
     }
 
     #[test]

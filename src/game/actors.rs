@@ -42,6 +42,9 @@ impl MafiaGame {
                 Role::Thief => self.thief_can_act_at_night(player, &alive, &unpurified_dead),
                 Role::Police | Role::Detective | Role::Spy | Role::Terrorist => has_other_alive,
                 Role::Vigilante => !self.vigilante_execution_targets(player).is_empty(),
+                Role::Mercenary => {
+                    self.mercenary_armed_ids.contains(&player.user_id) && has_other_alive
+                }
                 Role::Reporter => self.reporter_can_act(player, &alive),
                 Role::Contractor => self.contractor_can_act(player),
                 Role::Witch => has_other_alive,
@@ -94,6 +97,7 @@ impl MafiaGame {
             Role::Thief => self.stolen_night_action_submitted(actor),
             Role::Police => self.police_targets.contains_key(&actor.user_id),
             Role::Vigilante => self.vigilante_targets.contains_key(&actor.user_id),
+            Role::Mercenary => self.mercenary_targets.contains_key(&actor.user_id),
             Role::Reporter => {
                 self.reporter_targets.contains_key(&actor.user_id)
                     || self.reporter_skip_submitted.contains(&actor.user_id)

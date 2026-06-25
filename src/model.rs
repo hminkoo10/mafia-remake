@@ -18,6 +18,7 @@ pub enum Role {
     Gangster,
     Prophet,
     Psychologist,
+    Mercenary,
     Spy,
     Contractor,
     Thief,
@@ -56,6 +57,7 @@ impl Role {
             Self::Gangster => "건달",
             Self::Prophet => "예언자",
             Self::Psychologist => "심리학자",
+            Self::Mercenary => "용병",
             Self::Spy => "스파이",
             Self::Contractor => "청부업자",
             Self::Thief => "도둑",
@@ -196,6 +198,7 @@ pub const CITIZEN_SPECIAL_ROLES: &[Role] = &[
     Role::Gangster,
     Role::Prophet,
     Role::Psychologist,
+    Role::Mercenary,
 ];
 
 pub const MAFIA_SPECIAL_ROLES: &[Role] = &[
@@ -236,6 +239,7 @@ pub const PUBLIC_CITIZEN_SPECIAL_ROLES: &[Role] = &[
     Role::Gangster,
     Role::Prophet,
     Role::Psychologist,
+    Role::Mercenary,
     Role::Fanatic,
 ];
 
@@ -264,6 +268,7 @@ pub const CONTRACTOR_GUESS_ROLES: &[Role] = &[
     Role::Gangster,
     Role::Prophet,
     Role::Psychologist,
+    Role::Mercenary,
     Role::CultLeader,
     Role::Fanatic,
     Role::Joker,
@@ -302,6 +307,8 @@ pub struct NightResult {
     pub hacker_results: std::collections::HashMap<u64, String>,
     pub vigilante_results: std::collections::HashMap<u64, String>,
     pub vigilante_kills: Vec<Player>,
+    pub mercenary_results: std::collections::HashMap<u64, String>,
+    pub mercenary_kills: Vec<Player>,
     pub nurse_results: std::collections::HashMap<u64, String>,
     pub nurse_contacts: Vec<u64>,
     pub cult_results: std::collections::HashMap<u64, String>,

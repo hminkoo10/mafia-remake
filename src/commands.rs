@@ -2532,6 +2532,7 @@ pub async fn configure_extra_roles(
     gangster: Option<bool>,
     prophet: Option<bool>,
     psychologist: Option<bool>,
+    mercenary: Option<bool>,
     thief: Option<bool>,
     cult_team: Option<bool>,
 ) -> Result<(), Error> {
@@ -2559,6 +2560,9 @@ pub async fn configure_extra_roles(
     }
     if let Some(v) = psychologist {
         config_write.enable_psychologist = v;
+    }
+    if let Some(v) = mercenary {
+        config_write.enable_mercenary = v;
     }
     if let Some(v) = thief {
         config_write.enable_thief = v;
@@ -2809,6 +2813,7 @@ pub async fn show_role_descriptions(ctx: Context<'_>) -> Result<(), Error> {
         Role::Gangster,
         Role::Prophet,
         Role::Psychologist,
+        Role::Mercenary,
         Role::Detective,
         Role::Shaman,
         Role::Priest,
@@ -3391,6 +3396,7 @@ pub fn find_role_by_name(name: &str) -> Option<Role> {
         Role::Gangster,
         Role::Prophet,
         Role::Psychologist,
+        Role::Mercenary,
         Role::Spy,
         Role::Contractor,
         Role::Thief,

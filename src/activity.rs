@@ -1028,6 +1028,7 @@ mod tests {
             Role::Gangster,
             Role::Prophet,
             Role::Psychologist,
+            Role::Mercenary,
             Role::Spy,
             Role::Contractor,
             Role::Thief,
@@ -1081,7 +1082,7 @@ mod tests {
         ] {
             assert_eq!(player_team(&game, &Player::new(99, "test", role)), "Mafia");
         }
-        for role in [Role::Gangster, Role::Fanatic, Role::Citizen] {
+        for role in [Role::Gangster, Role::Fanatic, Role::Mercenary, Role::Citizen] {
             assert_eq!(player_team(&game, &Player::new(99, "test", role)), "Citizen");
         }
         assert_eq!(
@@ -1120,6 +1121,7 @@ fn role_name(role: Role) -> String {
         Role::Politician => "정치인",
         Role::Judge => "판사",
         Role::Psychologist => "심리학자",
+        Role::Mercenary => "용병",
         Role::Thief => "도둑",
         Role::Soldier => "군인",
         Role::Nurse => "간호사",
@@ -1166,7 +1168,7 @@ fn role_from_str(s: &str) -> Option<Role> {
         "요원" => Agent, "자경단" | "자경단원" => Vigilante, "기자" => Reporter, "해커" => Hacker,
         "탐정" | "사립탐정" => Detective, "영매" => Shaman, "성직자" => Priest,
         "군인" => Soldier, "건달" => Gangster, "예언자" => Prophet,
-        "심리학자" => Psychologist, "스파이" => Spy, "청부업자" => Contractor,
+        "심리학자" => Psychologist, "용병" => Mercenary, "스파이" => Spy, "청부업자" => Contractor,
         "도둑" => Thief, "마녀" => Witch, "과학자" => Scientist, "마담" => Madam,
         "도굴꾼" => Graverobber, "대부" => Godfather, "조커" => Joker,
         "정치인" => Politician, "판사" => Judge, "테러리스트" => Terrorist,

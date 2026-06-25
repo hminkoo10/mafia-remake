@@ -64,6 +64,7 @@ impl MafiaGame {
         self.police_targets.remove(&actor_id);
         self.thief_police_targets.remove(&actor_id);
         self.vigilante_targets.remove(&actor_id);
+        self.mercenary_targets.remove(&actor_id);
         self.detective_targets.remove(&actor_id);
         self.shaman_targets.remove(&actor_id);
         self.priest_targets.remove(&actor_id);
@@ -151,6 +152,7 @@ impl MafiaGame {
         let godfather_results = self.resolve_godfather_results();
         let (shaman_results, shaman_purifications) = self.resolve_shaman_results();
         let (vigilante_results, vigilante_kills) = self.resolve_vigilante_results();
+        let (mut mercenary_results, mercenary_kills) = self.resolve_mercenary_results();
         let (nurse_results, nurse_contacts) = self.resolve_nurse_results();
         let gangster_results = self.resolve_gangster_results();
         let (cult_results, cult_bells) = self.resolve_cult_results();
@@ -207,9 +209,26 @@ impl MafiaGame {
                 &mut killed_by_mafia_team_ids,
             );
         }
+        for target in &mercenary_kills {
+            self.kill_player(
+                target.user_id,
+                false,
+                &mut killed_players,
+                &mut killed_by_mafia_team_ids,
+            );
+        }
 
         let terrorist_retaliations = self
             .resolve_terrorist_night_retaliations(&killed_by_mafia_team_ids, &mut killed_players);
+        for (actor_id, message) in self.activate_mercenaries_for_killed_clients(&killed_players) {
+            mercenary_results
+                .entry(actor_id)
+                .and_modify(|text| {
+                    text.push('\n');
+                    text.push_str(&message);
+                })
+                .or_insert(message);
+        }
         let (priest_results, priest_revives) = self.resolve_priest_results(&killed_players);
         let graverobber_results = self.resolve_graverobbers(&killed_players);
         let agent_results = self.resolve_agent_results();
@@ -256,6 +275,8 @@ impl MafiaGame {
             hacker_results: HashMap::new(),
             vigilante_results,
             vigilante_kills,
+            mercenary_results,
+            mercenary_kills,
             nurse_results,
             nurse_contacts,
             cult_results,
@@ -321,6 +342,22 @@ impl MafiaGame {
             .collect::<Vec<_>>();
         for actor_id in vigilantes {
             self.record_rating_event(actor_id, 6, "숙청으로 마피아팀 처형");
+        }
+
+        let mercenary_kill_ids = result
+            .mercenary_kills
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        let mercenaries = self
+            .mercenary_targets
+            .iter()
+            .filter_map(|(&actor_id, &target_id)| {
+                mercenary_kill_ids.contains(&target_id).then_some(actor_id)
+            })
+            .collect::<Vec<_>>();
+        for actor_id in mercenaries {
+            self.record_rating_event(actor_id, 6, "의뢰 처형 성공");
         }
 
         for actor_id in &result.spy_contacts {
@@ -436,6 +473,7 @@ impl MafiaGame {
         self.police_targets.clear();
         self.thief_police_targets.clear();
         self.vigilante_targets.clear();
+        self.mercenary_targets.clear();
         self.reporter_targets.clear();
         self.reporter_skip_submitted.clear();
         self.detective_targets.clear();
@@ -569,6 +607,7 @@ impl MafiaGame {
                 .then_some(police_target_id)
                 .flatten(),
             Role::Vigilante => self.vigilante_targets.get(&watched.user_id).copied(),
+            Role::Mercenary => self.mercenary_targets.get(&watched.user_id).copied(),
             Role::Reporter => self.reporter_targets.get(&watched.user_id).copied(),
             Role::Detective => self.detective_targets.get(&watched.user_id).copied(),
             Role::Shaman => self.shaman_targets.get(&watched.user_id).copied(),
@@ -849,6 +888,71 @@ impl MafiaGame {
             }
         }
         (results, kills)
+    }
+
+    fn resolve_mercenary_results(&self) -> (HashMap<u64, String>, Vec<Player>) {
+        let mut results = HashMap::new();
+        let mut kills = Vec::new();
+        for (actor_id, target_id) in &self.mercenary_targets {
+            let Some(actor) = self.get_player(*actor_id) else {
+                continue;
+            };
+            let Some(target) = self.get_player(*target_id).cloned() else {
+                continue;
+            };
+            if !actor.alive || !self.mercenary_armed_ids.contains(actor_id) {
+                continue;
+            }
+            if target.alive {
+                kills.push(target.clone());
+                results.insert(
+                    *actor_id,
+                    format!("[의뢰] {} 님을 처형했습니다.", target.name),
+                );
+            } else {
+                results.insert(
+                    *actor_id,
+                    "[의뢰] 대상이 이미 사망해 처형에 실패했습니다.".to_string(),
+                );
+            }
+        }
+        (results, kills)
+    }
+
+    fn activate_mercenaries_for_killed_clients(
+        &mut self,
+        killed_players: &[Player],
+    ) -> HashMap<u64, String> {
+        let killed_ids = killed_players
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        let pairs = self.mercenary_client_ids.clone();
+        let mut results = HashMap::new();
+        for (mercenary_id, client_id) in pairs {
+            if !killed_ids.contains(&client_id)
+                || !self.mercenary_contract_received_ids.contains(&mercenary_id)
+                || !self
+                    .get_player(mercenary_id)
+                    .is_some_and(|player| player.alive && player.role == Role::Mercenary)
+            {
+                continue;
+            }
+            if self.mercenary_armed_ids.insert(mercenary_id) {
+                let client_name = self
+                    .get_player(client_id)
+                    .map(|player| player.name.clone())
+                    .unwrap_or_else(|| client_id.to_string());
+                results.insert(
+                    mercenary_id,
+                    format!(
+                        "[의뢰] 의뢰인 {} 님이 사망했습니다. 이제 밤마다 플레이어 한 명을 처형할 수 있습니다.",
+                        client_name
+                    ),
+                );
+            }
+        }
+        results
     }
 
     fn resolve_nurse_results(&mut self) -> (HashMap<u64, String>, Vec<u64>) {

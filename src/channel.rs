@@ -796,6 +796,7 @@ pub fn enabled_special_roles(config: &config::BotConfig, pool: &[Role]) -> Vec<R
             Role::Gangster => config.enable_gangster,
             Role::Prophet => config.enable_prophet,
             Role::Psychologist => config.enable_psychologist,
+            Role::Mercenary => config.enable_mercenary,
             Role::Thief => config.enable_thief,
             _ => true,
         })
@@ -1247,6 +1248,7 @@ pub fn enabled_special_role_names(config: &config::BotConfig) -> String {
         Role::Gangster,
         Role::Prophet,
         Role::Psychologist,
+        Role::Mercenary,
         Role::CultLeader,
         Role::Fanatic,
     ]
@@ -1275,6 +1277,7 @@ pub fn enabled_special_role_names(config: &config::BotConfig) -> String {
         Role::Gangster => config.enable_gangster,
         Role::Prophet => config.enable_prophet,
         Role::Psychologist => config.enable_psychologist,
+        Role::Mercenary => config.enable_mercenary,
         Role::CultLeader | Role::Fanatic => config.enable_cult_team,
         _ => false,
     })
