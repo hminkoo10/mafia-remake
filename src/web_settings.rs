@@ -854,8 +854,14 @@ const WEB_PAGE_STYLE: &str = r#"
   .role-card h3 { margin: 0; font-size: 1.06rem; }
   .role-card h4 { margin: 12px 0 6px; font-size: 0.85rem; color: var(--muted); }
   .role-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+  .role-title { position: relative; display: flex; align-items: center; min-width: 0; gap: 6px; }
+  .role-help { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 22px; height: 22px; border: 1px solid #bfdbfe; border-radius: 999px; background: #eff6ff; color: var(--accent-strong); font-size: 0.78rem; font-weight: 800; line-height: 1; cursor: help; }
+  .role-help::after { content: attr(data-tip); position: absolute; z-index: 20; top: calc(100% + 8px); left: 0; width: min(340px, calc(100vw - 32px)); padding: 10px 11px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: var(--text); box-shadow: 0 14px 32px rgb(15 23 42 / 0.16); font-size: 0.84rem; font-weight: 500; line-height: 1.55; text-align: left; white-space: normal; opacity: 0; pointer-events: none; transform: translateY(-4px); transition: opacity 140ms ease, transform 140ms ease; }
+  .role-help:hover::after, .role-help:focus-visible::after { opacity: 1; transform: translateY(0); }
   .role-tags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
   .role-summary { margin: 0 0 10px; color: #344054; }
+  .role-rating { margin: 0 0 10px; padding: 8px 10px; border: 1px solid #dbeafe; border-radius: 4px; background: #f8fbff; color: #1e3a8a; font-size: 0.88rem; line-height: 1.45; }
+  .role-rating strong { color: #1d4ed8; }
   .role-card ul { margin: 0; padding-left: 18px; }
   .role-card li { margin: 4px 0; }
   .role-note { margin: 11px 0 0; padding: 9px 10px; border-left: 3px solid #f59e0b; border-radius: 4px; background: #fffbeb; color: #713f12; }
@@ -2463,15 +2469,66 @@ fn render_role_card(guide: &WebRoleGuide) -> String {
         .map(|tip| format!("<li>{}</li>", html_escape(tip)))
         .collect::<Vec<_>>()
         .join("");
+    let rating_hint = role_rating_hint(guide.role);
+    let hover_text = format!(
+        "{}: {} 레이팅 요소: {} 주의: {}",
+        guide.role.value(),
+        guide.summary,
+        rating_hint,
+        guide.caution
+    );
     format!(
-        r#"<article class="role-card"><div class="role-head"><h3>{}</h3><div class="role-tags"><span class="pill">{}</span><span class="pill">{}</span></div></div><p class="role-summary">{}</p><h4>운영 포인트</h4><ul>{}</ul><p class="role-note"><strong>주의:</strong> {}</p></article>"#,
+        r#"<article class="role-card"><div class="role-head"><div class="role-title"><h3>{}</h3><span class="role-help" tabindex="0" aria-label="{} 상세 설명" data-tip="{}">?</span></div><div class="role-tags"><span class="pill">{}</span><span class="pill">{}</span></div></div><p class="role-summary">{}</p><p class="role-rating"><strong>레이팅:</strong> {}</p><h4>운영 포인트</h4><ul>{}</ul><p class="role-note"><strong>주의:</strong> {}</p></article>"#,
         html_escape(guide.role.value()),
+        html_escape(guide.role.value()),
+        html_escape(&hover_text),
         html_escape(guide.team),
         html_escape(guide.kind),
         html_escape(guide.summary),
+        html_escape(rating_hint),
         tips,
         html_escape(guide.caution)
     )
+}
+
+fn role_rating_hint(role: Role) -> &'static str {
+    match role {
+        Role::Citizen => "생존 승리, 공개 정보 정리, 투표 기여를 중심으로 평가합니다.",
+        Role::Police => "조사 결과 공개와 생존한 정보 유지 기여를 크게 봅니다.",
+        Role::Doctor => "치료 성공, 핵심 직업 보호, 보호 동선 판단을 평가합니다.",
+        Role::Nurse => "보호 보조와 핵심 직업 생존 지원을 평가합니다.",
+        Role::Agent => "수사 결과로 의심 대상을 좁힌 기여를 평가합니다.",
+        Role::Vigilante => "정확한 조사와 처형 압박, 오처형 회피를 평가합니다.",
+        Role::Reporter => "취재 공개 정보가 투표 판단에 준 기여를 평가합니다.",
+        Role::Hacker => "행동 정보로 거짓 직업 주장이나 밤 동선을 잡은 기여를 평가합니다.",
+        Role::Detective => "추적 결과를 누적해 행동 모순을 밝힌 기여를 평가합니다.",
+        Role::Shaman => "사망자 정보와 공개 추론을 연결한 기여를 평가합니다.",
+        Role::Priest => "부활 또는 정화 선택으로 판세를 바꾼 기여를 평가합니다.",
+        Role::Soldier => "방탄 생존과 공격 유도 정보 제공을 평가합니다.",
+        Role::Gangster => "투표 제어와 핵심 타이밍 방해 기여를 평가합니다.",
+        Role::Prophet => "장기 생존과 예언 타이밍으로 만든 확정 정보를 평가합니다.",
+        Role::Psychologist => "관계 분석으로 팀 구도를 좁힌 기여를 평가합니다.",
+        Role::Hypnotist => "최면 누적과 해제 타이밍으로 얻은 판별 정보를 평가합니다.",
+        Role::Mercenary => "의뢰인 보호, 의뢰 달성 뒤 처형 판단을 평가합니다.",
+        Role::Lover => "연인 생존 연계와 공개 타이밍 조절을 평가합니다.",
+        Role::Mafia => "밤 처형 성공, 낮 발언 교란, 팀 승리 기여를 평가합니다.",
+        Role::Spy => "접선, 정보 전달, 시민팀 추론 방해를 평가합니다.",
+        Role::Contractor => "청부 표적 압박과 마피아팀 승리 보조를 평가합니다.",
+        Role::Thief => "탈취한 능력을 독립적으로 활용한 기여를 평가합니다.",
+        Role::Witch => "저주로 시민팀 행동을 흔든 기여를 평가합니다.",
+        Role::Scientist => "부활 타이밍과 마피아팀 생존 변수 창출을 평가합니다.",
+        Role::Madam => "접대, 접선, 밤 대화 합류 후 정보 공유를 평가합니다.",
+        Role::Graverobber => "도굴한 역할의 가치와 이후 행동 기여를 평가합니다.",
+        Role::Godfather => "마피아팀 지휘, 은폐, 처형 우선순위 판단을 평가합니다.",
+        Role::Villain => "마피아팀 보조와 낮 발언 교란 기여를 평가합니다.",
+        Role::CultLeader => "포교 성공, 교주팀 생존, 숫자 우위 운영을 평가합니다.",
+        Role::Fanatic => "교주팀 보조와 포교 이후 정보 교란 기여를 평가합니다.",
+        Role::Joker => "단독 승리 조건 달성과 처형 유도 성공을 크게 평가합니다.",
+        Role::Politician => "찬반투표와 공개 정치 운영으로 만든 판세 기여를 평가합니다.",
+        Role::Judge => "처형 판정으로 확정 구도를 만든 기여를 평가합니다.",
+        Role::Terrorist => "교환 압박과 희생 타이밍으로 만든 판세 기여를 평가합니다.",
+        Role::Frog => "개구리 상태에서 생존하거나 정보 혼선을 관리한 기여를 평가합니다.",
+    }
 }
 
 fn render_api_docs_page(base_url: &str) -> String {
@@ -3536,6 +3593,9 @@ mod tests {
         assert!(html.contains("최면술사"));
         assert!(html.contains("운영 포인트"));
         assert!(html.contains("주의:"));
+        assert!(html.contains("role-help"));
+        assert!(html.contains("role-rating"));
+        assert!(html.contains("레이팅 요소"));
         assert!(html.contains("role-grid"));
     }
 

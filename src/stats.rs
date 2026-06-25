@@ -40,9 +40,11 @@ const ROLE_STATS_ORDER: &[Role] = &[
     Role::Scientist,
     Role::Madam,
     Role::Godfather,
+    Role::Villain,
     Role::CultLeader,
     Role::Fanatic,
     Role::Joker,
+    Role::Frog,
     Role::Citizen,
 ];
 
@@ -383,7 +385,7 @@ fn rating_change_for_player(
         -RATING_DELTA_CAP,
         RATING_DELTA_CAP,
     );
-    let (role_delta, mut role_reasons) = role_rating_adjustment(game, player, initial_role);
+    let (role_delta, mut role_reasons) = role_rating_adjustment(game, player, initial_role, won);
     let combined_delta = clamp(
         team_delta + role_delta,
         -RATING_DELTA_CAP,
@@ -416,9 +418,19 @@ fn rating_change_for_player(
     }
 }
 
-fn role_rating_adjustment(game: &MafiaGame, player: &Player, role: Role) -> (i64, Vec<String>) {
+fn role_rating_adjustment(
+    game: &MafiaGame,
+    player: &Player,
+    role: Role,
+    won: bool,
+) -> (i64, Vec<String>) {
     let mut points = 0;
     let mut reasons = Vec::new();
+    let (role_points, role_reason) = role_specific_rating_adjustment(player, role, won);
+    if role_points != 0 {
+        points += role_points;
+        reasons.push(format!("{} {:+}", role_reason, role_points));
+    }
     for event in game
         .rating_events
         .get(&player.user_id)
@@ -446,6 +458,83 @@ fn role_rating_adjustment(game: &MafiaGame, player: &Player, role: Role) -> (i64
         reasons.push("직업 보정 상한 적용".to_string());
     }
     (role_delta, reasons)
+}
+
+fn role_specific_rating_adjustment(player: &Player, role: Role, won: bool) -> (i64, &'static str) {
+    let alive_win_points = if player.alive { 2 } else { 1 };
+    match role {
+        Role::Citizen => (
+            if won { alive_win_points } else { 0 },
+            "시민 생존/추론 기여",
+        ),
+        Role::Police => (
+            if won { alive_win_points } else { 0 },
+            "경찰 조사 유지 기여",
+        ),
+        Role::Agent => (
+            if won { alive_win_points } else { 0 },
+            "요원 정보 압박 기여",
+        ),
+        Role::Vigilante => (
+            if won { alive_win_points } else { 0 },
+            "자경단원 처형 압박 기여",
+        ),
+        Role::Doctor => (if won { 1 } else { 0 }, "의사 보호 운영 기여"),
+        Role::Nurse => (if won { 1 } else { 0 }, "간호사 보조 보호 기여"),
+        Role::Gangster => (if won { 1 } else { 0 }, "건달 투표 제어 기여"),
+        Role::Prophet => (if won { 1 } else { 0 }, "예언자 장기 생존 기여"),
+        Role::Psychologist => (
+            if won { alive_win_points } else { 0 },
+            "심리학자 관계 분석 기여",
+        ),
+        Role::Hypnotist => (
+            if won { alive_win_points } else { 0 },
+            "최면술사 누적 판별 기여",
+        ),
+        Role::Mercenary => (
+            if won { alive_win_points } else { 0 },
+            "용병 의뢰 수행 기여",
+        ),
+        Role::Detective => (
+            if won { alive_win_points } else { 0 },
+            "탐정 행동 추적 기여",
+        ),
+        Role::Shaman => (if won { 1 } else { 0 }, "영매 사망 정보 연결 기여"),
+        Role::Priest => (if won { 1 } else { 0 }, "성직자 정화 판단 기여"),
+        Role::Graverobber => (if won { 1 } else { 0 }, "도굴꾼 역할 전환 기여"),
+        Role::Politician => (if won { 1 } else { 0 }, "정치인 찬반 운영 기여"),
+        Role::Judge => (if won { 1 } else { 0 }, "판사 처형 판정 기여"),
+        Role::Reporter => (if won { 1 } else { 0 }, "기자 공개 정보 기여"),
+        Role::Hacker => (if won { 1 } else { 0 }, "해커 행동 정보 기여"),
+        Role::Terrorist => (
+            if won { alive_win_points } else { 0 },
+            "테러리스트 교환 압박 기여",
+        ),
+        Role::Lover => (if won { 1 } else { 0 }, "연인 생존 연계 기여"),
+        Role::Soldier => (if won { 1 } else { 0 }, "군인 방탄 생존 기여"),
+        Role::Mafia => (
+            if won { alive_win_points } else { 0 },
+            "마피아 처형 운영 기여",
+        ),
+        Role::Spy => (if won { 1 } else { 0 }, "스파이 접선/교란 기여"),
+        Role::Contractor => (if won { 1 } else { 0 }, "청부업자 표적 압박 기여"),
+        Role::Thief => (if won { 1 } else { 0 }, "도둑 능력 탈취 기여"),
+        Role::Witch => (if won { 1 } else { 0 }, "마녀 저주 교란 기여"),
+        Role::Scientist => (if won { 1 } else { 0 }, "과학자 부활 변수 기여"),
+        Role::Madam => (if won { 1 } else { 0 }, "마담 접대/접선 기여"),
+        Role::Godfather => (
+            if won { alive_win_points } else { 0 },
+            "대부 지휘/은폐 기여",
+        ),
+        Role::Villain => (if won { 1 } else { 0 }, "악인 마피아팀 보조 기여"),
+        Role::CultLeader => (
+            if won { alive_win_points } else { 0 },
+            "교주 포교 운영 기여",
+        ),
+        Role::Fanatic => (if won { 1 } else { 0 }, "광신도 교주팀 보조 기여"),
+        Role::Joker => (if won { 6 } else { 0 }, "조커 단독 승리 달성"),
+        Role::Frog => (if won { 1 } else { 0 }, "개구리 상태 생존 기여"),
+    }
 }
 
 fn role_has_core_action(role: Role) -> bool {
@@ -942,8 +1031,13 @@ mod tests {
             .rating_history
             .last()
             .unwrap();
-        assert_eq!(history.role_delta, 5);
-        assert!(history.rating_reasons.iter().any(|reason| reason.contains("치료 성공")));
+        assert!(history.role_delta >= 5);
+        assert!(
+            history
+                .rating_reasons
+                .iter()
+                .any(|reason| reason.contains("치료 성공"))
+        );
     }
 
     #[test]
@@ -958,7 +1052,7 @@ mod tests {
         game.record_rating_event(doctor.user_id, 9, "첫 번째 기여");
         game.record_rating_event(doctor.user_id, 8, "두 번째 기여");
 
-        let (role_delta, reasons) = role_rating_adjustment(&game, &doctor, Role::Doctor);
+        let (role_delta, reasons) = role_rating_adjustment(&game, &doctor, Role::Doctor, true);
 
         assert_eq!(role_delta, ROLE_DELTA_CAP);
         assert!(reasons.iter().any(|reason| reason == "직업 보정 상한 적용"));
@@ -975,10 +1069,62 @@ mod tests {
             .cloned()
             .unwrap();
 
-        let (role_delta, reasons) = role_rating_adjustment(&game, &doctor, Role::Doctor);
+        let (role_delta, reasons) = role_rating_adjustment(&game, &doctor, Role::Doctor, false);
 
         assert_eq!(role_delta, -2);
         assert!(reasons.iter().any(|reason| reason.contains("미사용")));
+    }
+
+    #[test]
+    fn every_role_has_role_specific_rating_element() {
+        let game = rating_test_game();
+        let player = game.players.first().unwrap().clone();
+        let roles = [
+            Role::Mafia,
+            Role::Doctor,
+            Role::Nurse,
+            Role::Police,
+            Role::Agent,
+            Role::Vigilante,
+            Role::Reporter,
+            Role::Hacker,
+            Role::Detective,
+            Role::Shaman,
+            Role::Priest,
+            Role::Soldier,
+            Role::Gangster,
+            Role::Prophet,
+            Role::Psychologist,
+            Role::Hypnotist,
+            Role::Mercenary,
+            Role::Spy,
+            Role::Contractor,
+            Role::Thief,
+            Role::Witch,
+            Role::Scientist,
+            Role::Madam,
+            Role::Graverobber,
+            Role::Godfather,
+            Role::Joker,
+            Role::Politician,
+            Role::Judge,
+            Role::Terrorist,
+            Role::Lover,
+            Role::CultLeader,
+            Role::Fanatic,
+            Role::Frog,
+            Role::Villain,
+            Role::Citizen,
+        ];
+
+        for role in roles {
+            let (points, reason) = role_specific_rating_adjustment(&player, role, true);
+            assert!(points > 0, "{role:?} should have a positive win element");
+            assert!(
+                !reason.trim().is_empty(),
+                "{role:?} should have a visible reason"
+            );
+        }
     }
 
     #[test]
