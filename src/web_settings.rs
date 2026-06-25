@@ -1524,6 +1524,7 @@ async fn route_public_request(state: &WebSettingsState, path: &str, query: &str)
                 &render_leaderboard_page(&leaderboard, &stats),
             ))
         }
+        "/rating" => Some(http_response("200 OK", &render_rating_page())),
         "/roles" => Some(http_response("200 OK", &render_roles_page())),
         "/api" | "/api/docs" => Some(http_response(
             "200 OK",
@@ -1990,7 +1991,7 @@ fn safe_text(value: Option<&Value>) -> String {
 }
 
 fn render_nav() -> &'static str {
-    r#"<nav class="nav"><a href="/">홈</a><a href="/status">상태판</a><a href="/leaderboard">리더보드</a><a href="/roles">역할 설명</a><a href="/api/docs">API 문서</a></nav>"#
+    r#"<nav class="nav"><a href="/">홈</a><a href="/status">상태판</a><a href="/leaderboard">리더보드</a><a href="/rating">레이팅 설명</a><a href="/roles">역할 설명</a><a href="/api/docs">API 문서</a></nav>"#
 }
 
 fn render_status_summary(status: &Value) -> String {
@@ -2264,6 +2265,149 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
     format!(
         r#"<section class="panel">{title}<table><thead><tr><th class="num">순위</th><th>이름</th><th class="num">레이팅/랭크</th><th>승패</th><th class="num">승률</th><th class="num">판수</th><th class="num">마피아팀</th><th>게임시간</th></tr></thead><tbody>{rows}</tbody></table></section>"#
     )
+}
+
+fn render_rating_page() -> String {
+    let rank_rows = [
+        (
+            "C",
+            "900점 미만",
+            "시작 전 적응 구간입니다. 이기면 크게 오르고, 져도 적게 떨어집니다.",
+        ),
+        (
+            "B",
+            "900~1099점",
+            "기본 구간입니다. 초기 레이팅 1000점이 여기에 속합니다.",
+        ),
+        ("A", "1100~1299점", "안정적으로 승리를 쌓은 구간입니다."),
+        (
+            "S",
+            "1300~1499점",
+            "상위권 입구입니다. 승리 보상은 줄고 패배 부담은 커집니다.",
+        ),
+        (
+            "SS",
+            "1500~1699점",
+            "강한 실력 구간입니다. 한 번의 패배 손실이 꽤 큽니다.",
+        ),
+        (
+            "X",
+            "1700점 이상",
+            "최상위 구간입니다. 유지하려면 꾸준히 이겨야 합니다.",
+        ),
+    ]
+    .into_iter()
+    .map(|(rank, range, description)| {
+        format!(
+            "<tr><td><strong>{}</strong></td><td>{}</td><td>{}</td></tr>",
+            html_escape(rank),
+            html_escape(range),
+            html_escape(description)
+        )
+    })
+    .collect::<Vec<_>>()
+    .join("");
+    let gain_rows = [
+        (
+            "낮은 레이팅",
+            "승리 보상 큼",
+            "패배 손실 작음",
+            "점수 복구가 쉽습니다.",
+        ),
+        (
+            "중간 레이팅",
+            "표준에 가까움",
+            "표준에 가까움",
+            "승패와 활약이 균형 있게 반영됩니다.",
+        ),
+        (
+            "높은 레이팅",
+            "승리 보상 작음",
+            "패배 손실 큼",
+            "상위권 유지가 어려워집니다.",
+        ),
+    ]
+    .into_iter()
+    .map(|(rating, win, loss, note)| {
+        format!(
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            html_escape(rating),
+            html_escape(win),
+            html_escape(loss),
+            html_escape(note)
+        )
+    })
+    .collect::<Vec<_>>()
+    .join("");
+    let role_rows = [
+        ("의사", "마피아 공격 치료 성공", "+5"),
+        ("경찰", "마피아팀 조사 성공", "+4"),
+        ("자경단원", "마피아팀 숙청 처형 성공", "+6"),
+        ("용병", "의뢰 처형 성공", "+6"),
+        ("성직자", "소생 성공", "+6"),
+        ("스파이/마녀/청부업자", "마피아팀 접선", "+4"),
+        ("교주", "포교 성공", "+5"),
+        ("군인", "방탄 발동", "+5"),
+        ("테러리스트", "적팀 반격", "+6"),
+        ("도둑", "도벽 실행 + 접선", "+3 / +2"),
+        ("최면술사", "비시민 직업 확인", "대상당 +3, 최대 +9"),
+        (
+            "핵심 능력 미사용",
+            "2일차 이후까지 생존했는데 능력 미사용",
+            "-2",
+        ),
+    ]
+    .into_iter()
+    .map(|(role, action, points)| {
+        format!(
+            "<tr><td>{}</td><td>{}</td><td class=\"num\">{}</td></tr>",
+            html_escape(role),
+            html_escape(action),
+            html_escape(points)
+        )
+    })
+    .collect::<Vec<_>>()
+    .join("");
+    let body = format!(
+        r#"<p class="meta">레이팅은 단순 승률이 아니라 상대 난이도, 현재 점수 구간, 역할 기여를 같이 보는 점수입니다. 낮은 점수에서는 복구가 쉽고, 높은 점수에서는 유지가 어렵게 설계되어 있습니다.</p>
+<section class="grid">
+  <div class="card"><span>초기 레이팅</span><strong>1000점</strong></div>
+  <div class="card"><span>한 판 최대 변동</span><strong>±80점</strong></div>
+  <div class="card"><span>역할 보정</span><strong>±14점</strong></div>
+  <div class="card"><span>패배팀 최대 상승</span><strong>+5점</strong></div>
+</section>
+<section class="panel">
+  <h2>점수가 오르는 기준</h2>
+  <p class="meta">기본은 승리입니다. 상대 평균 레이팅이 높을수록, 내 현재 레이팅이 낮을수록 승리 보상이 커집니다. 여기에 역할 기여 점수가 더해집니다.</p>
+  <table><thead><tr><th>내 구간</th><th>이겼을 때</th><th>졌을 때</th><th>느낌</th></tr></thead><tbody>{gain_rows}</tbody></table>
+</section>
+<section class="panel">
+  <h2>랭크표</h2>
+  <p class="meta">랭크는 현재 레이팅을 보기 쉽게 나눈 표시입니다. 계산 자체에는 영향을 주지 않습니다.</p>
+  <table><thead><tr><th>랭크</th><th>레이팅</th><th>설명</th></tr></thead><tbody>{rank_rows}</tbody></table>
+</section>
+<section class="panel">
+  <h2>역할 기여 점수</h2>
+  <p class="meta">승패 점수와 별개로 역할을 잘 수행하면 추가 점수를 받습니다. 한 판 역할 보정은 최종적으로 -14점부터 +14점까지만 반영됩니다.</p>
+  <table><thead><tr><th>역할</th><th>대표 기여</th><th class="num">점수</th></tr></thead><tbody>{role_rows}</tbody></table>
+</section>
+<section class="panel">
+  <h2>게임 끝나고 보이는 로그 읽는 법</h2>
+  <pre>- 닉네임 (의사) 1000 -&gt; 1048 (+48) [팀 +43 / 직업 +5]
+  사유: 소속 진영 승리, 마피아 공격 치료 성공 +5, 레이팅 구간 보정 x1.35</pre>
+  <p class="meta">팀 점수는 승패와 상대 난이도에서 나온 값이고, 직업 점수는 해당 판 활약에서 나온 값입니다. 두 값을 합친 뒤 상한과 패배팀 제한을 적용해 최종 변화량이 됩니다.</p>
+</section>
+<section class="panel">
+  <h2>자주 묻는 질문</h2>
+  <table><tbody>
+    <tr><th>졌는데 왜 점수가 올랐나요?</th><td>역할 활약 점수가 컸기 때문입니다. 다만 패배팀은 한 판에 최대 +5점까지만 오릅니다.</td></tr>
+    <tr><th>이겼는데 왜 조금 올랐나요?</th><td>이미 레이팅이 높거나, 상대 평균 레이팅이 낮으면 기대 승률이 높아서 보상이 줄어듭니다.</td></tr>
+    <tr><th>역할 행동을 실패하면 무조건 감점인가요?</th><td>아닙니다. 능력을 제출했다면 핵심 능력 미사용 감점은 피합니다. 성공 이벤트가 없으면 추가 점수만 없는 구조입니다.</td></tr>
+    <tr><th>랭크는 어디서 보나요?</th><td>내정보, 리더보드, 웹 리더보드, API 응답에서 볼 수 있습니다.</td></tr>
+  </tbody></table>
+</section>"#
+    );
+    base_html("마피아 레이팅 설명", &body, false)
 }
 
 fn render_roles_page() -> String {
@@ -3393,5 +3537,18 @@ mod tests {
         assert!(html.contains("운영 포인트"));
         assert!(html.contains("주의:"));
         assert!(html.contains("role-grid"));
+    }
+
+    #[test]
+    fn rating_page_explains_rating_for_players() {
+        let html = render_rating_page();
+
+        assert!(html.contains("레이팅 설명"));
+        assert!(html.contains(r#"<a href="/rating">레이팅 설명</a>"#));
+        assert!(html.contains("초기 레이팅"));
+        assert!(html.contains("패배팀 최대 상승"));
+        assert!(html.contains("랭크표"));
+        assert!(html.contains("자주 묻는 질문"));
+        assert!(html.contains("졌는데 왜 점수가 올랐나요?"));
     }
 }
