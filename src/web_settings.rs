@@ -313,6 +313,7 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
         WebFieldKind::Bool,
         None,
     ),
+    field("enable_hypnotist", "최면술사 활성화", WebFieldKind::Bool, None),
     field("enable_mercenary", "용병 활성화", WebFieldKind::Bool, None),
     field("enable_thief", "도둑 활성화", WebFieldKind::Bool, None),
     field(
@@ -2000,6 +2001,7 @@ fn config_value(config: &BotConfig, name: &str) -> String {
         "enable_gangster" => config.enable_gangster.to_string(),
         "enable_prophet" => config.enable_prophet.to_string(),
         "enable_psychologist" => config.enable_psychologist.to_string(),
+        "enable_hypnotist" => config.enable_hypnotist.to_string(),
         "enable_mercenary" => config.enable_mercenary.to_string(),
         "enable_thief" => config.enable_thief.to_string(),
         "enable_cult_team" => config.enable_cult_team.to_string(),
@@ -2107,6 +2109,7 @@ fn set_bool(config: &mut BotConfig, name: &str, value: bool) -> std::result::Res
         "enable_gangster" => config.enable_gangster = value,
         "enable_prophet" => config.enable_prophet = value,
         "enable_psychologist" => config.enable_psychologist = value,
+        "enable_hypnotist" => config.enable_hypnotist = value,
         "enable_mercenary" => config.enable_mercenary = value,
         "enable_thief" => config.enable_thief = value,
         "enable_cult_team" => config.enable_cult_team = value,
@@ -2247,6 +2250,7 @@ fn special_role_enabled(config: &BotConfig, role: Role) -> bool {
         Role::Gangster => config.enable_gangster,
         Role::Prophet => config.enable_prophet,
         Role::Psychologist => config.enable_psychologist,
+        Role::Hypnotist => config.enable_hypnotist,
         Role::Mercenary => config.enable_mercenary,
         Role::Thief => config.enable_thief,
         _ => true,
@@ -2509,6 +2513,7 @@ mod tests {
             enable_gangster: true,
             enable_prophet: true,
             enable_psychologist: true,
+            enable_hypnotist: true,
             enable_mercenary: true,
             enable_thief: true,
             enable_cult_team: false,
@@ -2612,6 +2617,7 @@ mod tests {
         config.enable_gangster = false;
         config.enable_prophet = false;
         config.enable_psychologist = false;
+        config.enable_hypnotist = false;
         config.enable_mercenary = false;
 
         let roles = crate::channel::choose_special_roles(&config).unwrap();

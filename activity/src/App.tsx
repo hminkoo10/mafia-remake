@@ -53,11 +53,12 @@ const TEAM_META: Record<RoleTeam, { label: string; className: string }> = {
 
 const SPECIAL_ACTION_META: Record<
   ActivitySpecialAction,
-  { label: string; action: ActionType; requiresPair: boolean }
+  { label: string; action: ActionType; requiresPair: boolean; requiresTarget?: boolean }
 > = {
   hacker: { label: "해킹", action: "hacker_action", requiresPair: false },
   vigilante: { label: "자경단원 조사", action: "vigilante_action", requiresPair: false },
   psychologist: { label: "심리학자 관찰", action: "psychologist_action", requiresPair: true },
+  hypnotist: { label: "최면 해제", action: "hypnotist_action", requiresPair: false, requiresTarget: false },
   thief: { label: "도벽", action: "thief_action", requiresPair: false },
 };
 
@@ -101,6 +102,7 @@ const ROLE_HELP: Record<string, string> = {
   조커: "처형 유도와 과한 의심 사이 균형이 핵심입니다.",
   청부업자: "두 대상과 직업 추측을 확신할 때 제출하세요.",
   심리학자: "낮 행동 대상의 태도 변화를 함께 보세요.",
+  최면술사: "최면 대상은 누적됩니다. 낮에 깨우면 다음 밤은 쉬게 됩니다.",
   도둑: "훔칠 직업 가치와 생존 가능성을 비교하세요.",
   군인: "방탄 가능성을 노출할 타이밍을 아끼세요.",
   간호사: "의사 위치와 치료 흐름을 보조하세요.",
@@ -677,6 +679,17 @@ function ActionConsole({
                 type="button"
               >
                 관찰 실행
+              </button>
+            </div>
+          ) : specialMeta.requiresTarget === false ? (
+            <div className="command-row">
+              <button
+                className="primary-command wide"
+                disabled={busy}
+                onClick={() => run({ action: specialMeta.action }, `${specialMeta.label} 완료`)}
+                type="button"
+              >
+                {specialMeta.label}
               </button>
             </div>
           ) : (

@@ -18,6 +18,7 @@ pub enum Role {
     Gangster,
     Prophet,
     Psychologist,
+    Hypnotist,
     Mercenary,
     Spy,
     Contractor,
@@ -57,6 +58,7 @@ impl Role {
             Self::Gangster => "건달",
             Self::Prophet => "예언자",
             Self::Psychologist => "심리학자",
+            Self::Hypnotist => "최면술사",
             Self::Mercenary => "용병",
             Self::Spy => "스파이",
             Self::Contractor => "청부업자",
@@ -198,6 +200,7 @@ pub const CITIZEN_SPECIAL_ROLES: &[Role] = &[
     Role::Gangster,
     Role::Prophet,
     Role::Psychologist,
+    Role::Hypnotist,
     Role::Mercenary,
 ];
 
@@ -239,6 +242,7 @@ pub const PUBLIC_CITIZEN_SPECIAL_ROLES: &[Role] = &[
     Role::Gangster,
     Role::Prophet,
     Role::Psychologist,
+    Role::Hypnotist,
     Role::Mercenary,
     Role::Fanatic,
 ];
@@ -268,6 +272,7 @@ pub const CONTRACTOR_GUESS_ROLES: &[Role] = &[
     Role::Gangster,
     Role::Prophet,
     Role::Psychologist,
+    Role::Hypnotist,
     Role::Mercenary,
     Role::CultLeader,
     Role::Fanatic,

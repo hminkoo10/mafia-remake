@@ -39,6 +39,7 @@
   "enable_gangster": true,
   "enable_prophet": true,
   "enable_psychologist": true,
+  "enable_hypnotist": true,
   "enable_mercenary": true,
   "enable_thief": true,
   "enable_cult_team": false,

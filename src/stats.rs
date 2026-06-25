@@ -20,6 +20,7 @@ const ROLE_STATS_ORDER: &[Role] = &[
     Role::Gangster,
     Role::Prophet,
     Role::Psychologist,
+    Role::Hypnotist,
     Role::Mercenary,
     Role::Detective,
     Role::Shaman,
@@ -91,6 +92,18 @@ pub struct RatingHistoryItem {
     pub rating_reasons: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct GameRatingLogItem {
+    pub name: String,
+    pub role: String,
+    pub before: i64,
+    pub after: i64,
+    pub delta: i64,
+    pub team_delta: i64,
+    pub role_delta: i64,
+    pub reasons: Vec<String>,
+}
+
 impl Default for PlayerStats {
     fn default() -> Self {
         Self {
@@ -153,7 +166,7 @@ pub fn record_game_stats(
     initial_roles: &HashMap<u64, Role>,
     elapsed_seconds: i64,
     winner: Winner,
-) {
+) -> Vec<GameRatingLogItem> {
     let mut ratings = HashMap::new();
     for player in &game.players {
         let entry = ensure_player_stats(stats, player.user_id, &player.name);
@@ -188,6 +201,7 @@ pub fn record_game_stats(
         })
         .collect::<HashMap<_, _>>();
     let ended_at = Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    let mut rating_log = Vec::new();
 
     for player in &game.players {
         let role = initial_roles
@@ -223,6 +237,16 @@ pub fn record_game_stats(
         entry.rating = rating_change.after;
         entry.rating_games += 1;
         entry.rating_peak = entry.rating_peak.max(entry.rating);
+        rating_log.push(GameRatingLogItem {
+            name: player.name.clone(),
+            role: role.value().to_string(),
+            before: rating_change.before,
+            after: rating_change.after,
+            delta: rating_change.delta,
+            team_delta: rating_change.team_delta,
+            role_delta: rating_change.role_delta,
+            reasons: rating_change.reasons.clone(),
+        });
         entry.rating_history.push(RatingHistoryItem {
             ended_at: ended_at.clone(),
             before: rating_change.before,
@@ -244,6 +268,43 @@ pub fn record_game_stats(
             entry.rating_history.drain(..overflow);
         }
     }
+    rating_log.sort_by_key(|item| item.name.to_lowercase());
+    rating_log
+}
+
+pub fn game_rating_log_chunks(logs: &[GameRatingLogItem], max_chars: usize) -> Vec<String> {
+    if logs.is_empty() {
+        return vec!["레이팅 변동 기록이 없습니다.".to_string()];
+    }
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for item in logs {
+        let reasons = if item.reasons.is_empty() {
+            "사유 없음".to_string()
+        } else {
+            item.reasons.join(", ")
+        };
+        let line = format!(
+            "- {} ({}) {} -> {} ({:+}) [팀 {:+} / 직업 {:+}]\n  사유: {}\n",
+            item.name,
+            item.role,
+            item.before,
+            item.after,
+            item.delta,
+            item.team_delta,
+            item.role_delta,
+            reasons
+        );
+        if !current.is_empty() && current.len() + line.len() > max_chars {
+            chunks.push(current.trim_end().to_string());
+            current.clear();
+        }
+        current.push_str(&line);
+    }
+    if !current.is_empty() {
+        chunks.push(current.trim_end().to_string());
+    }
+    chunks
 }
 
 pub fn role_appearance_counts(stats: &StatsFile) -> HashMap<Role, i64> {
@@ -394,6 +455,7 @@ fn role_has_core_action(role: Role) -> bool {
             | Role::Reporter
             | Role::Hacker
             | Role::Psychologist
+            | Role::Hypnotist
             | Role::Mercenary
             | Role::Detective
             | Role::Shaman

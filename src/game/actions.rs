@@ -244,6 +244,7 @@ impl MafiaGame {
                 "조사 투표 대상",
             ),
             Role::Vigilante => self.submit_vigilante_night_action(actor_id, target_id),
+            Role::Hypnotist => self.submit_hypnotist_action(actor_id, target_id),
             Role::Mercenary => self.submit_mercenary_action(actor_id, target_id),
             Role::Reporter => self.submit_reporter_action(actor_id, target_id, ""),
             Role::Detective => self.once_target_action(
@@ -427,6 +428,81 @@ impl MafiaGame {
             Some("용병은 자기 자신을 처형할 수 없습니다."),
             "처형 대상",
         )
+    }
+
+    fn submit_hypnotist_action(&mut self, actor_id: u64, target_id: Option<u64>) -> Result<String> {
+        if self.hypnotist_skip_night_days.get(&actor_id) == Some(&self.day_number) {
+            bail!("최면을 해제한 다음 밤에는 최면을 걸 수 없습니다.");
+        }
+        let Some(target_id) = target_id else {
+            bail!("최면 대상을 선택해야 합니다.");
+        };
+        if self.hypnotist_targets.contains_key(&actor_id) {
+            bail!("이미 이번 밤 행동을 선택했습니다.");
+        }
+        if actor_id == target_id {
+            bail!("최면술사는 자기 자신에게 최면을 걸 수 없습니다.");
+        }
+        let selected = self.require_alive(target_id)?.clone();
+        let proxy = self.proxy_target_id(target_id);
+        self.hypnotist_targets.insert(actor_id, proxy);
+        Ok(format!("[{}님에게 최면을 겁니다.]", selected.name))
+    }
+
+    pub fn submit_hypnotist_wake(&mut self, actor_id: u64) -> Result<String> {
+        if self.phase != Phase::Day {
+            bail!("최면 해제는 낮에만 사용할 수 있습니다.");
+        }
+        let actor = self.require_alive(actor_id)?.clone();
+        if actor.role != Role::Hypnotist {
+            bail!("최면술사만 최면을 해제할 수 있습니다.");
+        }
+        if self.is_frog(&actor) {
+            bail!("개구리 상태에서는 능력을 사용할 수 없습니다.");
+        }
+        if self.is_madam_seduced(&actor) {
+            bail!("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.");
+        }
+        let Some(target_ids) = self.hypnotized_targets.remove(&actor_id) else {
+            bail!("해제할 최면 대상이 없습니다.");
+        };
+        if target_ids.is_empty() {
+            bail!("해제할 최면 대상이 없습니다.");
+        }
+        self.hypnotist_skip_night_days
+            .insert(actor_id, self.day_number + 1);
+        self.mark_rating_action(actor_id);
+
+        let mut targets = target_ids
+            .into_iter()
+            .filter_map(|target_id| self.get_player(target_id).cloned())
+            .collect::<Vec<_>>();
+        targets.sort_by_key(|player| player.name.to_lowercase());
+        let non_citizen_count = targets
+            .iter()
+            .filter(|target| !self.is_citizen_team(target))
+            .count();
+        if non_citizen_count > 0 {
+            self.record_rating_event(
+                actor_id,
+                (non_citizen_count as i64 * 3).min(9),
+                "최면 해제로 비시민 직업 확인",
+            );
+        } else {
+            self.record_rating_event(actor_id, 1, "최면 해제 실행");
+        }
+        Ok(targets
+            .into_iter()
+            .map(|target| {
+                format!(
+                    "[{}님에게 걸린 최면을 해제합니다. {}님 : {}]",
+                    target.name,
+                    target.name,
+                    self.hypnotist_reveal_text(&target)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     fn submit_reporter_action(

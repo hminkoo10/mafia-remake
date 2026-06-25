@@ -64,6 +64,7 @@ impl MafiaGame {
         self.police_targets.remove(&actor_id);
         self.thief_police_targets.remove(&actor_id);
         self.vigilante_targets.remove(&actor_id);
+        self.hypnotist_targets.remove(&actor_id);
         self.mercenary_targets.remove(&actor_id);
         self.detective_targets.remove(&actor_id);
         self.shaman_targets.remove(&actor_id);
@@ -152,6 +153,7 @@ impl MafiaGame {
         let godfather_results = self.resolve_godfather_results();
         let (shaman_results, shaman_purifications) = self.resolve_shaman_results();
         let (vigilante_results, vigilante_kills) = self.resolve_vigilante_results();
+        self.apply_hypnotist_targets();
         let (mut mercenary_results, mercenary_kills) = self.resolve_mercenary_results();
         let (nurse_results, nurse_contacts) = self.resolve_nurse_results();
         let gangster_results = self.resolve_gangster_results();
@@ -473,6 +475,7 @@ impl MafiaGame {
         self.police_targets.clear();
         self.thief_police_targets.clear();
         self.vigilante_targets.clear();
+        self.hypnotist_targets.clear();
         self.mercenary_targets.clear();
         self.reporter_targets.clear();
         self.reporter_skip_submitted.clear();
@@ -607,6 +610,7 @@ impl MafiaGame {
                 .then_some(police_target_id)
                 .flatten(),
             Role::Vigilante => self.vigilante_targets.get(&watched.user_id).copied(),
+            Role::Hypnotist => self.hypnotist_targets.get(&watched.user_id).copied(),
             Role::Mercenary => self.mercenary_targets.get(&watched.user_id).copied(),
             Role::Reporter => self.reporter_targets.get(&watched.user_id).copied(),
             Role::Detective => self.detective_targets.get(&watched.user_id).copied(),
@@ -917,6 +921,27 @@ impl MafiaGame {
             }
         }
         (results, kills)
+    }
+
+    fn apply_hypnotist_targets(&mut self) {
+        for (actor_id, target_id) in self.hypnotist_targets.clone() {
+            let Some(actor) = self.get_player(actor_id) else {
+                continue;
+            };
+            if !actor.alive || actor.role != Role::Hypnotist {
+                continue;
+            }
+            let Some(target) = self.get_player(target_id) else {
+                continue;
+            };
+            if !target.alive {
+                continue;
+            }
+            self.hypnotized_targets
+                .entry(actor_id)
+                .or_default()
+                .insert(target_id);
+        }
     }
 
     fn activate_mercenaries_for_killed_clients(

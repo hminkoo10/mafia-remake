@@ -650,6 +650,9 @@ async fn action_handler(
             };
             running.game.submit_psychologist_observation(user_id, first_target_id, second_target_id).map(Some).map_err(|e| e.to_string())
         }
+        "hypnotist_action" => {
+            running.game.submit_hypnotist_wake(user_id).map(Some).map_err(|e| e.to_string())
+        }
         "thief_action" => {
             let Some(target_id) = body.target_id.as_deref().and_then(|id| id.parse().ok()) else {
                 return Json(ActionResponse { ok: false, message: Some("target_id 필요".into()) }).into_response();
@@ -798,6 +801,13 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         Some("psychologist".to_string())
     } else if me_alive
         && game
+            .hypnotist_day_actors()
+            .iter()
+            .any(|player| player.user_id == user_id)
+    {
+        Some("hypnotist".to_string())
+    } else if me_alive
+        && game
             .thief_vote_actors()
             .iter()
             .any(|player| player.user_id == user_id)
@@ -832,7 +842,9 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
     } else {
         (vec![], false)
     };
-    let special_action_target_ids = if special_action.is_some() {
+    let special_action_target_ids = if special_action.as_deref() == Some("hypnotist") {
+        vec![]
+    } else if special_action.is_some() {
         game.alive_players()
             .into_iter()
             .filter(|player| player.user_id != user_id)
@@ -1028,6 +1040,7 @@ mod tests {
             Role::Gangster,
             Role::Prophet,
             Role::Psychologist,
+            Role::Hypnotist,
             Role::Mercenary,
             Role::Spy,
             Role::Contractor,
@@ -1082,7 +1095,7 @@ mod tests {
         ] {
             assert_eq!(player_team(&game, &Player::new(99, "test", role)), "Mafia");
         }
-        for role in [Role::Gangster, Role::Fanatic, Role::Mercenary, Role::Citizen] {
+        for role in [Role::Gangster, Role::Fanatic, Role::Hypnotist, Role::Mercenary, Role::Citizen] {
             assert_eq!(player_team(&game, &Player::new(99, "test", role)), "Citizen");
         }
         assert_eq!(
@@ -1121,6 +1134,7 @@ fn role_name(role: Role) -> String {
         Role::Politician => "정치인",
         Role::Judge => "판사",
         Role::Psychologist => "심리학자",
+        Role::Hypnotist => "최면술사",
         Role::Mercenary => "용병",
         Role::Thief => "도둑",
         Role::Soldier => "군인",
@@ -1168,7 +1182,7 @@ fn role_from_str(s: &str) -> Option<Role> {
         "요원" => Agent, "자경단" | "자경단원" => Vigilante, "기자" => Reporter, "해커" => Hacker,
         "탐정" | "사립탐정" => Detective, "영매" => Shaman, "성직자" => Priest,
         "군인" => Soldier, "건달" => Gangster, "예언자" => Prophet,
-        "심리학자" => Psychologist, "용병" => Mercenary, "스파이" => Spy, "청부업자" => Contractor,
+        "심리학자" => Psychologist, "최면술사" => Hypnotist, "용병" => Mercenary, "스파이" => Spy, "청부업자" => Contractor,
         "도둑" => Thief, "마녀" => Witch, "과학자" => Scientist, "마담" => Madam,
         "도굴꾼" => Graverobber, "대부" => Godfather, "조커" => Joker,
         "정치인" => Politician, "판사" => Judge, "테러리스트" => Terrorist,

@@ -42,6 +42,7 @@ impl MafiaGame {
                 Role::Thief => self.thief_can_act_at_night(player, &alive, &unpurified_dead),
                 Role::Police | Role::Detective | Role::Spy | Role::Terrorist => has_other_alive,
                 Role::Vigilante => !self.vigilante_execution_targets(player).is_empty(),
+                Role::Hypnotist => self.hypnotist_can_act_at_night(player),
                 Role::Mercenary => {
                     self.mercenary_armed_ids.contains(&player.user_id) && has_other_alive
                 }
@@ -97,6 +98,7 @@ impl MafiaGame {
             Role::Thief => self.stolen_night_action_submitted(actor),
             Role::Police => self.police_targets.contains_key(&actor.user_id),
             Role::Vigilante => self.vigilante_targets.contains_key(&actor.user_id),
+            Role::Hypnotist => self.hypnotist_targets.contains_key(&actor.user_id),
             Role::Mercenary => self.mercenary_targets.contains_key(&actor.user_id),
             Role::Reporter => {
                 self.reporter_targets.contains_key(&actor.user_id)
@@ -288,6 +290,26 @@ impl MafiaGame {
                     && player.role == Role::Psychologist
                     && !self.is_madam_seduced(player)
                     && self.psychologist_used_days.get(&player.user_id) != Some(&self.day_number)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn hypnotist_day_actors(&self) -> Vec<Player> {
+        if self.phase != Phase::Day {
+            return Vec::new();
+        }
+        self.players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && player.role == Role::Hypnotist
+                    && !self.is_frog(player)
+                    && !self.is_madam_seduced(player)
+                    && self
+                        .hypnotized_targets
+                        .get(&player.user_id)
+                        .is_some_and(|targets| !targets.is_empty())
             })
             .cloned()
             .collect()

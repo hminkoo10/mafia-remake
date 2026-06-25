@@ -248,6 +248,7 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Gangster => "밤에 한 명의 다음 낮 투표권을 빼앗습니다.",
         Role::Prophet => "4번째 낮까지 생존하면 소속팀이 승리합니다.",
         Role::Psychologist => "낮에 두 명이 같은 팀인지 봅니다.",
+        Role::Hypnotist => "밤마다 최면을 누적하고 낮에 한꺼번에 깨워 비시민 직업을 확인합니다.",
         Role::Mercenary => "의뢰인이 밤에 사망한 뒤 밤마다 한 명을 처형할 수 있습니다.",
         Role::Graverobber => "첫날 사망자의 직업을 이어받습니다.",
         _ => "낮 토론과 투표로 승리를 노리세요.",
@@ -1005,6 +1006,7 @@ pub fn night_placeholder(role: Role) -> &'static str {
         Role::Nurse => "처방/치료 대상을 선택하세요",
         Role::Police => "조사할 대상을 선택하세요",
         Role::Vigilante => "숙청할 대상을 선택하세요",
+        Role::Hypnotist => "최면을 걸 대상을 선택하세요",
         Role::Mercenary => "처형할 대상을 선택하세요",
         Role::Reporter => "특종 대상 또는 사용 안함을 선택하세요",
         Role::Detective => "추적할 대상을 선택하세요",
@@ -1259,6 +1261,7 @@ pub async fn run_day(
         hackers,
         vigilantes,
         psychologists,
+        hypnotists,
         mercenary_contracts,
     ) = {
         let mut running_write = running.write().await;
@@ -1279,6 +1282,7 @@ pub async fn run_day(
             running_write.game.hacker_day_actors(),
             running_write.game.vigilante_day_actors(),
             running_write.game.psychologist_day_actors(),
+            running_write.game.hypnotist_day_actors(),
             running_write.game.receive_mercenary_contracts(),
         )
     };
@@ -1402,6 +1406,36 @@ pub async fn run_day(
             format!(
                 "심리학자 낮 행동 선택지를 보낼 수 없는 참가자: {}",
                 failed_psychologists.join(", ")
+            ),
+            "마피아 게임",
+            serenity::Colour::RED,
+            vec![],
+        )
+        .await;
+    }
+    let mut failed_hypnotists = Vec::new();
+    for actor in hypnotists {
+        if !send_day_button_action(
+            ctx,
+            running,
+            &actor,
+            "hypnotist",
+            "최면을 해제하려면 버튼을 누르세요.",
+            "최면 해제",
+        )
+        .await
+        {
+            failed_hypnotists.push(actor.name);
+        }
+    }
+    if !failed_hypnotists.is_empty() {
+        let channel_id = running.read().await.channel_id;
+        let _ = send_channel_embed(
+            &ctx.http,
+            channel_id,
+            format!(
+                "최면술사 낮 행동 버튼을 보낼 수 없는 참가자: {}",
+                failed_hypnotists.join(", ")
             ),
             "마피아 게임",
             serenity::Colour::RED,
@@ -1594,6 +1628,9 @@ pub fn day_action_secret_text(kind: &str) -> &'static str {
         "thief" => {
             "도둑 투표 시간 행동을 선택하세요.\n하루에 한 번 플레이어 한 명의 직업 능력을 훔쳐 다음 밤까지 사용할 수 있습니다."
         }
+        "hypnotist" => {
+            "최면에 걸린 플레이어들을 모두 깨웁니다.\n시민팀이면 시민팀으로만 보이고, 시민팀이 아니면 직업을 확인합니다.\n최면을 해제하면 다음 밤에는 최면을 걸 수 없습니다."
+        }
         _ => "낮 능력을 선택하세요.",
     }
 }
@@ -1643,6 +1680,29 @@ pub async fn send_day_multi_select(
         actor,
         day_action_secret_text(kind),
         vec![serenity::CreateActionRow::SelectMenu(select)],
+    )
+    .await
+}
+
+pub async fn send_day_button_action(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    actor: &Player,
+    kind: &str,
+    text: &str,
+    label: &str,
+) -> bool {
+    let guild_id = running.read().await.guild_id;
+    send_player_secret(
+        ctx,
+        running,
+        actor,
+        format!("{}\n\n{}", day_action_secret_text(kind), text),
+        vec![serenity::CreateActionRow::Buttons(vec![
+            serenity::CreateButton::new(format!("{kind}:{}:{}", guild_id.get(), actor.user_id))
+                .label(label)
+                .style(serenity::ButtonStyle::Primary),
+        ])],
     )
     .await
 }
@@ -2015,15 +2075,17 @@ pub async fn announce_winner(
         )
     };
     upsert_game_status(ctx, running).await;
+    let mut rating_log_chunks = Vec::new();
     if let Some((game_snapshot, initial_roles, elapsed_seconds)) = record_payload {
         let mut stats_file = data.stats.write().await;
-        stats::record_game_stats(
+        let rating_log = stats::record_game_stats(
             &mut stats_file,
             &game_snapshot,
             &initial_roles,
             elapsed_seconds,
             winner,
         );
+        rating_log_chunks = stats::game_rating_log_chunks(&rating_log, 3500);
         if let Err(error) = stats::save_stats(&*data.stats_path, &stats_file) {
             eprintln!("failed to save stats after game end: {error:?}");
         }
@@ -2051,6 +2113,27 @@ pub async fn announce_winner(
     .await
     {
         eprintln!("failed to announce game winner: {error:?}");
+    }
+    for (index, chunk) in rating_log_chunks.into_iter().enumerate() {
+        let title = if index == 0 {
+            "이번 판 레이팅 로그".to_string()
+        } else {
+            format!("이번 판 레이팅 로그 {}", index + 1)
+        };
+        if let Err(error) = send_game_embed(
+            ctx,
+            running,
+            chunk,
+            &title,
+            serenity::Colour::BLUE,
+            vec![],
+            false,
+            true,
+        )
+        .await
+        {
+            eprintln!("failed to announce rating log: {error:?}");
+        }
     }
     Ok(true)
 }

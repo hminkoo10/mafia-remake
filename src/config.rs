@@ -78,6 +78,8 @@ pub struct BotConfig {
     #[serde(default = "default_true")]
     pub enable_psychologist: bool,
     #[serde(default = "default_true")]
+    pub enable_hypnotist: bool,
+    #[serde(default = "default_true")]
     pub enable_mercenary: bool,
     #[serde(default = "default_true")]
     pub enable_thief: bool,

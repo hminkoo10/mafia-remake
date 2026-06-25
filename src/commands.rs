@@ -370,6 +370,9 @@ pub async fn handle_component(
             handle_psychologist(ctx, data, component, parse_guild(guild)?, actor_id.parse()?)
                 .await?
         }
+        ["hypnotist", guild, actor_id] => {
+            handle_hypnotist(ctx, data, component, parse_guild(guild)?, actor_id.parse()?).await?
+        }
         ["thief", guild, actor_id] => {
             handle_thief(ctx, data, component, parse_guild(guild)?, actor_id.parse()?).await?
         }
@@ -1344,6 +1347,44 @@ pub async fn handle_psychologist(
                     serenity::Colour::DARK_GREEN,
                 ))
                 .components(vec![]),
+        )
+        .await?;
+    Ok(())
+}
+
+pub async fn handle_hypnotist(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    guild_id: serenity::GuildId,
+    actor_id: u64,
+) -> Result<()> {
+    if component.user.id.get() != actor_id {
+        send_component_private(ctx, component, "본인에게 온 선택지만 사용할 수 있습니다.").await?;
+        return Ok(());
+    }
+    let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
+        send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
+        return Ok(());
+    };
+    let message = {
+        let mut running_write = running.write().await;
+        match running_write.game.submit_hypnotist_wake(actor_id) {
+            Ok(message) => message,
+            Err(error) => {
+                send_component_private(ctx, component, error.to_string()).await?;
+                return Ok(());
+            }
+        }
+    };
+    component
+        .create_response(
+            ctx,
+            serenity::CreateInteractionResponse::UpdateMessage(
+                serenity::CreateInteractionResponseMessage::new()
+                    .embed(make_embed(message, "최면 해제 완료", serenity::Colour::DARK_GREEN))
+                    .components(vec![]),
+            ),
         )
         .await?;
     Ok(())
@@ -2532,6 +2573,7 @@ pub async fn configure_extra_roles(
     gangster: Option<bool>,
     prophet: Option<bool>,
     psychologist: Option<bool>,
+    hypnotist: Option<bool>,
     mercenary: Option<bool>,
     thief: Option<bool>,
     cult_team: Option<bool>,
@@ -2560,6 +2602,9 @@ pub async fn configure_extra_roles(
     }
     if let Some(v) = psychologist {
         config_write.enable_psychologist = v;
+    }
+    if let Some(v) = hypnotist {
+        config_write.enable_hypnotist = v;
     }
     if let Some(v) = mercenary {
         config_write.enable_mercenary = v;
@@ -2813,6 +2858,7 @@ pub async fn show_role_descriptions(ctx: Context<'_>) -> Result<(), Error> {
         Role::Gangster,
         Role::Prophet,
         Role::Psychologist,
+        Role::Hypnotist,
         Role::Mercenary,
         Role::Detective,
         Role::Shaman,
@@ -3396,6 +3442,7 @@ pub fn find_role_by_name(name: &str) -> Option<Role> {
         Role::Gangster,
         Role::Prophet,
         Role::Psychologist,
+        Role::Hypnotist,
         Role::Mercenary,
         Role::Spy,
         Role::Contractor,

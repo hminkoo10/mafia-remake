@@ -45,6 +45,9 @@ pub struct MafiaGame {
     pub hacker_used_ids: HashSet<u64>,
     pub hacker_proxy_targets: HashMap<u64, u64>,
     pub psychologist_used_days: HashMap<u64, u32>,
+    pub hypnotist_targets: HashMap<u64, u64>,
+    pub hypnotized_targets: HashMap<u64, HashSet<u64>>,
+    pub hypnotist_skip_night_days: HashMap<u64, u32>,
     pub mercenary_client_ids: HashMap<u64, u64>,
     pub mercenary_contract_received_ids: HashSet<u64>,
     pub mercenary_armed_ids: HashSet<u64>,
@@ -195,6 +198,9 @@ impl MafiaGame {
             hacker_used_ids: HashSet::new(),
             hacker_proxy_targets: HashMap::new(),
             psychologist_used_days: HashMap::new(),
+            hypnotist_targets: HashMap::new(),
+            hypnotized_targets: HashMap::new(),
+            hypnotist_skip_night_days: HashMap::new(),
             mercenary_client_ids: HashMap::new(),
             mercenary_contract_received_ids: HashSet::new(),
             mercenary_armed_ids: HashSet::new(),
@@ -331,6 +337,24 @@ impl MafiaGame {
 
     pub fn is_frog(&self, player: &Player) -> bool {
         player.alive && self.frog_user_ids.contains(&player.user_id)
+    }
+
+    fn hypnotist_can_act_at_night(&self, player: &Player) -> bool {
+        player.alive
+            && player.role == Role::Hypnotist
+            && self.hypnotist_skip_night_days.get(&player.user_id) != Some(&self.day_number)
+            && self
+                .players
+                .iter()
+                .any(|target| target.alive && target.user_id != player.user_id)
+    }
+
+    fn hypnotist_reveal_text(&self, target: &Player) -> String {
+        if self.is_citizen_team(target) {
+            "시민팀".to_string()
+        } else {
+            self.visible_role(target).value().to_string()
+        }
     }
 
     pub fn mercenary_client(&self, mercenary_id: u64) -> Option<&Player> {
@@ -679,6 +703,7 @@ impl MafiaGame {
             Role::Police => &[&self.police_targets],
             Role::Agent => &[&self.detective_targets],
             Role::Vigilante => &[&self.vigilante_targets],
+            Role::Hypnotist => &[&self.hypnotist_targets],
             Role::Mercenary => &[&self.mercenary_targets],
             Role::Godfather => &[&self.godfather_targets],
             Role::CultLeader => &[&self.cult_targets],
@@ -1189,6 +1214,56 @@ mod tests {
 
         assert!(result.mercenary_kills.iter().any(|p| p.user_id == 1));
         assert!(result.killed_players.iter().any(|p| p.user_id == 1));
+    }
+
+    fn hypnotist_test_game() -> MafiaGame {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Hypnotist),
+            (3, Role::Doctor),
+            (4, Role::CultLeader),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game
+    }
+
+    #[test]
+    fn hypnotist_accumulates_targets_until_wake() {
+        let mut game = hypnotist_test_game();
+
+        game.submit_night_action(2, Some(1)).unwrap();
+        game.resolve_night().unwrap();
+        assert!(game.hypnotized_targets.get(&2).is_some_and(|targets| targets.contains(&1)));
+
+        game.advance_to_next_night();
+        game.submit_night_action(2, Some(3)).unwrap();
+        game.resolve_night().unwrap();
+
+        let result = game.submit_hypnotist_wake(2).unwrap();
+        assert!(result.contains("One님 : 마피아"));
+        assert!(result.contains("Three님 : 시민팀"));
+        assert!(!game.hypnotized_targets.contains_key(&2));
+    }
+
+    #[test]
+    fn hypnotist_wake_blocks_next_night_action() {
+        let mut game = hypnotist_test_game();
+
+        game.submit_night_action(2, Some(4)).unwrap();
+        game.resolve_night().unwrap();
+        let result = game.submit_hypnotist_wake(2).unwrap();
+
+        assert!(result.contains("Four님 : 교주"));
+        game.advance_to_next_night();
+        assert!(
+            !game
+                .night_action_actors()
+                .iter()
+                .any(|player| player.user_id == 2)
+        );
     }
 
     #[test]
