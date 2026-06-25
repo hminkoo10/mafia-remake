@@ -24,6 +24,7 @@ export interface ContractorTarget {
 }
 
 export interface GameState {
+  game_key: string;
   in_game: boolean;
   phase: Phase;
   day_number: number;
@@ -39,6 +40,7 @@ export interface GameState {
   special_action: ActivitySpecialAction | null;
   special_action_target_ids: string[];
   vote_targets: Record<string, number>;
+  vote_skip_count: number;
   nominee: string | null;
   confirm_yes: number;
   confirm_no: number;

@@ -231,6 +231,7 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         anonymous_enabled: config_snapshot.anonymous_mode,
         game,
         started_at: Instant::now(),
+        activity_game_key: uuid::Uuid::new_v4().to_string(),
         phase_deadline: None,
         initial_roles,
         memos: HashMap::new(),

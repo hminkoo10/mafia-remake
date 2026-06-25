@@ -266,6 +266,28 @@ button {
   color: #c5cedb;
 }
 
+.role-guide strong {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.role-guide p {
+  margin: 0;
+}
+
+.role-guide ul {
+  margin: 8px 0 0;
+  padding-left: 17px;
+  display: grid;
+  gap: 4px;
+}
+
+.role-guide li {
+  color: #d8dfeb;
+}
+
 .result-alert,
 .mini-alert {
   background: rgba(53, 201, 135, 0.1);

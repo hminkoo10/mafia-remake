@@ -31,7 +31,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tower_http::{
     cors::{Any, CorsLayer},
     services::ServeDir,
@@ -50,6 +50,15 @@ pub struct ActivityState {
     pub sessions: Arc<DashMap<String, ActivitySession>>,
     pub client_id: String,
     pub client_secret: String,
+    pub discord_updates: broadcast::Sender<ActivityDiscordUpdate>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ActivityDiscordUpdate {
+    PrivateRoleStatus {
+        guild_id: serenity::GuildId,
+        role: Role,
+    },
 }
 
 #[derive(Clone)]
@@ -67,12 +76,14 @@ impl ActivityState {
         games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>>,
         client_id: String,
         client_secret: String,
+        discord_updates: broadcast::Sender<ActivityDiscordUpdate>,
     ) -> Self {
         Self {
             games,
             sessions: Arc::new(DashMap::new()),
             client_id,
             client_secret,
+            discord_updates,
         }
     }
 
@@ -109,6 +120,7 @@ pub struct ContractorTargetDto {
 
 #[derive(Serialize)]
 pub struct GameStateDto {
+    pub game_key: String,
     pub phase: String,
     pub day_number: u32,
     pub phase_ends_at: Option<u64>,
@@ -123,6 +135,7 @@ pub struct GameStateDto {
     pub special_action: Option<String>,
     pub special_action_target_ids: Vec<String>,
     pub vote_targets: HashMap<String, u32>,
+    pub vote_skip_count: u32,
     pub nominee: Option<String>,
     pub confirm_yes: u32,
     pub confirm_no: u32,
@@ -438,6 +451,7 @@ async fn state_handler(
             build_game_state(&mut running, session.user_id)
         }
         None => GameStateDto {
+            game_key: String::new(),
             in_game: false,
             phase: "Ended".into(),
             day_number: 0,
@@ -453,6 +467,7 @@ async fn state_handler(
             special_action: None,
             special_action_target_ids: vec![],
             vote_targets: HashMap::new(),
+            vote_skip_count: 0,
             nominee: None,
             confirm_yes: 0,
             confirm_no: 0,
@@ -509,6 +524,7 @@ async fn action_handler(
     let mut running = running_arc.write().await;
     let user_id = session.user_id;
 
+    let mut discord_update = None;
     let result: Result<Option<String>, String> = match body.action.as_str() {
         "night_action" => {
             let target = body.target_id.as_deref()
@@ -516,6 +532,16 @@ async fn action_handler(
             match running.game.submit_night_action(user_id, target) {
                 Ok(_) => {
                     let actor = running.game.get_player(user_id).cloned();
+                    if actor.as_ref().is_some_and(|player| {
+                        player.role == Role::Mafia
+                            || (player.role == Role::Thief
+                                && running.game.thief_night_role(player) == Some(Role::Mafia))
+                    }) {
+                        discord_update = Some(ActivityDiscordUpdate::PrivateRoleStatus {
+                            guild_id: guild_key,
+                            role: Role::Mafia,
+                        });
+                    }
                     let message = if actor.as_ref().is_some_and(|player| {
                         player.role == Role::Thief
                             && running.game.thief_night_role(player) == Some(Role::Police)
@@ -662,6 +688,11 @@ async fn action_handler(
         _ => Err(format!("알 수 없는 액션: {}", body.action)),
     };
 
+    drop(running);
+    if let Some(update) = discord_update {
+        let _ = state.discord_updates.send(update);
+    }
+
     match result {
         Ok(message) => Json(ActionResponse { ok: true, message }).into_response(),
         Err(msg) => Json(ActionResponse { ok: false, message: Some(msg) }).into_response(),
@@ -709,6 +740,7 @@ async fn handle_ws(
                         build_game_state(&mut running, user_id)
                     }
                     None => GameStateDto {
+                        game_key: String::new(),
                         in_game: false,
                         phase: "Ended".into(),
                         day_number: 0,
@@ -724,6 +756,7 @@ async fn handle_ws(
                         special_action: None,
                         special_action_target_ids: vec![],
                         vote_targets: HashMap::new(),
+                        vote_skip_count: 0,
                         nominee: None,
                         confirm_yes: 0,
                         confirm_no: 0,
@@ -905,27 +938,33 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
     };
 
     // 밤 행동 결과 (낮에만 표시)
-    let my_action_result = if matches!(game.phase, Phase::Day | Phase::Vote | Phase::FinalDefense | Phase::ConfirmVote) {
+    let my_action_result = if matches!(game.phase, Phase::Day) {
         running.activity_night_results.get(&user_id).cloned()
     } else {
         None
     };
 
     // 낮 투표 현황
-    let vote_targets = game.current_vote_counts()
-        .into_iter()
-        .map(|(id, count)| (id.to_string(), count as u32))
-        .collect();
+    let vote_targets = if matches!(game.phase, Phase::Vote) {
+        game.current_vote_counts()
+            .into_iter()
+            .map(|(id, count)| (id.to_string(), count as u32))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+    let vote_skip_count = if matches!(game.phase, Phase::Vote) {
+        game.day_votes.values().filter(|target| target.is_none()).count() as u32
+    } else {
+        0
+    };
 
     // 현재 지목된 플레이어: Vote 이후 단계에서는 running에 저장됨
-    let nominee = running.final_defense_user_id.map(|id| id.to_string())
-        .or_else(|| {
-            // Vote 단계: 최다 득표자
-            game.current_vote_counts()
-                .into_iter()
-                .max_by_key(|(_, c)| *c)
-                .map(|(id, _)| id.to_string())
-        });
+    let nominee = if matches!(game.phase, Phase::FinalDefense | Phase::ConfirmVote) {
+        running.final_defense_user_id.map(|id| id.to_string())
+    } else {
+        None
+    };
 
     // 찬반 현황
     let (confirm_yes, confirm_no) = game.current_confirm_counts();
@@ -938,8 +977,14 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
 
     // 낮 스킵 현황
     let alive_count = game.alive_players().len() as u32;
-    let day_skip_count = running.day_skip_voter_ids.len() as u32;
-    let day_skip_threshold = majority_required(alive_count as usize) as u32;
+    let (day_skip_count, day_skip_threshold) = if matches!(game.phase, Phase::Day) {
+        (
+            running.day_skip_voter_ids.len() as u32,
+            majority_required(alive_count as usize) as u32,
+        )
+    } else {
+        (0, 0)
+    };
 
     let contractor_targets = if contractor_can_act {
         if let Some(me_player) = &me_role_for_targets {
@@ -962,6 +1007,7 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
     let phase_ends_at = phase_deadline_unix_ms(running.phase_deadline, game.phase);
 
     GameStateDto {
+        game_key: running.activity_game_key.clone(),
         in_game: true,
         phase: phase_str.to_string(),
         day_number: game.day_number,
@@ -977,6 +1023,7 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         special_action,
         special_action_target_ids,
         vote_targets,
+        vote_skip_count,
         nominee,
         confirm_yes: confirm_yes as u32,
         confirm_no: confirm_no as u32,
@@ -1004,6 +1051,88 @@ fn phase_deadline_unix_ms(deadline: Option<Instant>, phase: Phase) -> Option<u64
 mod tests {
     use super::*;
 
+    fn activity_test_running(mut game: MafiaGame) -> RunningGame {
+        let initial_roles = game.players.iter().map(|player| (player.user_id, player.role)).collect();
+        let participant_user_ids = game.players.iter().map(|player| player.user_id).collect();
+        game.phase = Phase::Day;
+        RunningGame {
+            guild_id: serenity::GuildId::new(1),
+            channel_id: serenity::ChannelId::new(10),
+            participant_user_ids,
+            spectator_user_ids: Default::default(),
+            game,
+            reveal_death_roles: true,
+            anonymous_enabled: false,
+            started_at: Instant::now(),
+            activity_game_key: "test-game".to_string(),
+            phase_deadline: None,
+            initial_roles,
+            memos: Default::default(),
+            game_status_message_id: None,
+            game_status_text: None,
+            anonymous_aliases: Default::default(),
+            anonymous_original_names: Default::default(),
+            anonymous_input_channel_ids: Default::default(),
+            anonymous_input_channel_owners: Default::default(),
+            anonymous_dead_input_channel_ids: Default::default(),
+            anonymous_dead_input_channel_owners: Default::default(),
+            anonymous_shaman_input_channel_ids: Default::default(),
+            anonymous_shaman_input_channel_owners: Default::default(),
+            anonymous_role_input_channel_ids: Default::default(),
+            anonymous_role_input_channels: Default::default(),
+            anonymous_role_input_status_message_ids: Default::default(),
+            anonymous_role_status_texts: Default::default(),
+            anonymous_channel_topics: Default::default(),
+            anonymous_webhook_urls: Default::default(),
+            original_game_channel_overwrites: Default::default(),
+            game_channel_overwrites: Default::default(),
+            member_channel_overwrites: Default::default(),
+            original_slowmode_delays: Default::default(),
+            private_channel_ids: Default::default(),
+            private_role_status_message_ids: Default::default(),
+            private_role_status_texts: Default::default(),
+            memo_channel_ids: Default::default(),
+            shaman_channel_id: None,
+            shaman_status_message_id: None,
+            shaman_status_text: None,
+            frog_channel_id: None,
+            frog_game_channel_overwrites: Default::default(),
+            madam_seduction_channel_overwrites: Default::default(),
+            day_chat_open: true,
+            final_defense_user_id: None,
+            day_skip_voter_ids: Default::default(),
+            day_skip_confirmed: false,
+            day_extension_voter_ids: Default::default(),
+            day_extension_active: false,
+            day_extension_confirmed: false,
+            night_timed_events_due: false,
+            contractor_contract_drafts: Default::default(),
+            activity_night_results: Default::default(),
+            night_notify: Arc::new(tokio::sync::Notify::new()),
+            vote_notify: Arc::new(tokio::sync::Notify::new()),
+            confirm_notify: Arc::new(tokio::sync::Notify::new()),
+            day_notify: Arc::new(tokio::sync::Notify::new()),
+            stats_recorded: false,
+        }
+    }
+
+    fn activity_test_game() -> MafiaGame {
+        MafiaGame::new(
+            vec![
+                (1, "p1".to_string()),
+                (2, "p2".to_string()),
+                (3, "p3".to_string()),
+                (4, "p4".to_string()),
+                (5, "p5".to_string()),
+            ],
+            1,
+            0,
+            0,
+            vec![],
+        )
+        .unwrap()
+    }
+
     #[test]
     fn active_phase_deadline_is_unix_ms() {
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -1020,6 +1149,36 @@ mod tests {
     fn ended_phase_has_no_deadline() {
         let deadline = Instant::now() + Duration::from_secs(30);
         assert_eq!(phase_deadline_unix_ms(Some(deadline), Phase::Ended), None);
+    }
+
+    #[test]
+    fn activity_state_preserves_dead_players() {
+        let mut game = activity_test_game();
+        game.get_player_mut(2).unwrap().alive = false;
+        let mut running = activity_test_running(game);
+
+        let state = build_game_state(&mut running, 1);
+
+        assert!(!state.players.iter().find(|player| player.id == "2").unwrap().alive);
+        assert!(state.players.iter().find(|player| player.id == "1").unwrap().alive);
+    }
+
+    #[test]
+    fn activity_vote_state_is_phase_scoped_and_counts_skip() {
+        let mut running = activity_test_running(activity_test_game());
+        running.game.phase = Phase::Vote;
+        running.game.day_votes.insert(1, Some(2));
+        running.game.day_votes.insert(2, None);
+
+        let vote_state = build_game_state(&mut running, 1);
+        assert_eq!(vote_state.vote_targets.get("2"), Some(&1));
+        assert_eq!(vote_state.vote_skip_count, 1);
+
+        running.game.phase = Phase::Night;
+        let night_state = build_game_state(&mut running, 1);
+        assert!(night_state.vote_targets.is_empty());
+        assert_eq!(night_state.vote_skip_count, 0);
+        assert_eq!(night_state.nominee, None);
     }
 
     #[test]

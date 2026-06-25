@@ -12,7 +12,7 @@ export function VotePanel({ state, onActionSent }: Props) {
   const [msg, setMsg] = useState<string | null>(null);
 
   const me = state.players.find((p) => p.is_you);
-  const alivePlayers = state.players.filter((p) => p.alive && !p.is_you);
+  const alivePlayers = state.players.filter((p) => p.alive);
 
   async function vote(targetId: string | null) {
     setPending(true);
@@ -70,11 +70,11 @@ export function VotePanel({ state, onActionSent }: Props) {
   }
 
   // Vote / FinalDefense 단계
-  if (state.phase === "Vote" || state.phase === "FinalDefense") {
+  if (state.phase === "Vote") {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <div style={{ fontSize: 12, color: "#888" }}>
-          {state.phase === "FinalDefense" ? "최후변론 중 — 처형 대상 선택" : "처형할 플레이어를 선택하세요"}
+          처형할 플레이어를 선택하세요
         </div>
         {alivePlayers.map((p) => {
           const voteCount = state.vote_targets[p.id] ?? 0;
@@ -89,7 +89,7 @@ export function VotePanel({ state, onActionSent }: Props) {
           );
         })}
         <Button
-          label="🤫 기권"
+          label="🤫 스킵"
           color="#607d8b"
           disabled={pending}
           onClick={() => vote(null)}

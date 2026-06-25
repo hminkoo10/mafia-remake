@@ -93,9 +93,11 @@ function NightActionPanel({ state, onActionSent }: Props) {
         <button disabled={pending || !selectedTarget} onClick={() => submit(selectedTarget)} style={btnStyle("#5c6bc0", pending || !selectedTarget)}>
           ✔ 대상 지목
         </button>
-        <button disabled={pending} onClick={() => submit(null)} style={btnStyle("#607d8b", pending)}>
-          ✖ 스킵
-        </button>
+        {state.night_action_can_skip && (
+          <button disabled={pending} onClick={() => submit(null)} style={btnStyle("#607d8b", pending)}>
+            ✖ 스킵
+          </button>
+        )}
       </div>
       {msg && <StatusMsg text={msg} />}
     </div>
@@ -204,7 +206,7 @@ function SkipPanel({ state, onActionSent }: Props) {
   return (
     <div style={{ ...panelStyle("#607d8b"), flexDirection: "row", alignItems: "center", gap: 12 }}>
       <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 12, color: "#b0bec5", fontWeight: 600 }}>⏩ 낮 스킵 투표</div>
+        <div style={{ fontSize: 12, color: "#b0bec5", fontWeight: 600 }}>⏩ 바로 투표</div>
         <div style={{ fontSize: 11, color: "#78909c", marginTop: 2 }}>
           {state.day_skip_count} / {state.day_skip_threshold}명 (과반수)
         </div>
@@ -214,7 +216,7 @@ function SkipPanel({ state, onActionSent }: Props) {
         onClick={skip}
         style={{ ...btnStyle("#546e7a", pending || done), flex: "none", padding: "8px 16px" }}
       >
-        {done ? "✅ 투표함" : "스킵"}
+        {done ? "✅ 투표함" : "바로 투표"}
       </button>
       {msg && <StatusMsg text={msg} />}
     </div>

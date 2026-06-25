@@ -113,6 +113,7 @@ struct RunningGame {
     reveal_death_roles: bool,
     anonymous_enabled: bool,
     started_at: Instant,
+    activity_game_key: String,
     phase_deadline: Option<Instant>,
     initial_roles: HashMap<u64, Role>,
     memos: HashMap<u64, HashMap<u64, Vec<String>>>,
@@ -344,6 +345,7 @@ async fn main() -> Result<()> {
     let config_path_arc = Arc::new(config_path);
     let api_keys_path_arc = Arc::new(api_keys_path);
     let stats_path_arc = Arc::new(stats_path);
+    let (activity_discord_update_tx, _) = tokio::sync::broadcast::channel(64);
 
     // Activity 서버를 Discord 연결 전에 즉시 시작 (Fly.io health check 통과용)
     let activity_port = std::env::var("ACTIVITY_PORT")
@@ -359,6 +361,7 @@ async fn main() -> Result<()> {
         games.clone(),
         activity_client_id,
         activity_client_secret,
+        activity_discord_update_tx.clone(),
     );
     let activity_host = web_host.clone();
     tokio::spawn(async move {
@@ -379,6 +382,7 @@ async fn main() -> Result<()> {
     let config_path_setup = config_path_arc.clone();
     let api_keys_path_setup = api_keys_path_arc.clone();
     let stats_path_setup = stats_path_arc.clone();
+    let activity_discord_update_setup = activity_discord_update_tx.clone();
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -422,6 +426,21 @@ async fn main() -> Result<()> {
                     Err(e) => eprintln!("Global command registration warning: {e}"),
                 }
                 println!("Rust Mafia bot ready: {}", ready.user.name);
+                let mut activity_update_rx = activity_discord_update_setup.subscribe();
+                let activity_update_ctx = ctx.clone();
+                let activity_update_games = games_setup.clone();
+                tokio::spawn(async move {
+                    while let Ok(update) = activity_update_rx.recv().await {
+                        match update {
+                            activity::ActivityDiscordUpdate::PrivateRoleStatus { guild_id, role } => {
+                                let Some(running) = activity_update_games.get(&guild_id).map(|entry| entry.clone()) else {
+                                    continue;
+                                };
+                                channel::upsert_private_role_status_message(&activity_update_ctx, &running, role).await;
+                            }
+                        }
+                    }
+                });
                 let data = Data {
                     config: config_setup.clone(),
                     config_path: config_path_setup.clone(),

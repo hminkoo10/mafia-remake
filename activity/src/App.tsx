@@ -26,6 +26,7 @@ interface ActivityEvent {
 }
 
 interface GameSnapshot {
+  gameKey: string;
   phase: Phase;
   dayNumber: number;
   nominee: string | null;
@@ -33,6 +34,7 @@ interface GameSnapshot {
   confirmNo: number;
   actionResult: string | null;
   votes: Record<string, number>;
+  skipVotes: number;
 }
 
 const PHASE_META: Record<Phase, { label: string; tone: string; summary: string }> = {
@@ -79,7 +81,7 @@ const SORT_LABELS: Record<PlayerSort, string> = {
 const PHASE_CHECKS: Record<Phase, string[]> = {
   Night: ["밤 행동 제출", "대상 메모", "결과 대기"],
   Day: ["결과 확인", "발언 비교", "스킵 판단"],
-  Vote: ["득표 선두 확인", "확정 정보 대조", "기권/지목"],
+  Vote: ["득표 선두 확인", "확정 정보 대조", "스킵/지목"],
   FinalDefense: ["변론 기록", "라인 재계산", "찬반 준비"],
   ConfirmVote: ["찬반 수 확인", "팀 손익 계산", "최종 제출"],
   Ended: ["승리팀 확인", "메모 정리", "다음 판 준비"],
@@ -120,6 +122,18 @@ const ROLE_HELP: Record<string, string> = {
   악인: "마피아팀으로 승리합니다. 정체 노출 전 마피아와 접선을 노리세요.",
 };
 
+const ROLE_TIPS: Record<string, string[]> = {
+  시민: ["확정 정보와 발언 모순을 분리해 기록", "투표 전 스킵/지목 손익 확인"],
+  마피아: ["마피아 채팅의 처치 선택 현황 확인", "경찰·의사 주장자를 우선 추적"],
+  경찰: ["조사 결과는 이름과 일차까지 메모", "스파이·마녀 접선 상태 가능성 고려"],
+  의사: ["공개 확직 보호와 역킬 보호를 비교", "보호 성공 가능성이 높은 대상 우선"],
+  마녀: ["접선 전후 조사 판정 차이 주의", "저주 대상이 다음 낮 투표권에 미칠 영향 확인"],
+  도둑: ["훔친 직업의 당일 목표를 별도 관리", "경찰 계열을 훔치면 독립 조사로 사용"],
+  최면술사: ["최면 대상은 깨우기 전까지 누적", "낮에 깨우면 다음 밤 행동 불가"],
+  용병: ["의뢰인 생존 여부 확인", "무장 뒤 처형은 마피아 처치와 별도"],
+  건달: ["막을 투표권의 가치 확인", "다음 낮 투표 구도와 함께 계산"],
+};
+
 export default function App() {
   const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("connecting");
@@ -135,6 +149,10 @@ export default function App() {
   const [activityLog, setActivityLog] = useState<ActivityEvent[]>([]);
   const [notes, setNotes] = useState("");
   const snapshotRef = useRef<GameSnapshot | null>(null);
+  const gameStorageKey = useMemo(() => {
+    if (!guildId || !gameState?.in_game || !gameState.game_key) return "";
+    return `mafia-activity:${guildId}:${gameState.game_key}`;
+  }, [gameState?.game_key, gameState?.in_game, guildId]);
 
   useEffect(() => {
     (async () => {
@@ -177,35 +195,38 @@ export default function App() {
   }, [authStatus, refreshState]);
 
   useEffect(() => {
-    if (!guildId) return;
-    setPlayerMarks(readJson<Record<string, PlayerMark>>(`mafia-activity:${guildId}:marks`, {}));
-    setPlayerNotes(readJson<Record<string, string>>(`mafia-activity:${guildId}:player-notes`, {}));
-    setActivityLog(readJson<ActivityEvent[]>(`mafia-activity:${guildId}:log`, []));
-    setNotes(localStorage.getItem(`mafia-activity:${guildId}:notes`) ?? "");
-  }, [guildId]);
+    if (!gameStorageKey) return;
+    setPlayerMarks(readJson<Record<string, PlayerMark>>(`${gameStorageKey}:marks`, {}));
+    setPlayerNotes(readJson<Record<string, string>>(`${gameStorageKey}:player-notes`, {}));
+    setActivityLog(readJson<ActivityEvent[]>(`${gameStorageKey}:log`, []));
+    setNotes(localStorage.getItem(`${gameStorageKey}:notes`) ?? "");
+    setSelectedTarget(null);
+    setFocusedPlayerId(null);
+    snapshotRef.current = null;
+  }, [gameStorageKey]);
 
   useEffect(() => {
-    if (!guildId) return;
-    localStorage.setItem(`mafia-activity:${guildId}:marks`, JSON.stringify(playerMarks));
-  }, [guildId, playerMarks]);
+    if (!gameStorageKey) return;
+    localStorage.setItem(`${gameStorageKey}:marks`, JSON.stringify(playerMarks));
+  }, [gameStorageKey, playerMarks]);
 
   useEffect(() => {
-    if (!guildId) return;
-    localStorage.setItem(`mafia-activity:${guildId}:player-notes`, JSON.stringify(playerNotes));
-  }, [guildId, playerNotes]);
+    if (!gameStorageKey) return;
+    localStorage.setItem(`${gameStorageKey}:player-notes`, JSON.stringify(playerNotes));
+  }, [gameStorageKey, playerNotes]);
 
   useEffect(() => {
-    if (!guildId) return;
-    localStorage.setItem(`mafia-activity:${guildId}:log`, JSON.stringify(activityLog.slice(0, 32)));
-  }, [activityLog, guildId]);
+    if (!gameStorageKey) return;
+    localStorage.setItem(`${gameStorageKey}:log`, JSON.stringify(activityLog.slice(0, 32)));
+  }, [activityLog, gameStorageKey]);
 
   useEffect(() => {
-    if (!guildId) return;
-    localStorage.setItem(`mafia-activity:${guildId}:notes`, notes);
-  }, [guildId, notes]);
+    if (!gameStorageKey) return;
+    localStorage.setItem(`${gameStorageKey}:notes`, notes);
+  }, [gameStorageKey, notes]);
 
   useEffect(() => {
-    if (!guildId || !gameState?.in_game) {
+    if (!gameStorageKey || !gameState?.in_game) {
       snapshotRef.current = null;
       return;
     }
@@ -222,7 +243,19 @@ export default function App() {
       setActivityLog((prev) => [...events, ...prev].slice(0, 32));
     }
     snapshotRef.current = next;
-  }, [gameState, guildId]);
+  }, [gameState, gameStorageKey]);
+
+  useEffect(() => {
+    setSelectedTarget(null);
+  }, [gameState?.game_key, gameState?.day_number, gameState?.phase]);
+
+  useEffect(() => {
+    if (!gameState || !selectedTarget) return;
+    const selectableIds = new Set(selectableTargetIds(gameState));
+    if (!selectableIds.has(selectedTarget)) {
+      setSelectedTarget(null);
+    }
+  }, [gameState, selectedTarget]);
 
   const handleActionSent = useCallback(() => {
     refreshState().catch((error) => {
@@ -253,7 +286,7 @@ export default function App() {
     (id: string) => {
       setFocusedPlayerId(id);
       const player = gameState?.players.find((item) => item.id === id);
-      if (player?.alive && !player.is_you) {
+      if (player?.alive && (gameState?.phase === "Vote" || !player.is_you)) {
         setSelectedTarget(id);
       } else if (selectedTarget === id) {
         setSelectedTarget(null);
@@ -388,6 +421,7 @@ function RoleFocus({ player, state }: { player?: PlayerDto; state: GameState }) 
   const teamMeta = team ? TEAM_META[team] : null;
   const role = state.my_role ?? player?.role ?? "관전자";
   const guide = ROLE_HELP[role] ?? "공개 정보, 투표 흐름, 발언 모순을 같이 보세요.";
+  const tips = ROLE_TIPS[role] ?? ["생존자 수와 사망자 역할 확인", "득표 흐름과 메모를 같이 비교"];
   const result = state.my_action_result;
 
   return (
@@ -400,7 +434,7 @@ function RoleFocus({ player, state }: { player?: PlayerDto; state: GameState }) 
         </div>
         <div className="role-badge">{player?.alive === false ? "사망" : "생존"}</div>
       </div>
-      <div className="role-guide">{guide}</div>
+      <RoleGuide summary={guide} tips={tips} />
       {state.my_night_target && (
         <div className="mini-alert">
           밤 대상: {state.players.find((p) => p.id === state.my_night_target)?.name ?? "알 수 없음"}
@@ -408,6 +442,20 @@ function RoleFocus({ player, state }: { player?: PlayerDto; state: GameState }) 
       )}
       {result && <div className="result-alert">{result}</div>}
     </section>
+  );
+}
+
+function RoleGuide({ summary, tips }: { summary: string; tips: string[] }) {
+  return (
+    <div className="role-guide">
+      <strong>운영 포인트</strong>
+      <p>{summary}</p>
+      <ul>
+        {tips.map((tip) => (
+          <li key={tip}>{tip}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -429,6 +477,8 @@ function RoundBrief({
   const targetName = state.players.find((player) => player.id === selectedTarget)?.name;
   const focusedMark = focusedPlayer ? MARK_META[marks[focusedPlayer.id] ?? "none"] : null;
   const focusedNote = focusedPlayer ? notes[focusedPlayer.id] : "";
+  const voteLeaderText = state.phase === "Vote" && leader ? `${leader.player.name} ${leader.votes}표` : "진행 중 아님";
+  const skipText = state.phase === "Day" ? `${state.day_skip_count}/${state.day_skip_threshold}` : "-";
 
   return (
     <section className="panel round-brief">
@@ -439,13 +489,11 @@ function RoundBrief({
         </div>
         <div className="brief-card">
           <span>득표 선두</span>
-          <b>{leader ? `${leader.player.name} ${leader.votes}표` : "없음"}</b>
+          <b>{voteLeaderText}</b>
         </div>
         <div className="brief-card">
-          <span>스킵</span>
-          <b>
-            {state.day_skip_count}/{state.day_skip_threshold}
-          </b>
+          <span>바로 투표</span>
+          <b>{skipText}</b>
         </div>
       </div>
 
@@ -493,7 +541,7 @@ function ActionConsole({
   const [contractRoles, setContractRoles] = useState<[string, string]>(["", ""]);
   const [psychologistTargets, setPsychologistTargets] = useState<[string, string]>(["", ""]);
   const me = state.players.find((p) => p.is_you);
-  const aliveTargets = state.players.filter((p) => p.alive && !p.is_you);
+  const voteTargets = state.players.filter((p) => p.alive);
   const nightTargets = state.players.filter((p) => state.night_target_ids.includes(p.id));
   const specialAction = state.special_action;
   const specialMeta = specialAction ? SPECIAL_ACTION_META[specialAction] : null;
@@ -530,7 +578,7 @@ function ActionConsole({
   const nightTargetSelected = Boolean(selectedTarget && nightTargets.some((player) => player.id === selectedTarget));
   const specialTargetSelected = Boolean(selectedTarget && specialTargets.some((player) => player.id === selectedTarget));
   const canSkip = state.phase === "Day" && me?.alive;
-  const canVote = (state.phase === "Vote" || state.phase === "FinalDefense") && me?.alive;
+  const canVote = state.phase === "Vote" && me?.alive;
   const canConfirm = state.phase === "ConfirmVote" && me?.alive;
   const nominee = state.players.find((p) => p.id === state.nominee);
 
@@ -726,10 +774,10 @@ function ActionConsole({
           <button
             className="secondary-command"
             disabled={busy}
-            onClick={() => run({ action: "skip_vote" }, "스킵 투표 완료")}
+            onClick={() => run({ action: "skip_vote" }, "바로 투표 완료")}
             type="button"
           >
-            낮 스킵
+            바로 투표
           </button>
         </div>
       )}
@@ -737,7 +785,7 @@ function ActionConsole({
       {canVote && (
         <div className="action-group">
           <TargetGrid
-            players={aliveTargets}
+            players={voteTargets}
             selectedTarget={selectedTarget}
             voteTargets={state.vote_targets}
             onSelect={onSelectTarget}
@@ -756,10 +804,10 @@ function ActionConsole({
             <button
               className="secondary-command"
               disabled={busy}
-              onClick={() => run({ action: "day_vote" }, "기권 완료")}
+              onClick={() => run({ action: "day_vote" }, "스킵 완료")}
               type="button"
             >
-              기권
+              스킵
             </button>
           </div>
         </div>
@@ -994,7 +1042,11 @@ function VoteIntel({ state }: { state: GameState }) {
     .map(([id, votes]) => ({ player: state.players.find((p) => p.id === id), votes }))
     .filter((entry): entry is { player: PlayerDto; votes: number } => Boolean(entry.player))
     .sort((a, b) => b.votes - a.votes);
-  const maxVotes = Math.max(1, ...entries.map((entry) => entry.votes));
+  const maxVotes = Math.max(1, state.vote_skip_count, ...entries.map((entry) => entry.votes));
+
+  if (state.phase !== "Vote" && state.phase !== "FinalDefense" && state.phase !== "ConfirmVote") {
+    return null;
+  }
 
   if (state.phase === "ConfirmVote") {
     const total = Math.max(1, state.confirm_yes + state.confirm_no);
@@ -1007,15 +1059,30 @@ function VoteIntel({ state }: { state: GameState }) {
     );
   }
 
+  if (state.phase === "FinalDefense") {
+    const nominee = state.players.find((player) => player.id === state.nominee);
+    return (
+      <section className="panel vote-intel">
+        <div className="section-kicker">최후변론</div>
+        <div className="muted-line">{nominee ? `${nominee.name} 님 변론 중` : "지목 대상 확인 중"}</div>
+      </section>
+    );
+  }
+
   return (
     <section className="panel vote-intel">
       <div className="section-kicker">투표 흐름</div>
-      {entries.length === 0 ? (
+      {entries.length === 0 && state.vote_skip_count === 0 ? (
         <div className="muted-line">표 없음</div>
       ) : (
-        entries.slice(0, 5).map(({ player, votes }) => (
-          <ProgressBar key={player.id} value={votes} max={maxVotes} label={`${player.name} ${votes}표`} danger />
-        ))
+        <>
+          {entries.slice(0, 5).map(({ player, votes }) => (
+            <ProgressBar key={player.id} value={votes} max={maxVotes} label={`${player.name} ${votes}표`} danger />
+          ))}
+          {state.vote_skip_count > 0 && (
+            <ProgressBar value={state.vote_skip_count} max={maxVotes} label={`스킵 ${state.vote_skip_count}표`} />
+          )}
+        </>
       )}
     </section>
   );
@@ -1256,8 +1323,22 @@ function voteLeader(state: GameState) {
     .sort((a, b) => b.votes - a.votes)[0];
 }
 
+function selectableTargetIds(state: GameState) {
+  if (state.phase === "Night") {
+    return state.night_target_ids;
+  }
+  if (state.phase === "Vote") {
+    return state.players.filter((player) => player.alive).map((player) => player.id);
+  }
+  if (state.special_action) {
+    return state.special_action_target_ids;
+  }
+  return [];
+}
+
 function snapshotGame(state: GameState): GameSnapshot {
   return {
+    gameKey: state.game_key,
     phase: state.phase,
     dayNumber: state.day_number,
     nominee: state.nominee,
@@ -1265,6 +1346,7 @@ function snapshotGame(state: GameState): GameSnapshot {
     confirmNo: state.confirm_no,
     actionResult: state.my_action_result,
     votes: { ...state.vote_targets },
+    skipVotes: state.vote_skip_count,
   };
 }
 
@@ -1286,6 +1368,10 @@ function diffGameEvents(previous: GameSnapshot, next: GameSnapshot, state: GameS
       const player = state.players.find((item) => item.id === id);
       events.push(makeEvent(`${player?.name ?? "대상"} ${votes}표`, "vote"));
     }
+  }
+
+  if (next.skipVotes > previous.skipVotes) {
+    events.push(makeEvent(`스킵 ${next.skipVotes}표`, "vote"));
   }
 
   if (next.nominee && next.nominee !== previous.nominee) {
