@@ -7,9 +7,9 @@ use std::{collections::HashMap, fs, path::Path};
 
 pub const INITIAL_RATING: i64 = 1000;
 const RATING_HISTORY_LIMIT: usize = 20;
-const RATING_DELTA_CAP: i64 = 50;
-const ROLE_DELTA_CAP: i64 = 10;
-const LOSING_RATING_GAIN_CAP: i64 = 3;
+const RATING_DELTA_CAP: i64 = 80;
+const ROLE_DELTA_CAP: i64 = 14;
+const LOSING_RATING_GAIN_CAP: i64 = 5;
 const ROLE_STATS_ORDER: &[Role] = &[
     Role::Mafia,
     Role::Police,
@@ -374,10 +374,12 @@ fn rating_change_for_player(
     let score = if won { 1.0 } else { 0.0 };
     let opponent_average = opponent_average_rating(game, player, ratings, team_by_user_id);
     let entry = stats.users.get(&player.user_id.to_string());
+    let rating_multiplier = rating_progression_multiplier(old_rating, won);
     let base_delta =
         rating_k(entry) as f64 * (score - expected_score(old_rating, opponent_average));
     let team_delta = clamp(
-        (base_delta * player_count_multiplier(game.players.len())).round() as i64,
+        (base_delta * rating_multiplier * player_count_multiplier(game.players.len())).round()
+            as i64,
         -RATING_DELTA_CAP,
         RATING_DELTA_CAP,
     );
@@ -395,6 +397,9 @@ fn rating_change_for_player(
         "소속 진영 패배".to_string()
     }];
     reasons.append(&mut role_reasons);
+    if (rating_multiplier - 1.0).abs() > f64::EPSILON {
+        reasons.push(format!("레이팅 구간 보정 x{rating_multiplier:.2}"));
+    }
     if combined_delta != team_delta + role_delta {
         reasons.push("전체 레이팅 변동 상한 적용".to_string());
     }
@@ -556,11 +561,43 @@ fn opponent_average_rating(
 fn rating_k(entry: Option<&PlayerStats>) -> i64 {
     let rating_games = entry.map_or(0, |entry| entry.rating_games);
     if rating_games < 10 {
-        40
+        64
     } else if rating_games < 30 {
-        32
+        52
+    } else if rating_games < 70 {
+        44
     } else {
-        24
+        36
+    }
+}
+
+fn rating_progression_multiplier(rating: i64, won: bool) -> f64 {
+    if won {
+        if rating < 900 {
+            1.70
+        } else if rating < 1100 {
+            1.35
+        } else if rating < 1300 {
+            1.10
+        } else if rating < 1500 {
+            0.85
+        } else if rating < 1700 {
+            0.70
+        } else {
+            0.55
+        }
+    } else if rating < 900 {
+        0.55
+    } else if rating < 1100 {
+        0.75
+    } else if rating < 1300 {
+        0.95
+    } else if rating < 1500 {
+        1.15
+    } else if rating < 1700 {
+        1.35
+    } else {
+        1.55
     }
 }
 
@@ -589,6 +626,22 @@ pub fn win_rate_text(wins: i64, games: i64) -> String {
         return "0.0%".to_string();
     }
     format!("{:.1}%", wins as f64 / games as f64 * 100.0)
+}
+
+pub fn rating_rank(rating: i64) -> &'static str {
+    if rating < 900 {
+        "C"
+    } else if rating < 1100 {
+        "B"
+    } else if rating < 1300 {
+        "A"
+    } else if rating < 1500 {
+        "S"
+    } else if rating < 1700 {
+        "SS"
+    } else {
+        "X"
+    }
 }
 
 pub fn role_stats_text(entry: &PlayerStats) -> String {
@@ -620,7 +673,7 @@ pub fn leaderboard_text(stats: &StatsFile, metric: &str) -> String {
     let mut lines = vec![format!("기준: **{}**", leaderboard_metric_name(metric))];
     for (index, (_user_id, entry)) in entries.into_iter().enumerate() {
         lines.push(format!(
-            "{}. **{}** - {}승 {}패 / {}판 / 승률 {} / 마피아팀 {}회 / 게임시간 {} / 레이팅 {}점",
+            "{}. **{}** - {}승 {}패 / {}판 / 승률 {} / 마피아팀 {}회 / 게임시간 {} / 레이팅 {}점 ({})",
             index + 1,
             if entry.name.is_empty() {
                 "알 수 없음"
@@ -633,7 +686,8 @@ pub fn leaderboard_text(stats: &StatsFile, metric: &str) -> String {
             win_rate_text(entry.wins, entry.games),
             entry.mafia_team_games,
             play_duration_text(entry.play_seconds),
-            entry.rating
+            entry.rating,
+            rating_rank(entry.rating)
         ));
     }
     lines.join("\n")
@@ -808,6 +862,28 @@ mod tests {
     }
 
     #[test]
+    fn rating_rank_maps_rating_bands() {
+        assert_eq!(rating_rank(899), "C");
+        assert_eq!(rating_rank(900), "B");
+        assert_eq!(rating_rank(1100), "A");
+        assert_eq!(rating_rank(1300), "S");
+        assert_eq!(rating_rank(1500), "SS");
+        assert_eq!(rating_rank(1700), "X");
+    }
+
+    #[test]
+    fn rating_progression_helps_lower_ratings_more() {
+        assert!(
+            rating_progression_multiplier(850, true) > rating_progression_multiplier(1450, true)
+        );
+        assert!(
+            rating_progression_multiplier(850, false) < rating_progression_multiplier(1450, false)
+        );
+        assert!(rating_progression_multiplier(1000, false) < 1.0);
+        assert!(rating_progression_multiplier(1700, false) > 1.0);
+    }
+
+    #[test]
     fn leaderboard_sorts_by_rating() {
         let mut stats = StatsFile::default();
         stats.users.insert(
@@ -879,8 +955,8 @@ mod tests {
             .find(|player| player.role == Role::Doctor)
             .cloned()
             .unwrap();
-        game.record_rating_event(doctor.user_id, 7, "첫 번째 기여");
-        game.record_rating_event(doctor.user_id, 6, "두 번째 기여");
+        game.record_rating_event(doctor.user_id, 9, "첫 번째 기여");
+        game.record_rating_event(doctor.user_id, 8, "두 번째 기여");
 
         let (role_delta, reasons) = role_rating_adjustment(&game, &doctor, Role::Doctor);
 
@@ -906,7 +982,7 @@ mod tests {
     }
 
     #[test]
-    fn losing_team_cannot_gain_more_than_three_rating() {
+    fn losing_team_positive_gain_is_capped() {
         assert_eq!(final_rating_delta(-2, 10, false), LOSING_RATING_GAIN_CAP);
         assert_eq!(final_rating_delta(-40, 10, false), -30);
     }

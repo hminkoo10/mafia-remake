@@ -1827,7 +1827,7 @@ pub fn personal_stats_text(stats_file: &stats::StatsFile, user_id: u64, fallback
         &entry.name
     };
     format!(
-        "{name}님의 전적\n전체 게임: **{}판**\n승리/패배: **{}승 {}패**\n승률: **{}**\n마피아팀 플레이: **{}회**\n게임시간: **{}**\n레이팅: **{}점** (최고 {}점, 반영 {}판)\n\n역할별 플레이\n{}",
+        "{name}님의 전적\n전체 게임: **{}판**\n승리/패배: **{}승 {}패**\n승률: **{}**\n마피아팀 플레이: **{}회**\n게임시간: **{}**\n레이팅: **{}점** / **{}랭크** (최고 {}점, 반영 {}판)\n\n역할별 플레이\n{}",
         entry.games,
         entry.wins,
         entry.losses,
@@ -1835,6 +1835,7 @@ pub fn personal_stats_text(stats_file: &stats::StatsFile, user_id: u64, fallback
         entry.mafia_team_games,
         stats::play_duration_text(entry.play_seconds),
         entry.rating,
+        stats::rating_rank(entry.rating),
         entry.rating_peak,
         entry.rating_games,
         stats::role_stats_text(entry)
@@ -2119,7 +2120,7 @@ pub fn render_leaderboard_image(stats_file: &stats::StatsFile, metric: &str) -> 
         ("winrate", "승률"),
         ("mafia", "마피아"),
         ("time", "시간"),
-        ("rating", "레이팅"),
+        ("rating", "랭크/레이팅"),
     ] {
         draw_lb_text(
             &mut image,
@@ -2182,7 +2183,10 @@ pub fn render_leaderboard_image(stats_file: &stats::StatsFile, metric: &str) -> 
             ("winrate", stats::win_rate_text(entry.wins, entry.games)),
             ("mafia", format!("{}회", entry.mafia_team_games)),
             ("time", stats::play_duration_text(entry.play_seconds)),
-            ("rating", format!("{}점", entry.rating)),
+            (
+                "rating",
+                format!("{} {}점", stats::rating_rank(entry.rating), entry.rating),
+            ),
         ];
         for (key, value) in values {
             draw_lb_text(

@@ -1829,7 +1829,9 @@ async fn web_leaderboard_values(state: &WebSettingsState, metric: &str, limit: u
                 "play_seconds": entry.play_seconds,
                 "playtime": stats::play_duration_text(entry.play_seconds),
                 "rating": entry.rating,
+                "rating_rank": stats::rating_rank(entry.rating),
                 "rating_peak": entry.rating_peak,
+                "rating_peak_rank": stats::rating_rank(entry.rating_peak),
                 "rating_games": entry.rating_games,
                 "value": stats::leaderboard_value(&entry, metric),
             })
@@ -2199,10 +2201,11 @@ fn render_leaderboard_podium(leaderboard: &Value) -> String {
         .take(3)
         .map(|entry| {
             format!(
-                r#"<div class="podium-card"><div class="rank">#{}</div><div class="name">{}</div><div class="rating">{}점</div><div class="meta">{}승 {}패 · 승률 {}</div></div>"#,
+                r#"<div class="podium-card"><div class="rank">#{}</div><div class="name">{}</div><div class="rating">{}점 · {}랭크</div><div class="meta">{}승 {}패 · 승률 {}</div></div>"#,
                 safe_text(entry.get("rank")),
                 safe_text(entry.get("name")),
                 safe_text(entry.get("rating")),
+                safe_text(entry.get("rating_rank")),
                 safe_text(entry.get("wins")),
                 safe_text(entry.get("losses")),
                 safe_text(entry.get("winrate_text")),
@@ -2238,10 +2241,11 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
         .iter()
         .map(|entry| {
             format!(
-                r#"<tr><td class="num">{}</td><td>{}</td><td class="num">{}</td><td>{}승 {}패</td><td class="num">{}</td><td class="num">{}</td><td class="num">{}</td><td>{}</td></tr>"#,
+                r#"<tr><td class="num">{}</td><td>{}</td><td class="num">{}점 · {}</td><td>{}승 {}패</td><td class="num">{}</td><td class="num">{}</td><td class="num">{}</td><td>{}</td></tr>"#,
                 safe_text(entry.get("rank")),
                 safe_text(entry.get("name")),
                 safe_text(entry.get("rating")),
+                safe_text(entry.get("rating_rank")),
                 safe_text(entry.get("wins")),
                 safe_text(entry.get("losses")),
                 safe_text(entry.get("winrate_text")),
@@ -2258,7 +2262,7 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
         "<h2>전체 순위</h2>"
     };
     format!(
-        r#"<section class="panel">{title}<table><thead><tr><th class="num">순위</th><th>이름</th><th class="num">레이팅</th><th>승패</th><th class="num">승률</th><th class="num">판수</th><th class="num">마피아팀</th><th>게임시간</th></tr></thead><tbody>{rows}</tbody></table></section>"#
+        r#"<section class="panel">{title}<table><thead><tr><th class="num">순위</th><th>이름</th><th class="num">레이팅/랭크</th><th>승패</th><th class="num">승률</th><th class="num">판수</th><th class="num">마피아팀</th><th>게임시간</th></tr></thead><tbody>{rows}</tbody></table></section>"#
     )
 }
 
@@ -2342,10 +2346,13 @@ fn render_api_docs_page(base_url: &str) -> String {
             "공개 가능한 게임 설정 요약을 반환합니다.",
         ),
         ("GET /api/stats", "전적 요약 정보를 반환합니다."),
-        ("GET /api/leaderboard", "레이팅 기준 리더보드를 반환합니다."),
+        (
+            "GET /api/leaderboard",
+            "레이팅 기준 리더보드를 반환합니다. 각 항목에 rating_rank가 포함됩니다.",
+        ),
         (
             "GET /api/leaderboard/{metric}",
-            "wins, winrate, games, mafia, playtime, rating 기준 리더보드를 반환합니다.",
+            "wins, winrate, games, mafia, playtime, rating 기준 리더보드를 반환합니다. 각 항목에 rating_rank가 포함됩니다.",
         ),
     ];
     let protected_endpoints = [
@@ -2354,7 +2361,7 @@ fn render_api_docs_page(base_url: &str) -> String {
         ("GET /api/v1/stats", "전적 요약을 반환합니다. API 키 필요."),
         (
             "GET /api/v1/leaderboard/{metric}",
-            "보호 리더보드를 반환합니다. API 키 필요.",
+            "보호 리더보드를 반환합니다. 각 항목에 rating_rank가 포함됩니다. API 키 필요.",
         ),
         ("GET /api/v1/games", "키 발급 서버의 진행 중 게임을 반환합니다. API 키 필요."),
         (
