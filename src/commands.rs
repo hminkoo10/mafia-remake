@@ -111,8 +111,13 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         return Ok(());
     };
 
-    let special_roles = choose_special_roles(&config_snapshot)?;
-    let mut role_counts = selected_role_counts(&config_snapshot, &special_roles)?;
+    let role_history = {
+        let stats_read = ctx.data().stats.read().await;
+        stats::role_appearance_counts(&stats_read)
+    };
+    let special_roles = choose_special_roles_balanced(&config_snapshot, &role_history)?;
+    let mut role_counts =
+        selected_role_counts_balanced(&config_snapshot, &special_roles, &role_history)?;
     let minimum_players = minimum_player_count(&role_counts);
     let max_players = effective_max_player_count(&config_snapshot);
     if max_players < minimum_players {

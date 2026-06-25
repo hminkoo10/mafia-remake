@@ -838,6 +838,123 @@ pub fn choose_special_roles(config: &config::BotConfig) -> Result<Vec<Role>> {
     Ok(selected)
 }
 
+pub fn choose_special_roles_balanced(
+    config: &config::BotConfig,
+    role_history: &HashMap<Role, i64>,
+) -> Result<Vec<Role>> {
+    let mut selected = Vec::new();
+    let citizen_candidates =
+        balanced_special_candidates(config, CITIZEN_SPECIAL_ROLES, role_history);
+    let Some(citizen_selected) = select_balanced_special_roles_for_slots(
+        &citizen_candidates,
+        config.citizen_special_count as usize,
+        role_history,
+    ) else {
+        bail!(
+            "활성화된 시민 특수 역할로 설정된 인원 수를 구성할 수 없습니다. 연인은 2명으로 계산합니다."
+        );
+    };
+    selected.extend(citizen_selected);
+
+    for (pool, count) in [
+        (MAFIA_SPECIAL_ROLES, config.mafia_special_count as usize),
+        (NEUTRAL_SPECIAL_ROLES, config.neutral_special_count as usize),
+    ] {
+        let candidates = balanced_special_candidates(config, pool, role_history);
+        if count > candidates.len() {
+            bail!(
+                "{} 중 활성화된 역할보다 선택할 특수룰 수가 많습니다.",
+                pool.iter()
+                    .map(|role| role.value())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        selected.extend(candidates.into_iter().take(count));
+    }
+    Ok(selected)
+}
+
+fn balanced_special_candidates(
+    config: &config::BotConfig,
+    pool: &[Role],
+    role_history: &HashMap<Role, i64>,
+) -> Vec<Role> {
+    let mut candidates = enabled_special_roles(config, pool);
+    candidates.shuffle(&mut rand::rng());
+    candidates.sort_by_key(|role| {
+        (
+            role_history.get(role).copied().unwrap_or(0),
+            special_role_player_count(*role),
+        )
+    });
+    candidates
+}
+
+fn select_balanced_special_roles_for_slots(
+    candidates: &[Role],
+    remaining_slots: usize,
+    role_history: &HashMap<Role, i64>,
+) -> Option<Vec<Role>> {
+    fn search(
+        candidates: &[Role],
+        index: usize,
+        remaining_slots: usize,
+        role_history: &HashMap<Role, i64>,
+        selected: &mut Vec<Role>,
+        score: i64,
+        best: &mut Option<(i64, Vec<Role>)>,
+    ) {
+        if remaining_slots == 0 {
+            if best.as_ref().is_none_or(|(best_score, _)| score < *best_score) {
+                *best = Some((score, selected.clone()));
+            }
+            return;
+        }
+        if index >= candidates.len() {
+            return;
+        }
+
+        let role = candidates[index];
+        let slots = special_role_player_count(role);
+        if slots <= remaining_slots {
+            selected.push(role);
+            search(
+                candidates,
+                index + 1,
+                remaining_slots - slots,
+                role_history,
+                selected,
+                score + role_history.get(&role).copied().unwrap_or(0) * slots as i64,
+                best,
+            );
+            selected.pop();
+        }
+        search(
+            candidates,
+            index + 1,
+            remaining_slots,
+            role_history,
+            selected,
+            score,
+            best,
+        );
+    }
+
+    let mut selected = Vec::new();
+    let mut best = None;
+    search(
+        candidates,
+        0,
+        remaining_slots,
+        role_history,
+        &mut selected,
+        0,
+        &mut best,
+    );
+    best.map(|(_, roles)| roles)
+}
+
 fn select_special_roles_for_slots(
     candidates: &[Role],
     remaining_slots: usize,
@@ -880,6 +997,22 @@ pub fn selected_role_counts(
     config: &config::BotConfig,
     special_roles: &[Role],
 ) -> Result<HashMap<Role, usize>> {
+    selected_role_counts_with_history(config, special_roles, None)
+}
+
+pub fn selected_role_counts_balanced(
+    config: &config::BotConfig,
+    special_roles: &[Role],
+    role_history: &HashMap<Role, i64>,
+) -> Result<HashMap<Role, usize>> {
+    selected_role_counts_with_history(config, special_roles, Some(role_history))
+}
+
+fn selected_role_counts_with_history(
+    config: &config::BotConfig,
+    special_roles: &[Role],
+    role_history: Option<&HashMap<Role, i64>>,
+) -> Result<HashMap<Role, usize>> {
     let mafia_special_count = special_roles
         .iter()
         .filter(|role| role.is_mafia_team())
@@ -903,7 +1036,9 @@ pub fn selected_role_counts(
     );
     counts.insert(Role::Doctor, config.default_doctor_count as usize);
     if config.default_police_count > 0 {
-        let investigation = random_investigation_role(config);
+        let investigation = role_history
+            .map(|history| balanced_investigation_role(config, history))
+            .unwrap_or_else(|| random_investigation_role(config));
         counts.insert(investigation, config.default_police_count as usize);
     }
     for role in special_roles {
@@ -916,7 +1051,23 @@ pub fn selected_role_counts(
     Ok(counts)
 }
 
+fn balanced_investigation_role(
+    config: &config::BotConfig,
+    role_history: &HashMap<Role, i64>,
+) -> Role {
+    let mut candidates = investigation_role_candidates(config);
+    candidates.shuffle(&mut rand::rng());
+    candidates.sort_by_key(|role| role_history.get(role).copied().unwrap_or(0));
+    *candidates.first().unwrap_or(&Role::Police)
+}
+
 pub fn random_investigation_role(config: &config::BotConfig) -> Role {
+    let candidates = investigation_role_candidates(config);
+    let mut rng = rand::rng();
+    *candidates.choose(&mut rng).unwrap_or(&Role::Police)
+}
+
+fn investigation_role_candidates(config: &config::BotConfig) -> Vec<Role> {
     let mut candidates = vec![Role::Police];
     if config.use_agent {
         candidates.push(Role::Agent);
@@ -924,8 +1075,7 @@ pub fn random_investigation_role(config: &config::BotConfig) -> Role {
     if config.use_vigilante {
         candidates.push(Role::Vigilante);
     }
-    let mut rng = rand::rng();
-    *candidates.choose(&mut rng).unwrap_or(&Role::Police)
+    candidates
 }
 
 pub fn minimum_player_count(role_counts: &HashMap<Role, usize>) -> usize {
@@ -4600,6 +4750,37 @@ mod tests {
             Vec::new(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn balanced_special_selection_prefers_less_seen_roles() {
+        let mut history = std::collections::HashMap::new();
+        history.insert(Role::Spy, 10);
+        history.insert(Role::Contractor, 5);
+
+        let selected = select_balanced_special_roles_for_slots(
+            &[Role::Spy, Role::Contractor, Role::Thief],
+            1,
+            &history,
+        )
+        .unwrap();
+
+        assert_eq!(selected, vec![Role::Thief]);
+    }
+
+    #[test]
+    fn balanced_special_selection_counts_lover_slots() {
+        let mut history = std::collections::HashMap::new();
+        history.insert(Role::Lover, 100);
+
+        let selected = select_balanced_special_roles_for_slots(
+            &[Role::Lover, Role::Detective, Role::Shaman],
+            2,
+            &history,
+        )
+        .unwrap();
+
+        assert_eq!(selected, vec![Role::Detective, Role::Shaman]);
     }
 
     #[test]

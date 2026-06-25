@@ -245,6 +245,19 @@ pub fn record_game_stats(
     }
 }
 
+pub fn role_appearance_counts(stats: &StatsFile) -> HashMap<Role, i64> {
+    let mut counts = HashMap::new();
+    for entry in stats.users.values() {
+        for role in ROLE_STATS_ORDER {
+            let count = entry.roles.get(role.value()).copied().unwrap_or(0);
+            if count > 0 {
+                *counts.entry(*role).or_default() += count;
+            }
+        }
+    }
+    counts
+}
+
 fn ensure_player_stats<'a>(
     stats: &'a mut StatsFile,
     user_id: u64,
