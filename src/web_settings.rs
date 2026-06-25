@@ -32,6 +32,473 @@ const MAX_GAME_PLAYERS: usize = 24;
 const WEB_LEADERBOARD_METRICS: &[&str] =
     &["rating", "wins", "winrate", "games", "mafia", "playtime"];
 
+struct WebRoleGuide {
+    role: Role,
+    team: &'static str,
+    kind: &'static str,
+    summary: &'static str,
+    tips: &'static [&'static str],
+    caution: &'static str,
+}
+
+const WEB_ROLE_GUIDES: &[WebRoleGuide] = &[
+    WebRoleGuide {
+        role: Role::Citizen,
+        team: "시민팀",
+        kind: "기본",
+        summary: "특수 능력은 없지만 공개 정보, 발언, 투표 흐름을 모아 마피아 후보를 좁히는 기본 역할입니다. 시민은 죽지 않고 올바른 표를 모으는 것만으로도 게임을 크게 움직입니다.",
+        tips: &[
+            "확정 정보와 추측을 분리해서 메모하세요.",
+            "직업 주장자가 여러 명이면 결과보다 시간순 모순을 먼저 보세요.",
+            "스킵과 지목 중 어느 쪽이 시민팀 수 계산에 이득인지 확인하세요.",
+            "사망자 역할 공개 여부에 따라 추론 강도를 조절하세요.",
+        ],
+        caution: "능력이 없다는 이유로 침묵하면 후반 표 계산에서 밀립니다.",
+    },
+    WebRoleGuide {
+        role: Role::Police,
+        team: "시민팀",
+        kind: "수사",
+        summary: "밤마다 한 명을 조사해 마피아 판정 여부를 확인합니다. 결과는 강력하지만 대부의 조사 회피, 보조직의 접선 상태 같은 예외가 있어 결과 해석이 중요합니다.",
+        tips: &[
+            "조사 대상, 결과, 일차를 함께 기록하세요.",
+            "맞경이 있으면 서로의 대상 선정 이유와 공개 타이밍을 비교하세요.",
+            "마녀 같은 일부 보조직은 접선 전후 판정 차이가 있을 수 있습니다.",
+            "결과 공개 전 의사 생존 가능성과 본인 생존 위험을 계산하세요.",
+        ],
+        caution: "결과만 공개하고 이유를 설명하지 않으면 오히려 의심받기 쉽습니다.",
+    },
+    WebRoleGuide {
+        role: Role::Doctor,
+        team: "시민팀",
+        kind: "방어",
+        summary: "밤마다 한 명을 보호해 마피아 처치를 막을 수 있습니다. 공개 확직 보호와 마피아의 예측을 역이용하는 보호 사이에서 판단해야 합니다.",
+        tips: &[
+            "공개된 수사직, 핵심 발언자, 처형 구도상 중요한 사람을 우선 비교하세요.",
+            "마피아가 뻔한 대상을 피할 가능성도 함께 고려하세요.",
+            "치료 성공이 나오면 공격 대상과 마피아 의도를 같이 추론하세요.",
+            "간호사 접선 여부가 있으면 치료 흐름을 더 안정적으로 잡을 수 있습니다.",
+        ],
+        caution: "매일 같은 대상만 보호하면 마피아가 우회하기 쉬워집니다.",
+    },
+    WebRoleGuide {
+        role: Role::Agent,
+        team: "시민팀",
+        kind: "수사",
+        summary: "경찰 계열 수사직으로 밤 결과를 통해 마피아 후보를 좁힙니다. 결과 공개 타이밍과 다른 수사직 주장과의 정합성이 핵심입니다.",
+        tips: &[
+            "조사 결과를 낮 토론 흐름과 연결해 설명하세요.",
+            "결과가 확정 정보인지 보조 정보인지 구분하세요.",
+            "다른 수사직과 결과가 충돌하면 대상 선정 이유를 비교하세요.",
+            "살아남는 것이 정보 누적에 중요하므로 공개 타이밍을 조절하세요.",
+        ],
+        caution: "너무 늦은 공개는 시민팀 판단을 늦추고 신뢰를 떨어뜨립니다.",
+    },
+    WebRoleGuide {
+        role: Role::Vigilante,
+        team: "시민팀",
+        kind: "수사/처형",
+        summary: "낮 조사와 밤 숙청으로 마피아팀을 직접 압박합니다. 처형 능력은 강하지만 오판하면 시민 수가 줄어들어 패배 조건에 가까워집니다.",
+        tips: &[
+            "조사와 처형은 별개 판단으로 다루세요.",
+            "처형 전 생존자 수와 마피아 수 우위 조건을 계산하세요.",
+            "수사직 결과, 투표 라인, 발언 모순을 모두 확인한 뒤 처형하세요.",
+            "후반에는 마피아 수 우위 승리를 막는 용도로 가치가 큽니다.",
+        ],
+        caution: "확신 없는 숙청은 마피아 처치보다 시민 손실 위험이 큽니다.",
+    },
+    WebRoleGuide {
+        role: Role::Detective,
+        team: "시민팀",
+        kind: "추적",
+        summary: "밤에 대상을 추적해 행동 경로 단서를 얻습니다. 직접적인 마피아 판정은 아니지만 직업 주장과 실제 행동이 맞는지 검증하는 데 강합니다.",
+        tips: &[
+            "누가 누구에게 행동했는지 날짜별로 누적하세요.",
+            "밤 행동이 있는 직업 주장자 위주로 추적 가치가 높습니다.",
+            "한 번의 결과보다 여러 밤의 이동 패턴을 비교하세요.",
+            "경찰 결과와 결합하면 거짓 직업 주장을 좁히기 쉽습니다.",
+        ],
+        caution: "행동 경로는 팀 판정이 아니므로 단독 처형 근거로 과신하지 마세요.",
+    },
+    WebRoleGuide {
+        role: Role::Reporter,
+        team: "시민팀",
+        kind: "공개 정보",
+        summary: "대상을 취재해 공개 정보로 만들 수 있습니다. 취재는 판 전체가 보는 정보라 대상과 타이밍 선택이 매우 중요합니다.",
+        tips: &[
+            "이미 확정된 대상보다 판을 가르는 애매한 대상이 보통 더 좋습니다.",
+            "취재 공개 후 투표 흐름이 어떻게 바뀔지 예상하세요.",
+            "마피아가 취재 전 제거할 수 있는 대상이면 빠르게 사용하세요.",
+            "취재 결과는 다른 수사 결과와 함께 정리하세요.",
+        ],
+        caution: "낮은 가치 대상 취재는 강한 능력을 단순 확인에 낭비합니다.",
+    },
+    WebRoleGuide {
+        role: Role::Hacker,
+        team: "시민팀",
+        kind: "정보",
+        summary: "상대 행동 정보를 얻어 다음 낮 토론의 근거를 만듭니다. 누가 어떤 행동을 했는지와 발언이 맞는지 비교할 때 강합니다.",
+        tips: &[
+            "행동 정보와 발언 모순을 같이 기록하세요.",
+            "수사직 주장자 검증에 활용하세요.",
+            "결과 하나로 확정하지 말고 투표 흐름과 결합하세요.",
+            "다음 낮 지목 근거로 짧게 정리해두세요.",
+        ],
+        caution: "행동 정보는 맥락 없이 공개하면 오해를 만들 수 있습니다.",
+    },
+    WebRoleGuide {
+        role: Role::Shaman,
+        team: "시민팀",
+        kind: "사망자 정보",
+        summary: "사망자와 관련된 정보를 활용해 산 사람의 주장과 죽은 사람의 발언을 연결합니다. 사망자가 늘수록 정보량이 커집니다.",
+        tips: &[
+            "죽은 사람의 생전 투표와 발언을 복원하세요.",
+            "사망자 채팅 정보와 공개 정보를 구분하세요.",
+            "죽은 수사직의 결과 가능성을 우선 확인하세요.",
+            "후반에는 사망자 정보가 생존자 표 계산에 직접 영향을 줍니다.",
+        ],
+        caution: "사망자 정보만 믿고 현재 발언 모순을 놓치면 안 됩니다.",
+    },
+    WebRoleGuide {
+        role: Role::Priest,
+        team: "시민팀",
+        kind: "부활/정화",
+        summary: "죽은 대상을 되살리거나 위험한 상태를 정리하는 보조 역할입니다. 한 번의 선택으로 판세를 크게 바꿀 수 있습니다.",
+        tips: &[
+            "부활 대상의 직업 가치와 공개 정보량을 같이 보세요.",
+            "죽은 수사직이나 확정 시민은 높은 우선순위를 가집니다.",
+            "부활 후 즉시 공개될 정보가 무엇인지 예상하세요.",
+            "교주팀 관련 위협이 있으면 정화 가치도 고려하세요.",
+        ],
+        caution: "정보가 적은 대상 부활은 오히려 혼선을 만들 수 있습니다.",
+    },
+    WebRoleGuide {
+        role: Role::Soldier,
+        team: "시민팀",
+        kind: "방어",
+        summary: "마피아 공격을 한 번 버틸 수 있는 시민팀 방어 역할입니다. 방탄 발동은 강한 생존 정보가 되며 마피아의 공격 의도도 추론할 수 있습니다.",
+        tips: &[
+            "방탄 발동 사실을 언제 공개할지 판단하세요.",
+            "왜 본인이 공격받았는지 마피아 시각으로 생각하세요.",
+            "거짓 군인 주장과 충돌하면 발동 타이밍을 근거로 비교하세요.",
+            "후반에는 살아남는 것 자체가 시민 수 방어입니다.",
+        ],
+        caution: "너무 빨리 정체를 공개하면 이후 방어 가치가 줄어듭니다.",
+    },
+    WebRoleGuide {
+        role: Role::Gangster,
+        team: "시민팀",
+        kind: "투표 견제",
+        summary: "밤에 한 명을 공갈해 다음 낮 투표권을 막습니다. 투표권 하나가 승패를 바꾸는 후반에 특히 강합니다.",
+        tips: &[
+            "막을 표가 실제 결과를 바꾸는지 계산하세요.",
+            "정치인, 확정 마피아 후보, 라인 핵심 인물을 우선 보세요.",
+            "공갈 후 투표 결과가 어떻게 달라졌는지 기록하세요.",
+            "마피아 수 우위 조건 직전에는 방어적 사용도 중요합니다.",
+        ],
+        caution: "시민팀 핵심 표를 막으면 오히려 처형 실패를 만들 수 있습니다.",
+    },
+    WebRoleGuide {
+        role: Role::Prophet,
+        team: "시민팀",
+        kind: "예측",
+        summary: "예언 정보를 통해 장기적인 판세 판단에 도움을 주는 시민팀 역할입니다. 즉시 판정형보다 누적 추론과 공개 타이밍이 중요합니다.",
+        tips: &[
+            "예언 정보가 실제 투표에 어떤 영향을 주는지 정리하세요.",
+            "확정 정보와 가능성 정보를 구분해서 말하세요.",
+            "후반 생존자 수 계산과 함께 쓰면 가치가 커집니다.",
+            "마피아가 정보 공개 전에 제거할 가능성을 고려하세요.",
+        ],
+        caution: "예언을 절대 판정처럼 말하면 시민팀 판단이 굳어질 수 있습니다.",
+    },
+    WebRoleGuide {
+        role: Role::Psychologist,
+        team: "시민팀",
+        kind: "관찰",
+        summary: "낮에 두 명의 관계나 태도를 관찰해 라인 단서를 얻습니다. 직접 판정은 아니지만 반복 관찰로 발언 변화와 투표 라인을 잡아낼 수 있습니다.",
+        tips: &[
+            "서로를 감싸거나 몰아가는 관계를 우선 관찰하세요.",
+            "투표 전후 태도 변화를 기록하세요.",
+            "같은 대상군을 반복 비교하면 모순이 잘 보입니다.",
+            "결과를 다른 수사 결과와 연결해 해석하세요.",
+        ],
+        caution: "관찰 결과를 확정 마피아 판정처럼 쓰면 위험합니다.",
+    },
+    WebRoleGuide {
+        role: Role::Hypnotist,
+        team: "시민팀",
+        kind: "누적 정보",
+        summary: "밤에 최면 대상을 누적하고 낮에 한 번에 깨워 팀 또는 직업 정보를 확인합니다. 깨우면 다음 밤에는 최면을 쓸 수 없어 정보 공개 타이밍이 핵심입니다.",
+        tips: &[
+            "최면 대상과 날짜를 반드시 기록하세요.",
+            "여러 명을 모아 한 번에 깨우면 팀 구도 재계산이 쉽습니다.",
+            "낮에 깨운 다음 밤은 행동 불가라는 점을 고려하세요.",
+            "마피아팀과 교주팀 정보는 즉시 투표 흐름에 연결하세요.",
+        ],
+        caution: "너무 일찍 깨우면 정보량이 적고, 너무 늦으면 죽을 위험이 있습니다.",
+    },
+    WebRoleGuide {
+        role: Role::Mercenary,
+        team: "시민팀",
+        kind: "의뢰/처형",
+        summary: "게임 시작 후 시민팀 의뢰인을 받으며, 의뢰인이 밤에 살해되면 별도 처형 능력을 얻습니다. 용병 처형은 마피아 처치나 자경단 처형과 다른 독립 능력입니다.",
+        tips: &[
+            "의뢰인이 누구인지 안전하게 기억하세요.",
+            "의뢰인이 밤에 사망했는지 확인한 뒤 무장 상태를 판단하세요.",
+            "무장 후 처형은 마피아 수 우위 승리 조건을 막을 수 있습니다.",
+            "처형 대상은 수사 결과와 투표 라인을 같이 보고 고르세요.",
+        ],
+        caution: "무장 전에는 처형 능력이 없으므로 의뢰인 생존이 중요합니다.",
+    },
+    WebRoleGuide {
+        role: Role::Lover,
+        team: "시민팀",
+        kind: "특수 관계",
+        summary: "서로를 알고 밤 대화로 정보를 맞출 수 있는 관계형 역할입니다. 둘 중 한 명의 신뢰가 다른 한 명에게 영향을 주므로 함께 움직이는 운영이 중요합니다.",
+        tips: &[
+            "밤 대화로 서로의 정보와 의심 대상을 맞추세요.",
+            "한쪽 공개가 다른 한쪽 신뢰에 주는 영향을 계산하세요.",
+            "둘 다 살아있을 때 정보 가치가 가장 큽니다.",
+            "동시에 의심받지 않게 발언 일관성을 유지하세요.",
+        ],
+        caution: "한 명이 무너지면 둘 다 라인으로 묶여 의심받을 수 있습니다.",
+    },
+    WebRoleGuide {
+        role: Role::Mafia,
+        team: "마피아팀",
+        kind: "처치",
+        summary: "밤마다 처치 대상을 선택하는 마피아팀 중심 역할입니다. 낮에는 시민팀처럼 보이며 의심을 분산하고, 밤에는 팀 선택 현황을 맞춰 핵심 시민을 제거해야 합니다.",
+        tips: &[
+            "마피아 비밀방의 처치 선택 현황을 계속 확인하세요.",
+            "수사직, 의사, 확정 시민 순서로 위협도를 계산하세요.",
+            "낮 발언은 시민 관점으로 일관되게 유지하세요.",
+            "팀원이 몰릴 때 표 분산과 라인 절단을 준비하세요.",
+        ],
+        caution: "밤 선택이 갈리면 처치가 약해지고 팀원 동선도 노출됩니다.",
+    },
+    WebRoleGuide {
+        role: Role::Spy,
+        team: "마피아팀",
+        kind: "첩보/접선",
+        summary: "첩보를 사용해 정보를 얻고 마피아와 접선하는 보조 역할입니다. 접선 전에는 시민처럼 움직이며 정보 손실을 줄이고, 접선 후에는 마피아팀 정보망에 합류합니다.",
+        tips: &[
+            "마피아 접선 전까지는 의심을 낮게 유지하세요.",
+            "첩보 대상은 수사직 후보나 핵심 발언자가 좋습니다.",
+            "접선 후 추가 첩보가 가능하면 즉시 가치 높은 대상을 고르세요.",
+            "얻은 정보는 마피아 처치 우선순위와 연결하세요.",
+        ],
+        caution: "접선 전 무리한 발언은 마피아팀 보조직으로 찍히기 쉽습니다.",
+    },
+    WebRoleGuide {
+        role: Role::Contractor,
+        team: "마피아팀",
+        kind: "추측/암살",
+        summary: "두 대상과 각각의 직업을 추측해 청부를 시도합니다. 정확히 맞히면 큰 이득을 얻지만 실패하면 행동 가치를 잃습니다.",
+        tips: &[
+            "공개 정보가 충분한 대상끼리 묶어 제출하세요.",
+            "직업 주장과 실제 행동 가능성을 대조하세요.",
+            "수사직과 공개 직업 대상 제한을 확인하세요.",
+            "성공 시 접선과 암살 가치까지 함께 계산하세요.",
+        ],
+        caution: "확률 낮은 청부는 마피아팀의 밤 템포를 낭비합니다.",
+    },
+    WebRoleGuide {
+        role: Role::Thief,
+        team: "마피아팀",
+        kind: "도벽",
+        summary: "밤에 다른 사람의 직업을 훔쳐 그 능력을 사용할 수 있습니다. 훔친 직업에 따라 행동 방식이 바뀌며, 수사직을 훔치면 독립 결과를 얻습니다.",
+        tips: &[
+            "훔친 직업의 당일 행동 방식을 먼저 확인하세요.",
+            "경찰 계열을 훔치면 기존 경찰과 별도 조사로 관리하세요.",
+            "마피아 직업을 훔치면 접선 흐름을 확인하세요.",
+            "대상 직업 가치와 본인 생존 가능성을 같이 계산하세요.",
+        ],
+        caution: "능력은 강하지만 선택을 잘못하면 마피아팀 보조 역할만 노출됩니다.",
+    },
+    WebRoleGuide {
+        role: Role::Witch,
+        team: "마피아팀",
+        kind: "저주",
+        summary: "밤에 대상을 개구리로 저주해 능력 사용과 낮 발언 방식을 제한합니다. 중요한 수사직이나 투표 영향력이 큰 사람을 흔드는 데 좋습니다.",
+        tips: &[
+            "저주 대상의 능력 가치와 다음 낮 영향력을 보세요.",
+            "개구리 채팅 제한이 토론에 줄 혼선을 계산하세요.",
+            "마피아 접선 여부에 따라 경찰 판정 해석이 달라질 수 있습니다.",
+            "수사직 저주로 정보 공개 흐름을 끊을 수 있습니다.",
+        ],
+        caution: "무작정 저주하면 마피아 처치 우선순위와 충돌할 수 있습니다.",
+    },
+    WebRoleGuide {
+        role: Role::Scientist,
+        team: "마피아팀",
+        kind: "소생",
+        summary: "사망 이후 소생 가능성을 가진 마피아팀 역할입니다. 죽음이 곧 끝이 아니므로 사망 전 발언과 소생 후 행동을 모두 전략으로 써야 합니다.",
+        tips: &[
+            "사망 전 발언이 소생 후 의심에 미칠 영향을 생각하세요.",
+            "소생 타이밍 뒤 마피아 수 계산을 다시 하세요.",
+            "죽은 상태에서도 공개 정보가 어떻게 쌓이는지 보세요.",
+            "소생 후 바로 표적이 될 수 있어 후속 발언을 준비하세요.",
+        ],
+        caution: "소생만 믿고 초반에 쉽게 노출되면 팀 전체가 흔들립니다.",
+    },
+    WebRoleGuide {
+        role: Role::Madam,
+        team: "마피아팀",
+        kind: "유혹/투표",
+        summary: "투표를 통해 상대를 유혹해 능력과 발언을 제한합니다. 핵심 시민 직업이나 중요한 투표권을 묶어 낮 구도를 흔드는 역할입니다.",
+        tips: &[
+            "수사직, 의사, 정치인처럼 낮 영향력이 큰 대상을 보세요.",
+            "유혹 지속 기간과 다음 투표 구도를 같이 계산하세요.",
+            "접선 후 마피아 비밀방 정보를 적극 공유하세요.",
+            "마피아팀에게 불리한 표 하나를 막는 용도로도 강합니다.",
+        ],
+        caution: "잘못된 유혹은 마피아팀이 필요한 표까지 막을 수 있습니다.",
+    },
+    WebRoleGuide {
+        role: Role::Graverobber,
+        team: "마피아팀",
+        kind: "도굴",
+        summary: "사망자의 직업을 이어받아 판세를 바꿀 수 있는 역할입니다. 어떤 직업을 도굴했는지에 따라 팀 기여 방식이 크게 달라집니다.",
+        tips: &[
+            "첫 사망자의 직업 가치와 팀을 확인하세요.",
+            "도굴 후 자신의 승리 조건과 팀 판정을 다시 계산하세요.",
+            "얻은 직업의 행동 가능 시점을 확인하세요.",
+            "도굴 사실이 공개될 때 의심 흐름을 대비하세요.",
+        ],
+        caution: "마피아팀 직업 도굴 가능성이 있어 시민팀 판정만 믿으면 안 됩니다.",
+    },
+    WebRoleGuide {
+        role: Role::Godfather,
+        team: "마피아팀",
+        kind: "조사 회피",
+        summary: "조사 회피와 접선 흐름을 활용하는 마피아팀 특수 역할입니다. 경찰에게 바로 잡히지 않는 장점을 이용해 과감한 라인을 만들 수 있습니다.",
+        tips: &[
+            "조사 회피를 믿되 행동 모순은 숨길 수 없다는 점을 기억하세요.",
+            "자동 접선 시점 이후 마피아팀과 적극적으로 맞추세요.",
+            "수사직이 자신을 의심할 때 결과 외 근거를 차단하세요.",
+            "후반 마피아 수 우위 조건을 계속 계산하세요.",
+        ],
+        caution: "조사 회피가 모든 정보 역할을 막는 것은 아닙니다.",
+    },
+    WebRoleGuide {
+        role: Role::Villain,
+        team: "마피아팀",
+        kind: "보조",
+        summary: "마피아팀 승리를 목표로 움직이는 보조 성향 역할입니다. 접선 전에는 시민처럼 정보를 정리하며 마피아팀과 연결될 기회를 봅니다.",
+        tips: &[
+            "마피아팀 승리 조건 기준으로 표를 움직이세요.",
+            "접선 전에는 과한 마피아 편 발언을 피하세요.",
+            "정체 노출 타이밍을 조절하세요.",
+            "마피아와 연결될 밤 행동 기회를 확인하세요.",
+        ],
+        caution: "초반 노출은 시민팀 집중 견제를 부릅니다.",
+    },
+    WebRoleGuide {
+        role: Role::CultLeader,
+        team: "교주팀",
+        kind: "포교",
+        summary: "밤마다 포교로 세력을 늘리고 독자 승리 조건을 노리는 역할입니다. 시민팀과 마피아팀 싸움 사이에서 생존하며 숫자 우위를 만들어야 합니다.",
+        tips: &[
+            "포교 성공 후 교주팀 수와 비교주팀 수를 매일 계산하세요.",
+            "마피아와 시민이 서로 싸우게 두는 흐름이 좋습니다.",
+            "포교 대상은 생존력과 발언 영향력을 함께 보세요.",
+            "승리 조건이 가까워지면 투표를 과감하게 조정하세요.",
+        ],
+        caution: "교주가 죽으면 교주팀 전체 계획이 크게 약해집니다.",
+    },
+    WebRoleGuide {
+        role: Role::Fanatic,
+        team: "교주팀",
+        kind: "보조",
+        summary: "교주팀 보조 역할로 교주 생존과 포교 정보 보존이 중요합니다. 교주팀 숫자 계산을 도와 승리 타이밍을 잡습니다.",
+        tips: &[
+            "교주 생존 여부를 최우선으로 보세요.",
+            "포교 정보가 새어나가지 않게 관리하세요.",
+            "교주팀 숫자 우위 가능성을 계산하세요.",
+            "교주 노출 시 대체 표 흐름을 준비하세요.",
+        ],
+        caution: "교주팀은 숫자 조건을 놓치면 이길 타이밍을 잃습니다.",
+    },
+    WebRoleGuide {
+        role: Role::Joker,
+        team: "중립",
+        kind: "단독 승리",
+        summary: "낮 투표로 처형되면 단독 승리를 노립니다. 너무 노골적이면 견제당하고 너무 조용하면 처형 후보가 되기 어렵습니다.",
+        tips: &[
+            "의심받되 확정 마피아처럼 보이지 않게 조절하세요.",
+            "후반 과반 계산과 투표 피로도를 이용하세요.",
+            "찬반투표에서 처형 가능성이 높은 흐름을 유도하세요.",
+            "마피아와 시민 어느 쪽에도 완전히 붙지 않는 태도가 좋습니다.",
+        ],
+        caution: "정체가 들키면 모두가 처형을 피하려 하므로 승리가 어려워집니다.",
+    },
+    WebRoleGuide {
+        role: Role::Politician,
+        team: "시민팀",
+        kind: "투표 강화",
+        summary: "투표에서 2표 영향력을 가지는 시민팀 역할입니다. 최종 투표 구도에서 한 명 이상의 힘을 내므로 표 계산의 중심이 됩니다.",
+        tips: &[
+            "자신의 2표가 결과를 바꾸는지 매번 계산하세요.",
+            "스킵, 지목, 찬반 동률 가능성을 확인하세요.",
+            "막판 표 이동을 주도할 수 있습니다.",
+            "공갈 대상이 되면 영향력이 사라지므로 건달 가능성을 보세요.",
+        ],
+        caution: "잘못된 2표는 일반 시민의 오표보다 훨씬 크게 작용합니다.",
+    },
+    WebRoleGuide {
+        role: Role::Judge,
+        team: "시민팀",
+        kind: "찬반 개입",
+        summary: "찬반투표 동률이나 중요한 처형 판단에서 판세를 뒤집을 수 있습니다. 공개 전에는 일반 시민처럼 보이지만 결정 순간 영향력이 큽니다.",
+        tips: &[
+            "찬반 수와 처형 기준을 계속 확인하세요.",
+            "공개 전후 영향력 차이를 계산하세요.",
+            "처형 대상의 팀 가치를 따져 선택하세요.",
+            "막판 뒤집기 가능성을 숨겨두는 것도 전략입니다.",
+        ],
+        caution: "감정적인 뒤집기는 시민팀 전체 신뢰를 무너뜨립니다.",
+    },
+    WebRoleGuide {
+        role: Role::Terrorist,
+        team: "시민팀",
+        kind: "교환",
+        summary: "처형이나 공격 상황에서 교환 가치를 만드는 시민팀 역할입니다. 자신의 죽음이 누구를 데려갈 수 있는지 계산해야 합니다.",
+        tips: &[
+            "확정 마피아와 교환하면 큰 이득입니다.",
+            "마피아가 공격을 피하게 만드는 압박도 가치가 있습니다.",
+            "처형 후보가 됐을 때 교환 손익을 설명하세요.",
+            "후반 생존자 수 계산을 항상 같이 보세요.",
+        ],
+        caution: "시민과 교환되면 팀 손해가 매우 큽니다.",
+    },
+    WebRoleGuide {
+        role: Role::Nurse,
+        team: "시민팀",
+        kind: "의사 보조",
+        summary: "의사를 보조하고 의사와의 접선 정보를 활용합니다. 의사 위치를 파악하면 치료 흐름을 안정시키는 데 도움이 됩니다.",
+        tips: &[
+            "의사 접선 여부를 확인하세요.",
+            "의사 주장자가 여러 명이면 접선과 치료 결과를 비교하세요.",
+            "의사 생존 추정에 도움 되는 정보를 정리하세요.",
+            "치료 관련 공개 정보와 모순을 점검하세요.",
+        ],
+        caution: "의사 위치를 성급하게 공개하면 마피아의 처치 목표가 됩니다.",
+    },
+    WebRoleGuide {
+        role: Role::Frog,
+        team: "상태",
+        kind: "저주 상태",
+        summary: "마녀 저주로 밤 능력을 사용할 수 없고 낮 발언 방식이 제한된 상태입니다. 짧은 표현으로 핵심 정보를 전달해야 합니다.",
+        tips: &[
+            "핵심 의심 대상과 이유를 최대한 짧게 남기세요.",
+            "능력 사용 불가 상태임을 고려해 결과 부재를 설명하세요.",
+            "누가 저주했을지 마녀 후보를 추론하세요.",
+            "해제 후 이전 발언을 보강하세요.",
+        ],
+        caution: "제한된 말 때문에 오해받기 쉬우니 핵심만 반복하세요.",
+    },
+];
+
 #[derive(Debug, Clone)]
 pub struct WebSettingsSession {
     pub guild_id: u64,
@@ -381,6 +848,17 @@ const WEB_PAGE_STYLE: &str = r#"
   .podium-card .rating { color: #854d0e; font-size: 1.35rem; font-weight: 800; }
   .endpoint { display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
   .endpoint:last-child { border-bottom: 0; padding-bottom: 0; }
+  .role-section h2 { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .role-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); gap: 12px; }
+  .role-card { min-width: 0; border: 1px solid var(--line); border-radius: 6px; padding: 14px; background: var(--surface-strong); }
+  .role-card h3 { margin: 0; font-size: 1.06rem; }
+  .role-card h4 { margin: 12px 0 6px; font-size: 0.85rem; color: var(--muted); }
+  .role-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+  .role-tags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+  .role-summary { margin: 0 0 10px; color: #344054; }
+  .role-card ul { margin: 0; padding-left: 18px; }
+  .role-card li { margin: 4px 0; }
+  .role-note { margin: 11px 0 0; padding: 9px 10px; border-left: 3px solid #f59e0b; border-radius: 4px; background: #fffbeb; color: #713f12; }
   code { display: inline; max-width: 100%; padding: 2px 5px; border: 1px solid #d9e2ec; border-radius: 4px; background: #f6f8fa; color: #334e68; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.88em; overflow-wrap: anywhere; word-break: break-word; }
   pre { max-width: 100%; margin: 10px 0 0; padding: 12px; overflow-x: auto; border: 1px solid #d9e2ec; border-radius: 4px; background: #f8fafc; color: #334155; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.82rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
   table { width: 100%; min-width: 560px; border-collapse: collapse; }
@@ -1046,6 +1524,7 @@ async fn route_public_request(state: &WebSettingsState, path: &str, query: &str)
                 &render_leaderboard_page(&leaderboard, &stats),
             ))
         }
+        "/roles" => Some(http_response("200 OK", &render_roles_page())),
         "/api" | "/api/docs" => Some(http_response(
             "200 OK",
             &render_api_docs_page(&state.base_url),
@@ -1509,7 +1988,7 @@ fn safe_text(value: Option<&Value>) -> String {
 }
 
 fn render_nav() -> &'static str {
-    r#"<nav class="nav"><a href="/">홈</a><a href="/status">상태판</a><a href="/leaderboard">리더보드</a><a href="/api/docs">API 문서</a></nav>"#
+    r#"<nav class="nav"><a href="/">홈</a><a href="/status">상태판</a><a href="/leaderboard">리더보드</a><a href="/roles">역할 설명</a><a href="/api/docs">API 문서</a></nav>"#
 }
 
 fn render_status_summary(status: &Value) -> String {
@@ -1780,6 +2259,70 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
     };
     format!(
         r#"<section class="panel">{title}<table><thead><tr><th class="num">순위</th><th>이름</th><th class="num">레이팅</th><th>승패</th><th class="num">승률</th><th class="num">판수</th><th class="num">마피아팀</th><th>게임시간</th></tr></thead><tbody>{rows}</tbody></table></section>"#
+    )
+}
+
+fn render_roles_page() -> String {
+    let sections = [
+        (
+            "시민팀",
+            "시민팀은 공개 정보와 밤 행동 결과를 모아 마피아팀을 제거하는 진영입니다.",
+        ),
+        (
+            "마피아팀",
+            "마피아팀은 밤 행동과 낮 발언을 맞춰 시민팀의 추론을 흔드는 진영입니다.",
+        ),
+        (
+            "교주팀",
+            "교주팀은 포교로 독자 세력을 만들고 숫자 우위를 노리는 진영입니다.",
+        ),
+        ("중립", "중립 역할은 별도 승리 조건을 중심으로 움직입니다."),
+        ("상태", "상태 항목은 특정 역할이 만드는 임시 상태 설명입니다."),
+    ];
+    let mut body = String::from(
+        r#"<p class="meta">메인 웹 전용 역할 설명입니다. 디스코드 명령어 설명은 그대로 유지하고, 여기서는 판 운영에 필요한 세부 규칙과 판단 포인트를 길게 보여줍니다.</p>"#,
+    );
+    for (team, description) in sections {
+        let cards = WEB_ROLE_GUIDES
+            .iter()
+            .filter(|guide| guide.team == team)
+            .map(render_role_card)
+            .collect::<Vec<_>>()
+            .join("");
+        if cards.is_empty() {
+            continue;
+        }
+        let count = WEB_ROLE_GUIDES
+            .iter()
+            .filter(|guide| guide.team == team)
+            .count();
+        let _ = write!(
+            body,
+            r#"<section class="panel role-section"><h2>{}<span class="pill">{}개</span></h2><p class="meta">{}</p><div class="role-grid">{}</div></section>"#,
+            html_escape(team),
+            count,
+            html_escape(description),
+            cards
+        );
+    }
+    base_html("마피아 역할 설명", &body, false)
+}
+
+fn render_role_card(guide: &WebRoleGuide) -> String {
+    let tips = guide
+        .tips
+        .iter()
+        .map(|tip| format!("<li>{}</li>", html_escape(tip)))
+        .collect::<Vec<_>>()
+        .join("");
+    format!(
+        r#"<article class="role-card"><div class="role-head"><h3>{}</h3><div class="role-tags"><span class="pill">{}</span><span class="pill">{}</span></div></div><p class="role-summary">{}</p><h4>운영 포인트</h4><ul>{}</ul><p class="role-note"><strong>주의:</strong> {}</p></article>"#,
+        html_escape(guide.role.value()),
+        html_escape(guide.team),
+        html_escape(guide.kind),
+        html_escape(guide.summary),
+        tips,
+        html_escape(guide.caution)
     )
 }
 
@@ -2830,5 +3373,18 @@ mod tests {
         assert!(html.contains("word-break: break-word"));
         assert!(html.contains("site-shell"));
         assert!(html.contains("응답 코드"));
+    }
+
+    #[test]
+    fn roles_page_renders_detailed_guides() {
+        let html = render_roles_page();
+
+        assert!(html.contains("역할 설명"));
+        assert!(html.contains(r#"<a href="/roles">역할 설명</a>"#));
+        assert!(html.contains("마피아 비밀방의 처치 선택 현황"));
+        assert!(html.contains("최면술사"));
+        assert!(html.contains("운영 포인트"));
+        assert!(html.contains("주의:"));
+        assert!(html.contains("role-grid"));
     }
 }

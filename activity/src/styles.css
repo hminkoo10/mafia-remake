@@ -264,8 +264,6 @@ button {
 .role-guide {
   background: rgba(255, 255, 255, 0.04);
   color: #c5cedb;
-  max-height: 260px;
-  overflow: auto;
 }
 
 .role-guide strong {
