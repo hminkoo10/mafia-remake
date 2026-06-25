@@ -4002,18 +4002,32 @@ pub async fn cleanup_game(ctx: &serenity::Context, data: &Data, running: &Arc<Rw
     if let Ok(roles) = channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await {
         for user_id in participant_user_ids {
             if let Ok(member) = guild_id.member(ctx, serenity::UserId::new(user_id)).await {
-                if let Some(role_id) = roles.participant {
-                    let _ = member.remove_role(ctx, role_id).await;
-                }
-                if let Some(role_id) = roles.dead {
-                    let _ = member.remove_role(ctx, role_id).await;
-                }
+        let participant_cleanup_role_ids = [roles.participant, roles.dead]
+            .into_iter()
+            .flatten()
+            .collect::<HashSet<_>>();
+                let _ = remove_cleanup_roles_from_member_snapshot(
+                    ctx,
+                    guild_id,
+                    member.user.id,
+                    &member.roles,
+                    &participant_cleanup_role_ids,
+                )
+                .await;
             }
         }
         if let Some(role_id) = roles.spectator {
             for user_id in spectator_user_ids {
                 if let Ok(member) = guild_id.member(ctx, serenity::UserId::new(user_id)).await {
-                    let _ = member.remove_role(ctx, role_id).await;
+                    let role_ids = HashSet::from([role_id]);
+                    let _ = remove_cleanup_roles_from_member_snapshot(
+                        ctx,
+                        guild_id,
+                        member.user.id,
+                        &member.roles,
+                        &role_ids,
+                    )
+                    .await;
                 }
             }
         }
@@ -4096,6 +4110,7 @@ pub async fn cleanup_orphaned_game_artifacts(
     guild_id: serenity::GuildId,
 ) -> ForcedCleanupSummary {
     let config = data.config.read().await.clone();
+    full_role_sweep: bool,
     let roles = channel_role_ids(ctx, guild_id, &config, data.bot_user_id)
         .await
         .ok();
@@ -4129,6 +4144,10 @@ pub async fn cleanup_orphaned_game_artifacts(
 
     let mut after = None;
     loop {
+    if !full_role_sweep {
+        return summary;
+    }
+
         let Ok(members) = guild_id.members(&ctx.http, Some(1000), after).await else {
             break;
         };
@@ -4136,12 +4155,14 @@ pub async fn cleanup_orphaned_game_artifacts(
             break;
         }
         for member in &members {
-            for role_id in &role_ids {
-                if member.roles.contains(role_id) && member.remove_role(ctx, *role_id).await.is_ok()
-                {
-                    summary.role_removals += 1;
-                }
-            }
+            summary.role_removals += remove_cleanup_roles_from_member_snapshot(
+                ctx,
+                guild_id,
+                member.user.id,
+                &member.roles,
+                &role_ids,
+            )
+            .await;
         }
         let count = members.len();
         after = members.last().map(|member| member.user.id);
@@ -4155,6 +4176,44 @@ pub async fn cleanup_orphaned_game_artifacts(
 
 fn should_force_delete_game_channel(
     channel: &serenity::GuildChannel,
+async fn remove_cleanup_roles_from_member_snapshot(
+    ctx: &serenity::Context,
+    guild_id: serenity::GuildId,
+    user_id: serenity::UserId,
+    member_roles: &[serenity::RoleId],
+    role_ids: &HashSet<serenity::RoleId>,
+) -> usize {
+    let mut removed = 0;
+    let remaining_roles = member_roles
+        .iter()
+        .copied()
+        .filter(|role_id| {
+            if role_ids.contains(role_id) {
+                removed += 1;
+                false
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<_>>();
+    if removed == 0 {
+        return 0;
+    }
+    if guild_id
+        .edit_member(
+            &ctx.http,
+            user_id,
+            serenity::EditMember::new().roles(remaining_roles),
+        )
+        .await
+        .is_ok()
+    {
+        removed
+    } else {
+        0
+    }
+}
+
     roles: Option<ChannelRoleIds>,
 ) -> bool {
     if channel.kind != serenity::ChannelType::Text {

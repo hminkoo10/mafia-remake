@@ -1495,11 +1495,20 @@ pub async fn cleanup_stuck_game(ctx: Context<'_>) -> Result<(), Error> {
     let Some(guild_id) = ctx.guild_id() else {
         return Ok(());
     };
-    if let Some((_id, running)) = ctx.data().games.remove(&guild_id) {
+    let cleaned_running_game = if let Some((_id, running)) = ctx.data().games.remove(&guild_id) {
         halt_running_game(&running).await;
         cleanup_game(ctx.serenity_context(), ctx.data(), &running).await;
-    }
-    let summary = cleanup_orphaned_game_artifacts(ctx.serenity_context(), ctx.data(), guild_id).await;
+        true
+    } else {
+        false
+    };
+    let summary = cleanup_orphaned_game_artifacts(
+        ctx.serenity_context(),
+        ctx.data(),
+        guild_id,
+        !cleaned_running_game,
+    )
+    .await;
     reply_embed(
         ctx,
         format!(
