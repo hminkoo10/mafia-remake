@@ -1141,6 +1141,25 @@ mod tests {
         assert!(game.mark_dead(1).is_none());
     }
 
+    #[test]
+    fn confirmation_vote_executes_at_half_or_more_yes() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        game.phase = Phase::FinalDefense;
+        game.start_confirmation_vote().unwrap();
+
+        for voter_id in [1, 2, 3] {
+            game.submit_confirmation_vote(voter_id, true).unwrap();
+        }
+        for voter_id in [4, 5] {
+            game.submit_confirmation_vote(voter_id, false).unwrap();
+        }
+
+        let result = game.resolve_confirmation_vote(5).unwrap();
+
+        assert!(result.approved);
+        assert_eq!(result.executed.unwrap().user_id, 5);
+    }
+
     fn mercenary_test_game() -> MafiaGame {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
         for (id, role) in [

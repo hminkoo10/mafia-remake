@@ -14,7 +14,9 @@ use anyhow::{Context as AnyhowContext, Result, bail};
 use dashmap::{DashMap, mapref::entry::Entry};
 use mafia_remake::config;
 use mafia_remake::game::{MafiaGame, majority_required};
-use mafia_remake::model::{CONTRACTOR_GUESS_ROLES, NightResult, Phase, Player, Role, VoteResult, Winner};
+use mafia_remake::model::{
+    CONTRACTOR_GUESS_ROLES, ConfirmVoteResult, NightResult, Phase, Player, Role, VoteResult, Winner,
+};
 use mafia_remake::stats;
 use poise::serenity_prelude as serenity;
 use poise::serenity_prelude::Mentionable;
@@ -1879,7 +1881,7 @@ pub async fn run_vote(
         ctx,
         running,
         format!(
-            "{} 님 처형 여부를 찬반투표합니다. {CONFIRM_VOTE_SECONDS}초 안에 선택하세요.\n찬성이 반대보다 많으면 처형합니다.",
+            "{} 님 처형 여부를 찬반투표합니다. {CONFIRM_VOTE_SECONDS}초 안에 선택하세요.\n생존자 과반수 이상이 찬성하면 처형합니다.",
             nominee.name
         ),
         "찬반투표",
@@ -1994,11 +1996,7 @@ pub async fn run_vote(
             false,
         )
     } else {
-        let reject_message = if confirm_result.decided_by_judge {
-            "판사의 선택으로 처형하지 않습니다."
-        } else {
-            "반대가 많아 처형하지 않습니다."
-        };
+        let reject_message = confirmation_rejection_message(&confirm_result);
         (
             format!("{reject_message}{judge_notice}\n\n찬반투표 집계\n{summary}"),
             serenity::Colour::GOLD,
@@ -2017,6 +2015,19 @@ pub async fn run_vote(
     )
     .await?;
     Ok(())
+}
+
+fn confirmation_rejection_message(confirm_result: &ConfirmVoteResult) -> &'static str {
+    if confirm_result.decided_by_judge {
+        return "판사의 선택으로 처형하지 않습니다.";
+    }
+    let yes = confirm_result.vote_counts.get(&true).copied().unwrap_or(0);
+    let no = confirm_result.vote_counts.get(&false).copied().unwrap_or(0);
+    if yes > no {
+        "찬성이 생존자 과반수 이상에 도달하지 못해 처형하지 않습니다."
+    } else {
+        "반대가 많아 처형하지 않습니다."
+    }
 }
 
 pub async fn send_thief_vote_actions(ctx: &serenity::Context, running: &Arc<RwLock<RunningGame>>) {
@@ -2153,5 +2164,31 @@ mod tests {
         assert!(Arc::ptr_eq(games.get(&1).unwrap().value(), &current));
         assert!(remove_current_entry(&games, 1, &current));
         assert!(games.is_empty());
+    }
+
+    #[test]
+    fn confirmation_rejection_message_reports_yes_shortfall_when_yes_leads() {
+        let result = ConfirmVoteResult {
+            vote_counts: HashMap::from([(true, 3), (false, 2)]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            confirmation_rejection_message(&result),
+            "찬성이 생존자 과반수 이상에 도달하지 못해 처형하지 않습니다."
+        );
+    }
+
+    #[test]
+    fn confirmation_rejection_message_reports_no_leading() {
+        let result = ConfirmVoteResult {
+            vote_counts: HashMap::from([(true, 2), (false, 3)]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            confirmation_rejection_message(&result),
+            "반대가 많아 처형하지 않습니다."
+        );
     }
 }
