@@ -4,6 +4,7 @@
 #![allow(clippy::collapsible_if, clippy::too_many_arguments, clippy::type_complexity)]
 
 use crate::model::{NightResult, Phase, Player, Role};
+use crate::system_random;
 use anyhow::{Result, bail};
 use rand::prelude::IndexedRandom;
 use std::collections::{HashMap, HashSet};
@@ -1423,7 +1424,7 @@ impl MafiaGame {
                 results.insert(agent.user_id, "지령이 도착하지 않았습니다.".to_string());
                 continue;
             }
-            let mut rng = rand::rng();
+            let mut rng = system_random::rng();
             let target = candidates.choose(&mut rng).cloned().unwrap();
             self.agent_discovered_ids.insert(target.user_id);
             results.insert(

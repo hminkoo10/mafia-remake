@@ -20,6 +20,7 @@ use mafia_remake::model::{
     ConfirmVoteResult, NightResult, Phase, Player, Role, VoteResult, Winner,
 };
 use mafia_remake::stats;
+use mafia_remake::system_random;
 use poise::serenity_prelude as serenity;
 use poise::serenity_prelude::Mentionable;
 use rand::seq::{IndexedRandom, SliceRandom};
@@ -539,7 +540,7 @@ pub fn assign_anonymous_aliases(running: &mut RunningGame, config: &config::BotC
             .map(|alias| (*alias).to_string())
             .collect::<Vec<_>>()
     };
-    aliases.shuffle(&mut rand::rng());
+    aliases.shuffle(&mut system_random::rng());
     running.anonymous_aliases = players
         .into_iter()
         .enumerate()
@@ -805,7 +806,7 @@ pub fn enabled_special_roles(config: &config::BotConfig, pool: &[Role]) -> Vec<R
 }
 
 pub fn choose_special_roles(config: &config::BotConfig) -> Result<Vec<Role>> {
-    let mut rng = rand::rng();
+    let mut rng = system_random::rng();
     let mut selected = Vec::new();
     let mut citizen_candidates = enabled_special_roles(config, CITIZEN_SPECIAL_ROLES);
     citizen_candidates.shuffle(&mut rng);
@@ -883,7 +884,7 @@ fn balanced_special_candidates(
     role_history: &HashMap<Role, i64>,
 ) -> Vec<Role> {
     let mut candidates = enabled_special_roles(config, pool);
-    candidates.shuffle(&mut rand::rng());
+    candidates.shuffle(&mut system_random::rng());
     candidates.sort_by_key(|role| {
         (
             role_history.get(role).copied().unwrap_or(0),
@@ -1058,14 +1059,14 @@ fn balanced_investigation_role(
     role_history: &HashMap<Role, i64>,
 ) -> Role {
     let mut candidates = investigation_role_candidates(config);
-    candidates.shuffle(&mut rand::rng());
+    candidates.shuffle(&mut system_random::rng());
     candidates.sort_by_key(|role| role_history.get(role).copied().unwrap_or(0));
     *candidates.first().unwrap_or(&Role::Police)
 }
 
 pub fn random_investigation_role(config: &config::BotConfig) -> Role {
     let candidates = investigation_role_candidates(config);
-    let mut rng = rand::rng();
+    let mut rng = system_random::rng();
     *candidates.choose(&mut rng).unwrap_or(&Role::Police)
 }
 

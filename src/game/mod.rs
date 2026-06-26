@@ -10,6 +10,7 @@ pub mod resolve;
 pub mod vote;
 
 use crate::model::{Phase, Player, Role, Winner};
+use crate::system_random;
 use anyhow::{Result, bail};
 use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
@@ -152,7 +153,7 @@ impl MafiaGame {
             players.len() - roles.len(),
         ));
 
-        let mut rng = rand::rng();
+        let mut rng = system_random::rng();
         roles.shuffle(&mut rng);
         let mut shuffled_players = players;
         shuffled_players.shuffle(&mut rng);
@@ -404,7 +405,7 @@ impl MafiaGame {
             .filter(|player| player.role == Role::Mercenary)
             .map(|player| player.user_id)
             .collect::<Vec<_>>();
-        let mut rng = rand::rng();
+        let mut rng = system_random::rng();
         for mercenary_id in mercenary_ids {
             let mut candidates = self
                 .players

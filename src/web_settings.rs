@@ -7,8 +7,8 @@ use mafia_remake::model::{
     CITIZEN_SPECIAL_ROLES, MAFIA_SPECIAL_ROLES, NEUTRAL_SPECIAL_ROLES, Phase, Role,
 };
 use mafia_remake::stats::{self, StatsFile};
+use mafia_remake::system_random;
 use poise::serenity_prelude as serenity;
-use rand::RngCore;
 use rustls::ServerConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -929,7 +929,7 @@ pub fn issue_session(
 ) -> String {
     purge_expired_sessions(sessions);
     let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
+    system_random::fill_bytes(&mut bytes);
     let mut token = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         let _ = write!(&mut token, "{byte:02x}");
