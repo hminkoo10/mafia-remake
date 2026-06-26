@@ -1210,7 +1210,7 @@ impl MafiaGame {
                 .iter()
                 .filter(|player| {
                     player.user_id != agent.user_id
-                        && self.is_citizen_team(player)
+                        && self.is_investigation_citizen_team(player)
                         && !self.agent_discovered_ids.contains(&player.user_id)
                         && !self.is_publicly_revealed(player)
                 })

@@ -338,6 +338,10 @@ impl MafiaGame {
         !self.is_mafia_team(player) && !self.is_cult_team(player) && player.role != Role::Joker
     }
 
+    pub fn is_investigation_citizen_team(&self, player: &Player) -> bool {
+        self.team_key(player) == "citizen"
+    }
+
     pub fn is_frog(&self, player: &Player) -> bool {
         player.alive && self.frog_user_ids.contains(&player.user_id)
     }
@@ -1115,11 +1119,101 @@ mod tests {
         ]
     }
 
+    fn special_mafia_player(role: Role, index: usize) -> Player {
+        Player::new(900 + index as u64, format!("{role:?}"), role)
+    }
+
     #[test]
     fn indexes_players_by_id() {
         let game = MafiaGame::new(basic_players(), 1, 1, 0, Vec::new()).unwrap();
         assert_eq!(game.get_player(2).unwrap().name, "Two");
         assert!(game.get_player(999).is_none());
+    }
+
+    #[test]
+    fn uncontacted_mafia_specials_are_citizen_for_investigations() {
+        let game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+
+        for (index, role) in crate::model::MAFIA_SPECIAL_ROLES
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let player = special_mafia_player(role, index);
+
+            assert!(
+                !game.is_police_detected_mafia_team(&player),
+                "{role:?} should not be police-detected as mafia before contact"
+            );
+            assert_eq!(
+                game.team_key(&player),
+                "citizen",
+                "{role:?} should be citizen team for relation investigations before contact"
+            );
+            assert!(
+                game.is_investigation_citizen_team(&player),
+                "{role:?} should be a citizen candidate for investigation-only checks before contact"
+            );
+        }
+    }
+
+    #[test]
+    fn contacted_mafia_specials_are_mafia_for_investigations() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+
+        for (index, role) in crate::model::MAFIA_SPECIAL_ROLES
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let player = special_mafia_player(role, index);
+            game.contact_mafia_team_member(&player);
+
+            assert_eq!(
+                game.team_key(&player),
+                "mafia",
+                "{role:?} should be mafia team for relation investigations after contact"
+            );
+            assert!(
+                !game.is_investigation_citizen_team(&player),
+                "{role:?} should stop being a citizen investigation candidate after contact"
+            );
+            if role == Role::Godfather {
+                assert!(
+                    !game.is_police_detected_mafia_team(&player),
+                    "Godfather should keep police concealment even after contact"
+                );
+            } else {
+                assert!(
+                    game.is_police_detected_mafia_team(&player),
+                    "{role:?} should be police-detected as mafia after contact"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn agent_directive_can_reveal_uncontacted_mafia_special_as_citizen_side() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Agent),
+            (3, Role::Spy),
+            (4, Role::Mafia),
+            (5, Role::Joker),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        let result = game.resolve_night().unwrap();
+
+        assert!(game.agent_discovered_ids.contains(&3));
+        assert!(
+            result
+                .agent_results
+                .get(&2)
+                .is_some_and(|text| text.contains("Three"))
+        );
     }
 
     #[test]
