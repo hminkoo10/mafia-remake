@@ -240,7 +240,7 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Thief => "투표 시간에 능력을 훔칩니다.",
         Role::Witch => "밤에 대상을 개구리로 저주합니다.",
         Role::Scientist => "사망 후 다음 밤 부활합니다.",
-        Role::Madam => "투표로 대상을 유혹합니다.",
+        Role::Madam => "지목 투표로 선택한 대상을 유혹합니다.",
         Role::Godfather => "세 번째 밤부터 확정 처치합니다.",
         Role::CultLeader => "홀수날 밤마다 포교합니다.",
         Role::Fanatic => "교주팀 여부를 확인하고 교주를 찾습니다.",
