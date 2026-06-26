@@ -11,11 +11,17 @@ use std::collections::{HashMap, HashSet};
 use super::{MafiaGame, reported_protected_id};
 
 impl MafiaGame {
-    pub fn apply_witch_curses(&mut self) -> (Vec<Player>, Vec<u64>) {
+    pub fn apply_witch_curses(
+        &mut self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> (Vec<Player>, Vec<u64>) {
         let mut cursed_players = Vec::new();
         let mut contacts = Vec::new();
         let targets = self.witch_targets.clone();
         for (actor_id, target_id) in targets {
+            if blocked_actor_ids.contains(&actor_id) {
+                continue;
+            }
             if !self.witch_curse_applied_actor_ids.insert(actor_id) {
                 continue;
             }
@@ -36,6 +42,73 @@ impl MafiaGame {
             }
         }
         (cursed_players, contacts)
+    }
+
+    fn night_protection(
+        &self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> (HashSet<u64>, Option<u64>, HashSet<u64>) {
+        let mut healing_targets = self
+            .doctor_targets
+            .iter()
+            .filter(|(actor_id, _)| {
+                !blocked_actor_ids.contains(actor_id)
+                    && self
+                        .get_player(**actor_id)
+                        .is_some_and(|actor| actor.role == Role::Doctor)
+            })
+            .map(|(actor_id, target_id)| (*actor_id, *target_id))
+            .collect::<HashMap<_, _>>();
+        let stolen_doctor_target_ids = self
+            .doctor_targets
+            .iter()
+            .filter(|(actor_id, target_id)| {
+                !blocked_actor_ids.contains(actor_id)
+                    && self.is_stolen_doctor_actor(**actor_id)
+                    && self.is_alive(**actor_id)
+                    && self.is_alive(**target_id)
+            })
+            .map(|(_, target_id)| *target_id)
+            .collect::<HashSet<_>>();
+        if self.alive_role_count(Role::Doctor) == 0 {
+            healing_targets.extend(
+                self.nurse_targets
+                    .iter()
+                    .filter(|(actor_id, _)| !blocked_actor_ids.contains(actor_id))
+                    .map(|(actor_id, target_id)| (*actor_id, *target_id)),
+            );
+        }
+        let majority_protected_id = self.majority_target(&healing_targets);
+        let mut protected_ids = stolen_doctor_target_ids;
+        if let Some(id) = majority_protected_id {
+            protected_ids.insert(id);
+        }
+        let enhanced_protection_ids = if majority_protected_id.is_some()
+            && self.nurse_enhanced_heal_active(blocked_actor_ids)
+        {
+            protected_ids.clone()
+        } else {
+            HashSet::new()
+        };
+        (
+            protected_ids,
+            majority_protected_id,
+            enhanced_protection_ids,
+        )
+    }
+
+    fn attack_blocked_by_protection(
+        &self,
+        target: Option<&Player>,
+        ignore_doctor: bool,
+        protected_ids: &HashSet<u64>,
+        enhanced_protection_ids: &HashSet<u64>,
+    ) -> bool {
+        let Some(target) = target else {
+            return false;
+        };
+        enhanced_protection_ids.contains(&target.user_id)
+            || (!ignore_doctor && protected_ids.contains(&target.user_id))
     }
 
     fn resolve_priest_cult_after_curse(&mut self, target: &Player) {
@@ -86,9 +159,6 @@ impl MafiaGame {
         }
 
         self.ensure_godfather_auto_contact();
-        self.apply_witch_curses();
-        let timed_cult_bells = self.consume_cult_bells();
-        let witch_contacts = self.witch_contacts_this_night.clone();
         let godfather_attackers = self
             .godfather_targets
             .iter()
@@ -99,78 +169,18 @@ impl MafiaGame {
             .map(|(actor_id, target_id)| (*actor_id, *target_id))
             .collect::<HashMap<_, _>>();
         let mafia_target_id = self.majority_target(&self.mafia_targets);
-        let mut healing_targets = self
-            .doctor_targets
-            .iter()
-            .filter(|(actor_id, _)| {
-                self.get_player(**actor_id)
-                    .is_some_and(|actor| actor.role == Role::Doctor)
-            })
-            .map(|(actor_id, target_id)| (*actor_id, *target_id))
-            .collect::<HashMap<_, _>>();
-        let stolen_doctor_target_ids = self
-            .doctor_targets
-            .iter()
-            .filter(|(actor_id, target_id)| {
-                self.is_stolen_doctor_actor(**actor_id)
-                    && self.is_alive(**actor_id)
-                    && self.is_alive(**target_id)
-            })
-            .map(|(_, target_id)| *target_id)
-            .collect::<HashSet<_>>();
-        if self.alive_role_count(Role::Doctor) == 0 {
-            healing_targets.extend(self.nurse_targets.iter().map(|(a, t)| (*a, *t)));
-        }
-        let majority_protected_id = self.majority_target(&healing_targets);
-        let mut protected_ids = stolen_doctor_target_ids;
-        if let Some(id) = majority_protected_id {
-            protected_ids.insert(id);
-        }
-        let police_target_id = self.current_police_result().0.map(|player| player.user_id);
+        let (protected_ids, _, enhanced_protection_ids) = self.night_protection(&HashSet::new());
         let godfather_target_id = self.majority_target(&godfather_attackers);
-        let protected_id = reported_protected_id(
-            &protected_ids,
-            mafia_target_id,
-            godfather_target_id,
-            majority_protected_id,
-        );
 
         let mafia_target = mafia_target_id.and_then(|id| self.get_player(id).cloned());
-        let protected = protected_id.and_then(|id| self.get_player(id).cloned());
-        let police_target = police_target_id.and_then(|id| self.get_player(id).cloned());
         let godfather_target = godfather_target_id.and_then(|id| self.get_player(id).cloned());
-        let thief_police_results = self.thief_police_results();
-
-        let detective_results = self.resolve_detective_results(
-            mafia_target_id,
-            protected_id,
-            police_target_id,
-            godfather_target_id,
-        );
-        let (spy_results, spy_contacts) = self.resolve_spy_results();
-        let (contractor_results, contractor_contacts, contractor_kills) =
-            self.resolve_contractor_results();
-        let godfather_results = self.resolve_godfather_results();
-        let (shaman_results, shaman_purifications) = self.resolve_shaman_results();
-        let (vigilante_results, vigilante_kills) = self.resolve_vigilante_results();
-        self.apply_hypnotist_targets();
-        let (mut mercenary_results, mercenary_kills) = self.resolve_mercenary_results();
-        let (nurse_results, nurse_contacts) = self.resolve_nurse_results();
-        let gangster_results = self.resolve_gangster_results();
-        let (cult_results, cult_bells) = self.resolve_cult_results();
-        let (fanatic_results, fanatic_bells) = self.resolve_fanatic_results();
-        let mut fanatic_inherits = self.ensure_fanatic_reincarnation();
 
         let mut killed_players: Vec<Player> = Vec::new();
         let mut killed_by_mafia_team_ids = HashSet::new();
         let mut soldier_blocks = Vec::new();
         let mut lover_sacrifices = Vec::new();
-        let enhanced_protection_ids =
-            if majority_protected_id.is_some() && self.nurse_enhanced_heal_active() {
-                protected_ids.clone()
-            } else {
-                HashSet::new()
-            };
+        let initial_protected_ids = protected_ids.clone();
+        let initial_enhanced_protection_ids = enhanced_protection_ids.clone();
 
         self.resolve_mafia_team_attack(
             mafia_target.as_ref(),
@@ -195,6 +205,75 @@ impl MafiaGame {
             &mut lover_sacrifices,
         );
 
+        let mut blocked_actor_ids = killed_players
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        let (protected_ids, majority_protected_id, enhanced_protection_ids) =
+            self.night_protection(&blocked_actor_ids);
+        if self.attack_blocked_by_protection(
+            mafia_target.as_ref(),
+            false,
+            &initial_protected_ids,
+            &initial_enhanced_protection_ids,
+        ) && !self.attack_blocked_by_protection(
+            mafia_target.as_ref(),
+            false,
+            &protected_ids,
+            &enhanced_protection_ids,
+        ) {
+            self.resolve_mafia_team_attack(
+                mafia_target.as_ref(),
+                false,
+                true,
+                &protected_ids,
+                &enhanced_protection_ids,
+                &mut killed_players,
+                &mut killed_by_mafia_team_ids,
+                &mut soldier_blocks,
+                &mut lover_sacrifices,
+            );
+        }
+        if self.attack_blocked_by_protection(
+            godfather_target.as_ref(),
+            true,
+            &initial_protected_ids,
+            &initial_enhanced_protection_ids,
+        ) && !self.attack_blocked_by_protection(
+            godfather_target.as_ref(),
+            true,
+            &protected_ids,
+            &enhanced_protection_ids,
+        ) {
+            self.resolve_mafia_team_attack(
+                godfather_target.as_ref(),
+                true,
+                false,
+                &protected_ids,
+                &enhanced_protection_ids,
+                &mut killed_players,
+                &mut killed_by_mafia_team_ids,
+                &mut soldier_blocks,
+                &mut lover_sacrifices,
+            );
+        }
+        let protected_id = reported_protected_id(
+            &protected_ids,
+            mafia_target_id,
+            godfather_target_id,
+            majority_protected_id,
+        );
+        let protected = protected_id.and_then(|id| self.get_player(id).cloned());
+        blocked_actor_ids = killed_players
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        self.apply_witch_curses(&blocked_actor_ids);
+        let timed_cult_bells = self.consume_cult_bells();
+        let witch_contacts = self.witch_contacts_this_night.clone();
+        let (contractor_results, contractor_contacts, contractor_kills) =
+            self.resolve_contractor_results(&blocked_actor_ids);
+
         for target in &contractor_kills {
             self.kill_player(
                 target.user_id,
@@ -203,6 +282,12 @@ impl MafiaGame {
                 &mut killed_by_mafia_team_ids,
             );
         }
+        blocked_actor_ids = killed_players
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        let (vigilante_results, vigilante_kills) =
+            self.resolve_vigilante_results(&blocked_actor_ids);
         for target in &vigilante_kills {
             self.kill_player(
                 target.user_id,
@@ -211,6 +296,12 @@ impl MafiaGame {
                 &mut killed_by_mafia_team_ids,
             );
         }
+        blocked_actor_ids = killed_players
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        let (mut mercenary_results, mercenary_kills) =
+            self.resolve_mercenary_results(&blocked_actor_ids);
         for target in &mercenary_kills {
             self.kill_player(
                 target.user_id,
@@ -219,7 +310,6 @@ impl MafiaGame {
                 &mut killed_by_mafia_team_ids,
             );
         }
-
         let terrorist_retaliations = self
             .resolve_terrorist_night_retaliations(&killed_by_mafia_team_ids, &mut killed_players);
         for (actor_id, message) in self.activate_mercenaries_for_killed_clients(&killed_players) {
@@ -231,9 +321,34 @@ impl MafiaGame {
                 })
                 .or_insert(message);
         }
+        blocked_actor_ids = killed_players
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+        let (police_target, police_target_is_mafia) =
+            self.current_police_result_excluding(&blocked_actor_ids);
+        let police_target_id = police_target.as_ref().map(|player| player.user_id);
+        let thief_police_results = self.thief_police_results_excluding(&blocked_actor_ids);
+        let detective_results = self.resolve_detective_results(
+            &blocked_actor_ids,
+            mafia_target_id,
+            protected_id,
+            police_target_id,
+            godfather_target_id,
+        );
+        let (spy_results, spy_contacts) = self.resolve_spy_results(&blocked_actor_ids);
+        let godfather_results = self.resolve_godfather_results(&blocked_actor_ids);
+        let (shaman_results, shaman_purifications) =
+            self.resolve_shaman_results(&blocked_actor_ids);
+        self.apply_hypnotist_targets(&blocked_actor_ids);
+        let (nurse_results, nurse_contacts) = self.resolve_nurse_results(&blocked_actor_ids);
+        let gangster_results = self.resolve_gangster_results(&blocked_actor_ids);
+        let (cult_results, cult_bells) = self.resolve_cult_results(&blocked_actor_ids);
+        let (fanatic_results, fanatic_bells) = self.resolve_fanatic_results(&blocked_actor_ids);
+        let mut fanatic_inherits = self.ensure_fanatic_reincarnation();
         let (priest_results, priest_revives) = self.resolve_priest_results(&killed_players);
         let graverobber_results = self.resolve_graverobbers(&killed_players);
-        let agent_results = self.resolve_agent_results();
+        let agent_results = self.resolve_agent_results(&blocked_actor_ids);
         let reporter_results = self.resolve_reporter_results(
             &killed_players
                 .iter()
@@ -250,9 +365,7 @@ impl MafiaGame {
             killed: killed_players.first().cloned(),
             protected,
             mafia_target,
-            police_target_is_mafia: police_target
-                .as_ref()
-                .map(|target| self.is_police_detected_mafia_team(target)),
+            police_target_is_mafia,
             police_target,
             thief_police_results,
             killed_players,
@@ -541,6 +654,7 @@ impl MafiaGame {
 
     fn resolve_detective_results(
         &self,
+        blocked_actor_ids: &HashSet<u64>,
         mafia_target_id: Option<u64>,
         protected_id: Option<u64>,
         police_target_id: Option<u64>,
@@ -548,6 +662,9 @@ impl MafiaGame {
     ) -> HashMap<u64, String> {
         let mut results = HashMap::new();
         for (actor_id, watched_id) in &self.detective_targets {
+            if blocked_actor_ids.contains(actor_id) {
+                continue;
+            }
             let Some(actor) = self.get_player(*actor_id) else {
                 continue;
             };
@@ -696,9 +813,15 @@ impl MafiaGame {
         retaliations
     }
 
-    fn resolve_spy_results(&self) -> (HashMap<u64, String>, Vec<u64>) {
+    fn resolve_spy_results(
+        &self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> (HashMap<u64, String>, Vec<u64>) {
         let mut results = HashMap::new();
         for (actor_id, target_ids) in &self.spy_targets {
+            if blocked_actor_ids.contains(actor_id) {
+                continue;
+            }
             let Some(actor) = self.get_player(*actor_id) else {
                 continue;
             };
@@ -722,14 +845,27 @@ impl MafiaGame {
                 results.insert(*actor_id, lines.join("\n"));
             }
         }
-        (results, self.spy_contacts_this_night.clone())
+        (
+            results,
+            self.spy_contacts_this_night
+                .iter()
+                .copied()
+                .filter(|actor_id| !blocked_actor_ids.contains(actor_id))
+                .collect(),
+        )
     }
 
-    fn resolve_contractor_results(&mut self) -> (HashMap<u64, String>, Vec<u64>, Vec<Player>) {
+    fn resolve_contractor_results(
+        &mut self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> (HashMap<u64, String>, Vec<u64>, Vec<Player>) {
         let mut results = HashMap::new();
         let mut kills = Vec::new();
         let contracts = self.contractor_contracts.clone();
         for (actor_id, contract) in contracts {
+            if blocked_actor_ids.contains(&actor_id) {
+                continue;
+            }
             let Some(actor) = self.get_player(actor_id).cloned() else {
                 continue;
             };
@@ -784,13 +920,24 @@ impl MafiaGame {
             }
             results.insert(actor_id, text);
         }
-        (results, self.contractor_contacts_this_night.clone(), kills)
+        (
+            results,
+            self.contractor_contacts_this_night
+                .iter()
+                .copied()
+                .filter(|actor_id| !blocked_actor_ids.contains(actor_id))
+                .collect(),
+            kills,
+        )
     }
 
-    fn resolve_godfather_results(&self) -> HashMap<u64, String> {
+    fn resolve_godfather_results(&self, blocked_actor_ids: &HashSet<u64>) -> HashMap<u64, String> {
         self.godfather_targets
             .iter()
             .filter_map(|(actor_id, target_id)| {
+                if blocked_actor_ids.contains(actor_id) {
+                    return None;
+                }
                 let actor = self.get_player(*actor_id)?;
                 let target = self.get_player(*target_id)?;
                 (actor.alive && target.alive).then(|| {
@@ -803,10 +950,16 @@ impl MafiaGame {
             .collect()
     }
 
-    fn resolve_shaman_results(&mut self) -> (HashMap<u64, String>, Vec<u64>) {
+    fn resolve_shaman_results(
+        &mut self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> (HashMap<u64, String>, Vec<u64>) {
         let mut results = HashMap::new();
         let mut purifications = Vec::new();
         for (actor_id, target_id) in self.shaman_targets.clone() {
+            if blocked_actor_ids.contains(&actor_id) {
+                continue;
+            }
             let Some(actor) = self.get_player(actor_id) else {
                 continue;
             };
@@ -864,10 +1017,16 @@ impl MafiaGame {
         results
     }
 
-    fn resolve_vigilante_results(&self) -> (HashMap<u64, String>, Vec<Player>) {
+    fn resolve_vigilante_results(
+        &self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> (HashMap<u64, String>, Vec<Player>) {
         let mut results = HashMap::new();
         let mut kills = Vec::new();
         for (actor_id, target_id) in &self.vigilante_targets {
+            if blocked_actor_ids.contains(actor_id) {
+                continue;
+            }
             let Some(actor) = self.get_player(*actor_id) else {
                 continue;
             };
@@ -894,10 +1053,16 @@ impl MafiaGame {
         (results, kills)
     }
 
-    fn resolve_mercenary_results(&self) -> (HashMap<u64, String>, Vec<Player>) {
+    fn resolve_mercenary_results(
+        &self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> (HashMap<u64, String>, Vec<Player>) {
         let mut results = HashMap::new();
         let mut kills = Vec::new();
         for (actor_id, target_id) in &self.mercenary_targets {
+            if blocked_actor_ids.contains(actor_id) {
+                continue;
+            }
             let Some(actor) = self.get_player(*actor_id) else {
                 continue;
             };
@@ -923,8 +1088,11 @@ impl MafiaGame {
         (results, kills)
     }
 
-    fn apply_hypnotist_targets(&mut self) {
+    fn apply_hypnotist_targets(&mut self, blocked_actor_ids: &HashSet<u64>) {
         for (actor_id, target_id) in self.hypnotist_targets.clone() {
+            if blocked_actor_ids.contains(&actor_id) {
+                continue;
+            }
             let Some(actor) = self.get_player(actor_id) else {
                 continue;
             };
@@ -980,9 +1148,15 @@ impl MafiaGame {
         results
     }
 
-    fn resolve_nurse_results(&mut self) -> (HashMap<u64, String>, Vec<u64>) {
+    fn resolve_nurse_results(
+        &mut self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> (HashMap<u64, String>, Vec<u64>) {
         let mut results = HashMap::new();
         for (actor_id, target_id) in self.nurse_prescription_targets.clone() {
+            if blocked_actor_ids.contains(&actor_id) {
+                continue;
+            }
             let Some(actor) = self.get_player(actor_id) else {
                 continue;
             };
@@ -1012,6 +1186,9 @@ impl MafiaGame {
             }
         }
         for (actor_id, target_id) in &self.nurse_targets {
+            if blocked_actor_ids.contains(actor_id) {
+                continue;
+            }
             if let (Some(actor), Some(target)) =
                 (self.get_player(*actor_id), self.get_player(*target_id))
             {
@@ -1023,12 +1200,25 @@ impl MafiaGame {
                 }
             }
         }
-        (results, self.nurse_contacts_this_night.clone())
+        (
+            results,
+            self.nurse_contacts_this_night
+                .iter()
+                .copied()
+                .filter(|actor_id| !blocked_actor_ids.contains(actor_id))
+                .collect(),
+        )
     }
 
-    fn resolve_gangster_results(&mut self) -> HashMap<u64, String> {
+    fn resolve_gangster_results(
+        &mut self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> HashMap<u64, String> {
         let mut results = HashMap::new();
         for (actor_id, target_id) in self.gangster_targets.clone() {
+            if blocked_actor_ids.contains(&actor_id) {
+                continue;
+            }
             let Some(actor) = self.get_player(actor_id) else {
                 continue;
             };
@@ -1052,10 +1242,11 @@ impl MafiaGame {
         results
     }
 
-    fn nurse_enhanced_heal_active(&self) -> bool {
+    fn nurse_enhanced_heal_active(&self, blocked_actor_ids: &HashSet<u64>) -> bool {
         self.players.iter().any(|player| {
             player.alive
                 && player.role == Role::Nurse
+                && !blocked_actor_ids.contains(&player.user_id)
                 && self.nurse_contacted.contains(&player.user_id)
         })
     }
@@ -1112,9 +1303,15 @@ impl MafiaGame {
         (results, revived)
     }
 
-    fn resolve_cult_results(&mut self) -> (HashMap<u64, String>, u32) {
+    fn resolve_cult_results(
+        &mut self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> (HashMap<u64, String>, u32) {
         let mut results = HashMap::new();
         for (actor_id, target_id) in self.cult_targets.clone() {
+            if blocked_actor_ids.contains(&actor_id) {
+                continue;
+            }
             let Some(actor) = self.get_player(actor_id) else {
                 continue;
             };
@@ -1163,9 +1360,15 @@ impl MafiaGame {
         (results, 0)
     }
 
-    fn resolve_fanatic_results(&mut self) -> (HashMap<u64, String>, u32) {
+    fn resolve_fanatic_results(
+        &mut self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> (HashMap<u64, String>, u32) {
         let mut results = HashMap::new();
         for (actor_id, target_id) in self.fanatic_targets.clone() {
+            if blocked_actor_ids.contains(&actor_id) {
+                continue;
+            }
             let Some(actor) = self.get_player(actor_id) else {
                 continue;
             };
@@ -1192,11 +1395,11 @@ impl MafiaGame {
         (results, 0)
     }
 
-    fn resolve_agent_results(&mut self) -> HashMap<u64, String> {
+    fn resolve_agent_results(&mut self, blocked_actor_ids: &HashSet<u64>) -> HashMap<u64, String> {
         let alive = self
             .players
             .iter()
-            .filter(|player| player.alive)
+            .filter(|player| player.alive && !blocked_actor_ids.contains(&player.user_id))
             .cloned()
             .collect::<Vec<_>>();
         let mut results = HashMap::new();

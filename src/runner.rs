@@ -275,7 +275,8 @@ pub async fn trigger_timed_night_events(
         if running_write.game.phase != Phase::Night {
             return Ok(());
         }
-        let (cursed_players, witch_contacts) = running_write.game.apply_witch_curses();
+        let (cursed_players, witch_contacts) =
+            running_write.game.apply_witch_curses(&HashSet::new());
         let cult_bells = running_write.game.consume_cult_bells();
         let revived_players = running_write.game.revive_pending_scientists();
         (

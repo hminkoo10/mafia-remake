@@ -1320,6 +1320,68 @@ mod tests {
         assert!(result.killed_players.iter().any(|p| p.user_id == 1));
     }
 
+    #[test]
+    fn mercenary_kill_is_canceled_when_mercenary_dies_same_night() {
+        let mut game = mercenary_test_game();
+        game.mercenary_armed_ids.insert(2);
+
+        game.submit_night_action(1, Some(2)).unwrap();
+        game.submit_night_action(2, Some(3)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(result.killed_players.iter().any(|p| p.user_id == 2));
+        assert!(!result.killed_players.iter().any(|p| p.user_id == 3));
+        assert!(result.mercenary_kills.is_empty());
+        assert!(!result.mercenary_results.contains_key(&2));
+        assert!(game.get_player(3).unwrap().alive);
+    }
+
+    #[test]
+    fn police_result_is_canceled_when_police_dies_same_night() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Police),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.submit_night_action(1, Some(2)).unwrap();
+        game.submit_night_action(2, Some(1)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(result.killed_players.iter().any(|p| p.user_id == 2));
+        assert!(result.police_target.is_none());
+        assert_eq!(result.police_target_is_mafia, None);
+    }
+
+    #[test]
+    fn doctor_protection_is_canceled_when_doctor_dies_same_night() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Doctor),
+            (3, Role::Citizen),
+            (4, Role::Godfather),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.godfather_contacted.insert(4);
+
+        game.submit_night_action(1, Some(2)).unwrap();
+        game.submit_night_action(2, Some(3)).unwrap();
+        game.submit_night_action(4, Some(3)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(result.killed_players.iter().any(|p| p.user_id == 2));
+        assert!(result.killed_players.iter().any(|p| p.user_id == 3));
+        assert!(result.protected.is_none());
+    }
+
     fn hypnotist_test_game() -> MafiaGame {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
         for (id, role) in [

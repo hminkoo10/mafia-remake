@@ -369,10 +369,20 @@ impl MafiaGame {
     }
 
     pub fn current_police_result(&self) -> (Option<Player>, Option<bool>) {
+        self.current_police_result_excluding(&HashSet::new())
+    }
+
+    pub(crate) fn current_police_result_excluding(
+        &self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> (Option<Player>, Option<bool>) {
         let police_targets = self
             .police_targets
             .iter()
             .filter_map(|(&actor_id, &target_id)| {
+                if blocked_actor_ids.contains(&actor_id) {
+                    return None;
+                }
                 let actor = self.get_player(actor_id)?;
                 (actor.role == Role::Police).then_some((actor_id, target_id))
             })
@@ -399,6 +409,17 @@ impl MafiaGame {
     }
 
     pub fn police_result_for_actor(&self, actor_id: u64) -> Option<String> {
+        self.police_result_for_actor_excluding(actor_id, &HashSet::new())
+    }
+
+    pub(crate) fn police_result_for_actor_excluding(
+        &self,
+        actor_id: u64,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> Option<String> {
+        if blocked_actor_ids.contains(&actor_id) {
+            return None;
+        }
         let actor = self.get_player(actor_id)?;
         if !actor.alive {
             return None;
@@ -423,10 +444,17 @@ impl MafiaGame {
     }
 
     pub fn thief_police_results(&self) -> HashMap<u64, String> {
+        self.thief_police_results_excluding(&HashSet::new())
+    }
+
+    pub(crate) fn thief_police_results_excluding(
+        &self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> HashMap<u64, String> {
         self.thief_police_targets
             .keys()
             .filter_map(|actor_id| {
-                self.police_result_for_actor(*actor_id)
+                self.police_result_for_actor_excluding(*actor_id, blocked_actor_ids)
                     .map(|message| (*actor_id, message))
             })
             .collect()
