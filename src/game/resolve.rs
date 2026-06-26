@@ -877,7 +877,7 @@ impl MafiaGame {
             if !actor.alive {
                 continue;
             }
-            if target.alive && self.is_mafia_team(&target) {
+            if target.alive && self.is_known_mafia_team(&target) {
                 kills.push(target.clone());
                 results.insert(
                     *actor_id,

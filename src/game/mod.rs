@@ -330,8 +330,7 @@ impl MafiaGame {
     pub fn is_police_detected_mafia_team(&self, player: &Player) -> bool {
         match player.role {
             Role::Godfather => false,
-            Role::Witch => self.witch_contacted.contains(&player.user_id),
-            _ => self.is_mafia_team(player),
+            _ => self.is_known_mafia_team(player),
         }
     }
 
@@ -354,7 +353,7 @@ impl MafiaGame {
     }
 
     fn hypnotist_reveal_text(&self, target: &Player) -> String {
-        if self.is_citizen_team(target) {
+        if self.team_key(target) == "citizen" {
             "시민팀".to_string()
         } else {
             self.visible_role(target).value().to_string()
@@ -487,7 +486,7 @@ impl MafiaGame {
     fn team_key(&self, player: &Player) -> &'static str {
         if self.is_cult_team(player) {
             "cult"
-        } else if self.is_mafia_team(player) {
+        } else if self.is_known_mafia_team(player) {
             "mafia"
         } else if player.role == Role::Joker {
             "joker"
@@ -1371,7 +1370,7 @@ mod tests {
     }
 
     #[test]
-    fn police_detects_spy_as_mafia_team() {
+    fn police_does_not_detect_uncontacted_spy_as_mafia_team() {
         let mut game = MafiaGame::new(
             vec![
                 (1, "One".to_string()),
@@ -1402,8 +1401,213 @@ mod tests {
         game.submit_night_action(police_id, Some(spy_id)).unwrap();
 
         assert!(game.police_result_ready());
+        assert_eq!(game.current_police_result().1, Some(false));
+        assert_eq!(
+            game.resolve_night().unwrap().police_target_is_mafia,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn police_detects_contacted_spy_as_mafia_team() {
+        let mut game = MafiaGame::new(
+            vec![
+                (1, "One".to_string()),
+                (2, "Two".to_string()),
+                (3, "Three".to_string()),
+                (4, "Four".to_string()),
+                (5, "Five".to_string()),
+            ],
+            1,
+            0,
+            1,
+            vec![Role::Spy],
+        )
+        .unwrap();
+        let police_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Police)
+            .unwrap()
+            .user_id;
+        let spy_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Spy)
+            .unwrap()
+            .user_id;
+        game.spy_contacted.insert(spy_id);
+
+        game.submit_night_action(police_id, Some(spy_id)).unwrap();
+
+        assert!(game.police_result_ready());
         assert_eq!(game.current_police_result().1, Some(true));
-        assert_eq!(game.resolve_night().unwrap().police_target_is_mafia, Some(true));
+        assert_eq!(
+            game.resolve_night().unwrap().police_target_is_mafia,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn psychologist_treats_uncontacted_spy_and_citizen_as_same_team() {
+        let mut game = MafiaGame::new(
+            vec![
+                (1, "One".to_string()),
+                (2, "Two".to_string()),
+                (3, "Three".to_string()),
+                (4, "Four".to_string()),
+                (5, "Five".to_string()),
+            ],
+            1,
+            0,
+            0,
+            vec![Role::Psychologist, Role::Spy],
+        )
+        .unwrap();
+        game.phase = Phase::Day;
+        let psychologist_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Psychologist)
+            .unwrap()
+            .user_id;
+        let spy = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Spy)
+            .unwrap()
+            .clone();
+        let citizen = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Citizen)
+            .unwrap()
+            .clone();
+
+        assert_eq!(game.team_key(&spy), game.team_key(&citizen));
+        assert!(
+            game.submit_psychologist_observation(psychologist_id, spy.user_id, citizen.user_id)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn psychologist_treats_contacted_spy_and_citizen_as_different_team() {
+        let mut game = MafiaGame::new(
+            vec![
+                (1, "One".to_string()),
+                (2, "Two".to_string()),
+                (3, "Three".to_string()),
+                (4, "Four".to_string()),
+                (5, "Five".to_string()),
+            ],
+            1,
+            0,
+            0,
+            vec![Role::Psychologist, Role::Spy],
+        )
+        .unwrap();
+        let spy = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Spy)
+            .unwrap()
+            .clone();
+        let citizen = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Citizen)
+            .unwrap()
+            .clone();
+        game.spy_contacted.insert(spy.user_id);
+
+        assert_ne!(game.team_key(&spy), game.team_key(&citizen));
+    }
+
+    #[test]
+    fn vigilante_does_not_execute_uncontacted_spy() {
+        let mut game = MafiaGame::new_with_counts(
+            vec![
+                (1, "One".to_string()),
+                (2, "Two".to_string()),
+                (3, "Three".to_string()),
+                (4, "Four".to_string()),
+                (5, "Five".to_string()),
+            ],
+            GameCounts {
+                mafia_count: 1,
+                vigilante_count: 1,
+                special_roles: vec![Role::Spy],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let vigilante_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Vigilante)
+            .unwrap()
+            .user_id;
+        let spy_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Spy)
+            .unwrap()
+            .user_id;
+
+        game.submit_night_action(vigilante_id, Some(spy_id))
+            .unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(result.vigilante_kills.is_empty());
+        assert!(game.get_player(spy_id).unwrap().alive);
+    }
+
+    #[test]
+    fn vigilante_executes_contacted_spy() {
+        let mut game = MafiaGame::new_with_counts(
+            vec![
+                (1, "One".to_string()),
+                (2, "Two".to_string()),
+                (3, "Three".to_string()),
+                (4, "Four".to_string()),
+                (5, "Five".to_string()),
+            ],
+            GameCounts {
+                mafia_count: 1,
+                vigilante_count: 1,
+                special_roles: vec![Role::Spy],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let vigilante_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Vigilante)
+            .unwrap()
+            .user_id;
+        let spy_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Spy)
+            .unwrap()
+            .user_id;
+        game.spy_contacted.insert(spy_id);
+
+        game.submit_night_action(vigilante_id, Some(spy_id))
+            .unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert_eq!(
+            result
+                .vigilante_kills
+                .iter()
+                .map(|player| player.user_id)
+                .collect::<Vec<_>>(),
+            vec![spy_id]
+        );
+        assert!(!game.get_player(spy_id).unwrap().alive);
     }
 
     #[test]
