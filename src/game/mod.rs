@@ -338,10 +338,6 @@ impl MafiaGame {
         !self.is_mafia_team(player) && !self.is_cult_team(player) && player.role != Role::Joker
     }
 
-    pub fn is_investigation_citizen_team(&self, player: &Player) -> bool {
-        self.team_key(player) == "citizen"
-    }
-
     pub fn is_frog(&self, player: &Player) -> bool {
         player.alive && self.frog_user_ids.contains(&player.user_id)
     }
@@ -1150,10 +1146,6 @@ mod tests {
                 "citizen",
                 "{role:?} should be citizen team for relation investigations before contact"
             );
-            assert!(
-                game.is_investigation_citizen_team(&player),
-                "{role:?} should be a citizen candidate for investigation-only checks before contact"
-            );
         }
     }
 
@@ -1174,10 +1166,6 @@ mod tests {
                 "mafia",
                 "{role:?} should be mafia team for relation investigations after contact"
             );
-            assert!(
-                !game.is_investigation_citizen_team(&player),
-                "{role:?} should stop being a citizen investigation candidate after contact"
-            );
             if role == Role::Godfather {
                 assert!(
                     !game.is_police_detected_mafia_team(&player),
@@ -1193,7 +1181,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_directive_can_reveal_uncontacted_mafia_special_as_citizen_side() {
+    fn agent_directive_ignores_uncontacted_mafia_specials() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
         for (id, role) in [
             (1, Role::Mafia),
@@ -1207,12 +1195,12 @@ mod tests {
 
         let result = game.resolve_night().unwrap();
 
-        assert!(game.agent_discovered_ids.contains(&3));
+        assert!(!game.agent_discovered_ids.contains(&3));
         assert!(
             result
                 .agent_results
                 .get(&2)
-                .is_some_and(|text| text.contains("Three"))
+                .is_some_and(|text| !text.contains("Three"))
         );
     }
 
