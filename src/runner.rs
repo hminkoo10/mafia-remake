@@ -2062,7 +2062,7 @@ fn confirmation_required_yes(confirm_result: &ConfirmVoteResult) -> i32 {
     if submitted_vote_count <= 0 {
         1
     } else {
-        majority_required(submitted_vote_count as usize) as i32
+        submitted_vote_count / 2 + 1
     }
 }
 
@@ -2075,7 +2075,9 @@ fn confirmation_rejection_message(
     }
     let yes = confirm_result.vote_counts.get(&true).copied().unwrap_or(0);
     let no = confirm_result.vote_counts.get(&false).copied().unwrap_or(0);
-    if yes > no {
+    if yes == no {
+        "찬성과 반대가 같아 처형하지 않습니다.".to_string()
+    } else if yes > no {
         let required_yes = confirmation_required_yes(confirm_result);
         format!(
             "찬성이 더 많지만 투표수 기준 과반수에 도달하지 못해 처형하지 않습니다. (찬성 {yes}/{required_yes}표)"
@@ -2235,6 +2237,27 @@ mod tests {
         assert_eq!(
             confirmation_vote_summary(&result, context),
             "찬성 3표 / 반대 2표 / 미투표 2명\n처형 기준: 찬성 3표 이상 (투표수 5표 기준)"
+        );
+    }
+
+    #[test]
+    fn confirmation_summary_requires_strict_majority_for_even_votes() {
+        let result = ConfirmVoteResult {
+            vote_counts: HashMap::from([(true, 4), (false, 4)]),
+            ..Default::default()
+        };
+        let context = ConfirmationVoteContext {
+            eligible_voters: 9,
+            submitted_voters: 8,
+        };
+        assert_eq!(
+            confirmation_vote_summary(&result, context),
+            "찬성 4표 / 반대 4표 / 미투표 1명
+처형 기준: 찬성 5표 이상 (투표수 8표 기준)"
+        );
+        assert_eq!(
+            confirmation_rejection_message(&result, context),
+            "찬성과 반대가 같아 처형하지 않습니다."
         );
     }
 
