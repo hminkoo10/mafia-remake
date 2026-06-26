@@ -1881,7 +1881,7 @@ pub async fn run_vote(
         ctx,
         running,
         format!(
-            "{} 님 처형 여부를 찬반투표합니다. {CONFIRM_VOTE_SECONDS}초 안에 선택하세요.\n생존자 과반수 이상이 찬성하면 처형합니다.",
+            "{} 님 처형 여부를 찬반투표합니다. {CONFIRM_VOTE_SECONDS}초 안에 선택하세요.\n실제 투표 수 기준 과반수 이상이 찬성하면 처형합니다.",
             nominee.name
         ),
         "찬반투표",
@@ -1905,6 +1905,10 @@ pub async fn run_vote(
     if running.read().await.game.phase == Phase::Ended {
         return Ok(());
     }
+    let confirm_context = {
+        let running_read = running.read().await;
+        confirmation_vote_context(&running_read.game)
+    };
     let confirm_result = {
         let mut running_write = running.write().await;
         running_write
@@ -1912,12 +1916,7 @@ pub async fn run_vote(
             .resolve_confirmation_vote(nominee.user_id)?
     };
     set_channel_slowmode(ctx, running, config.chat_slowmode_seconds).await;
-    let counts = &confirm_result.vote_counts;
-    let summary = format!(
-        "찬성 {}표 / 반대 {}표",
-        counts.get(&true).copied().unwrap_or(0),
-        counts.get(&false).copied().unwrap_or(0)
-    );
+    let summary = confirmation_vote_summary(&confirm_result, confirm_context);
     let judge_notice = if confirm_result.decided_by_judge {
         if let Some(judge) = &confirm_result.judge {
             let judge_choice = match confirm_result.judge_choice {
@@ -1996,7 +1995,7 @@ pub async fn run_vote(
             false,
         )
     } else {
-        let reject_message = confirmation_rejection_message(&confirm_result);
+        let reject_message = confirmation_rejection_message(&confirm_result, confirm_context);
         (
             format!("{reject_message}{judge_notice}\n\n찬반투표 집계\n{summary}"),
             serenity::Colour::GOLD,
@@ -2017,16 +2016,72 @@ pub async fn run_vote(
     Ok(())
 }
 
-fn confirmation_rejection_message(confirm_result: &ConfirmVoteResult) -> &'static str {
+#[derive(Debug, Clone, Copy)]
+struct ConfirmationVoteContext {
+    eligible_voters: usize,
+    submitted_voters: usize,
+}
+
+fn confirmation_vote_context(game: &MafiaGame) -> ConfirmationVoteContext {
+    let alive_ids = game
+        .alive_players()
+        .into_iter()
+        .map(|player| player.user_id)
+        .collect::<HashSet<_>>();
+    let submitted_voters = game
+        .confirm_votes
+        .keys()
+        .filter(|user_id| alive_ids.contains(user_id))
+        .count();
+    ConfirmationVoteContext {
+        eligible_voters: alive_ids.len(),
+        submitted_voters,
+    }
+}
+
+fn confirmation_vote_summary(
+    confirm_result: &ConfirmVoteResult,
+    context: ConfirmationVoteContext,
+) -> String {
+    let yes = confirm_result.vote_counts.get(&true).copied().unwrap_or(0);
+    let no = confirm_result.vote_counts.get(&false).copied().unwrap_or(0);
+    let submitted_vote_count = yes + no;
+    let required_yes = confirmation_required_yes(confirm_result);
+    let abstained = context
+        .eligible_voters
+        .saturating_sub(context.submitted_voters);
+    format!(
+        "찬성 {yes}표 / 반대 {no}표 / 미투표 {abstained}명\n처형 기준: 찬성 {required_yes}표 이상 (투표수 {submitted_vote_count}표 기준)"
+    )
+}
+
+fn confirmation_required_yes(confirm_result: &ConfirmVoteResult) -> i32 {
+    let yes = confirm_result.vote_counts.get(&true).copied().unwrap_or(0);
+    let no = confirm_result.vote_counts.get(&false).copied().unwrap_or(0);
+    let submitted_vote_count = yes + no;
+    if submitted_vote_count <= 0 {
+        1
+    } else {
+        majority_required(submitted_vote_count as usize) as i32
+    }
+}
+
+fn confirmation_rejection_message(
+    confirm_result: &ConfirmVoteResult,
+    _context: ConfirmationVoteContext,
+) -> String {
     if confirm_result.decided_by_judge {
-        return "판사의 선택으로 처형하지 않습니다.";
+        return "판사의 선택으로 처형하지 않습니다.".to_string();
     }
     let yes = confirm_result.vote_counts.get(&true).copied().unwrap_or(0);
     let no = confirm_result.vote_counts.get(&false).copied().unwrap_or(0);
     if yes > no {
-        "찬성이 생존자 과반수 이상에 도달하지 못해 처형하지 않습니다."
+        let required_yes = confirmation_required_yes(confirm_result);
+        format!(
+            "찬성이 더 많지만 투표수 기준 과반수에 도달하지 못해 처형하지 않습니다. (찬성 {yes}/{required_yes}표)"
+        )
     } else {
-        "반대가 많아 처형하지 않습니다."
+        "반대가 많아 처형하지 않습니다.".to_string()
     }
 }
 
@@ -2167,15 +2222,19 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_rejection_message_reports_yes_shortfall_when_yes_leads() {
+    fn confirmation_summary_uses_submitted_vote_threshold() {
         let result = ConfirmVoteResult {
             vote_counts: HashMap::from([(true, 3), (false, 2)]),
             ..Default::default()
         };
+        let context = ConfirmationVoteContext {
+            eligible_voters: 7,
+            submitted_voters: 5,
+        };
 
         assert_eq!(
-            confirmation_rejection_message(&result),
-            "찬성이 생존자 과반수 이상에 도달하지 못해 처형하지 않습니다."
+            confirmation_vote_summary(&result, context),
+            "찬성 3표 / 반대 2표 / 미투표 2명\n처형 기준: 찬성 3표 이상 (투표수 5표 기준)"
         );
     }
 
@@ -2186,8 +2245,13 @@ mod tests {
             ..Default::default()
         };
 
+        let context = ConfirmationVoteContext {
+            eligible_voters: 5,
+            submitted_voters: 5,
+        };
+
         assert_eq!(
-            confirmation_rejection_message(&result),
+            confirmation_rejection_message(&result, context),
             "반대가 많아 처형하지 않습니다."
         );
     }

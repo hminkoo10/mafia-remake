@@ -155,10 +155,13 @@ impl MafiaGame {
         let yes = *counts.get(&true).unwrap_or(&0);
         let no = *counts.get(&false).unwrap_or(&0);
         let target = self.get_player(target_id).cloned();
-        let required_yes = majority_required(self.alive_players().len()) as i32;
+        let submitted_vote_count = yes + no;
+        let required_yes = majority_required(submitted_vote_count as usize) as i32;
         let normal_approved = target
             .as_ref()
-            .is_some_and(|target| target.alive && yes >= required_yes);
+            .is_some_and(|target| {
+                target.alive && submitted_vote_count > 0 && yes >= required_yes
+            });
         let mut approved = normal_approved;
         let judge = self.active_judge();
         let judge_choice = judge
@@ -178,7 +181,7 @@ impl MafiaGame {
                 decided_by_judge = true;
             }
         }
-        let tied = !decided_by_judge && yes == no;
+        let tied = !decided_by_judge && !normal_approved && yes == no;
         let blocked_by_politician = approved
             && target
                 .as_ref()
