@@ -7,11 +7,7 @@ use poise::serenity_prelude as serenity;
 pub(crate) mod web_settings;
 
 use std::collections::{HashMap, HashSet};
-use std::{
-    path::PathBuf,
-    sync::Arc,
-    time::Instant,
-};
+use std::{path::PathBuf, sync::Arc, time::Instant};
 use tokio::sync::{Notify, RwLock};
 
 const RECRUITMENT_SECONDS: u64 = 60;
@@ -125,6 +121,8 @@ struct RunningGame {
     anonymous_input_channel_owners: HashMap<serenity::ChannelId, u64>,
     anonymous_dead_input_channel_ids: HashMap<u64, serenity::ChannelId>,
     anonymous_dead_input_channel_owners: HashMap<serenity::ChannelId, u64>,
+    dead_chat_unlocked_ids: HashSet<u64>,
+    pending_dead_chat_user_ids: HashSet<u64>,
     anonymous_shaman_input_channel_ids: HashMap<u64, serenity::ChannelId>,
     anonymous_shaman_input_channel_owners: HashMap<serenity::ChannelId, u64>,
     anonymous_role_input_channel_ids: HashMap<(u64, Role), serenity::ChannelId>,
@@ -183,12 +181,11 @@ struct Recruitment {
     done: Arc<Notify>,
 }
 
-
-mod embed;
-mod channel;
-mod runner;
-mod commands;
 mod activity;
+mod channel;
+mod commands;
+mod embed;
+mod runner;
 
 async fn event_handler(
     ctx: &serenity::Context,
@@ -283,7 +280,9 @@ fn warn_cloudflare_https_port(base_url: Option<&str>) {
 }
 
 fn explicit_url_port(url: &str) -> Option<u16> {
-    let without_scheme = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
     let authority = without_scheme.split('/').next().unwrap_or_default();
     let (_, port) = authority.rsplit_once(':')?;
     port.parse().ok()
@@ -295,7 +294,10 @@ mod main_tests {
 
     #[test]
     fn extracts_explicit_web_url_port() {
-        assert_eq!(explicit_url_port("https://example.com:8443/web-settings"), Some(8443));
+        assert_eq!(
+            explicit_url_port("https://example.com:8443/web-settings"),
+            Some(8443)
+        );
         assert_eq!(explicit_url_port("https://example.com"), None);
         assert_eq!(explicit_url_port("http://localhost:8880"), Some(8880));
     }
@@ -325,10 +327,16 @@ async fn main() -> Result<()> {
         .is_some_and(|url| url.trim_start().starts_with("https://"));
     let explicit_web_tls_cert = std::env::var("WEB_SETTINGS_TLS_CERT").ok();
     let explicit_web_tls_key = std::env::var("WEB_SETTINGS_TLS_KEY").ok();
-    let web_tls_cert = explicit_web_tls_cert
-        .or_else(|| web_base_url_https.then(|| std::env::var("ACTIVITY_TLS_CERT").ok()).flatten());
-    let web_tls_key = explicit_web_tls_key
-        .or_else(|| web_base_url_https.then(|| std::env::var("ACTIVITY_TLS_KEY").ok()).flatten());
+    let web_tls_cert = explicit_web_tls_cert.or_else(|| {
+        web_base_url_https
+            .then(|| std::env::var("ACTIVITY_TLS_CERT").ok())
+            .flatten()
+    });
+    let web_tls_key = explicit_web_tls_key.or_else(|| {
+        web_base_url_https
+            .then(|| std::env::var("ACTIVITY_TLS_KEY").ok())
+            .flatten()
+    });
     let web_tls_enabled = web_tls_cert.is_some() && web_tls_key.is_some();
     if web_base_url_https && !web_tls_enabled {
         eprintln!("WEB_SETTINGS_BASE_URL uses https but web settings TLS cert/key are missing.");
@@ -337,11 +345,13 @@ async fn main() -> Result<()> {
 
     // 공유 상태를 Discord 연결 전에 먼저 생성
     let games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>> = Arc::new(DashMap::new());
-    let recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>> = Arc::new(DashMap::new());
+    let recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>> =
+        Arc::new(DashMap::new());
     let config_arc = Arc::new(RwLock::new(config));
     let api_keys_arc = Arc::new(RwLock::new(api_keys));
     let stats_arc = Arc::new(RwLock::new(stats));
-    let web_sessions: Arc<DashMap<String, web_settings::WebSettingsSession>> = Arc::new(DashMap::new());
+    let web_sessions: Arc<DashMap<String, web_settings::WebSettingsSession>> =
+        Arc::new(DashMap::new());
     let config_path_arc = Arc::new(config_path);
     let api_keys_path_arc = Arc::new(api_keys_path);
     let stats_path_arc = Arc::new(stats_path);
@@ -365,7 +375,15 @@ async fn main() -> Result<()> {
     );
     let activity_host = web_host.clone();
     tokio::spawn(async move {
-        activity::run_activity_server(activity_state, activity_host, activity_port, activity_static, activity_tls_cert, activity_tls_key).await;
+        activity::run_activity_server(
+            activity_state,
+            activity_host,
+            activity_port,
+            activity_static,
+            activity_tls_cert,
+            activity_tls_key,
+        )
+        .await;
     });
 
     let intents = serenity::GatewayIntents::non_privileged()
@@ -421,7 +439,12 @@ async fn main() -> Result<()> {
         })
         .setup(move |ctx, ready, framework| {
             Box::pin(async move {
-                match register_global_commands_preserving_activity(ctx, &framework.options().commands).await {
+                match register_global_commands_preserving_activity(
+                    ctx,
+                    &framework.options().commands,
+                )
+                .await
+                {
                     Ok(count) => println!("Global commands registered: {count}"),
                     Err(e) => eprintln!("Global command registration warning: {e}"),
                 }
@@ -432,11 +455,22 @@ async fn main() -> Result<()> {
                 tokio::spawn(async move {
                     while let Ok(update) = activity_update_rx.recv().await {
                         match update {
-                            activity::ActivityDiscordUpdate::PrivateRoleStatus { guild_id, role } => {
-                                let Some(running) = activity_update_games.get(&guild_id).map(|entry| entry.clone()) else {
+                            activity::ActivityDiscordUpdate::PrivateRoleStatus {
+                                guild_id,
+                                role,
+                            } => {
+                                let Some(running) = activity_update_games
+                                    .get(&guild_id)
+                                    .map(|entry| entry.clone())
+                                else {
                                     continue;
                                 };
-                                channel::upsert_private_role_status_message(&activity_update_ctx, &running, role).await;
+                                channel::upsert_private_role_status_message(
+                                    &activity_update_ctx,
+                                    &running,
+                                    role,
+                                )
+                                .await;
                             }
                         }
                     }
@@ -468,7 +502,15 @@ async fn main() -> Result<()> {
                 };
                 let host = web_host.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = web_settings::run_server(web_state, host, web_port, web_tls_cert, web_tls_key).await {
+                    if let Err(error) = web_settings::run_server(
+                        web_state,
+                        host,
+                        web_port,
+                        web_tls_cert,
+                        web_tls_key,
+                    )
+                    .await
+                    {
                         eprintln!("Rust web settings server error: {error:?}");
                     }
                 });

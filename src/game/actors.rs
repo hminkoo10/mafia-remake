@@ -1,7 +1,11 @@
 // game/actors.rs
 // 역할: 밤·낮·투표 단계에서 행동 가능한 플레이어 목록 조회, 제출 여부 확인, 경찰·해커 결과 처리
 
-#![allow(clippy::collapsible_if, clippy::too_many_arguments, clippy::type_complexity)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
 
 use crate::model::{Phase, Player, Role};
 use std::collections::{HashMap, HashSet};
@@ -398,7 +402,8 @@ impl MafiaGame {
     pub fn police_result_message(&self) -> String {
         let (target, is_mafia) = self.current_police_result();
         let Some(target) = target else {
-            return "경찰 조사 대상이 과반에 도달하지 못해 이번 밤 조사 결과가 없습니다.".to_string();
+            return "경찰 조사 대상이 과반에 도달하지 못해 이번 밤 조사 결과가 없습니다."
+                .to_string();
         };
         let result_text = if is_mafia.unwrap_or(false) {
             "마피아입니다"
@@ -440,7 +445,10 @@ impl MafiaGame {
         } else {
             "마피아팀이 아닙니다"
         };
-        Some(format!("조사 결과: {} 님은 **{}**.", target.name, result_text))
+        Some(format!(
+            "조사 결과: {} 님은 **{}**.",
+            target.name, result_text
+        ))
     }
 
     pub fn thief_police_results(&self) -> HashMap<u64, String> {
@@ -487,5 +495,4 @@ impl MafiaGame {
                 .filter(|p| p.alive)
                 .all(|player| self.confirm_votes.contains_key(&player.user_id))
     }
-
 }

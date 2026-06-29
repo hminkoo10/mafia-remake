@@ -4,9 +4,8 @@
 #![allow(unused_imports, clippy::too_many_arguments, clippy::collapsible_if)]
 
 use super::{
-    Context, Data, Error, RunningGame,
-    DAY_EXTENSION_VOTE_SECONDS, DISCUSSION_EXTENSION_SECONDS, CONFIRM_VOTE_SECONDS,
-    PRIVATE_CHAT_ROLES,
+    CONFIRM_VOTE_SECONDS, Context, DAY_EXTENSION_VOTE_SECONDS, DISCUSSION_EXTENSION_SECONDS, Data,
+    Error, PRIVATE_CHAT_ROLES, RunningGame,
 };
 use crate::channel::*;
 use crate::embed::*;
@@ -102,11 +101,7 @@ async fn game_loop_inner(
     Ok(())
 }
 
-fn remove_current_entry<K, T>(
-    entries: &DashMap<K, Arc<T>>,
-    key: K,
-    current: &Arc<T>,
-) -> bool
+fn remove_current_entry<K, T>(entries: &DashMap<K, Arc<T>>, key: K, current: &Arc<T>) -> bool
 where
     K: Eq + Hash,
 {
@@ -387,7 +382,8 @@ pub async fn run_night(
         let config = data.config.read().await.clone();
         let mut running_write = running.write().await;
         running_write.game.phase = Phase::Night;
-        running_write.phase_deadline = Some(Instant::now() + Duration::from_secs(config.night_seconds));
+        running_write.phase_deadline =
+            Some(Instant::now() + Duration::from_secs(config.night_seconds));
         running_write.day_chat_open = false;
         running_write.final_defense_user_id = None;
         running_write.night_timed_events_due = config.night_seconds <= 10;
@@ -559,7 +555,9 @@ pub async fn run_night(
             &result.thief_police_results,
         ] {
             for (user_id, text) in map {
-                running_write.activity_night_results.insert(*user_id, text.clone());
+                running_write
+                    .activity_night_results
+                    .insert(*user_id, text.clone());
             }
         }
         // 경찰 조사 결과
@@ -1289,6 +1287,7 @@ pub async fn run_day(
             running_write.game.receive_mercenary_contracts(),
         )
     };
+    unlock_pending_dead_chats(ctx, data, running).await;
     upsert_game_status(ctx, running).await;
     set_game_channel_chat(ctx, data, running, true).await;
     set_channel_slowmode(ctx, running, config.chat_slowmode_seconds).await;
@@ -1522,8 +1521,7 @@ pub async fn run_day(
             true,
         )
         .await?;
-        let extension_deadline =
-            Instant::now() + Duration::from_secs(DAY_EXTENSION_VOTE_SECONDS);
+        let extension_deadline = Instant::now() + Duration::from_secs(DAY_EXTENSION_VOTE_SECONDS);
         loop {
             tokio::select! {
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(extension_deadline)) => {
@@ -1719,7 +1717,8 @@ pub async fn run_vote(
     let (guild_id, vote_notify, seconds, alive) = {
         let mut running_write = running.write().await;
         running_write.game.start_vote()?;
-        running_write.phase_deadline = Some(Instant::now() + Duration::from_secs(config.vote_seconds));
+        running_write.phase_deadline =
+            Some(Instant::now() + Duration::from_secs(config.vote_seconds));
         running_write.day_chat_open = false;
         running_write.final_defense_user_id = None;
         (
@@ -1787,19 +1786,6 @@ pub async fn run_vote(
         let running_read = running.read().await;
         anonymous_vote_summary(&running_read.game, &vote_result)
     };
-    let blocked_notice = if vote_result.blocked_voters.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n\n공갈로 투표권을 잃은 참가자: {}",
-            vote_result
-                .blocked_voters
-                .iter()
-                .map(|player| player.name.clone())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
     if vote_result.executed.is_none() {
         let message = if vote_result.tied {
             "투표가 동률이라 최후변론 대상이 없습니다."
@@ -1811,7 +1797,7 @@ pub async fn run_vote(
         send_game_embed(
             ctx,
             running,
-            format!("{message}{blocked_notice}\n\n익명 투표 집계\n{vote_summary}"),
+            format!("{message}\n\n익명 투표 집계\n{vote_summary}"),
             "지목 투표 결과",
             serenity::Colour::GOLD,
             vec![],
@@ -1838,7 +1824,7 @@ pub async fn run_vote(
         ctx,
         running,
         format!(
-            "지목 투표 결과, {} 님이 최후변론 대상이 되었습니다.{blocked_notice}\n\n익명 투표 집계\n{vote_summary}",
+            "지목 투표 결과, {} 님이 최후변론 대상이 되었습니다.\n\n익명 투표 집계\n{vote_summary}",
             nominee.name
         ),
         "지목 투표 결과",
@@ -2234,7 +2220,6 @@ mod tests {
             eligible_voters: 7,
             submitted_voters: 5,
         };
-
         assert_eq!(
             confirmation_vote_summary(&result, context),
             "찬성 3표 / 반대 2표 / 미투표 2명\n처형 기준: 찬성 3표 이상 (투표수 5표 기준)"
@@ -2253,8 +2238,7 @@ mod tests {
         };
         assert_eq!(
             confirmation_vote_summary(&result, context),
-            "찬성 4표 / 반대 4표 / 미투표 1명
-처형 기준: 찬성 5표 이상 (투표수 8표 기준)"
+            "찬성 4표 / 반대 4표 / 미투표 1명\n처형 기준: 찬성 5표 이상 (투표수 8표 기준)"
         );
         assert_eq!(
             confirmation_rejection_message(&result, context),
@@ -2268,7 +2252,6 @@ mod tests {
             vote_counts: HashMap::from([(true, 2), (false, 3)]),
             ..Default::default()
         };
-
         let context = ConfirmationVoteContext {
             eligible_voters: 5,
             submitted_voters: 5,

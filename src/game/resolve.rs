@@ -1,7 +1,11 @@
 // game/resolve.rs
 // 역할: 밤 행동 결산 (마피아 공격, 치료, 경찰 조사, 각종 특수 능력 결산), 저주·성불·소생 처리
 
-#![allow(clippy::collapsible_if, clippy::too_many_arguments, clippy::type_complexity)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
 
 use crate::model::{NightResult, Phase, Player, Role};
 use crate::system_random;
@@ -405,7 +409,7 @@ impl MafiaGame {
         self.record_night_rating_events(&result);
         self.clear_night_maps();
         self.phase = Phase::Day;
-        self.expire_madam_seductions();
+        // Madam seductions expire when the following day's vote ends.
 
         Ok(result)
     }
@@ -423,7 +427,9 @@ impl MafiaGame {
             let doctors = self
                 .doctor_targets
                 .iter()
-                .filter_map(|(&actor_id, &target_id)| (target_id == protected.user_id).then_some(actor_id))
+                .filter_map(|(&actor_id, &target_id)| {
+                    (target_id == protected.user_id).then_some(actor_id)
+                })
                 .collect::<Vec<_>>();
             for actor_id in doctors {
                 self.record_rating_event(actor_id, 5, "마피아 공격 치료 성공");
@@ -436,7 +442,9 @@ impl MafiaGame {
             let police = self
                 .police_targets
                 .iter()
-                .filter_map(|(&actor_id, &target_id)| (target_id == target.user_id).then_some(actor_id))
+                .filter_map(|(&actor_id, &target_id)| {
+                    (target_id == target.user_id).then_some(actor_id)
+                })
                 .collect::<Vec<_>>();
             for actor_id in police {
                 self.record_rating_event(actor_id, 4, "경찰 조사로 마피아팀 확인");
@@ -453,7 +461,8 @@ impl MafiaGame {
             .iter()
             .filter_map(|(&actor_id, &target_id)| {
                 let target = self.get_player(target_id)?;
-                (vigilante_kills.contains(&target_id) && self.is_mafia_team(target)).then_some(actor_id)
+                (vigilante_kills.contains(&target_id) && self.is_mafia_team(target))
+                    .then_some(actor_id)
             })
             .collect::<Vec<_>>();
         for actor_id in vigilantes {
@@ -539,7 +548,9 @@ impl MafiaGame {
         let priests = self
             .priest_targets
             .iter()
-            .filter_map(|(&actor_id, &target_id)| revived_ids.contains(&target_id).then_some(actor_id))
+            .filter_map(|(&actor_id, &target_id)| {
+                revived_ids.contains(&target_id).then_some(actor_id)
+            })
             .collect::<Vec<_>>();
         for actor_id in priests {
             self.record_rating_event(actor_id, 6, "성직자 소생 성공");
@@ -1562,5 +1573,4 @@ impl MafiaGame {
             }
         }
     }
-
 }

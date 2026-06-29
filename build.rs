@@ -124,7 +124,10 @@ fn write_activity_static(dist_dir: &Path, generated: &Path) -> io::Result<()> {
         file,
         "pub struct EmbeddedActivityAsset {{ pub path: &'static str, pub content_type: &'static str, pub body: &'static [u8] }}"
     )?;
-    writeln!(file, "pub static ACTIVITY_ASSETS: &[EmbeddedActivityAsset] = &[")?;
+    writeln!(
+        file,
+        "pub static ACTIVITY_ASSETS: &[EmbeddedActivityAsset] = &["
+    )?;
     for (url_path, fs_path) in entries {
         writeln!(
             file,

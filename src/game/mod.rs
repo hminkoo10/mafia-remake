@@ -2,10 +2,14 @@
 // 역할: MafiaGame 구조체 정의, 생성자, 기본 플레이어 조회, 팀 판별, 승리 조건,
 //        공유 유틸리티 메서드 (majority_target, mark_dead, ensure_fanatic_reincarnation 등)
 
-#![allow(clippy::collapsible_if, clippy::too_many_arguments, clippy::type_complexity)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
 
-pub mod actors;
 pub mod actions;
+pub mod actors;
 pub mod resolve;
 pub mod vote;
 
@@ -716,7 +720,13 @@ impl MafiaGame {
             Role::Witch => &[&self.witch_targets],
             Role::Priest => &[&self.priest_targets],
             Role::Terrorist => &[&self.terrorist_targets],
-            Role::Spy => return self.spy_targets.get(&user_id).and_then(|v| v.first()).copied(),
+            Role::Spy => {
+                return self
+                    .spy_targets
+                    .get(&user_id)
+                    .and_then(|v| v.first())
+                    .copied();
+            }
             _ => &[],
         };
         maps.iter().find_map(|m| m.get(&user_id).copied())
@@ -948,7 +958,6 @@ impl MafiaGame {
             }
         };
     }
-
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -964,7 +973,6 @@ enum RoleActionMap {
     Terrorist,
     Mercenary,
 }
-
 
 fn validate_counts(players: &[(u64, String)], counts: &GameCounts) -> Result<()> {
     if players.len() < 3 {
@@ -1069,7 +1077,6 @@ fn validate_counts(players: &[(u64, String)], counts: &GameCounts) -> Result<()>
     Ok(())
 }
 
-
 pub const fn majority_required(voter_count: usize) -> usize {
     (voter_count + 1) / 2
 }
@@ -1081,7 +1088,6 @@ fn count_values(values: impl IntoIterator<Item = u64>) -> HashMap<u64, usize> {
     }
     counts
 }
-
 
 fn reported_protected_id(
     protected_ids: &HashSet<u64>,
@@ -1100,7 +1106,6 @@ fn reported_protected_id(
     }
     protected_ids.iter().copied().min()
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1294,7 +1299,12 @@ mod tests {
 
         assert!(result.killed_players.iter().any(|p| p.user_id == client_id));
         assert!(game.mercenary_armed_ids.contains(&2));
-        assert!(result.mercenary_results.get(&2).is_some_and(|text| text.contains("의뢰인")));
+        assert!(
+            result
+                .mercenary_results
+                .get(&2)
+                .is_some_and(|text| text.contains("의뢰인"))
+        );
     }
 
     #[test]
@@ -1403,7 +1413,11 @@ mod tests {
 
         game.submit_night_action(2, Some(1)).unwrap();
         game.resolve_night().unwrap();
-        assert!(game.hypnotized_targets.get(&2).is_some_and(|targets| targets.contains(&1)));
+        assert!(
+            game.hypnotized_targets
+                .get(&2)
+                .is_some_and(|targets| targets.contains(&1))
+        );
 
         game.advance_to_next_night();
         game.submit_night_action(2, Some(3)).unwrap();
@@ -1788,7 +1802,10 @@ mod tests {
 
         assert!(game.police_result_ready());
         assert_eq!(game.current_police_result().1, Some(false));
-        assert_eq!(game.resolve_night().unwrap().police_target_is_mafia, Some(false));
+        assert_eq!(
+            game.resolve_night().unwrap().police_target_is_mafia,
+            Some(false)
+        );
     }
 
     #[test]
@@ -1825,7 +1842,10 @@ mod tests {
 
         assert!(game.police_result_ready());
         assert_eq!(game.current_police_result().1, Some(true));
-        assert_eq!(game.resolve_night().unwrap().police_target_is_mafia, Some(true));
+        assert_eq!(
+            game.resolve_night().unwrap().police_target_is_mafia,
+            Some(true)
+        );
     }
 
     #[test]
@@ -1868,8 +1888,85 @@ mod tests {
         assert!(result.killed.is_none());
         assert_eq!(result.protected.unwrap().user_id, target);
         let events = game.rating_events.get(&doctor).unwrap();
-        assert!(events
+        assert!(
+            events
+                .iter()
+                .any(|event| event.points == 5 && event.reason.contains("치료 성공"))
+        );
+    }
+
+    #[test]
+    fn madam_seduction_lasts_until_following_vote_ends() {
+        let mut game = MafiaGame::new(basic_players(), 1, 1, 0, vec![Role::Madam]).unwrap();
+        let madam_id = game
+            .players
             .iter()
-            .any(|event| event.points == 5 && event.reason.contains("치료 성공")));
+            .find(|player| player.role == Role::Madam)
+            .unwrap()
+            .user_id;
+        let doctor_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Doctor)
+            .unwrap()
+            .user_id;
+
+        game.phase = Phase::Day;
+        game.start_vote().unwrap();
+        game.submit_day_vote(madam_id, Some(doctor_id)).unwrap();
+        let other_voter_ids = game
+            .alive_players()
+            .into_iter()
+            .filter(|player| player.user_id != madam_id)
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        for voter_id in other_voter_ids {
+            game.submit_day_vote(voter_id, None).unwrap();
+        }
+        game.resolve_nomination_vote().unwrap();
+        assert!(game.madam_seduced_ids.contains(&doctor_id));
+        assert!(
+            !game
+                .night_action_actors()
+                .iter()
+                .any(|player| player.user_id == doctor_id)
+        );
+
+        game.resolve_night().unwrap();
+        assert!(game.madam_seduced_ids.contains(&doctor_id));
+
+        game.start_vote().unwrap();
+        let voter_ids = game
+            .alive_players()
+            .into_iter()
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        for voter_id in voter_ids {
+            game.submit_day_vote(voter_id, None).unwrap();
+        }
+        game.resolve_nomination_vote().unwrap();
+        assert!(!game.madam_seduced_ids.contains(&doctor_id));
+    }
+
+    #[test]
+    fn madam_cannot_vote_for_herself() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Madam]).unwrap();
+        let madam_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Madam)
+            .unwrap()
+            .user_id;
+
+        game.phase = Phase::Day;
+        game.start_vote().unwrap();
+        let error = game.submit_day_vote(madam_id, Some(madam_id)).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("마담은 자기 자신에게 투표할 수 없습니다.")
+        );
+        assert!(!game.day_votes.contains_key(&madam_id));
     }
 }

@@ -386,11 +386,7 @@ fn rating_change_for_player(
         RATING_DELTA_CAP,
     );
     let (role_delta, mut role_reasons) = role_rating_adjustment(game, player, initial_role, won);
-    let combined_delta = clamp(
-        team_delta + role_delta,
-        -RATING_DELTA_CAP,
-        RATING_DELTA_CAP,
-    );
+    let combined_delta = clamp(team_delta + role_delta, -RATING_DELTA_CAP, RATING_DELTA_CAP);
     let final_delta = final_rating_delta(team_delta, role_delta, won);
     let after = (old_rating + final_delta).max(0);
     let mut reasons = vec![if won {
@@ -445,11 +441,7 @@ fn role_rating_adjustment(
         .get(&player.user_id)
         .copied()
         .unwrap_or(0);
-    if action_count == 0
-        && player.alive
-        && game.day_number >= 2
-        && role_has_core_action(role)
-    {
+    if action_count == 0 && player.alive && game.day_number >= 2 && role_has_core_action(role) {
         points -= 2;
         reasons.push("핵심 능력 미사용 -2".to_string());
     }
@@ -566,11 +558,7 @@ fn role_has_core_action(role: Role) -> bool {
 }
 
 fn final_rating_delta(team_delta: i64, role_delta: i64, won: bool) -> i64 {
-    let combined_delta = clamp(
-        team_delta + role_delta,
-        -RATING_DELTA_CAP,
-        RATING_DELTA_CAP,
-    );
+    let combined_delta = clamp(team_delta + role_delta, -RATING_DELTA_CAP, RATING_DELTA_CAP);
     if won {
         combined_delta
     } else {
@@ -1022,7 +1010,13 @@ mod tests {
         game.record_rating_event(doctor.user_id, 5, "마피아 공격 치료 성공");
         let mut stats = StatsFile::default();
 
-        record_game_stats(&mut stats, &game, &initial_roles(&game), 120, Winner::Citizen);
+        record_game_stats(
+            &mut stats,
+            &game,
+            &initial_roles(&game),
+            120,
+            Winner::Citizen,
+        );
 
         let history = stats
             .users

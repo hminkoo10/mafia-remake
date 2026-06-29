@@ -2,13 +2,13 @@
 //        프론트엔드에 게임 상태 제공, 플레이어 액션 수신·처리
 
 use crate::{
-    runner::{effective_night_role, night_targets},
     RunningGame,
+    runner::{effective_night_role, night_targets},
 };
 use anyhow::Result;
 use axum::{
+    Json, Router,
     body::Body,
-    Router,
     extract::{
         Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -16,7 +16,6 @@ use axum::{
     http::{HeaderMap, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json,
 };
 use dashmap::DashMap;
 use mafia_remake::{
@@ -31,7 +30,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use tower_http::{
     cors::{Any, CorsLayer},
     services::ServeDir,
@@ -129,7 +128,7 @@ pub struct GameStateDto {
     pub my_team: Option<String>,
     pub can_act: bool,
     pub my_night_target: Option<String>,
-    pub my_action_result: Option<String>,   // 밤 행동 결과 텍스트
+    pub my_action_result: Option<String>, // 밤 행동 결과 텍스트
     pub night_target_ids: Vec<String>,
     pub night_action_can_skip: bool,
     pub special_action: Option<String>,
@@ -142,11 +141,11 @@ pub struct GameStateDto {
     pub winner: Option<String>,
     pub public_status: String,
     pub in_game: bool,
-    pub day_skip_count: u32,            // 낮 스킵 투표 현황
-    pub day_skip_threshold: u32,        // 과반 기준 인원수
-    pub contractor_can_act: bool,       // 청부업자 청부 가능 여부
+    pub day_skip_count: u32,                          // 낮 스킵 투표 현황
+    pub day_skip_threshold: u32,                      // 과반 기준 인원수
+    pub contractor_can_act: bool,                     // 청부업자 청부 가능 여부
     pub contractor_targets: Vec<ContractorTargetDto>, // 청부 가능 대상 목록
-    pub contractor_guess_roles: Vec<String>, // 추측 가능 직업 목록
+    pub contractor_guess_roles: Vec<String>,          // 추측 가능 직업 목록
 }
 
 #[derive(Deserialize)]
@@ -176,10 +175,10 @@ pub struct WsQuery {
 #[derive(Deserialize)]
 pub struct ActionRequest {
     pub guild_id: String,
-    pub action: String,         // "night_action" | "day_vote" | "confirm_vote" | "skip_vote" | "contractor_action"
+    pub action: String, // "night_action" | "day_vote" | "confirm_vote" | "skip_vote" | "contractor_action"
     pub target_id: Option<String>,
     pub secondary_target_id: Option<String>,
-    pub confirm: Option<bool>,  // confirm_vote용
+    pub confirm: Option<bool>, // confirm_vote용
     // contractor_action용
     pub contract_target_ids: Option<[String; 2]>,
     pub contract_roles: Option<[String; 2]>,
@@ -328,7 +327,11 @@ async fn auth_handler(
     let guild_id: u64 = match query.guild_id.parse() {
         Ok(id) => id,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid guild_id" }))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid guild_id" })),
+            )
+                .into_response();
         }
     };
 
@@ -339,7 +342,8 @@ async fn auth_handler(
             "session_token": "mock_session_token",
             "user_id": "0",
             "username": "Mock User",
-        })).into_response();
+        }))
+        .into_response();
     }
 
     // Discord OAuth2 코드 → access_token
@@ -363,7 +367,11 @@ async fn auth_handler(
             let status = res.status();
             let body: serde_json::Value = res.json().await.unwrap_or_default();
             eprintln!("Discord token exchange failed: status={status}, body={body}");
-            return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "token exchange failed", "detail": body }))).into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": "token exchange failed", "detail": body })),
+            )
+                .into_response();
         }
         Err(e) => {
             eprintln!("Discord token exchange error: {e}");
@@ -390,7 +398,11 @@ async fn auth_handler(
             (id, name)
         }
         _ => {
-            return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "user fetch failed" }))).into_response();
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": "user fetch failed" })),
+            )
+                .into_response();
         }
     };
 
@@ -432,16 +444,34 @@ async fn state_handler(
 ) -> impl IntoResponse {
     let token = match extract_session_token(&headers) {
         Some(t) => t,
-        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "missing token" }))).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": "missing token" })),
+            )
+                .into_response();
+        }
     };
     let session = match state.get_session(&token) {
         Some(s) => s,
-        None => return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "invalid session" }))).into_response(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": "invalid session" })),
+            )
+                .into_response();
+        }
     };
 
     let guild_id: u64 = match query.guild_id.parse() {
         Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "invalid guild_id" }))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid guild_id" })),
+            )
+                .into_response();
+        }
     };
 
     let guild_key = serenity::GuildId::new(guild_id);
@@ -496,20 +526,32 @@ async fn action_handler(
     let token = match extract_session_token(&headers) {
         Some(t) => t,
         None => {
-            return Json(ActionResponse { ok: false, message: Some("인증 필요".into()) }).into_response();
+            return Json(ActionResponse {
+                ok: false,
+                message: Some("인증 필요".into()),
+            })
+            .into_response();
         }
     };
     let session = match state.get_session(&token) {
         Some(s) => s,
         None => {
-            return Json(ActionResponse { ok: false, message: Some("세션 만료".into()) }).into_response();
+            return Json(ActionResponse {
+                ok: false,
+                message: Some("세션 만료".into()),
+            })
+            .into_response();
         }
     };
 
     let guild_id: u64 = match body.guild_id.parse() {
         Ok(id) => id,
         Err(_) => {
-            return Json(ActionResponse { ok: false, message: Some("잘못된 guild_id".into()) }).into_response();
+            return Json(ActionResponse {
+                ok: false,
+                message: Some("잘못된 guild_id".into()),
+            })
+            .into_response();
         }
     };
 
@@ -517,7 +559,11 @@ async fn action_handler(
     let running_arc = match state.games.get(&guild_key) {
         Some(r) => r.clone(),
         None => {
-            return Json(ActionResponse { ok: false, message: Some("진행 중인 게임 없음".into()) }).into_response();
+            return Json(ActionResponse {
+                ok: false,
+                message: Some("진행 중인 게임 없음".into()),
+            })
+            .into_response();
         }
     };
 
@@ -527,7 +573,9 @@ async fn action_handler(
     let mut discord_update = None;
     let result: Result<Option<String>, String> = match body.action.as_str() {
         "night_action" => {
-            let target = body.target_id.as_deref()
+            let target = body
+                .target_id
+                .as_deref()
                 .and_then(|s| s.parse::<u64>().ok());
             match running.game.submit_night_action(user_id, target) {
                 Ok(_) => {
@@ -547,7 +595,10 @@ async fn action_handler(
                             && running.game.thief_night_role(player) == Some(Role::Police)
                     }) {
                         running.game.police_result_for_actor(user_id)
-                    } else if actor.as_ref().is_some_and(|player| player.role == Role::Police) {
+                    } else if actor
+                        .as_ref()
+                        .is_some_and(|player| player.role == Role::Police)
+                    {
                         if running.game.police_result_ready() {
                             Some(running.game.police_result_message())
                         } else {
@@ -562,7 +613,9 @@ async fn action_handler(
                                 && running.game.thief_night_role(player) == Some(Role::Police)
                         })
                     {
-                        running.activity_night_results.insert(user_id, message.clone());
+                        running
+                            .activity_night_results
+                            .insert(user_id, message.clone());
                     }
                     if running.game.all_night_actions_submitted() {
                         running.night_notify.notify_one();
@@ -573,9 +626,13 @@ async fn action_handler(
             }
         }
         "day_vote" => {
-            let target = body.target_id.as_deref()
+            let target = body
+                .target_id
+                .as_deref()
                 .and_then(|s| s.parse::<u64>().ok());
-            running.game.submit_day_vote(user_id, target)
+            running
+                .game
+                .submit_day_vote(user_id, target)
                 .map_err(|e| e.to_string())
                 .map(|_| {
                     if running.game.all_day_votes_submitted() {
@@ -586,7 +643,9 @@ async fn action_handler(
         }
         "confirm_vote" => {
             let agree = body.confirm.unwrap_or(false);
-            running.game.submit_confirmation_vote(user_id, agree)
+            running
+                .game
+                .submit_confirmation_vote(user_id, agree)
                 .map_err(|e| e.to_string())
                 .map(|_| {
                     if running.game.all_confirm_votes_submitted() {
@@ -628,25 +687,57 @@ async fn action_handler(
         "contractor_action" => {
             let (ids, roles) = match (&body.contract_target_ids, &body.contract_roles) {
                 (Some(ids), Some(roles)) => (ids, roles),
-                _ => return Json(ActionResponse { ok: false, message: Some("contract_target_ids, contract_roles 필요".into()) }).into_response(),
+                _ => {
+                    return Json(ActionResponse {
+                        ok: false,
+                        message: Some("contract_target_ids, contract_roles 필요".into()),
+                    })
+                    .into_response();
+                }
             };
             let t1: u64 = match ids[0].parse() {
                 Ok(v) => v,
-                Err(_) => return Json(ActionResponse { ok: false, message: Some("잘못된 target_id".into()) }).into_response(),
+                Err(_) => {
+                    return Json(ActionResponse {
+                        ok: false,
+                        message: Some("잘못된 target_id".into()),
+                    })
+                    .into_response();
+                }
             };
             let t2: u64 = match ids[1].parse() {
                 Ok(v) => v,
-                Err(_) => return Json(ActionResponse { ok: false, message: Some("잘못된 target_id".into()) }).into_response(),
+                Err(_) => {
+                    return Json(ActionResponse {
+                        ok: false,
+                        message: Some("잘못된 target_id".into()),
+                    })
+                    .into_response();
+                }
             };
             let r1 = match role_from_str(&roles[0]) {
                 Some(r) => r,
-                None => return Json(ActionResponse { ok: false, message: Some(format!("알 수 없는 직업: {}", roles[0])) }).into_response(),
+                None => {
+                    return Json(ActionResponse {
+                        ok: false,
+                        message: Some(format!("알 수 없는 직업: {}", roles[0])),
+                    })
+                    .into_response();
+                }
             };
             let r2 = match role_from_str(&roles[1]) {
                 Some(r) => r,
-                None => return Json(ActionResponse { ok: false, message: Some(format!("알 수 없는 직업: {}", roles[1])) }).into_response(),
+                None => {
+                    return Json(ActionResponse {
+                        ok: false,
+                        message: Some(format!("알 수 없는 직업: {}", roles[1])),
+                    })
+                    .into_response();
+                }
             };
-            running.game.submit_contractor_contract(user_id, t1, r1, t2, r2)
+            running
+                .game
+                .submit_contractor_contract(user_id, t1, r1, t2, r2)
                 .map_err(|e| e.to_string())
                 .map(|_| {
                     if running.game.all_night_actions_submitted() {
@@ -657,33 +748,69 @@ async fn action_handler(
         }
         "hacker_action" => {
             let Some(target_id) = body.target_id.as_deref().and_then(|id| id.parse().ok()) else {
-                return Json(ActionResponse { ok: false, message: Some("target_id 필요".into()) }).into_response();
+                return Json(ActionResponse {
+                    ok: false,
+                    message: Some("target_id 필요".into()),
+                })
+                .into_response();
             };
-            running.game.submit_hacker_action(user_id, target_id).map(Some).map_err(|e| e.to_string())
+            running
+                .game
+                .submit_hacker_action(user_id, target_id)
+                .map(Some)
+                .map_err(|e| e.to_string())
         }
         "vigilante_action" => {
             let Some(target_id) = body.target_id.as_deref().and_then(|id| id.parse().ok()) else {
-                return Json(ActionResponse { ok: false, message: Some("target_id 필요".into()) }).into_response();
+                return Json(ActionResponse {
+                    ok: false,
+                    message: Some("target_id 필요".into()),
+                })
+                .into_response();
             };
-            running.game.submit_vigilante_investigation(user_id, target_id).map(Some).map_err(|e| e.to_string())
+            running
+                .game
+                .submit_vigilante_investigation(user_id, target_id)
+                .map(Some)
+                .map_err(|e| e.to_string())
         }
         "psychologist_action" => {
             let (Some(first_target_id), Some(second_target_id)) = (
                 body.target_id.as_deref().and_then(|id| id.parse().ok()),
-                body.secondary_target_id.as_deref().and_then(|id| id.parse().ok()),
+                body.secondary_target_id
+                    .as_deref()
+                    .and_then(|id| id.parse().ok()),
             ) else {
-                return Json(ActionResponse { ok: false, message: Some("서로 다른 두 target_id 필요".into()) }).into_response();
+                return Json(ActionResponse {
+                    ok: false,
+                    message: Some("서로 다른 두 target_id 필요".into()),
+                })
+                .into_response();
             };
-            running.game.submit_psychologist_observation(user_id, first_target_id, second_target_id).map(Some).map_err(|e| e.to_string())
+            running
+                .game
+                .submit_psychologist_observation(user_id, first_target_id, second_target_id)
+                .map(Some)
+                .map_err(|e| e.to_string())
         }
-        "hypnotist_action" => {
-            running.game.submit_hypnotist_wake(user_id).map(Some).map_err(|e| e.to_string())
-        }
+        "hypnotist_action" => running
+            .game
+            .submit_hypnotist_wake(user_id)
+            .map(Some)
+            .map_err(|e| e.to_string()),
         "thief_action" => {
             let Some(target_id) = body.target_id.as_deref().and_then(|id| id.parse().ok()) else {
-                return Json(ActionResponse { ok: false, message: Some("target_id 필요".into()) }).into_response();
+                return Json(ActionResponse {
+                    ok: false,
+                    message: Some("target_id 필요".into()),
+                })
+                .into_response();
             };
-            running.game.submit_thief_steal(user_id, target_id).map(Some).map_err(|e| e.to_string())
+            running
+                .game
+                .submit_thief_steal(user_id, target_id)
+                .map(Some)
+                .map_err(|e| e.to_string())
         }
         _ => Err(format!("알 수 없는 액션: {}", body.action)),
     };
@@ -695,7 +822,11 @@ async fn action_handler(
 
     match result {
         Ok(message) => Json(ActionResponse { ok: true, message }).into_response(),
-        Err(msg) => Json(ActionResponse { ok: false, message: Some(msg) }).into_response(),
+        Err(msg) => Json(ActionResponse {
+            ok: false,
+            message: Some(msg),
+        })
+        .into_response(),
     }
 }
 
@@ -722,12 +853,7 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| handle_ws(socket, state, session.user_id, guild_id))
 }
 
-async fn handle_ws(
-    mut socket: WebSocket,
-    state: ActivityState,
-    user_id: u64,
-    guild_id: u64,
-) {
+async fn handle_ws(mut socket: WebSocket, state: ActivityState, user_id: u64, guild_id: u64) {
     let guild_key = serenity::GuildId::new(guild_id);
     let mut interval = tokio::time::interval(Duration::from_secs(1));
 
@@ -850,16 +976,16 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         None
     };
 
-    let contractor_can_act = me_alive
-        && game.contractor_can_use_contract(user_id)
-        && matches!(game.phase, Phase::Night);
+    let contractor_can_act =
+        me_alive && game.contractor_can_use_contract(user_id) && matches!(game.phase, Phase::Night);
     let night_action_available = me_alive
         && matches!(game.phase, Phase::Night)
         && game
             .night_action_actors()
             .iter()
             .any(|player| player.user_id == user_id);
-    let (night_target_ids, night_action_can_skip) = if night_action_available && !contractor_can_act {
+    let (night_target_ids, night_action_can_skip) = if night_action_available && !contractor_can_act
+    {
         if let Some(player) = &me_role_for_targets {
             let role = effective_night_role(game, player);
             (
@@ -888,30 +1014,34 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
     };
 
     // 플레이어 목록
-    let players = game.all_players().iter().map(|p| {
-        let is_you = p.user_id == user_id;
-        let role_visible = is_you
-            || game_ended
-            || (reveal_roles && !p.alive)
-            || game.is_publicly_revealed(p);
+    let players = game
+        .all_players()
+        .iter()
+        .map(|p| {
+            let is_you = p.user_id == user_id;
+            let role_visible =
+                is_you || game_ended || (reveal_roles && !p.alive) || game.is_publicly_revealed(p);
 
-        let display_name = if running.anonymous_enabled {
-            running.anonymous_aliases.get(&p.user_id)
-                .cloned()
-                .unwrap_or_else(|| p.name.clone())
-        } else {
-            p.name.clone()
-        };
+            let display_name = if running.anonymous_enabled {
+                running
+                    .anonymous_aliases
+                    .get(&p.user_id)
+                    .cloned()
+                    .unwrap_or_else(|| p.name.clone())
+            } else {
+                p.name.clone()
+            };
 
-        PlayerDto {
-            id: p.user_id.to_string(),
-            name: display_name,
-            alive: p.alive,
-            is_you,
-            role: role_visible.then(|| role_name(game.visible_role(p))),
-            role_team: role_visible.then(|| player_team(game, p)),
-        }
-    }).collect();
+            PlayerDto {
+                id: p.user_id.to_string(),
+                name: display_name,
+                alive: p.alive,
+                is_you,
+                role: role_visible.then(|| role_name(game.visible_role(p))),
+                role_team: role_visible.then(|| player_team(game, p)),
+            }
+        })
+        .collect();
 
     // 내 역할 / 팀
     let (my_role, my_team) = match me.as_ref() {
@@ -923,16 +1053,18 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
     };
 
     // 행동 가능 여부 (me 레퍼런스 해제 후 game 뮤터블 메서드 호출)
-    let can_act = me_alive && match game.phase {
-        Phase::Night => night_action_available && !contractor_can_act,
-        Phase::Day | Phase::Vote => true,
-        Phase::ConfirmVote => game.alive_players().iter().any(|p| p.user_id == user_id),
-        _ => false,
-    };
+    let can_act = me_alive
+        && match game.phase {
+            Phase::Night => night_action_available && !contractor_can_act,
+            Phase::Day | Phase::Vote => true,
+            Phase::ConfirmVote => game.alive_players().iter().any(|p| p.user_id == user_id),
+            _ => false,
+        };
 
     // 밤 지목 대상
     let my_night_target = if matches!(game.phase, Phase::Night) {
-        game.get_night_action_target(user_id).map(|id| id.to_string())
+        game.get_night_action_target(user_id)
+            .map(|id| id.to_string())
     } else {
         None
     };
@@ -954,7 +1086,10 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         HashMap::new()
     };
     let vote_skip_count = if matches!(game.phase, Phase::Vote) {
-        game.day_votes.values().filter(|target| target.is_none()).count() as u32
+        game.day_votes
+            .values()
+            .filter(|target| target.is_none())
+            .count() as u32
     } else {
         0
     };
@@ -990,7 +1125,10 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         if let Some(me_player) = &me_role_for_targets {
             game.contractor_contract_targets(me_player)
                 .iter()
-                .map(|p| ContractorTargetDto { id: p.user_id.to_string(), name: p.name.clone() })
+                .map(|p| ContractorTargetDto {
+                    id: p.user_id.to_string(),
+                    name: p.name.clone(),
+                })
                 .collect()
         } else {
             vec![]
@@ -999,7 +1137,10 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         vec![]
     };
     let contractor_guess_roles = if contractor_can_act {
-        mafia_remake::model::CONTRACTOR_GUESS_ROLES.iter().map(|r| r.value().to_string()).collect()
+        mafia_remake::model::CONTRACTOR_GUESS_ROLES
+            .iter()
+            .map(|r| r.value().to_string())
+            .collect()
     } else {
         vec![]
     };
@@ -1052,7 +1193,11 @@ mod tests {
     use super::*;
 
     fn activity_test_running(mut game: MafiaGame) -> RunningGame {
-        let initial_roles = game.players.iter().map(|player| (player.user_id, player.role)).collect();
+        let initial_roles = game
+            .players
+            .iter()
+            .map(|player| (player.user_id, player.role))
+            .collect();
         let participant_user_ids = game.players.iter().map(|player| player.user_id).collect();
         game.phase = Phase::Day;
         RunningGame {
@@ -1076,6 +1221,8 @@ mod tests {
             anonymous_input_channel_owners: Default::default(),
             anonymous_dead_input_channel_ids: Default::default(),
             anonymous_dead_input_channel_owners: Default::default(),
+            dead_chat_unlocked_ids: Default::default(),
+            pending_dead_chat_user_ids: Default::default(),
             anonymous_shaman_input_channel_ids: Default::default(),
             anonymous_shaman_input_channel_owners: Default::default(),
             anonymous_role_input_channel_ids: Default::default(),
@@ -1159,8 +1306,46 @@ mod tests {
 
         let state = build_game_state(&mut running, 1);
 
-        assert!(!state.players.iter().find(|player| player.id == "2").unwrap().alive);
-        assert!(state.players.iter().find(|player| player.id == "1").unwrap().alive);
+        assert!(
+            !state
+                .players
+                .iter()
+                .find(|player| player.id == "2")
+                .unwrap()
+                .alive
+        );
+        assert!(
+            state
+                .players
+                .iter()
+                .find(|player| player.id == "1")
+                .unwrap()
+                .alive
+            );
+    }
+
+    #[test]
+    fn dead_chat_requires_unlock_after_death() {
+        let mut game = activity_test_game();
+        game.get_player_mut(2).unwrap().alive = false;
+        let mut running = activity_test_running(game);
+        let player = running.game.get_player(2).unwrap().clone();
+
+        assert!(!crate::channel::can_use_anonymous_dead_chat(
+            &running, &player
+        ));
+        assert!(!crate::channel::can_use_anonymous_shaman_chat(
+            &running, &player
+        ));
+
+        running.dead_chat_unlocked_ids.insert(player.user_id);
+
+        assert!(crate::channel::can_use_anonymous_dead_chat(
+            &running, &player
+        ));
+        assert!(crate::channel::can_use_anonymous_shaman_chat(
+            &running, &player
+        ));
     }
 
     #[test]
@@ -1254,8 +1439,17 @@ mod tests {
         ] {
             assert_eq!(player_team(&game, &Player::new(99, "test", role)), "Mafia");
         }
-        for role in [Role::Gangster, Role::Fanatic, Role::Hypnotist, Role::Mercenary, Role::Citizen] {
-            assert_eq!(player_team(&game, &Player::new(99, "test", role)), "Citizen");
+        for role in [
+            Role::Gangster,
+            Role::Fanatic,
+            Role::Hypnotist,
+            Role::Mercenary,
+            Role::Citizen,
+        ] {
+            assert_eq!(
+                player_team(&game, &Player::new(99, "test", role)),
+                "Citizen"
+            );
         }
         assert_eq!(
             player_team(&game, &Player::new(99, "test", Role::CultLeader)),
@@ -1337,16 +1531,41 @@ fn player_team(game: &MafiaGame, player: &Player) -> String {
 fn role_from_str(s: &str) -> Option<Role> {
     use Role::*;
     Some(match s {
-        "마피아" => Mafia, "의사" => Doctor, "간호사" => Nurse, "경찰" => Police,
-        "요원" => Agent, "자경단" | "자경단원" => Vigilante, "기자" => Reporter, "해커" => Hacker,
-        "탐정" | "사립탐정" => Detective, "영매" => Shaman, "성직자" => Priest,
-        "군인" => Soldier, "건달" => Gangster, "예언자" => Prophet,
-        "심리학자" => Psychologist, "최면술사" => Hypnotist, "용병" => Mercenary, "스파이" => Spy, "청부업자" => Contractor,
-        "도둑" => Thief, "마녀" => Witch, "과학자" => Scientist, "마담" => Madam,
-        "도굴꾼" => Graverobber, "대부" => Godfather, "조커" => Joker,
-        "정치인" => Politician, "판사" => Judge, "테러리스트" => Terrorist,
-        "연인" => Lover, "교주" => CultLeader, "광신도" => Fanatic,
-        "개구리" => Frog, "악인" => Villain, "시민" => Citizen,
+        "마피아" => Mafia,
+        "의사" => Doctor,
+        "간호사" => Nurse,
+        "경찰" => Police,
+        "요원" => Agent,
+        "자경단" | "자경단원" => Vigilante,
+        "기자" => Reporter,
+        "해커" => Hacker,
+        "탐정" | "사립탐정" => Detective,
+        "영매" => Shaman,
+        "성직자" => Priest,
+        "군인" => Soldier,
+        "건달" => Gangster,
+        "예언자" => Prophet,
+        "심리학자" => Psychologist,
+        "최면술사" => Hypnotist,
+        "용병" => Mercenary,
+        "스파이" => Spy,
+        "청부업자" => Contractor,
+        "도둑" => Thief,
+        "마녀" => Witch,
+        "과학자" => Scientist,
+        "마담" => Madam,
+        "도굴꾼" => Graverobber,
+        "대부" => Godfather,
+        "조커" => Joker,
+        "정치인" => Politician,
+        "판사" => Judge,
+        "테러리스트" => Terrorist,
+        "연인" => Lover,
+        "교주" => CultLeader,
+        "광신도" => Fanatic,
+        "개구리" => Frog,
+        "악인" => Villain,
+        "시민" => Citizen,
         _ => return None,
     })
 }

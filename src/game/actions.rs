@@ -1,7 +1,11 @@
 // game/actions.rs
 // 역할: 플레이어의 낮·밤 행동 제출 처리 (해킹, 숙청, 심리학, 도벽, 밤 행동, 청부, 소생 등)
 
-#![allow(clippy::collapsible_if, clippy::too_many_arguments, clippy::type_complexity)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
 
 use crate::model::{CONTRACTOR_GUESS_ROLES, Phase, Player, Role};
 use anyhow::{Result, bail};
@@ -894,5 +898,4 @@ impl MafiaGame {
             .iter()
             .any(|id| self.get_player(*id).is_some_and(|player| !player.alive))
     }
-
 }

@@ -1,7 +1,11 @@
 // game/vote.rs
 // 역할: 낮 투표 (지목·찬반), 최후변론, 처형 결산 처리
 
-#![allow(clippy::collapsible_if, clippy::too_many_arguments, clippy::type_complexity)]
+#![allow(
+    clippy::collapsible_if,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
 
 use crate::model::{ConfirmVoteResult, Phase, Role, VoteResult};
 use anyhow::{Result, bail};
@@ -34,6 +38,9 @@ impl MafiaGame {
             return Ok("투표 대상: 스킵".to_string());
         };
         let target = self.require_alive(target_id)?.clone();
+        if voter.role == Role::Madam && voter.user_id == target.user_id {
+            bail!("마담은 자기 자신에게 투표할 수 없습니다.");
+        }
         self.day_votes.insert(voter.user_id, Some(target.user_id));
         Ok(format!("투표 대상: {}", target.name))
     }
@@ -159,9 +166,7 @@ impl MafiaGame {
         let required_yes = submitted_vote_count / 2 + 1;
         let normal_approved = target
             .as_ref()
-            .is_some_and(|target| {
-                target.alive && submitted_vote_count > 0 && yes >= required_yes
-            });
+            .is_some_and(|target| target.alive && submitted_vote_count > 0 && yes >= required_yes);
         let mut approved = normal_approved;
         let judge = self.active_judge();
         let judge_choice = judge
@@ -230,5 +235,4 @@ impl MafiaGame {
             decided_by_judge,
         })
     }
-
 }
