@@ -756,11 +756,11 @@ impl MafiaGame {
             if !actor.alive || !target.alive {
                 continue;
             }
-            target_notices.insert(
-                target.user_id,
-                format!("[형사 {}님이 당신을 수사했습니다.]", actor.name),
-            );
             if self.team_key(actor) == self.team_key(target) {
+                target_notices.insert(
+                    target.user_id,
+                    format!("[형사 {}님이 당신을 수사했습니다.]", actor.name),
+                );
                 results.insert(
                     *actor_id,
                     format!(

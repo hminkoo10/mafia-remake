@@ -1237,7 +1237,7 @@ mod tests {
     }
 
     #[test]
-    fn inspector_does_not_reveal_other_team_role_but_notifies_target() {
+    fn inspector_does_not_reveal_or_notify_other_team() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
         for (id, role) in [
             (1, Role::Mafia),
@@ -1253,10 +1253,7 @@ mod tests {
         let result = game.resolve_night().unwrap();
 
         assert!(!result.inspector_results.contains_key(&2));
-        assert_eq!(
-            result.inspector_target_notices.get(&1).map(String::as_str),
-            Some("[형사 Two님이 당신을 수사했습니다.]")
-        );
+        assert!(!result.inspector_target_notices.contains_key(&1));
     }
 
     #[test]
