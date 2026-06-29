@@ -706,6 +706,7 @@ impl MafiaGame {
         let maps: &[&HashMap<u64, u64>] = match role {
             Role::Mafia => &[&self.mafia_targets],
             Role::Doctor => &[&self.doctor_targets],
+            Role::Nurse => &[&self.nurse_targets, &self.nurse_prescription_targets],
             Role::Gangster => &[&self.gangster_targets],
             Role::Police if player.role == Role::Thief => &[&self.thief_police_targets],
             Role::Police => &[&self.police_targets],
@@ -1536,6 +1537,60 @@ mod tests {
         let thief_result = result.thief_police_results.get(&thief_id).unwrap();
         assert!(thief_result.contains(&thief_target_name));
         assert!(!thief_result.contains(&police_target_name));
+    }
+
+    #[test]
+    fn thief_stealing_vigilante_can_act_at_night() {
+        let mut game = MafiaGame::new_with_counts(
+            vec![
+                (1, "One".to_string()),
+                (2, "Two".to_string()),
+                (3, "Three".to_string()),
+                (4, "Four".to_string()),
+                (5, "Five".to_string()),
+            ],
+            GameCounts {
+                mafia_count: 1,
+                vigilante_count: 1,
+                special_roles: vec![Role::Thief],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let thief_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Thief)
+            .unwrap()
+            .user_id;
+        let vigilante_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Vigilante)
+            .unwrap()
+            .user_id;
+        let target_id = game
+            .players
+            .iter()
+            .find(|player| player.user_id != thief_id && player.user_id != vigilante_id)
+            .unwrap()
+            .user_id;
+
+        game.phase = Phase::Day;
+        game.start_vote().unwrap();
+        let vote_message = game.submit_day_vote(thief_id, Some(vigilante_id)).unwrap();
+        assert!(vote_message.contains("자경단원"));
+
+        game.phase = Phase::Night;
+        assert!(
+            game.night_action_actors()
+                .iter()
+                .any(|player| player.user_id == thief_id)
+        );
+        let action_message = game.submit_night_action(thief_id, Some(target_id)).unwrap();
+
+        assert!(action_message.contains("[도벽: 자경단원]"));
+        assert_eq!(game.vigilante_targets.get(&thief_id), Some(&target_id));
     }
 
     #[test]

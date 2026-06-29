@@ -4736,8 +4736,21 @@ pub async fn unlock_pending_dead_chats(
         return;
     }
     let config = data.config.read().await.clone();
-    let Ok(roles) = channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await else {
-        return;
+    let roles = match channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await {
+        Ok(roles) => roles,
+        Err(error) => {
+            eprintln!("failed to load roles for dead chat unlock: {error:?}");
+            let _ = send_channel_embed(
+                &ctx.http,
+                channel_id,
+                "사망자 채팅방 생성에 필요한 서버 역할 정보를 불러오지 못했습니다. 봇 권한을 확인하세요.",
+                "사망자 채팅 생성 실패",
+                serenity::Colour::RED,
+                vec![],
+            )
+            .await;
+            return;
+        }
     };
     let category = source_category(ctx, channel_id).await;
     let players = {
@@ -4762,6 +4775,7 @@ pub async fn unlock_pending_dead_chats(
     if players.is_empty() {
         return;
     }
+    let mut failed_dead_chat_names = Vec::new();
     for player in &players {
         let can_dead_chat = {
             let running_read = running.read().await;
@@ -4772,9 +4786,12 @@ pub async fn unlock_pending_dead_chats(
         };
         set_shaman_channel_member_access(ctx, running, player, true, can_dead_chat).await;
         if can_dead_chat {
-            let _ =
-                ensure_anonymous_dead_input_channel(ctx, running, player, roles, category, true)
-                    .await;
+            if ensure_anonymous_dead_input_channel(ctx, running, player, roles, category, true)
+                .await
+                .is_none()
+            {
+                failed_dead_chat_names.push(player.name.clone());
+            }
         }
         if anonymous_enabled && running.read().await.shaman_channel_id.is_some() {
             let can_shaman_chat = {
@@ -4786,16 +4803,25 @@ pub async fn unlock_pending_dead_chats(
             };
             if can_shaman_chat {
                 let _ = ensure_anonymous_shaman_input_channel(
-                    ctx,
-                    running,
-                    player,
-                    roles,
-                    category,
-                    true,
+                    ctx, running, player, roles, category, true,
                 )
                 .await;
             }
         }
+    }
+    if !failed_dead_chat_names.is_empty() {
+        let _ = send_channel_embed(
+            &ctx.http,
+            channel_id,
+            format!(
+                "사망자 개인 채팅방을 만들 수 없는 참가자: {}",
+                failed_dead_chat_names.join(", ")
+            ),
+            "사망자 채팅 생성 실패",
+            serenity::Colour::RED,
+            vec![],
+        )
+        .await;
     }
 }
 
@@ -4817,9 +4843,23 @@ pub async fn apply_death_side_effects(
         let running_read = running.read().await;
         (running_read.guild_id, running_read.channel_id)
     };
-    let Ok(roles) = channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await else {
-        return;
+    let roles = match channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await {
+        Ok(roles) => roles,
+        Err(error) => {
+            eprintln!("failed to load roles for death side effects: {error:?}");
+            let _ = send_channel_embed(
+                &ctx.http,
+                channel_id,
+                "사망자 역할/채팅방 처리에 필요한 서버 역할 정보를 불러오지 못했습니다. 봇 권한을 확인하세요.",
+                "사망 처리 실패",
+                serenity::Colour::RED,
+                vec![],
+            )
+            .await;
+            return;
+        }
     };
+    let mut failed_dead_chat_names = Vec::new();
     for player in dead_players {
         if let Ok(member) = guild_id
             .member(ctx, serenity::UserId::new(player.user_id))
@@ -4860,9 +4900,13 @@ pub async fn apply_death_side_effects(
             .anonymous_dead_input_channel_ids
             .contains_key(&player.user_id);
         if can_chat || dead_channel_exists {
-            let _ =
-                ensure_anonymous_dead_input_channel(ctx, running, player, roles, category, can_chat)
-                    .await;
+            if ensure_anonymous_dead_input_channel(ctx, running, player, roles, category, can_chat)
+                .await
+                .is_none()
+                && can_chat
+            {
+                failed_dead_chat_names.push(player.name.clone());
+            }
         }
         if anonymous_enabled && running.read().await.shaman_channel_id.is_some() {
             let can_shaman_chat = {
@@ -4889,6 +4933,20 @@ pub async fn apply_death_side_effects(
                 .await;
             }
         }
+    }
+    if !failed_dead_chat_names.is_empty() {
+        let _ = send_channel_embed(
+            &ctx.http,
+            channel_id,
+            format!(
+                "사망자 개인 채팅방을 만들 수 없는 참가자: {}",
+                failed_dead_chat_names.join(", ")
+            ),
+            "사망자 채팅 생성 실패",
+            serenity::Colour::RED,
+            vec![],
+        )
+        .await;
     }
     if anonymous_enabled {
         sync_anonymous_general_chat_permissions(ctx, running).await;

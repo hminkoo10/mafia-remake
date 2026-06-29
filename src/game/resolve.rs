@@ -775,7 +775,13 @@ impl MafiaGame {
         match self.thief_night_role(watched) {
             Some(Role::Mafia) => self.mafia_targets.get(&watched.user_id).copied(),
             Some(Role::Doctor) => self.doctor_targets.get(&watched.user_id).copied(),
+            Some(Role::Nurse) => self
+                .nurse_targets
+                .get(&watched.user_id)
+                .or_else(|| self.nurse_prescription_targets.get(&watched.user_id))
+                .copied(),
             Some(Role::Police) => self.thief_police_targets.get(&watched.user_id).copied(),
+            Some(Role::Vigilante) => self.vigilante_targets.get(&watched.user_id).copied(),
             Some(Role::Reporter) => self.reporter_targets.get(&watched.user_id).copied(),
             Some(Role::Detective) => self.detective_targets.get(&watched.user_id).copied(),
             Some(Role::Spy) => self
@@ -792,6 +798,8 @@ impl MafiaGame {
             Some(Role::Godfather) => self.godfather_targets.get(&watched.user_id).copied(),
             Some(Role::Terrorist) => self.terrorist_targets.get(&watched.user_id).copied(),
             Some(Role::Gangster) => self.gangster_targets.get(&watched.user_id).copied(),
+            Some(Role::CultLeader) => self.cult_targets.get(&watched.user_id).copied(),
+            Some(Role::Fanatic) => self.fanatic_targets.get(&watched.user_id).copied(),
             _ => None,
         }
     }
@@ -1330,7 +1338,11 @@ impl MafiaGame {
             let Some(target) = self.get_player(target_id).cloned() else {
                 continue;
             };
-            if !actor.alive || actor.role != Role::CultLeader || !target.alive {
+            if !actor.alive
+                || (actor.role != Role::CultLeader
+                    && self.thief_stolen_roles.get(&actor_id) != Some(&Role::CultLeader))
+                || !target.alive
+            {
                 continue;
             }
             if self.culted_ids.contains(&target.user_id) {
@@ -1387,7 +1399,10 @@ impl MafiaGame {
             let Some(target) = self.get_player(target_id).cloned() else {
                 continue;
             };
-            if !actor.alive || actor.role != Role::Fanatic {
+            if !actor.alive
+                || (actor.role != Role::Fanatic
+                    && self.thief_stolen_roles.get(&actor_id) != Some(&Role::Fanatic))
+            {
                 continue;
             }
             let is_cult = self.is_cult_team(&target);

@@ -165,13 +165,23 @@ impl MafiaGame {
         self.mark_rating_action(actor_id);
         self.record_rating_event(actor_id, 3, "도벽 실행");
         let contacted_now = self.is_mafia_team(&target) && self.thief_contacted.insert(actor_id);
-        let mut lines = vec![
-            format!("[도벽] {} 님의 직업 능력을 훔쳤습니다.", target.name),
-            format!(
+        let mut lines = vec![format!(
+            "[도벽] {} 님의 직업 능력을 훔쳤습니다.",
+            target.name
+        )];
+        if self.thief_night_role(&actor).is_some() {
+            lines.push(format!(
                 "다음 밤까지 **{}** 능력을 사용할 수 있습니다.",
                 target.role.value()
-            ),
-        ];
+            ));
+        } else if target.role == Role::Agent {
+            lines.push("다음 밤 결과 때 요원 지령을 받습니다.".to_string());
+        } else {
+            lines.push(format!(
+                "**{}**은/는 도둑이 다음 밤에 사용할 수 있는 선택형 밤 능력이 없습니다.",
+                target.role.value()
+            ));
+        }
         if contacted_now {
             self.record_rating_event(actor_id, 2, "도벽으로 마피아팀 접선");
             lines.push("[교련] 마피아 직업을 훔쳐 마피아팀과 접선했습니다.".to_string());
@@ -744,6 +754,9 @@ impl MafiaGame {
                 None,
                 &format!("{prefix}보호 대상"),
             ),
+            Role::Nurse => self
+                .submit_nurse_action(actor_id, target_id)
+                .map(|message| format!("{prefix}{message}")),
             Role::Police => self.once_target_action(
                 actor_id,
                 target_id,
@@ -753,6 +766,9 @@ impl MafiaGame {
                 Some("자기 자신은 조사할 수 없습니다."),
                 &format!("{prefix}조사 대상"),
             ),
+            Role::Vigilante => self
+                .submit_vigilante_night_action(actor_id, target_id)
+                .map(|message| format!("{prefix}{message}")),
             Role::Reporter => self.submit_reporter_action(actor_id, target_id, &prefix),
             Role::Detective => self.once_target_action(
                 actor_id,
@@ -794,6 +810,12 @@ impl MafiaGame {
                 Some("자기 자신은 지목할 수 없습니다."),
                 &format!("{prefix}지목 대상"),
             ),
+            Role::CultLeader => self
+                .submit_cult_action(actor_id, target_id)
+                .map(|message| format!("{prefix}{message}")),
+            Role::Fanatic => self
+                .submit_fanatic_action(actor_id, target_id)
+                .map(|message| format!("{prefix}{message}")),
             Role::Gangster => self.once_target_action(
                 actor_id,
                 target_id,

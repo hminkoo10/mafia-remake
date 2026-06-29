@@ -142,7 +142,9 @@ impl MafiaGame {
         match role {
             Role::Mafia
             | Role::Doctor
+            | Role::Nurse
             | Role::Police
+            | Role::Vigilante
             | Role::Reporter
             | Role::Detective
             | Role::Spy
@@ -152,7 +154,9 @@ impl MafiaGame {
             | Role::Witch
             | Role::Godfather
             | Role::Terrorist
-            | Role::Gangster => Some(role),
+            | Role::Gangster
+            | Role::CultLeader
+            | Role::Fanatic => Some(role),
             _ => None,
         }
     }
@@ -165,11 +169,14 @@ impl MafiaGame {
     ) -> bool {
         match self.thief_night_role(player) {
             Some(Role::Mafia | Role::Doctor) => !alive.is_empty(),
+            Some(Role::Nurse) => self.nurse_can_act(player, alive),
+            Some(Role::Vigilante) => !self.vigilante_execution_targets(player).is_empty(),
             Some(Role::Shaman) => !unpurified_dead.is_empty(),
             Some(Role::Priest) => {
                 !unpurified_dead.is_empty() && !self.priest_used_ids.contains(&player.user_id)
             }
             Some(Role::Reporter) => self.reporter_can_act(player, alive),
+            Some(Role::CultLeader) => self.cult_leader_can_act(player, alive),
             Some(_) => alive.len() > 1,
             None => false,
         }
@@ -179,7 +186,12 @@ impl MafiaGame {
         match self.thief_night_role(actor) {
             Some(Role::Mafia) => self.mafia_targets.contains_key(&actor.user_id),
             Some(Role::Doctor) => self.doctor_targets.contains_key(&actor.user_id),
+            Some(Role::Nurse) => {
+                self.nurse_targets.contains_key(&actor.user_id)
+                    || self.nurse_prescription_targets.contains_key(&actor.user_id)
+            }
             Some(Role::Police) => self.thief_police_targets.contains_key(&actor.user_id),
+            Some(Role::Vigilante) => self.vigilante_targets.contains_key(&actor.user_id),
             Some(Role::Reporter) => {
                 self.reporter_targets.contains_key(&actor.user_id)
                     || self.reporter_skip_submitted.contains(&actor.user_id)
@@ -199,6 +211,8 @@ impl MafiaGame {
             Some(Role::Godfather) => self.godfather_targets.contains_key(&actor.user_id),
             Some(Role::Terrorist) => self.terrorist_action_submitted.contains(&actor.user_id),
             Some(Role::Gangster) => self.gangster_targets.contains_key(&actor.user_id),
+            Some(Role::CultLeader) => self.cult_targets.contains_key(&actor.user_id),
+            Some(Role::Fanatic) => self.fanatic_targets.contains_key(&actor.user_id),
             _ => true,
         }
     }
@@ -246,6 +260,7 @@ impl MafiaGame {
 
     pub fn vigilante_execution_targets(&self, actor: &Player) -> Vec<Player> {
         if actor.role != Role::Vigilante
+            && self.thief_stolen_roles.get(&actor.user_id) != Some(&Role::Vigilante)
             || !actor.alive
             || self.vigilante_execution_used_ids.contains(&actor.user_id)
         {
