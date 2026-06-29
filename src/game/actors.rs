@@ -319,22 +319,6 @@ impl MafiaGame {
             .collect()
     }
 
-    pub fn thief_vote_actors(&self) -> Vec<Player> {
-        if self.phase != Phase::Vote || self.alive_players().len() <= 1 {
-            return Vec::new();
-        }
-        self.players
-            .iter()
-            .filter(|player| {
-                player.alive
-                    && player.role == Role::Thief
-                    && !self.is_frog(player)
-                    && self.thief_used_days.get(&player.user_id) != Some(&self.day_number)
-            })
-            .cloned()
-            .collect()
-    }
-
     fn police_action_actors(&mut self) -> Vec<Player> {
         self.night_action_actors()
             .into_iter()

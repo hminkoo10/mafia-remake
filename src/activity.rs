@@ -798,20 +798,9 @@ async fn action_handler(
             .submit_hypnotist_wake(user_id)
             .map(Some)
             .map_err(|e| e.to_string()),
-        "thief_action" => {
-            let Some(target_id) = body.target_id.as_deref().and_then(|id| id.parse().ok()) else {
-                return Json(ActionResponse {
-                    ok: false,
-                    message: Some("target_id 필요".into()),
-                })
-                .into_response();
-            };
-            running
-                .game
-                .submit_thief_steal(user_id, target_id)
-                .map(Some)
-                .map_err(|e| e.to_string())
-        }
+        "thief_action" => Ok(Some(
+            "도벽은 별도 행동이 아니라 지목 투표한 대상에게 자동으로 적용됩니다.".to_string(),
+        )),
         _ => Err(format!("알 수 없는 액션: {}", body.action)),
     };
 
@@ -965,13 +954,6 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
             .any(|player| player.user_id == user_id)
     {
         Some("hypnotist".to_string())
-    } else if me_alive
-        && game
-            .thief_vote_actors()
-            .iter()
-            .any(|player| player.user_id == user_id)
-    {
-        Some("thief".to_string())
     } else {
         None
     };
@@ -1321,7 +1303,7 @@ mod tests {
                 .find(|player| player.id == "1")
                 .unwrap()
                 .alive
-            );
+        );
     }
 
     #[test]

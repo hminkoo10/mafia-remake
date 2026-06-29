@@ -7,7 +7,7 @@ export type Phase =
   | "Ended";
 
 export type RoleTeam = "Citizen" | "Mafia" | "Cult" | "Neutral";
-export type ActivitySpecialAction = "hacker" | "vigilante" | "psychologist" | "hypnotist" | "thief";
+export type ActivitySpecialAction = "hacker" | "vigilante" | "psychologist" | "hypnotist";
 
 export interface PlayerDto {
   id: string;
@@ -62,8 +62,7 @@ export type ActionType =
   | "hacker_action"
   | "vigilante_action"
   | "psychologist_action"
-  | "hypnotist_action"
-  | "thief_action";
+  | "hypnotist_action";
 
 export interface ActionRequest {
   guild_id: string;

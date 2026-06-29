@@ -379,7 +379,7 @@ pub async fn handle_component(
             handle_hypnotist(ctx, data, component, parse_guild(guild)?, actor_id.parse()?).await?
         }
         ["thief", guild, actor_id] => {
-            handle_thief(ctx, data, component, parse_guild(guild)?, actor_id.parse()?).await?
+            handle_thief(ctx, component, parse_guild(guild)?, actor_id.parse()?).await?
         }
         _ => ack_component(ctx, component).await,
     }
@@ -1277,26 +1277,17 @@ pub async fn handle_vigilante(
 
 pub async fn handle_thief(
     ctx: &serenity::Context,
-    data: &Data,
     component: &serenity::ComponentInteraction,
-    guild_id: serenity::GuildId,
-    actor_id: u64,
+    _guild_id: serenity::GuildId,
+    _actor_id: u64,
 ) -> Result<()> {
-    let value = selected_values(component)
-        .first()
-        .and_then(|v| v.parse().ok());
-    handle_day_action(
+    send_component_private(
         ctx,
-        data,
         component,
-        guild_id,
-        actor_id,
-        value,
-        "도벽 완료",
-        |game, actor, target| game.submit_thief_steal(actor, target),
-        |_, _, message| message,
+        "도벽은 별도 선택이 아니라 지목 투표한 대상에게 자동으로 적용됩니다.",
     )
-    .await
+    .await?;
+    Ok(())
 }
 
 pub async fn handle_psychologist(

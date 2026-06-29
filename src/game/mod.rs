@@ -1493,8 +1493,11 @@ mod tests {
         let (police_target_id, police_target_name) = targets[0].clone();
         let (thief_target_id, thief_target_name) = targets[1].clone();
 
-        game.phase = Phase::Vote;
-        game.submit_thief_steal(thief_id, police_id).unwrap();
+        game.phase = Phase::Day;
+        game.start_vote().unwrap();
+        let vote_message = game.submit_day_vote(thief_id, Some(police_id)).unwrap();
+        assert!(vote_message.contains("투표 대상"));
+        assert!(vote_message.contains("[도벽]"));
         game.phase = Phase::Night;
         game.submit_night_action(police_id, Some(police_target_id))
             .unwrap();

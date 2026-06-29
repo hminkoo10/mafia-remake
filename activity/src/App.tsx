@@ -61,7 +61,6 @@ const SPECIAL_ACTION_META: Record<
   vigilante: { label: "자경단원 조사", action: "vigilante_action", requiresPair: false },
   psychologist: { label: "심리학자 관찰", action: "psychologist_action", requiresPair: true },
   hypnotist: { label: "최면 해제", action: "hypnotist_action", requiresPair: false, requiresTarget: false },
-  thief: { label: "도벽", action: "thief_action", requiresPair: false },
 };
 
 const MARK_META: Record<PlayerMark, { label: string; short: string; className: string }> = {
@@ -105,7 +104,7 @@ const ROLE_HELP: Record<string, string> = {
   청부업자: "두 대상과 직업 추측을 확신할 때 제출하세요.",
   심리학자: "낮 행동 대상의 태도 변화를 함께 보세요.",
   최면술사: "최면 대상은 누적됩니다. 낮에 깨우면 다음 밤은 쉬게 됩니다.",
-  도둑: "훔칠 직업 가치와 생존 가능성을 비교하세요.",
+  도둑: "지목 투표 대상에게 도벽이 자동 적용됩니다.",
   군인: "방탄 가능성을 노출할 타이밍을 아끼세요.",
   간호사: "의사 위치와 치료 흐름을 보조하세요.",
   마담: "지목 투표로 선택한 대상이 유혹됩니다. 별도 유혹 행동은 없습니다.",
@@ -128,7 +127,7 @@ const ROLE_TIPS: Record<string, string[]> = {
   경찰: ["조사 결과는 이름과 일차까지 메모", "스파이·마녀 접선 상태 가능성 고려"],
   의사: ["공개 확직 보호와 역킬 보호를 비교", "보호 성공 가능성이 높은 대상 우선"],
   마녀: ["접선 전후 조사 판정 차이 주의", "저주 대상이 다음 낮 투표권에 미칠 영향 확인"],
-  도둑: ["훔친 직업의 당일 목표를 별도 관리", "경찰 계열을 훔치면 독립 조사로 사용"],
+  도둑: ["지목 투표 대상이 곧 도벽 대상", "경찰 계열을 훔치면 독립 조사로 사용"],
   최면술사: ["최면 대상은 깨우기 전까지 누적", "낮에 깨우면 다음 밤 행동 불가"],
   용병: ["의뢰인 생존 여부 확인", "무장 뒤 처형은 마피아 처치와 별도"],
   건달: ["막을 투표권의 가치 확인", "다음 낮 투표 구도와 함께 계산"],

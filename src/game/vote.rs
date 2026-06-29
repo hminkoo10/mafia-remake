@@ -42,7 +42,15 @@ impl MafiaGame {
             bail!("마담은 자기 자신에게 투표할 수 없습니다.");
         }
         self.day_votes.insert(voter.user_id, Some(target.user_id));
-        Ok(format!("투표 대상: {}", target.name))
+        let mut lines = vec![format!("투표 대상: {}", target.name)];
+        if voter.role == Role::Thief
+            && voter.user_id != target.user_id
+            && !self.is_frog(&voter)
+            && self.thief_used_days.get(&voter.user_id) != Some(&self.day_number)
+        {
+            lines.push(self.submit_thief_steal(voter.user_id, target.user_id)?);
+        }
+        Ok(lines.join("\n\n"))
     }
 
     pub fn resolve_nomination_vote(&mut self) -> Result<VoteResult> {

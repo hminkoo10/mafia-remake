@@ -232,7 +232,7 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Soldier => "마피아 공격을 한 번 버팁니다.",
         Role::Spy => "밤마다 직업을 확인하고 마피아와 접선합니다.",
         Role::Contractor => "두 명의 직업을 맞히면 암살합니다.",
-        Role::Thief => "투표 시간에 능력을 훔칩니다.",
+        Role::Thief => "지목 투표한 대상의 능력을 훔칩니다.",
         Role::Witch => "밤에 대상을 개구리로 저주합니다.",
         Role::Scientist => "사망 후 다음 밤 부활합니다.",
         Role::Madam => "지목 투표로 선택한 대상을 유혹합니다.",
@@ -1626,9 +1626,6 @@ pub fn day_action_secret_text(kind: &str) -> &'static str {
         "psychologist" => {
             "심리학자 낮 행동을 선택하세요.\n자신을 제외한 생존자 2명을 선택하면 두 사람이 같은 팀인지 즉시 확인합니다."
         }
-        "thief" => {
-            "도둑 투표 시간 행동을 선택하세요.\n하루에 한 번 플레이어 한 명의 직업 능력을 훔쳐 다음 밤까지 사용할 수 있습니다."
-        }
         "hypnotist" => {
             "최면에 걸린 플레이어들을 모두 깨웁니다.\n시민팀이면 시민팀으로만 보이고, 시민팀이 아니면 직업을 확인합니다.\n최면을 해제하면 다음 밤에는 최면을 걸 수 없습니다."
         }
@@ -1767,7 +1764,6 @@ pub async fn run_vote(
         true,
     )
     .await?;
-    send_thief_vote_actions(ctx, running).await;
     tokio::select! {
         _ = tokio::time::sleep(Duration::from_secs(seconds)) => {}
         _ = vote_notify.notified() => {}
@@ -2071,32 +2067,6 @@ fn confirmation_rejection_message(
         )
     } else {
         "반대가 많아 처형하지 않습니다.".to_string()
-    }
-}
-
-pub async fn send_thief_vote_actions(ctx: &serenity::Context, running: &Arc<RwLock<RunningGame>>) {
-    let actors = running.read().await.game.thief_vote_actors();
-    let mut failed_names = Vec::new();
-    for actor in actors {
-        if !send_day_single_select(ctx, running, &actor, "thief", "도벽 대상을 선택하세요").await
-        {
-            failed_names.push(actor.name);
-        }
-    }
-    if !failed_names.is_empty() {
-        let channel_id = running.read().await.channel_id;
-        let _ = send_channel_embed(
-            &ctx.http,
-            channel_id,
-            format!(
-                "도둑 도벽 선택지를 보낼 수 없는 참가자: {}",
-                failed_names.join(", ")
-            ),
-            "마피아 게임",
-            serenity::Colour::RED,
-            vec![],
-        )
-        .await;
     }
 }
 
