@@ -661,6 +661,37 @@ fn record_dead_chat_deaths(running: &mut RunningGame, dead_players: &[Player]) {
     }
 }
 
+fn dead_chat_unlock_candidates(running: &RunningGame) -> Vec<Player> {
+    if running.game.phase != Phase::Day {
+        return Vec::new();
+    }
+
+    let mut user_ids = running
+        .pending_dead_chat_user_ids
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    user_ids.extend(
+        running
+            .dead_chat_unlocked_ids
+            .iter()
+            .filter(|user_id| {
+                !running
+                    .anonymous_dead_input_channel_ids
+                    .contains_key(user_id)
+            })
+            .copied(),
+    );
+
+    let mut players = user_ids
+        .into_iter()
+        .filter_map(|user_id| running.game.get_player(user_id).cloned())
+        .filter(|player| !player.alive)
+        .collect::<Vec<_>>();
+    players.sort_by_key(|player| player.user_id);
+    players
+}
+
 pub fn role_chat_player_ids(game: &MafiaGame, role: Role) -> Vec<u64> {
     game.alive_players()
         .into_iter()
@@ -4728,8 +4759,7 @@ pub async fn unlock_pending_dead_chats(
             running_read.guild_id,
             running_read.channel_id,
             running_read.anonymous_enabled,
-            running_read.game.phase == Phase::Day
-                && !running_read.pending_dead_chat_user_ids.is_empty(),
+            !dead_chat_unlock_candidates(&running_read).is_empty(),
         )
     };
     if !should_unlock {
@@ -4758,17 +4788,12 @@ pub async fn unlock_pending_dead_chats(
         if running_write.game.phase != Phase::Day {
             return;
         }
-        let pending_ids = running_write
-            .pending_dead_chat_user_ids
-            .drain()
-            .collect::<Vec<_>>();
-        let mut players = Vec::new();
-        for user_id in pending_ids {
-            let player = running_write.game.get_player(user_id).cloned();
-            if let Some(player) = player.filter(|player| !player.alive) {
-                running_write.dead_chat_unlocked_ids.insert(user_id);
-                players.push(player);
-            }
+        let players = dead_chat_unlock_candidates(&running_write);
+        for player in &players {
+            running_write
+                .pending_dead_chat_user_ids
+                .remove(&player.user_id);
+            running_write.dead_chat_unlocked_ids.insert(player.user_id);
         }
         players
     };
@@ -4971,6 +4996,111 @@ mod tests {
             Vec::new(),
         )
         .unwrap()
+    }
+
+    fn dead_chat_test_running() -> RunningGame {
+        let game = role_chat_test_game();
+        let initial_roles = game
+            .players
+            .iter()
+            .map(|player| (player.user_id, player.role))
+            .collect();
+        let participant_user_ids = game.players.iter().map(|player| player.user_id).collect();
+        RunningGame {
+            guild_id: serenity::GuildId::new(1),
+            channel_id: serenity::ChannelId::new(10),
+            participant_user_ids,
+            spectator_user_ids: Default::default(),
+            game,
+            reveal_death_roles: true,
+            anonymous_enabled: false,
+            started_at: Instant::now(),
+            activity_game_key: "test-game".to_string(),
+            phase_deadline: None,
+            initial_roles,
+            memos: Default::default(),
+            game_status_message_id: None,
+            game_status_text: None,
+            anonymous_aliases: Default::default(),
+            anonymous_original_names: Default::default(),
+            anonymous_input_channel_ids: Default::default(),
+            anonymous_input_channel_owners: Default::default(),
+            anonymous_dead_input_channel_ids: Default::default(),
+            anonymous_dead_input_channel_owners: Default::default(),
+            dead_chat_unlocked_ids: Default::default(),
+            pending_dead_chat_user_ids: Default::default(),
+            anonymous_shaman_input_channel_ids: Default::default(),
+            anonymous_shaman_input_channel_owners: Default::default(),
+            anonymous_role_input_channel_ids: Default::default(),
+            anonymous_role_input_channels: Default::default(),
+            anonymous_role_input_status_message_ids: Default::default(),
+            anonymous_role_status_texts: Default::default(),
+            anonymous_channel_topics: Default::default(),
+            anonymous_webhook_urls: Default::default(),
+            original_game_channel_overwrites: Default::default(),
+            game_channel_overwrites: Default::default(),
+            member_channel_overwrites: Default::default(),
+            original_slowmode_delays: Default::default(),
+            private_channel_ids: Default::default(),
+            private_role_status_message_ids: Default::default(),
+            private_role_status_texts: Default::default(),
+            memo_channel_ids: Default::default(),
+            shaman_channel_id: None,
+            shaman_status_message_id: None,
+            shaman_status_text: None,
+            frog_channel_id: None,
+            frog_game_channel_overwrites: Default::default(),
+            madam_seduction_channel_overwrites: Default::default(),
+            day_chat_open: true,
+            final_defense_user_id: None,
+            day_skip_voter_ids: Default::default(),
+            day_skip_confirmed: false,
+            day_extension_voter_ids: Default::default(),
+            day_extension_active: false,
+            day_extension_confirmed: false,
+            night_timed_events_due: false,
+            contractor_contract_drafts: Default::default(),
+            activity_night_results: Default::default(),
+            night_notify: Arc::new(Notify::new()),
+            vote_notify: Arc::new(Notify::new()),
+            confirm_notify: Arc::new(Notify::new()),
+            day_notify: Arc::new(Notify::new()),
+            stats_recorded: false,
+        }
+    }
+
+    #[test]
+    fn pending_dead_chat_unlocks_when_day_starts() {
+        let mut running = dead_chat_test_running();
+        let user_id = running.game.players[0].user_id;
+        running.game.players[0].alive = false;
+        running.pending_dead_chat_user_ids.insert(user_id);
+
+        running.game.phase = Phase::Night;
+        assert!(dead_chat_unlock_candidates(&running).is_empty());
+
+        running.game.phase = Phase::Day;
+        let candidates = dead_chat_unlock_candidates(&running);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].user_id, user_id);
+    }
+
+    #[test]
+    fn unlocked_dead_without_channel_is_retried_on_day() {
+        let mut running = dead_chat_test_running();
+        let user_id = running.game.players[0].user_id;
+        running.game.players[0].alive = false;
+        running.game.phase = Phase::Day;
+        running.dead_chat_unlocked_ids.insert(user_id);
+
+        let candidates = dead_chat_unlock_candidates(&running);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].user_id, user_id);
+
+        running
+            .anonymous_dead_input_channel_ids
+            .insert(user_id, serenity::ChannelId::new(123));
+        assert!(dead_chat_unlock_candidates(&running).is_empty());
     }
 
     #[test]

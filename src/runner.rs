@@ -1297,6 +1297,7 @@ pub async fn run_day(
     sync_madam_seduction_permissions(ctx, running).await;
     sync_anonymous_general_chat_permissions(ctx, running).await;
     sync_shaman_chat_access(ctx, data, running).await;
+    unlock_pending_dead_chats(ctx, data, running).await;
     for (mercenary, client) in &mercenary_contracts {
         let _ = send_player_secret(
             ctx,
