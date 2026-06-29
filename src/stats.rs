@@ -64,6 +64,10 @@ pub struct PlayerStats {
     #[serde(default)]
     pub losses: i64,
     #[serde(default)]
+    pub win_streak: i64,
+    #[serde(default)]
+    pub best_win_streak: i64,
+    #[serde(default)]
     pub mafia_team_games: i64,
     #[serde(default)]
     pub play_seconds: i64,
@@ -113,6 +117,8 @@ impl Default for PlayerStats {
             games: 0,
             wins: 0,
             losses: 0,
+            win_streak: 0,
+            best_win_streak: 0,
             mafia_team_games: 0,
             play_seconds: 0,
             rating: INITIAL_RATING,
@@ -233,8 +239,11 @@ pub fn record_game_stats(
         }
         if won {
             entry.wins += 1;
+            entry.win_streak += 1;
+            entry.best_win_streak = entry.best_win_streak.max(entry.win_streak);
         } else {
             entry.losses += 1;
+            entry.win_streak = 0;
         }
         entry.rating = rating_change.after;
         entry.rating_games += 1;
@@ -787,7 +796,7 @@ pub fn leaderboard_text(stats: &StatsFile, metric: &str) -> String {
     let mut lines = vec![format!("기준: **{}**", leaderboard_metric_name(metric))];
     for (index, (_user_id, entry)) in entries.into_iter().enumerate() {
         lines.push(format!(
-            "{}. **{}** - {}승 {}패 / {}판 / 승률 {} / 마피아팀 {}회 / 게임시간 {} / 레이팅 {}점 ({})",
+            "{}. **{}** - {}승 {}패 / {}판 / 승률 {} / 현재 {}연승 / 최고 {}연승 / 마피아팀 {}회 / 게임시간 {} / 레이팅 {}점 ({})",
             index + 1,
             if entry.name.is_empty() {
                 "알 수 없음"
@@ -798,6 +807,8 @@ pub fn leaderboard_text(stats: &StatsFile, metric: &str) -> String {
             entry.losses,
             entry.games,
             win_rate_text(entry.wins, entry.games),
+            entry.win_streak,
+            entry.best_win_streak,
             entry.mafia_team_games,
             play_duration_text(entry.play_seconds),
             entry.rating,
@@ -891,6 +902,7 @@ pub fn leaderboard_value(entry: &PlayerStats, metric: &str) -> f64 {
             }
         }
         "games" => entry.games as f64,
+        "streak" => entry.win_streak as f64,
         "mafia" => entry.mafia_team_games as f64,
         "playtime" => entry.play_seconds as f64,
         "rating" => entry.rating as f64,
@@ -902,6 +914,7 @@ pub fn leaderboard_metric_name(metric: &str) -> &'static str {
     match metric {
         "winrate" => "승률",
         "games" => "판수",
+        "streak" => "연승",
         "mafia" => "마피아팀 플레이",
         "playtime" => "게임시간",
         "rating" => "레이팅",
@@ -1059,6 +1072,60 @@ mod tests {
         let text = leaderboard_text(&stats, "rating");
         assert!(text.starts_with("기준: **레이팅**\n1. **Beta**"));
         assert!(text.contains("2. **Alpha**"));
+    }
+
+    #[test]
+    fn win_streak_updates_and_sorts() {
+        let game = rating_test_game();
+        let roles = initial_roles(&game);
+        let citizen_id = game
+            .players
+            .iter()
+            .find(|player| game.is_citizen_team(player))
+            .map(|player| player.user_id)
+            .unwrap();
+        let mut stats = StatsFile::default();
+
+        record_game_stats(&mut stats, &game, &roles, 120, Winner::Citizen);
+        record_game_stats(&mut stats, &game, &roles, 120, Winner::Citizen);
+
+        let entry = stats.users.get(&citizen_id.to_string()).unwrap();
+        assert_eq!(entry.win_streak, 2);
+        assert_eq!(entry.best_win_streak, 2);
+
+        record_game_stats(&mut stats, &game, &roles, 120, Winner::Mafia);
+
+        let entry = stats.users.get(&citizen_id.to_string()).unwrap();
+        assert_eq!(entry.win_streak, 0);
+        assert_eq!(entry.best_win_streak, 2);
+
+        let mut ranking = StatsFile::default();
+        ranking.users.insert(
+            "1".to_string(),
+            PlayerStats {
+                name: "Alpha".to_string(),
+                games: 5,
+                wins: 4,
+                win_streak: 1,
+                best_win_streak: 4,
+                ..Default::default()
+            },
+        );
+        ranking.users.insert(
+            "2".to_string(),
+            PlayerStats {
+                name: "Beta".to_string(),
+                games: 4,
+                wins: 3,
+                win_streak: 3,
+                best_win_streak: 3,
+                ..Default::default()
+            },
+        );
+
+        let entries = leaderboard_entries(&ranking, "streak", 10);
+        assert_eq!(entries[0].0, "2");
+        assert_eq!(leaderboard_metric_name("streak"), "연승");
     }
 
     #[test]

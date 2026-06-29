@@ -57,6 +57,8 @@ enum LeaderboardMetric {
     Wins,
     #[name = "승률"]
     Winrate,
+    #[name = "연승"]
+    Streak,
     #[name = "판수"]
     Games,
     #[name = "마피아팀 횟수"]
@@ -72,6 +74,7 @@ impl LeaderboardMetric {
         match self {
             Self::Wins => "wins",
             Self::Winrate => "winrate",
+            Self::Streak => "streak",
             Self::Games => "games",
             Self::Mafia => "mafia",
             Self::Playtime => "playtime",

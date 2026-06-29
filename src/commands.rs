@@ -1830,11 +1830,13 @@ pub fn personal_stats_text(
         &entry.name
     };
     format!(
-        "{name}님의 전적\n전체 게임: **{}판**\n승리/패배: **{}승 {}패**\n승률: **{}**\n마피아팀 플레이: **{}회**\n게임시간: **{}**\n레이팅: **{}점** / **{}랭크** (최고 {}점, 반영 {}판)\n\n역할별 플레이\n{}",
+        "{name}님의 전적\n전체 게임: **{}판**\n승리/패배: **{}승 {}패**\n승률: **{}**\n연승: **{}연승** (최고 {}연승)\n마피아팀 플레이: **{}회**\n게임시간: **{}**\n레이팅: **{}점** / **{}랭크** (최고 {}점, 반영 {}판)\n\n역할별 플레이\n{}",
         entry.games,
         entry.wins,
         entry.losses,
         stats::win_rate_text(entry.wins, entry.games),
+        entry.win_streak,
+        entry.best_win_streak,
         entry.mafia_team_games,
         stats::play_duration_text(entry.play_seconds),
         entry.rating,
@@ -2023,6 +2025,7 @@ pub fn truncate_for_board(value: &str, max_chars: usize) -> String {
 pub fn leaderboard_metric_column(metric: &str) -> &'static str {
     match metric {
         "winrate" => "winrate",
+        "streak" => "streak",
         "games" => "games",
         "mafia" => "mafia",
         "playtime" => "time",
@@ -2106,11 +2109,12 @@ pub fn render_leaderboard_image(stats_file: &stats::StatsFile, metric: &str) -> 
     let columns = HashMap::from([
         ("rank", SIDE_PADDING + 32),
         ("name", SIDE_PADDING + 110),
-        ("record", SIDE_PADDING + 410),
-        ("games", SIDE_PADDING + 555),
-        ("winrate", SIDE_PADDING + 665),
-        ("mafia", SIDE_PADDING + 800),
-        ("time", SIDE_PADDING + 930),
+        ("record", SIDE_PADDING + 390),
+        ("games", SIDE_PADDING + 535),
+        ("winrate", SIDE_PADDING + 635),
+        ("streak", SIDE_PADDING + 745),
+        ("mafia", SIDE_PADDING + 850),
+        ("time", SIDE_PADDING + 955),
         ("rating", SIDE_PADDING + 1085),
     ]);
     let selected_column = leaderboard_metric_column(metric);
@@ -2121,6 +2125,7 @@ pub fn render_leaderboard_image(stats_file: &stats::StatsFile, metric: &str) -> 
         ("record", "승패"),
         ("games", "판수"),
         ("winrate", "승률"),
+        ("streak", "연승"),
         ("mafia", "마피아"),
         ("time", "시간"),
         ("rating", "랭크/레이팅"),
@@ -2184,6 +2189,7 @@ pub fn render_leaderboard_image(stats_file: &stats::StatsFile, metric: &str) -> 
             ("record", format!("{}승 {}패", entry.wins, entry.losses)),
             ("games", format!("{}판", entry.games)),
             ("winrate", stats::win_rate_text(entry.wins, entry.games)),
+            ("streak", format!("{}연승", entry.win_streak)),
             ("mafia", format!("{}회", entry.mafia_team_games)),
             ("time", stats::play_duration_text(entry.play_seconds)),
             (

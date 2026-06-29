@@ -29,8 +29,9 @@ use uuid::Uuid;
 const WEB_SETTINGS_PATH: &str = "/web-settings";
 const WEB_SETTINGS_SESSION_TTL_SECONDS: u64 = 600;
 const MAX_GAME_PLAYERS: usize = 24;
-const WEB_LEADERBOARD_METRICS: &[&str] =
-    &["rating", "wins", "winrate", "games", "mafia", "playtime"];
+const WEB_LEADERBOARD_METRICS: &[&str] = &[
+    "rating", "wins", "streak", "winrate", "games", "mafia", "playtime",
+];
 
 struct WebRoleGuide {
     role: Role,
@@ -1872,6 +1873,10 @@ async fn web_leaderboard_values(state: &WebSettingsState, metric: &str, limit: u
                 "games": entry.games,
                 "wins": entry.wins,
                 "losses": entry.losses,
+                "win_streak": entry.win_streak,
+                "best_win_streak": entry.best_win_streak,
+                "streak_text": format!("{}연승", entry.win_streak),
+                "best_streak_text": format!("{}연승", entry.best_win_streak),
                 "winrate": winrate,
                 "winrate_text": stats::win_rate_text(entry.wins, entry.games),
                 "mafia_team_games": entry.mafia_team_games,
@@ -2253,7 +2258,7 @@ fn render_leaderboard_podium(leaderboard: &Value) -> String {
         .take(3)
         .map(|entry| {
             format!(
-                r#"<div class="podium-card"><div class="rank">#{}</div><div class="name">{}</div><div class="rating">{}점 · {}랭크</div><div class="meta">{}승 {}패 · 승률 {}</div></div>"#,
+                r#"<div class="podium-card"><div class="rank">#{}</div><div class="name">{}</div><div class="rating">{}점 · {}랭크</div><div class="meta">{}승 {}패 · 승률 {} · 연승 {}</div></div>"#,
                 safe_text(entry.get("rank")),
                 safe_text(entry.get("name")),
                 safe_text(entry.get("rating")),
@@ -2261,6 +2266,7 @@ fn render_leaderboard_podium(leaderboard: &Value) -> String {
                 safe_text(entry.get("wins")),
                 safe_text(entry.get("losses")),
                 safe_text(entry.get("winrate_text")),
+                safe_text(entry.get("streak_text")),
             )
         })
         .collect::<Vec<_>>()
@@ -2293,7 +2299,7 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
         .iter()
         .map(|entry| {
             format!(
-                r#"<tr><td class="num">{}</td><td>{}</td><td class="num">{}점 · {}</td><td>{}승 {}패</td><td class="num">{}</td><td class="num">{}</td><td class="num">{}</td><td>{}</td></tr>"#,
+                r#"<tr><td class="num">{}</td><td>{}</td><td class="num">{}점 · {}</td><td>{}승 {}패</td><td class="num">{}</td><td class="num">{}</td><td class="num">{}</td><td class="num">{}</td><td>{}</td></tr>"#,
                 safe_text(entry.get("rank")),
                 safe_text(entry.get("name")),
                 safe_text(entry.get("rating")),
@@ -2301,6 +2307,7 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
                 safe_text(entry.get("wins")),
                 safe_text(entry.get("losses")),
                 safe_text(entry.get("winrate_text")),
+                safe_text(entry.get("streak_text")),
                 safe_text(entry.get("games")),
                 safe_text(entry.get("mafia_team_games")),
                 safe_text(entry.get("playtime")),
@@ -2314,7 +2321,7 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
         "<h2>전체 순위</h2>"
     };
     format!(
-        r#"<section class="panel">{title}<table><thead><tr><th class="num">순위</th><th>이름</th><th class="num">레이팅/랭크</th><th>승패</th><th class="num">승률</th><th class="num">판수</th><th class="num">마피아팀</th><th>게임시간</th></tr></thead><tbody>{rows}</tbody></table></section>"#
+        r#"<section class="panel">{title}<table><thead><tr><th class="num">순위</th><th>이름</th><th class="num">레이팅/랭크</th><th>승패</th><th class="num">승률</th><th class="num">연승</th><th class="num">판수</th><th class="num">마피아팀</th><th>게임시간</th></tr></thead><tbody>{rows}</tbody></table></section>"#
     )
 }
 
@@ -2601,7 +2608,7 @@ fn render_api_docs_page(base_url: &str) -> String {
         ),
         (
             "GET /api/leaderboard/{metric}",
-            "wins, winrate, games, mafia, playtime, rating 기준 리더보드를 반환합니다. 각 항목에 rating_rank가 포함됩니다.",
+            "wins, streak, winrate, games, mafia, playtime, rating 기준 리더보드를 반환합니다. 각 항목에 rating_rank와 win_streak가 포함됩니다.",
         ),
     ];
     let protected_endpoints = [
@@ -2616,7 +2623,7 @@ fn render_api_docs_page(base_url: &str) -> String {
         ("GET /api/v1/stats", "전적 요약을 반환합니다. API 키 필요."),
         (
             "GET /api/v1/leaderboard/{metric}",
-            "보호 리더보드를 반환합니다. 각 항목에 rating_rank가 포함됩니다. API 키 필요.",
+            "보호 리더보드를 반환합니다. streak 정렬과 win_streak 필드가 포함됩니다. API 키 필요.",
         ),
         (
             "GET /api/v1/games",
