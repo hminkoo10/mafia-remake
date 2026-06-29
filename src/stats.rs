@@ -10,6 +10,7 @@ const RATING_HISTORY_LIMIT: usize = 20;
 const RATING_DELTA_CAP: i64 = 80;
 const ROLE_DELTA_CAP: i64 = 14;
 const LOSING_RATING_GAIN_CAP: i64 = 5;
+const FIRST_DEATH_LOSS_RELIEF_DIVISOR: i64 = 4;
 const ROLE_STATS_ORDER: &[Role] = &[
     Role::Mafia,
     Role::Police,
@@ -451,7 +452,9 @@ fn rating_change_for_player(
         -RATING_DELTA_CAP,
         RATING_DELTA_CAP,
     );
-    let final_delta = final_rating_delta(team_delta, role_delta + streak_delta, won);
+    let raw_final_delta = final_rating_delta(team_delta, role_delta + streak_delta, won);
+    let first_death_relief = first_death_loss_relief(game, player, raw_final_delta, won);
+    let final_delta = raw_final_delta + first_death_relief;
     let after = (old_rating + final_delta).max(0);
     let mut reasons = vec![if won {
         "소속 진영 승리".to_string()
@@ -469,8 +472,11 @@ fn rating_change_for_player(
     if combined_delta != team_delta + role_delta + streak_delta {
         reasons.push("전체 레이팅 변동 상한 적용".to_string());
     }
-    if !won && final_delta != combined_delta {
+    if !won && raw_final_delta != combined_delta {
         reasons.push("패배팀 상승 제한 적용".to_string());
+    }
+    if first_death_relief > 0 {
+        reasons.push(format!("첫 사망 패배 완화 +{first_death_relief}"));
     }
     RatingChange {
         before: old_rating,
@@ -645,6 +651,13 @@ fn final_rating_delta(team_delta: i64, role_delta: i64, won: bool) -> i64 {
     } else {
         combined_delta.min(LOSING_RATING_GAIN_CAP)
     }
+}
+
+fn first_death_loss_relief(game: &MafiaGame, player: &Player, final_delta: i64, won: bool) -> i64 {
+    if won || final_delta >= 0 || game.death_order.first() != Some(&player.user_id) {
+        return 0;
+    }
+    ((-final_delta + FIRST_DEATH_LOSS_RELIEF_DIVISOR - 1) / FIRST_DEATH_LOSS_RELIEF_DIVISOR).max(1)
 }
 
 fn player_won_game(game: &MafiaGame, player: &Player, winner: Winner) -> bool {
@@ -1361,6 +1374,74 @@ mod tests {
                 "{role:?} should have a visible reason"
             );
         }
+    }
+
+    #[test]
+    fn first_dead_losing_player_loses_less_rating() {
+        let game = rating_test_game();
+        let roles = initial_roles(&game);
+        let loser = game
+            .players
+            .iter()
+            .find(|player| game.is_citizen_team(player))
+            .cloned()
+            .unwrap();
+        let other_id = game
+            .players
+            .iter()
+            .find(|player| player.user_id != loser.user_id)
+            .map(|player| player.user_id)
+            .unwrap();
+
+        let mut first_dead_game = game.clone();
+        first_dead_game.get_player_mut(loser.user_id).unwrap().alive = false;
+        first_dead_game.death_order.push(loser.user_id);
+
+        let mut later_dead_game = game.clone();
+        later_dead_game.get_player_mut(loser.user_id).unwrap().alive = false;
+        later_dead_game.death_order.push(other_id);
+        later_dead_game.death_order.push(loser.user_id);
+
+        let mut first_stats = StatsFile::default();
+        let first_log = record_game_stats(
+            &mut first_stats,
+            &first_dead_game,
+            &roles,
+            120,
+            Winner::Mafia,
+        );
+        let first_item = first_log
+            .iter()
+            .find(|item| item.name == loser.name)
+            .unwrap();
+
+        let mut later_stats = StatsFile::default();
+        let later_log = record_game_stats(
+            &mut later_stats,
+            &later_dead_game,
+            &roles,
+            120,
+            Winner::Mafia,
+        );
+        let later_item = later_log
+            .iter()
+            .find(|item| item.name == loser.name)
+            .unwrap();
+
+        assert!(first_item.delta > later_item.delta);
+        assert!(first_item.delta <= 0);
+        assert!(
+            first_item
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("첫 사망 패배 완화"))
+        );
+        assert!(
+            !later_item
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("첫 사망 패배 완화"))
+        );
     }
 
     #[test]

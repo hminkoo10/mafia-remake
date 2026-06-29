@@ -100,6 +100,7 @@ pub struct MafiaGame {
     pub cult_bells_this_night: u32,
     pub joker_won: bool,
     pub joker_winner_id: Option<u64>,
+    pub death_order: Vec<u64>,
     pub rating_events: HashMap<u64, Vec<RatingEvent>>,
     pub rating_action_counts: HashMap<u64, u32>,
 }
@@ -253,6 +254,7 @@ impl MafiaGame {
             cult_bells_this_night: 0,
             joker_won: false,
             joker_winner_id: None,
+            death_order: Vec::new(),
             rating_events: HashMap::new(),
             rating_action_counts: HashMap::new(),
         };
@@ -553,6 +555,7 @@ impl MafiaGame {
             return None;
         }
         self.players[index].alive = false;
+        self.death_order.push(user_id);
         self.frog_user_ids.remove(&user_id);
         if self.players[index].role == Role::Scientist
             && self.scientist_revive_used_ids.insert(user_id)
@@ -1227,6 +1230,7 @@ mod tests {
 
         assert_eq!(game.mark_dead(1).map(|player| player.user_id), Some(1));
         assert!(game.mark_dead(1).is_none());
+        assert_eq!(game.death_order, vec![1]);
     }
 
     #[test]

@@ -106,10 +106,13 @@
 | 한 판 전체 변동 상한 | `-80 ~ +80` |
 | 역할 보정 상한 | `-14 ~ +14` |
 | 패배팀 최종 상승 상한 | `+5` |
+| 첫 사망 패배 완화 | 최종 손실의 `25%` 완화 |
 | 레이팅 최저값 | `0` |
 | 레이팅 히스토리 보관 수 | `20` |
 
 패배팀 최종 상승 상한은 역할 활약으로 패배했는데도 너무 많이 오르는 상황을 막기 위한 장치입니다. 예를 들어 패배팀이 `team_delta = -2`, `role_delta = +14`를 얻으면 합산은 `+12`지만 최종 상승은 `+5`까지만 허용됩니다.
+
+첫 사망 패배 완화는 가장 먼저 사망한 플레이어가 그 판에서 패배했을 때만 적용됩니다. 최종 변화량이 음수일 경우 손실의 약 25%를 되돌려, 초반 사망으로 게임 영향력이 크게 줄어든 상황을 조금 보정합니다.
 
 ---
 
@@ -136,6 +139,9 @@ if won:
     final_delta = combined_delta
 else:
     final_delta = min(combined_delta, +5)
+
+if first_dead and not won and final_delta < 0:
+    final_delta += ceil(abs(final_delta) / 4)
 
 after = max(old_rating + final_delta, 0)
 ```
@@ -294,6 +300,7 @@ role_delta = clamp(이벤트 점수 합계 + 미사용 패널티, -14, +14)
 - 한 판 역할 보정은 최대 `+14`, 최소 `-14`입니다.
 - 역할 보정은 승패 Elo와 합산됩니다.
 - 패배팀은 역할 보정으로 최종 `+5`까지만 오를 수 있습니다.
+- 첫 사망자가 패배하면 최종 손실의 25%가 완화됩니다.
 - 성공 이벤트가 여러 번 있어도 상한 이상은 잘립니다.
 - 상한에 걸리면 로그에 `직업 보정 상한 적용`이 남습니다.
 
@@ -675,6 +682,7 @@ Discord:
 - 역할 보정이 `-14 ~ +14`를 넘지 않는지
 - 전체 변동이 `-80 ~ +80`을 넘지 않는지
 - 패배팀 최종 상승이 `+5`를 넘지 않는지
+- 첫 사망 패배 완화가 첫 사망자에게만 적용되는지
 - `rating_history`가 최근 20개만 남는지
 - `/내정보`, `/리더보드`, 웹 리더보드, API에 랭크가 표시되는지
 
@@ -684,6 +692,7 @@ Discord:
 - `rating_progression_helps_lower_ratings_more`
 - `role_rating_adjustment_is_capped`
 - `losing_team_positive_gain_is_capped`
+- `first_dead_losing_player_loses_less_rating`
 - `leaderboard_sorts_by_rating`
 - `successful_role_event_is_recorded_in_rating_history`
 

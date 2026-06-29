@@ -2438,6 +2438,7 @@ fn render_rating_page() -> String {
   <div class="card"><span>역할 보정</span><strong>±14점</strong></div>
   <div class="card"><span>패배팀 최대 상승</span><strong>+5점</strong></div>
   <div class="card"><span>연승 보너스</span><strong>최대 +16점</strong></div>
+  <div class="card"><span>첫 사망 패배 완화</span><strong>손실 25% 완화</strong></div>
 </section>
 <section class="panel">
   <h2>점수가 오르는 기준</h2>
@@ -2458,12 +2459,13 @@ fn render_rating_page() -> String {
   <h2>게임 끝나고 보이는 로그 읽는 법</h2>
   <pre>- 닉네임 (의사) 1000 -&gt; 1037 (+37) [팀 +32 / 직업 +5]
   사유: 소속 진영 승리, 마피아 공격 치료 성공 +5, 레이팅 구간 보정 x1.15</pre>
-  <p class="meta">팀 점수는 승패와 상대 난이도에서 나온 값이고, 직업 점수는 해당 판 활약에서 나온 값입니다. 두 값을 합친 뒤 상한과 패배팀 제한을 적용해 최종 변화량이 됩니다.</p>
+  <p class="meta">팀 점수는 승패와 상대 난이도에서 나온 값이고, 직업 점수는 해당 판 활약에서 나온 값입니다. 두 값을 합친 뒤 상한과 패배팀 제한을 적용하고, 첫 사망자가 패배한 경우 손실을 조금 완화해 최종 변화량이 됩니다.</p>
 </section>
 <section class="panel">
   <h2>자주 묻는 질문</h2>
   <table><tbody>
     <tr><th>졌는데 왜 점수가 올랐나요?</th><td>역할 활약 점수가 컸기 때문입니다. 다만 패배팀은 한 판에 최대 +5점까지만 오릅니다.</td></tr>
+    <tr><th>제일 먼저 죽고 졌는데 왜 덜 깎였나요?</th><td>첫 사망자는 게임에 영향을 줄 기회가 가장 적으므로, 패배 시 최종 손실의 25%를 완화합니다.</td></tr>
     <tr><th>이겼는데 왜 조금 올랐나요?</th><td>이미 레이팅이 높거나, 상대 평균 레이팅이 낮으면 기대 승률이 높아서 보상이 줄어듭니다.</td></tr>
     <tr><th>역할 행동을 실패하면 무조건 감점인가요?</th><td>아닙니다. 능력을 제출했다면 핵심 능력 미사용 감점은 피합니다. 성공 이벤트가 없으면 추가 점수만 없는 구조입니다.</td></tr>
     <tr><th>랭크는 어디서 보나요?</th><td>내정보, 리더보드, 웹 리더보드, API 응답에서 볼 수 있습니다.</td></tr>
@@ -3685,6 +3687,7 @@ mod tests {
         assert!(html.contains(r#"<a href="/rating">레이팅 설명</a>"#));
         assert!(html.contains("초기 레이팅"));
         assert!(html.contains("패배팀 최대 상승"));
+        assert!(html.contains("첫 사망 패배 완화"));
         assert!(html.contains("랭크표"));
         assert!(html.contains("자주 묻는 질문"));
         assert!(html.contains("졌는데 왜 점수가 올랐나요?"));
