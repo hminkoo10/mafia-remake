@@ -233,7 +233,7 @@ impl MafiaGame {
                 actor_id,
                 target_id,
                 "보호 대상을 선택해야 합니다.",
-                "이미 이번 밤 행동을 선택했습니다.",
+                "",
                 RoleActionMap::Doctor,
                 None,
                 "보호 대상",
@@ -243,7 +243,7 @@ impl MafiaGame {
                 actor_id,
                 target_id,
                 "공갈 대상을 선택해야 합니다.",
-                "이미 이번 밤 행동을 선택했습니다.",
+                "",
                 RoleActionMap::Gangster,
                 Some("건달은 자기 자신을 공갈할 수 없습니다."),
                 "공갈 대상",
@@ -252,7 +252,7 @@ impl MafiaGame {
                 actor_id,
                 target_id,
                 "조사 대상을 선택해야 합니다.",
-                "이미 이번 밤 행동을 선택했습니다.",
+                "",
                 RoleActionMap::Police,
                 Some("경찰은 자기 자신을 조사할 수 없습니다."),
                 "조사 투표 대상",
@@ -265,7 +265,7 @@ impl MafiaGame {
                 actor_id,
                 target_id,
                 "추적 대상을 선택해야 합니다.",
-                "이미 이번 밤 행동을 선택했습니다.",
+                "",
                 RoleActionMap::Detective,
                 Some("사립탐정은 자기 자신을 추적할 수 없습니다."),
                 "추적 대상",
@@ -285,7 +285,7 @@ impl MafiaGame {
                 actor_id,
                 target_id,
                 "지목 대상을 선택해야 합니다.",
-                "이미 이번 밤 행동을 선택했습니다.",
+                "",
                 RoleActionMap::Terrorist,
                 Some("테러리스트는 자기 자신을 지목할 수 없습니다."),
                 "지목 대상",
@@ -294,7 +294,7 @@ impl MafiaGame {
                 actor_id,
                 target_id,
                 "저주 대상을 선택해야 합니다.",
-                "이미 이번 밤 행동을 선택했습니다.",
+                "",
                 RoleActionMap::Witch,
                 Some("마녀는 자기 자신을 저주할 수 없습니다."),
                 "저주 대상",
@@ -339,7 +339,7 @@ impl MafiaGame {
         actor_id: u64,
         target_id: Option<u64>,
         missing: &str,
-        duplicate: &str,
+        _duplicate: &str,
         map: RoleActionMap,
         self_error: Option<&str>,
         label: &str,
@@ -347,9 +347,6 @@ impl MafiaGame {
         let Some(target_id) = target_id else {
             bail!("{}", missing);
         };
-        if self.action_contains(map, actor_id) {
-            bail!("{}", duplicate);
-        }
         if actor_id == target_id {
             if let Some(message) = self_error {
                 bail!("{}", message);
@@ -368,17 +365,13 @@ impl MafiaGame {
         let Some(target_id) = target_id else {
             bail!("대상을 선택해야 합니다.");
         };
-        if self.nurse_targets.contains_key(&actor_id)
-            || self.nurse_prescription_targets.contains_key(&actor_id)
-        {
-            bail!("이미 이번 밤 행동을 선택했습니다.");
-        }
         let selected = self.require_alive(target_id)?.clone();
         if self.nurse_contacted.contains(&actor_id) {
             if self.alive_role_count(Role::Doctor) > 0 {
                 bail!("의사가 살아있는 동안 간호사는 치료 대상을 직접 선택하지 않습니다.");
             }
             let proxy = self.proxy_target_id(target_id);
+            self.nurse_prescription_targets.remove(&actor_id);
             self.nurse_targets.insert(actor_id, proxy);
             return Ok(format!("치료 대상: {}", selected.name));
         }
@@ -386,14 +379,9 @@ impl MafiaGame {
             bail!("간호사는 자기 자신을 처방할 수 없습니다.");
         }
         let proxy = self.proxy_target_id(target_id);
+        self.nurse_targets.remove(&actor_id);
         self.nurse_prescription_targets.insert(actor_id, proxy);
-        if selected.role == Role::Doctor {
-            self.nurse_contacted.insert(actor_id);
-            self.nurse_contacts_this_night.push(actor_id);
-            Ok("[처방] 의사와 접선했습니다.".to_string())
-        } else {
-            Ok("[처방] 대상은 의사가 아닙니다.".to_string())
-        }
+        Ok(format!("처방 대상: {}", selected.name))
     }
 
     fn submit_vigilante_night_action(
@@ -404,9 +392,6 @@ impl MafiaGame {
         let Some(target_id) = target_id else {
             bail!("숙청 대상을 선택해야 합니다.");
         };
-        if self.vigilante_targets.contains_key(&actor_id) {
-            bail!("이미 이번 밤 행동을 선택했습니다.");
-        }
         if self.vigilante_execution_used_ids.contains(&actor_id) {
             bail!("숙청 처형은 이미 사용했습니다.");
         }
@@ -425,7 +410,6 @@ impl MafiaGame {
         }
         let proxy = self.proxy_target_id(target_id);
         self.vigilante_targets.insert(actor_id, proxy);
-        self.vigilante_execution_used_ids.insert(actor_id);
         Ok(format!("숙청 대상: {}", selected.name))
     }
 
@@ -437,7 +421,7 @@ impl MafiaGame {
             actor_id,
             target_id,
             "처형 대상을 선택해야 합니다.",
-            "이미 이번 밤 행동을 선택했습니다.",
+            "",
             RoleActionMap::Mercenary,
             Some("용병은 자기 자신을 처형할 수 없습니다."),
             "처형 대상",
@@ -451,9 +435,6 @@ impl MafiaGame {
         let Some(target_id) = target_id else {
             bail!("최면 대상을 선택해야 합니다.");
         };
-        if self.hypnotist_targets.contains_key(&actor_id) {
-            bail!("이미 이번 밤 행동을 선택했습니다.");
-        }
         if actor_id == target_id {
             bail!("최면술사는 자기 자신에게 최면을 걸 수 없습니다.");
         }
@@ -531,12 +512,8 @@ impl MafiaGame {
         if self.reporter_used_ids.contains(&actor_id) {
             bail!("기자는 특종을 이미 사용했습니다.");
         }
-        if self.reporter_targets.contains_key(&actor_id)
-            || self.reporter_skip_submitted.contains(&actor_id)
-        {
-            bail!("이미 이번 밤 행동을 선택했습니다.");
-        }
         let Some(target_id) = target_id else {
+            self.reporter_targets.remove(&actor_id);
             self.reporter_skip_submitted.insert(actor_id);
             return Ok(format!("{prefix}이번 밤에는 특종을 사용하지 않습니다."));
         };
@@ -545,8 +522,8 @@ impl MafiaGame {
         }
         let selected = self.require_alive(target_id)?.clone();
         let proxy = self.proxy_target_id(target_id);
+        self.reporter_skip_submitted.remove(&actor_id);
         self.reporter_targets.insert(actor_id, proxy);
-        self.reporter_used_ids.insert(actor_id);
         Ok(format!("{prefix}특종 대상: {}", selected.name))
     }
 
@@ -563,9 +540,6 @@ impl MafiaGame {
         let Some(target_id) = target_id else {
             bail!("{}", missing);
         };
-        if self.action_contains(map, actor_id) {
-            bail!("이미 이번 밤 행동을 선택했습니다.");
-        }
         let target = self.require_player(target_id)?.clone();
         if target.alive {
             bail!("{}", alive_error);
@@ -595,7 +569,6 @@ impl MafiaGame {
             "성불 상태인 사망자는 소생시킬 수 없습니다.",
             "소생 대상",
         )?;
-        self.priest_used_ids.insert(actor_id);
         Ok(format!("{prefix}{result}"))
     }
 
@@ -656,9 +629,6 @@ impl MafiaGame {
         if !stolen && !self.godfather_contacted.contains(&actor_id) {
             bail!("대부는 세 번째 밤부터 마피아 팀과 자동 접선되어 행동할 수 있습니다.");
         }
-        if self.godfather_targets.contains_key(&actor_id) {
-            bail!("이미 이번 밤 행동을 선택했습니다.");
-        }
         if actor_id == target_id {
             bail!("대부는 자기 자신을 지목할 수 없습니다.");
         }
@@ -675,9 +645,6 @@ impl MafiaGame {
         if self.day_number % 2 != 1 {
             bail!("교주는 홀수날 밤에만 포교할 수 있습니다.");
         }
-        if self.cult_targets.contains_key(&actor_id) {
-            bail!("이미 이번 밤 행동을 선택했습니다.");
-        }
         if actor_id == target_id {
             bail!("교주는 자기 자신을 포교할 수 없습니다.");
         }
@@ -688,14 +655,6 @@ impl MafiaGame {
             bail!("이미 교주팀인 대상은 포교할 수 없습니다.");
         }
         self.cult_targets.insert(actor_id, proxy);
-        if target.role != Role::Priest
-            && !self.is_mafia_team(&target)
-            && target.role != Role::CultLeader
-        {
-            if self.culted_ids.insert(target.user_id) {
-                self.cult_bells_this_night += 1;
-            }
-        }
         Ok(format!("포교 대상: {}", selected.name))
     }
 
@@ -703,19 +662,12 @@ impl MafiaGame {
         let Some(target_id) = target_id else {
             bail!("추종 대상을 선택해야 합니다.");
         };
-        if self.fanatic_targets.contains_key(&actor_id) {
-            bail!("이미 이번 밤 행동을 선택했습니다.");
-        }
         if actor_id == target_id {
             bail!("광신도는 자기 자신을 추종할 수 없습니다.");
         }
         let selected = self.require_alive(target_id)?.clone();
         let proxy = self.proxy_target_id(target_id);
-        let target = self.require_player(proxy)?.clone();
         self.fanatic_targets.insert(actor_id, proxy);
-        if target.role == Role::CultLeader && self.culted_ids.insert(actor_id) {
-            self.cult_bells_this_night += 1;
-        }
         Ok(format!("추종 대상: {}", selected.name))
     }
 
@@ -749,7 +701,7 @@ impl MafiaGame {
                 actor_id,
                 target_id,
                 "보호 대상을 선택해야 합니다.",
-                "이미 이번 밤 행동을 선택했습니다.",
+                "",
                 RoleActionMap::Doctor,
                 None,
                 &format!("{prefix}보호 대상"),
@@ -761,7 +713,7 @@ impl MafiaGame {
                 actor_id,
                 target_id,
                 "조사 대상을 선택해야 합니다.",
-                "이미 이번 밤 행동을 선택했습니다.",
+                "",
                 RoleActionMap::ThiefPolice,
                 Some("자기 자신은 조사할 수 없습니다."),
                 &format!("{prefix}조사 대상"),
@@ -774,7 +726,7 @@ impl MafiaGame {
                 actor_id,
                 target_id,
                 "추적 대상을 선택해야 합니다.",
-                "이미 이번 밤 행동을 선택했습니다.",
+                "",
                 RoleActionMap::Detective,
                 Some("자기 자신은 추적할 수 없습니다."),
                 &format!("{prefix}추적 대상"),
@@ -795,7 +747,7 @@ impl MafiaGame {
                 actor_id,
                 target_id,
                 "저주 대상을 선택해야 합니다.",
-                "이미 이번 밤 행동을 선택했습니다.",
+                "",
                 RoleActionMap::Witch,
                 Some("자기 자신은 저주할 수 없습니다."),
                 &format!("{prefix}저주 대상"),
@@ -805,7 +757,7 @@ impl MafiaGame {
                 actor_id,
                 target_id,
                 "지목 대상을 선택해야 합니다.",
-                "이미 이번 밤 행동을 선택했습니다.",
+                "",
                 RoleActionMap::Terrorist,
                 Some("자기 자신은 지목할 수 없습니다."),
                 &format!("{prefix}지목 대상"),
@@ -820,7 +772,7 @@ impl MafiaGame {
                 actor_id,
                 target_id,
                 "공갈 대상을 선택해야 합니다.",
-                "이미 이번 밤 행동을 선택했습니다.",
+                "",
                 RoleActionMap::Gangster,
                 Some("자기 자신은 공갈할 수 없습니다."),
                 &format!("{prefix}공갈 대상"),
@@ -852,9 +804,6 @@ impl MafiaGame {
         }
         if self.day_number < 2 {
             bail!("청부는 두 번째 밤부터 사용할 수 있습니다.");
-        }
-        if self.contractor_contracts.contains_key(&actor_id) {
-            bail!("이미 이번 밤 행동을 선택했습니다.");
         }
         if first_target_id == second_target_id {
             bail!("청부 대상 두 명은 서로 달라야 합니다.");

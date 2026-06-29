@@ -86,8 +86,46 @@ impl MafiaGame {
         })
     }
 
+    pub fn has_changeable_night_action(&mut self) -> bool {
+        self.night_action_actors()
+            .iter()
+            .any(|actor| self.night_action_can_be_changed(actor))
+    }
+
     pub fn should_finish_night_early(&mut self) -> bool {
-        self.all_night_actions_submitted() && !self.has_changeable_mafia_action()
+        self.all_night_actions_submitted() && !self.has_changeable_night_action()
+    }
+
+    pub fn night_action_can_be_changed(&self, actor: &Player) -> bool {
+        let role = if actor.role == Role::Thief {
+            match self.thief_night_role(actor) {
+                Some(role) => role,
+                None => return false,
+            }
+        } else {
+            actor.role
+        };
+        matches!(
+            role,
+            Role::Mafia
+                | Role::Doctor
+                | Role::Nurse
+                | Role::Gangster
+                | Role::Police
+                | Role::Vigilante
+                | Role::Hypnotist
+                | Role::Mercenary
+                | Role::Reporter
+                | Role::Detective
+                | Role::Shaman
+                | Role::Priest
+                | Role::Contractor
+                | Role::Witch
+                | Role::Godfather
+                | Role::Terrorist
+                | Role::CultLeader
+                | Role::Fanatic
+        )
     }
 
     fn night_action_submitted(&self, actor: &Player) -> bool {

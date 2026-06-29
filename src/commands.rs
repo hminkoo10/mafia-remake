@@ -12,8 +12,8 @@ use super::{
 use crate::channel::*;
 use crate::embed::*;
 use crate::runner::{
-    effective_night_role, game_loop, night_action_components, night_targets, role_message,
-    role_short_guide, send_police_result_message, trigger_timed_night_events,
+    contractor_contract_components, effective_night_role, game_loop, night_action_components,
+    night_targets, role_message, role_short_guide, trigger_timed_night_events,
 };
 use ab_glyph::{
     Font, FontArc, GlyphId, OutlinedGlyph, PxScale, Rect as GlyphRect, ScaleFont, point,
@@ -492,7 +492,7 @@ pub async fn handle_contractor_submit(
         send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
         return Ok(());
     };
-    let (message, done, newly_contacted_mafia) = {
+    let (message, done, newly_contacted_mafia, targets) = {
         let mut running_write = running.write().await;
         let was_known_mafia_team = running_write
             .game
@@ -539,6 +539,11 @@ pub async fn handle_contractor_submit(
             }
         };
         running_write.contractor_contract_drafts.remove(&actor_id);
+        let targets = running_write
+            .game
+            .get_player(actor_id)
+            .map(|actor| running_write.game.contractor_contract_targets(actor))
+            .unwrap_or_default();
         let newly_contacted_mafia = running_write
             .game
             .get_player(actor_id)
@@ -549,7 +554,7 @@ pub async fn handle_contractor_submit(
             })
             .cloned();
         let done = running_write.game.should_finish_night_early();
-        (message, done, newly_contacted_mafia)
+        (message, done, newly_contacted_mafia, targets)
     };
     if let Some(player) = &newly_contacted_mafia {
         grant_private_role_member_access(ctx, data, &running, Role::Mafia, player).await;
@@ -563,11 +568,15 @@ pub async fn handle_contractor_submit(
             serenity::CreateInteractionResponse::UpdateMessage(
                 serenity::CreateInteractionResponseMessage::new()
                     .embed(make_embed(
-                        message,
+                        format!(
+                            "{message}\n\n밤이 끝나기 전 다시 선택하면 청부 대상을 변경할 수 있습니다."
+                        ),
                         "밤 행동 완료",
                         serenity::Colour::DARK_GREEN,
                     ))
-                    .components(vec![]),
+                    .components(contractor_contract_components(
+                        guild_id, actor_id, &targets,
+                    )),
             ),
         )
         .await?;
@@ -965,11 +974,10 @@ pub async fn handle_night_action(
         message,
         done,
         mafia_action_view,
+        changeable_action_view,
         spy_bonus_targets,
         newly_contacted_mafia,
         cult_bells,
-        immediate_police_result,
-        broadcast_police_result,
     ) = {
         let mut running_write = running.write().await;
         let was_known_mafia_team = running_write
@@ -985,30 +993,6 @@ pub async fn handle_night_action(
         };
         let cult_bells = running_write.game.consume_cult_bells();
         let actor = running_write.game.get_player(actor_id).cloned();
-        let is_police_action = actor
-            .as_ref()
-            .is_some_and(|actor| actor.role == Role::Police);
-        let is_thief_police_action = actor.as_ref().is_some_and(|actor| {
-            actor.role == Role::Thief
-                && running_write.game.thief_night_role(actor) == Some(Role::Police)
-        });
-        let (immediate_police_result, broadcast_police_result) = if is_thief_police_action {
-            (running_write.game.police_result_for_actor(actor_id), None)
-        } else if is_police_action {
-            if let Some(result) = running_write.game.consume_ready_police_result() {
-                (Some(result.clone()), Some(result))
-            } else {
-                (
-                    Some(
-                        "다른 경찰의 선택이 남아 있어 조사 결과는 아직 확정되지 않았습니다."
-                            .to_string(),
-                    ),
-                    None,
-                )
-            }
-        } else {
-            (None, None)
-        };
         let newly_contacted_mafia = actor
             .as_ref()
             .filter(|actor| {
@@ -1028,6 +1012,16 @@ pub async fn handle_night_action(
                 None
             }
         });
+        let changeable_action_view = actor.as_ref().and_then(|actor| {
+            if !running_write.game.night_action_can_be_changed(actor) {
+                return None;
+            }
+            let role = effective_night_role(&running_write.game, actor);
+            if role == Role::Mafia {
+                return None;
+            }
+            Some((role, night_targets(&running_write.game, actor)))
+        });
         let spy_bonus_targets = actor.and_then(|actor| {
             if actor.role == Role::Spy && running_write.game.spy_can_use_bonus_action(actor_id) {
                 Some(night_targets(&running_write.game, &actor))
@@ -1040,24 +1034,16 @@ pub async fn handle_night_action(
             message,
             done,
             mafia_action_view,
+            changeable_action_view,
             spy_bonus_targets,
             newly_contacted_mafia,
             cult_bells,
-            immediate_police_result,
-            broadcast_police_result,
         )
     };
     if let Some(player) = &newly_contacted_mafia {
         grant_private_role_member_access(ctx, data, &running, Role::Mafia, player).await;
     }
-    if let Some(result) = &broadcast_police_result {
-        send_police_result_message(ctx, &running, result, Some(actor_id)).await;
-    }
-    let response_message = if let Some(result) = immediate_police_result {
-        format!("{message}\n\n{result}")
-    } else {
-        message
-    };
+    let response_message = message;
     if let Some((targets, status_text)) = mafia_action_view {
         component
             .create_response(
@@ -1103,6 +1089,28 @@ pub async fn handle_night_action(
                             Role::Spy,
                             &targets,
                         )),
+                ),
+            )
+            .await?;
+        if running.read().await.night_timed_events_due {
+            trigger_timed_night_events(ctx, data, &running).await?;
+        }
+        return Ok(());
+    }
+    if let Some((role, targets)) = changeable_action_view {
+        component
+            .create_response(
+                ctx,
+                serenity::CreateInteractionResponse::UpdateMessage(
+                    serenity::CreateInteractionResponseMessage::new()
+                        .embed(make_embed(
+                            format!(
+                                "{response_message}\n\n밤이 끝나기 전 다시 선택하면 대상을 변경할 수 있습니다."
+                            ),
+                            "밤 행동 완료",
+                            serenity::Colour::DARK_GREEN,
+                        ))
+                        .components(night_action_components(guild_id, actor_id, role, &targets)),
                 ),
             )
             .await?;

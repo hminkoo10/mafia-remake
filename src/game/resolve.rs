@@ -407,6 +407,7 @@ impl MafiaGame {
             ..Default::default()
         };
         self.record_night_rating_events(&result);
+        self.record_night_action_usage(&result);
         self.clear_night_maps();
         self.phase = Phase::Day;
         // Madam seductions expire when the following day's vote ends.
@@ -574,6 +575,18 @@ impl MafiaGame {
         }
         for actor_id in result.graverobber_results.keys() {
             self.record_rating_event(*actor_id, 2, "도굴 성공");
+        }
+    }
+
+    fn record_night_action_usage(&mut self, result: &NightResult) {
+        for actor_id in result.vigilante_results.keys() {
+            self.vigilante_execution_used_ids.insert(*actor_id);
+        }
+        for actor_id in result.reporter_results.keys() {
+            self.reporter_used_ids.insert(*actor_id);
+        }
+        for actor_id in result.priest_results.keys() {
+            self.priest_used_ids.insert(*actor_id);
         }
     }
 
@@ -1328,6 +1341,7 @@ impl MafiaGame {
         blocked_actor_ids: &HashSet<u64>,
     ) -> (HashMap<u64, String>, u32) {
         let mut results = HashMap::new();
+        let mut cult_bells = 0;
         for (actor_id, target_id) in self.cult_targets.clone() {
             if blocked_actor_ids.contains(&actor_id) {
                 continue;
@@ -1371,7 +1385,9 @@ impl MafiaGame {
                 );
                 continue;
             }
-            self.culted_ids.insert(target.user_id);
+            if self.culted_ids.insert(target.user_id) {
+                cult_bells += 1;
+            }
             results.insert(
                 actor_id,
                 format!(
@@ -1381,7 +1397,7 @@ impl MafiaGame {
                 ),
             );
         }
-        (results, 0)
+        (results, cult_bells)
     }
 
     fn resolve_fanatic_results(
@@ -1389,6 +1405,7 @@ impl MafiaGame {
         blocked_actor_ids: &HashSet<u64>,
     ) -> (HashMap<u64, String>, u32) {
         let mut results = HashMap::new();
+        let mut cult_bells = 0;
         for (actor_id, target_id) in self.fanatic_targets.clone() {
             if blocked_actor_ids.contains(&actor_id) {
                 continue;
@@ -1407,7 +1424,9 @@ impl MafiaGame {
             }
             let is_cult = self.is_cult_team(&target);
             if target.role == Role::CultLeader {
-                self.culted_ids.insert(actor_id);
+                if self.culted_ids.insert(actor_id) {
+                    cult_bells += 1;
+                }
             }
             let suffix = if is_cult {
                 "교주팀입니다"
@@ -1419,7 +1438,7 @@ impl MafiaGame {
                 format!("[추종] {} 님은 **{}**.", target.name, suffix),
             );
         }
-        (results, 0)
+        (results, cult_bells)
     }
 
     fn resolve_agent_results(&mut self, blocked_actor_ids: &HashSet<u64>) -> HashMap<u64, String> {

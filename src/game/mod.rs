@@ -913,21 +913,6 @@ impl MafiaGame {
         }
     }
 
-    fn action_contains(&self, map: RoleActionMap, actor_id: u64) -> bool {
-        match map {
-            RoleActionMap::Doctor => self.doctor_targets.contains_key(&actor_id),
-            RoleActionMap::Gangster => self.gangster_targets.contains_key(&actor_id),
-            RoleActionMap::Police => self.police_targets.contains_key(&actor_id),
-            RoleActionMap::ThiefPolice => self.thief_police_targets.contains_key(&actor_id),
-            RoleActionMap::Detective => self.detective_targets.contains_key(&actor_id),
-            RoleActionMap::Shaman => self.shaman_targets.contains_key(&actor_id),
-            RoleActionMap::Priest => self.priest_targets.contains_key(&actor_id),
-            RoleActionMap::Witch => self.witch_targets.contains_key(&actor_id),
-            RoleActionMap::Terrorist => self.terrorist_action_submitted.contains(&actor_id),
-            RoleActionMap::Mercenary => self.mercenary_targets.contains_key(&actor_id),
-        }
-    }
-
     fn action_insert(&mut self, map: RoleActionMap, actor_id: u64, target_id: u64) {
         match map {
             RoleActionMap::Doctor => {
@@ -1403,6 +1388,93 @@ mod tests {
         assert!(result.killed_players.iter().any(|p| p.user_id == 2));
         assert!(result.killed_players.iter().any(|p| p.user_id == 3));
         assert!(result.protected.is_none());
+    }
+
+    #[test]
+    fn doctor_can_change_night_target_before_morning() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Doctor),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.submit_night_action(2, Some(3)).unwrap();
+        game.submit_night_action(2, Some(4)).unwrap();
+        game.submit_night_action(1, Some(3)).unwrap();
+
+        assert_eq!(game.doctor_targets.get(&2), Some(&4));
+        assert!(!game.should_finish_night_early());
+
+        let result = game.resolve_night().unwrap();
+
+        assert_eq!(result.protected.unwrap().user_id, 4);
+        assert!(
+            result
+                .killed_players
+                .iter()
+                .any(|player| player.user_id == 3)
+        );
+    }
+
+    #[test]
+    fn vigilante_can_change_execution_target_before_morning() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Vigilante),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.submit_night_action(2, Some(3)).unwrap();
+        game.submit_night_action(2, Some(1)).unwrap();
+
+        assert_eq!(game.vigilante_targets.get(&2), Some(&1));
+        assert!(!game.vigilante_execution_used_ids.contains(&2));
+
+        let result = game.resolve_night().unwrap();
+
+        assert!(
+            result
+                .vigilante_kills
+                .iter()
+                .any(|player| player.user_id == 1)
+        );
+        assert!(game.vigilante_execution_used_ids.contains(&2));
+    }
+
+    #[test]
+    fn cult_leader_change_does_not_convert_previous_target() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::CultLeader),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.submit_night_action(2, Some(3)).unwrap();
+        game.submit_night_action(2, Some(4)).unwrap();
+
+        assert!(!game.culted_ids.contains(&3));
+        assert!(!game.culted_ids.contains(&4));
+
+        let result = game.resolve_night().unwrap();
+
+        assert!(!game.culted_ids.contains(&3));
+        assert!(game.culted_ids.contains(&4));
+        assert_eq!(result.cult_bells, 1);
     }
 
     fn hypnotist_test_game() -> MafiaGame {

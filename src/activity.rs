@@ -578,7 +578,7 @@ async fn action_handler(
                 .as_deref()
                 .and_then(|s| s.parse::<u64>().ok());
             match running.game.submit_night_action(user_id, target) {
-                Ok(_) => {
+                Ok(selection_message) => {
                     let actor = running.game.get_player(user_id).cloned();
                     if actor.as_ref().is_some_and(|player| {
                         player.role == Role::Mafia
@@ -590,37 +590,10 @@ async fn action_handler(
                             role: Role::Mafia,
                         });
                     }
-                    let message = if actor.as_ref().is_some_and(|player| {
-                        player.role == Role::Thief
-                            && running.game.thief_night_role(player) == Some(Role::Police)
-                    }) {
-                        running.game.police_result_for_actor(user_id)
-                    } else if actor
-                        .as_ref()
-                        .is_some_and(|player| player.role == Role::Police)
-                    {
-                        if running.game.police_result_ready() {
-                            Some(running.game.police_result_message())
-                        } else {
-                            Some("다른 경찰의 선택이 남아 있어 조사 결과가 아직 확정되지 않았습니다.".to_string())
-                        }
-                    } else {
-                        None
-                    };
-                    if let Some(message) = &message
-                        && actor.as_ref().is_some_and(|player| {
-                            player.role == Role::Thief
-                                && running.game.thief_night_role(player) == Some(Role::Police)
-                        })
-                    {
-                        running
-                            .activity_night_results
-                            .insert(user_id, message.clone());
-                    }
-                    if running.game.all_night_actions_submitted() {
+                    if running.game.should_finish_night_early() {
                         running.night_notify.notify_one();
                     }
-                    Ok(message)
+                    Ok(Some(selection_message))
                 }
                 Err(error) => Err(error.to_string()),
             }
@@ -740,7 +713,7 @@ async fn action_handler(
                 .submit_contractor_contract(user_id, t1, r1, t2, r2)
                 .map_err(|e| e.to_string())
                 .map(|_| {
-                    if running.game.all_night_actions_submitted() {
+                    if running.game.should_finish_night_early() {
                         running.night_notify.notify_one();
                     }
                     None

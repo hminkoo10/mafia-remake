@@ -440,7 +440,7 @@ pub async fn run_night(
         ctx,
         running,
         format!(
-            "밤이 되었습니다. {seconds}초 동안 게임 채널 채팅이 비활성화됩니다.\n밤 행동이 있는 역할은 본인 익명 채널 또는 DM에서 선택합니다.\n행동 가능한 역할이 모두 선택하면 남은 시간을 기다리지 않고 바로 아침으로 넘어갑니다."
+            "밤이 되었습니다. {seconds}초 동안 게임 채널 채팅이 비활성화됩니다.\n밤 행동이 있는 역할은 본인 익명 채널 또는 DM에서 선택합니다.\n변경 가능한 밤 행동은 밤이 끝나기 전 다시 선택하면 대상을 바꿀 수 있습니다."
         ),
         "밤",
         serenity::Colour::GOLD,
@@ -879,7 +879,7 @@ pub async fn send_night_action_dm(
     running: &Arc<RwLock<RunningGame>>,
     actor: &Player,
 ) -> bool {
-    let (guild_id, role, targets) = {
+    let (guild_id, role, can_change, targets) = {
         let running_read = running.read().await;
         let role = effective_night_role(&running_read.game, actor);
         let targets = if role == Role::Contractor {
@@ -887,7 +887,12 @@ pub async fn send_night_action_dm(
         } else {
             night_targets(&running_read.game, actor)
         };
-        (running_read.guild_id, role, targets)
+        (
+            running_read.guild_id,
+            role,
+            running_read.game.night_action_can_be_changed(actor),
+            targets,
+        )
     };
     if targets.is_empty() && role != Role::Reporter {
         return true;
@@ -897,16 +902,24 @@ pub async fn send_night_action_dm(
             ctx,
             running,
             actor,
-            "청부업자 밤 행동을 선택하세요.\n두 명과 각 직업을 추측합니다. 둘 중 한 명이라도 마피아를 정확히 맞히면 접선합니다.\n첫날 밤에는 사용할 수 없고, 수사직과 직업이 공개된 사람은 대상에서 제외됩니다.",
+            "청부업자 밤 행동을 선택하세요.\n두 명과 각 직업을 추측합니다. 둘 중 한 명이라도 마피아를 정확히 맞히면 접선합니다.\n밤이 끝나기 전 다시 제출하면 청부 대상을 변경할 수 있습니다.\n첫날 밤에는 사용할 수 없고, 수사직과 직업이 공개된 사람은 대상에서 제외됩니다.",
             contractor_contract_components(guild_id, actor.user_id, &targets),
         )
         .await;
     }
+    let prompt = if can_change {
+        format!(
+            "{} 밤 행동을 선택하세요\n밤이 끝나기 전 다시 선택하면 대상을 변경할 수 있습니다.",
+            role.value()
+        )
+    } else {
+        format!("{} 밤 행동을 선택하세요", role.value())
+    };
     send_player_secret(
         ctx,
         running,
         actor,
-        format!("{} 밤 행동을 선택하세요", role.value()),
+        prompt,
         night_action_components(guild_id, actor.user_id, role, &targets),
     )
     .await
@@ -1153,27 +1166,6 @@ pub async fn announce_police_result(
     }
     for player in police_players {
         let _ = send_player_secret(ctx, running, &player, message.clone(), vec![]).await;
-    }
-}
-
-pub async fn send_police_result_message(
-    ctx: &serenity::Context,
-    running: &Arc<RwLock<RunningGame>>,
-    message: &str,
-    exclude_user_id: Option<u64>,
-) {
-    let police_players = {
-        let running_read = running.read().await;
-        running_read
-            .game
-            .alive_players()
-            .into_iter()
-            .filter(|player| player.role == Role::Police && Some(player.user_id) != exclude_user_id)
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-    for player in police_players {
-        let _ = send_player_secret(ctx, running, &player, message, vec![]).await;
     }
 }
 
