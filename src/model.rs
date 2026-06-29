@@ -9,6 +9,7 @@ pub enum Role {
     Police,
     Agent,
     Vigilante,
+    Inspector,
     Reporter,
     Hacker,
     Detective,
@@ -49,6 +50,7 @@ impl Role {
             Self::Police => "경찰",
             Self::Agent => "요원",
             Self::Vigilante => "자경단원",
+            Self::Inspector => "형사",
             Self::Reporter => "기자",
             Self::Hacker => "해커",
             Self::Detective => "사립탐정",
@@ -97,7 +99,10 @@ impl Role {
     }
 
     pub const fn is_investigation_role(self) -> bool {
-        matches!(self, Self::Police | Self::Agent | Self::Vigilante)
+        matches!(
+            self,
+            Self::Police | Self::Agent | Self::Vigilante | Self::Inspector
+        )
     }
 }
 
@@ -179,12 +184,13 @@ pub fn mafia_team_roles() -> HashSet<Role> {
 }
 
 pub fn investigation_roles() -> HashSet<Role> {
-    [Role::Police, Role::Agent, Role::Vigilante]
+    [Role::Police, Role::Agent, Role::Vigilante, Role::Inspector]
         .into_iter()
         .collect()
 }
 
 pub const CITIZEN_SPECIAL_ROLES: &[Role] = &[
+    Role::Inspector,
     Role::Detective,
     Role::Shaman,
     Role::Priest,
@@ -227,6 +233,7 @@ pub const PUBLIC_MAFIA_SPECIAL_ROLES: &[Role] = &[
 ];
 
 pub const PUBLIC_CITIZEN_SPECIAL_ROLES: &[Role] = &[
+    Role::Inspector,
     Role::Detective,
     Role::Shaman,
     Role::Priest,
@@ -257,6 +264,7 @@ pub const CONTRACTOR_GUESS_ROLES: &[Role] = &[
     Role::Scientist,
     Role::Madam,
     Role::Thief,
+    Role::Inspector,
     Role::Detective,
     Role::Shaman,
     Role::Priest,
@@ -290,6 +298,8 @@ pub struct NightResult {
     pub thief_police_results: std::collections::HashMap<u64, String>,
     pub killed_players: Vec<Player>,
     pub detective_results: std::collections::HashMap<u64, String>,
+    pub inspector_results: std::collections::HashMap<u64, String>,
+    pub inspector_target_notices: std::collections::HashMap<u64, String>,
     pub spy_results: std::collections::HashMap<u64, String>,
     pub spy_contacts: Vec<u64>,
     pub contractor_results: std::collections::HashMap<u64, String>,

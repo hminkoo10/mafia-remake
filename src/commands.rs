@@ -2310,6 +2310,7 @@ pub async fn configure_game(
     #[description = "낮에 경찰 조사 성공 여부 공개 여부"] police_status_reveal: Option<bool>,
     #[description = "아침 생존 마피아 수 공개 여부"] mafia_count_reveal: Option<bool>,
     #[description = "사립탐정 활성화 여부"] detective: Option<bool>,
+    #[description = "형사 활성화 여부"] inspector: Option<bool>,
     #[description = "영매 활성화 여부"] shaman: Option<bool>,
     #[description = "도굴꾼 활성화 여부"] graverobber: Option<bool>,
     #[description = "스파이 활성화 여부"] spy: Option<bool>,
@@ -2373,6 +2374,9 @@ pub async fn configure_game(
     }
     if let Some(value) = detective {
         config_write.enable_detective = value;
+    }
+    if let Some(value) = inspector {
+        config_write.enable_inspector = value;
     }
     if let Some(value) = shaman {
         config_write.enable_shaman = value;
@@ -2883,6 +2887,7 @@ pub async fn show_role_descriptions(ctx: Context<'_>) -> Result<(), Error> {
         Role::Police,
         Role::Agent,
         Role::Vigilante,
+        Role::Inspector,
         Role::Doctor,
         Role::Nurse,
         Role::Gangster,
@@ -4968,6 +4973,7 @@ pub fn find_role_by_name(name: &str) -> Option<Role> {
         Role::Police,
         Role::Agent,
         Role::Vigilante,
+        Role::Inspector,
         Role::Reporter,
         Role::Hacker,
         Role::Detective,

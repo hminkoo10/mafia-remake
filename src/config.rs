@@ -36,6 +36,8 @@ pub struct BotConfig {
     #[serde(default = "default_true")]
     pub enable_detective: bool,
     #[serde(default = "default_true")]
+    pub enable_inspector: bool,
+    #[serde(default = "default_true")]
     pub enable_graverobber: bool,
     #[serde(default = "default_true")]
     pub enable_spy: bool,

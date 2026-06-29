@@ -141,6 +141,7 @@ impl MafiaGame {
         self.gangster_targets.remove(&actor_id);
         self.police_targets.remove(&actor_id);
         self.thief_police_targets.remove(&actor_id);
+        self.inspector_targets.remove(&actor_id);
         self.vigilante_targets.remove(&actor_id);
         self.hypnotist_targets.remove(&actor_id);
         self.mercenary_targets.remove(&actor_id);
@@ -341,6 +342,8 @@ impl MafiaGame {
             police_target_id,
             godfather_target_id,
         );
+        let (inspector_results, inspector_target_notices) =
+            self.resolve_inspector_results(&blocked_actor_ids);
         let (spy_results, spy_contacts) = self.resolve_spy_results(&blocked_actor_ids);
         let godfather_results = self.resolve_godfather_results(&blocked_actor_ids);
         let (shaman_results, shaman_purifications) =
@@ -375,6 +378,8 @@ impl MafiaGame {
             thief_police_results,
             killed_players,
             detective_results,
+            inspector_results,
+            inspector_target_notices,
             spy_results,
             spy_contacts,
             contractor_results,
@@ -518,6 +523,9 @@ impl MafiaGame {
         for actor_id in result.agent_results.keys() {
             self.record_rating_event(*actor_id, 3, "요원 지령으로 시민 직업 확인");
         }
+        for actor_id in result.inspector_results.keys() {
+            self.record_rating_event(*actor_id, 3, "형사 수사로 같은 팀 직업 확인");
+        }
         for (actor_id, text) in &result.cult_results {
             if text.contains("포교했습니다") {
                 self.record_rating_event(*actor_id, 5, "포교 성공");
@@ -612,6 +620,7 @@ impl MafiaGame {
         self.gangster_targets.clear();
         self.police_targets.clear();
         self.thief_police_targets.clear();
+        self.inspector_targets.clear();
         self.vigilante_targets.clear();
         self.hypnotist_targets.clear();
         self.mercenary_targets.clear();
@@ -728,6 +737,43 @@ impl MafiaGame {
         results
     }
 
+    fn resolve_inspector_results(
+        &self,
+        blocked_actor_ids: &HashSet<u64>,
+    ) -> (HashMap<u64, String>, HashMap<u64, String>) {
+        let mut results = HashMap::new();
+        let mut target_notices = HashMap::new();
+        for (actor_id, target_id) in &self.inspector_targets {
+            if blocked_actor_ids.contains(actor_id) {
+                continue;
+            }
+            let Some(actor) = self.get_player(*actor_id) else {
+                continue;
+            };
+            let Some(target) = self.get_player(*target_id) else {
+                continue;
+            };
+            if !actor.alive || !target.alive {
+                continue;
+            }
+            target_notices.insert(
+                target.user_id,
+                format!("[형사 {}님이 당신을 수사했습니다.]", actor.name),
+            );
+            if self.team_key(actor) == self.team_key(target) {
+                results.insert(
+                    *actor_id,
+                    format!(
+                        "[{}님의 직업은 {}입니다.]",
+                        target.name,
+                        self.visible_role(target).value()
+                    ),
+                );
+            }
+        }
+        (results, target_notices)
+    }
+
     fn resolved_action_target(
         &self,
         watched: &Player,
@@ -751,6 +797,7 @@ impl MafiaGame {
                 .contains_key(&watched.user_id)
                 .then_some(police_target_id)
                 .flatten(),
+            Role::Inspector => self.inspector_targets.get(&watched.user_id).copied(),
             Role::Vigilante => self.vigilante_targets.get(&watched.user_id).copied(),
             Role::Hypnotist => self.hypnotist_targets.get(&watched.user_id).copied(),
             Role::Mercenary => self.mercenary_targets.get(&watched.user_id).copied(),
@@ -794,6 +841,7 @@ impl MafiaGame {
                 .or_else(|| self.nurse_prescription_targets.get(&watched.user_id))
                 .copied(),
             Some(Role::Police) => self.thief_police_targets.get(&watched.user_id).copied(),
+            Some(Role::Inspector) => self.inspector_targets.get(&watched.user_id).copied(),
             Some(Role::Vigilante) => self.vigilante_targets.get(&watched.user_id).copied(),
             Some(Role::Reporter) => self.reporter_targets.get(&watched.user_id).copied(),
             Some(Role::Detective) => self.detective_targets.get(&watched.user_id).copied(),

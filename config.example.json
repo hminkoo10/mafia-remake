@@ -18,6 +18,7 @@
   "mafia_special_count": 1,
   "neutral_special_count": 0,
   "enable_detective": true,
+  "enable_inspector": true,
   "enable_graverobber": true,
   "enable_spy": true,
   "enable_contractor": true,

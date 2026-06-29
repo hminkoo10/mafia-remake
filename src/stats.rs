@@ -16,6 +16,7 @@ const ROLE_STATS_ORDER: &[Role] = &[
     Role::Police,
     Role::Agent,
     Role::Vigilante,
+    Role::Inspector,
     Role::Doctor,
     Role::Nurse,
     Role::Gangster,
@@ -558,6 +559,10 @@ fn role_specific_rating_adjustment(player: &Player, role: Role, won: bool) -> (i
             if won { alive_win_points } else { 0 },
             "자경단원 처형 압박 기여",
         ),
+        Role::Inspector => (
+            if won { alive_win_points } else { 0 },
+            "형사 수사 정보 공유 기여",
+        ),
         Role::Doctor => (if won { 1 } else { 0 }, "의사 보호 운영 기여"),
         Role::Nurse => (if won { 1 } else { 0 }, "간호사 보조 보호 기여"),
         Role::Gangster => (if won { 1 } else { 0 }, "건달 투표 제어 기여"),
@@ -625,6 +630,7 @@ fn role_has_core_action(role: Role) -> bool {
             | Role::Gangster
             | Role::Police
             | Role::Vigilante
+            | Role::Inspector
             | Role::Reporter
             | Role::Hacker
             | Role::Psychologist
@@ -1335,6 +1341,7 @@ mod tests {
             Role::Police,
             Role::Agent,
             Role::Vigilante,
+            Role::Inspector,
             Role::Reporter,
             Role::Hacker,
             Role::Detective,

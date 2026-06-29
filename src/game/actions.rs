@@ -257,6 +257,15 @@ impl MafiaGame {
                 Some("경찰은 자기 자신을 조사할 수 없습니다."),
                 "조사 투표 대상",
             ),
+            Role::Inspector => self.once_target_action(
+                actor_id,
+                target_id,
+                "수사 대상을 선택해야 합니다.",
+                "",
+                RoleActionMap::Inspector,
+                Some("형사는 자기 자신을 수사할 수 없습니다."),
+                "수사 대상",
+            ),
             Role::Vigilante => self.submit_vigilante_night_action(actor_id, target_id),
             Role::Hypnotist => self.submit_hypnotist_action(actor_id, target_id),
             Role::Mercenary => self.submit_mercenary_action(actor_id, target_id),
@@ -717,6 +726,15 @@ impl MafiaGame {
                 RoleActionMap::ThiefPolice,
                 Some("자기 자신은 조사할 수 없습니다."),
                 &format!("{prefix}조사 대상"),
+            ),
+            Role::Inspector => self.once_target_action(
+                actor_id,
+                target_id,
+                "수사 대상을 선택해야 합니다.",
+                "",
+                RoleActionMap::Inspector,
+                Some("자기 자신은 수사할 수 없습니다."),
+                &format!("{prefix}수사 대상"),
             ),
             Role::Vigilante => self
                 .submit_vigilante_night_action(actor_id, target_id)

@@ -37,6 +37,7 @@ pub struct MafiaGame {
     pub gangster_blocked_vote_days: HashMap<u64, u32>,
     pub police_targets: HashMap<u64, u64>,
     pub thief_police_targets: HashMap<u64, u64>,
+    pub inspector_targets: HashMap<u64, u64>,
     pub vigilante_targets: HashMap<u64, u64>,
     pub vigilante_pending_results: HashMap<u64, u64>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
@@ -191,6 +192,7 @@ impl MafiaGame {
             gangster_blocked_vote_days: HashMap::new(),
             police_targets: HashMap::new(),
             thief_police_targets: HashMap::new(),
+            inspector_targets: HashMap::new(),
             vigilante_targets: HashMap::new(),
             vigilante_pending_results: HashMap::new(),
             vigilante_known_enemy_ids: HashMap::new(),
@@ -713,6 +715,7 @@ impl MafiaGame {
             Role::Gangster => &[&self.gangster_targets],
             Role::Police if player.role == Role::Thief => &[&self.thief_police_targets],
             Role::Police => &[&self.police_targets],
+            Role::Inspector => &[&self.inspector_targets],
             Role::Agent => &[&self.detective_targets],
             Role::Vigilante => &[&self.vigilante_targets],
             Role::Hypnotist => &[&self.hypnotist_targets],
@@ -927,6 +930,9 @@ impl MafiaGame {
             RoleActionMap::ThiefPolice => {
                 self.thief_police_targets.insert(actor_id, target_id);
             }
+            RoleActionMap::Inspector => {
+                self.inspector_targets.insert(actor_id, target_id);
+            }
             RoleActionMap::Detective => {
                 self.detective_targets.insert(actor_id, target_id);
             }
@@ -955,6 +961,7 @@ enum RoleActionMap {
     Gangster,
     Police,
     ThiefPolice,
+    Inspector,
     Detective,
     Shaman,
     Priest,
@@ -995,12 +1002,16 @@ fn validate_counts(players: &[(u64, String)], counts: &GameCounts) -> Result<()>
                 .filter(|role| **role == Role::Vigilante)
                 .count()
             > 0,
+        counts
+            .special_roles
+            .iter()
+            .any(|role| *role == Role::Inspector),
     ]
     .into_iter()
     .filter(|value| *value)
     .count();
     if investigation_role_count > 1 {
-        bail!("경찰, 요원, 자경단원은 한 게임에 함께 배정할 수 없습니다.");
+        bail!("경찰, 요원, 자경단원, 형사는 한 게임에 함께 배정할 수 없습니다.");
     }
     if counts.agent_count > 0 && counts.special_roles.contains(&Role::Agent) {
         bail!("요원 수가 중복 배정되었습니다.");
@@ -1196,6 +1207,55 @@ mod tests {
                 .agent_results
                 .get(&2)
                 .is_some_and(|text| !text.contains("Three"))
+        );
+    }
+
+    #[test]
+    fn inspector_reveals_same_team_role_and_notifies_target() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Inspector),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.submit_night_action(2, Some(3)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert_eq!(
+            result.inspector_results.get(&2).map(String::as_str),
+            Some("[Three님의 직업은 의사입니다.]")
+        );
+        assert_eq!(
+            result.inspector_target_notices.get(&3).map(String::as_str),
+            Some("[형사 Two님이 당신을 수사했습니다.]")
+        );
+    }
+
+    #[test]
+    fn inspector_does_not_reveal_other_team_role_but_notifies_target() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Inspector),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.submit_night_action(2, Some(1)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(!result.inspector_results.contains_key(&2));
+        assert_eq!(
+            result.inspector_target_notices.get(&1).map(String::as_str),
+            Some("[형사 Two님이 당신을 수사했습니다.]")
         );
     }
 

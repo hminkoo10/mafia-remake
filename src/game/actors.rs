@@ -44,7 +44,9 @@ impl MafiaGame {
                 Role::Nurse => self.nurse_can_act(player, &alive),
                 Role::Gangster => has_other_alive,
                 Role::Thief => self.thief_can_act_at_night(player, &alive, &unpurified_dead),
-                Role::Police | Role::Detective | Role::Spy | Role::Terrorist => has_other_alive,
+                Role::Police | Role::Inspector | Role::Detective | Role::Spy | Role::Terrorist => {
+                    has_other_alive
+                }
                 Role::Vigilante => !self.vigilante_execution_targets(player).is_empty(),
                 Role::Hypnotist => self.hypnotist_can_act_at_night(player),
                 Role::Mercenary => {
@@ -112,6 +114,7 @@ impl MafiaGame {
                 | Role::Nurse
                 | Role::Gangster
                 | Role::Police
+                | Role::Inspector
                 | Role::Vigilante
                 | Role::Hypnotist
                 | Role::Mercenary
@@ -139,6 +142,7 @@ impl MafiaGame {
             Role::Gangster => self.gangster_targets.contains_key(&actor.user_id),
             Role::Thief => self.stolen_night_action_submitted(actor),
             Role::Police => self.police_targets.contains_key(&actor.user_id),
+            Role::Inspector => self.inspector_targets.contains_key(&actor.user_id),
             Role::Vigilante => self.vigilante_targets.contains_key(&actor.user_id),
             Role::Hypnotist => self.hypnotist_targets.contains_key(&actor.user_id),
             Role::Mercenary => self.mercenary_targets.contains_key(&actor.user_id),
@@ -182,6 +186,7 @@ impl MafiaGame {
             | Role::Doctor
             | Role::Nurse
             | Role::Police
+            | Role::Inspector
             | Role::Vigilante
             | Role::Reporter
             | Role::Detective
@@ -229,6 +234,7 @@ impl MafiaGame {
                     || self.nurse_prescription_targets.contains_key(&actor.user_id)
             }
             Some(Role::Police) => self.thief_police_targets.contains_key(&actor.user_id),
+            Some(Role::Inspector) => self.inspector_targets.contains_key(&actor.user_id),
             Some(Role::Vigilante) => self.vigilante_targets.contains_key(&actor.user_id),
             Some(Role::Reporter) => {
                 self.reporter_targets.contains_key(&actor.user_id)

@@ -109,6 +109,19 @@ const WEB_ROLE_GUIDES: &[WebRoleGuide] = &[
         caution: "확신 없는 숙청은 마피아 처치보다 시민 손실 위험이 큽니다.",
     },
     WebRoleGuide {
+        role: Role::Inspector,
+        team: "시민팀",
+        kind: "경찰계열",
+        summary: "밤에 한 명을 수사합니다. 대상이 형사와 같은 팀이면 밤이 끝날 때 형사는 대상의 직업을 알게 되고, 수사를 받은 대상에게는 형사의 정체가 전달됩니다. 다른 팀을 수사하면 직업은 알 수 없지만, 대상에게 수사 사실은 전달됩니다.",
+        tips: &[
+            "같은 팀 확인이 뜨면 직업 정보와 함께 신뢰 가능한 연결고리가 생깁니다.",
+            "수사 대상에게 형사 정체가 알려지므로 공개 타이밍과 생존 위험을 함께 계산하세요.",
+            "경찰, 요원, 자경단원과 같은 경찰계열이므로 한 판에 함께 배정되지 않습니다.",
+            "접선 전 특수 마피아는 기존 조사 규칙처럼 마피아팀으로 확정 판정되지 않습니다.",
+        ],
+        caution: "수사 사실이 대상에게 전달되므로 적을 수사하면 형사의 존재가 노출될 수 있습니다.",
+    },
+    WebRoleGuide {
         role: Role::Detective,
         team: "시민팀",
         kind: "추적",
@@ -732,6 +745,7 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
         WebFieldKind::Bool,
         None,
     ),
+    field("enable_inspector", "형사 활성화", WebFieldKind::Bool, None),
     field(
         "enable_graverobber",
         "도굴꾼 활성화",
@@ -2561,6 +2575,7 @@ fn role_rating_hint(role: Role) -> &'static str {
         Role::Nurse => "보호 보조와 핵심 직업 생존 지원을 평가합니다.",
         Role::Agent => "수사 결과로 의심 대상을 좁힌 기여를 평가합니다.",
         Role::Vigilante => "정확한 조사와 처형 압박, 오처형 회피를 평가합니다.",
+        Role::Inspector => "같은 팀 수사 성공, 직업 정보 공유, 정체 공개 타이밍을 평가합니다.",
         Role::Reporter => "취재 공개 정보가 투표 판단에 준 기여를 평가합니다.",
         Role::Hacker => "행동 정보로 거짓 직업 주장이나 밤 동선을 잡은 기여를 평가합니다.",
         Role::Detective => "추적 결과를 누적해 행동 모순을 밝힌 기여를 평가합니다.",
@@ -2804,6 +2819,7 @@ fn config_value(config: &BotConfig, name: &str) -> String {
         "use_agent" => config.use_agent.to_string(),
         "use_vigilante" => config.use_vigilante.to_string(),
         "enable_detective" => config.enable_detective.to_string(),
+        "enable_inspector" => config.enable_inspector.to_string(),
         "enable_graverobber" => config.enable_graverobber.to_string(),
         "enable_spy" => config.enable_spy.to_string(),
         "enable_contractor" => config.enable_contractor.to_string(),
@@ -2912,6 +2928,7 @@ fn set_bool(config: &mut BotConfig, name: &str, value: bool) -> std::result::Res
         "use_agent" => config.use_agent = value,
         "use_vigilante" => config.use_vigilante = value,
         "enable_detective" => config.enable_detective = value,
+        "enable_inspector" => config.enable_inspector = value,
         "enable_graverobber" => config.enable_graverobber = value,
         "enable_spy" => config.enable_spy = value,
         "enable_contractor" => config.enable_contractor = value,
@@ -3052,6 +3069,7 @@ fn enabled_special_count(config: &BotConfig, roles: &[Role]) -> usize {
 
 fn special_role_enabled(config: &BotConfig, role: Role) -> bool {
     match role {
+        Role::Inspector => config.enable_inspector,
         Role::Detective => config.enable_detective,
         Role::Graverobber => config.enable_graverobber,
         Role::Spy => config.enable_spy,
@@ -3316,6 +3334,7 @@ mod tests {
             mafia_special_count: 0,
             neutral_special_count: 0,
             enable_detective: true,
+            enable_inspector: true,
             enable_graverobber: true,
             enable_spy: true,
             enable_contractor: true,

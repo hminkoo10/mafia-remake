@@ -222,6 +222,9 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Police => "밤마다 한 명을 조사합니다.",
         Role::Agent => "밤마다 시민팀 지령 정보를 받습니다.",
         Role::Vigilante => "낮에 조사하고 밤에 숙청할 수 있습니다.",
+        Role::Inspector => {
+            "밤에 한 명을 수사해 같은 팀이면 직업을 확인하고 대상에게 자신의 정체를 알립니다."
+        }
         Role::Detective => "밤 행동의 이동 경로를 추적합니다.",
         Role::Shaman => "사망자를 성불하고 직업을 확인합니다.",
         Role::Priest => "사망자를 한 번 소생시킬 수 있습니다.",
@@ -536,6 +539,8 @@ pub async fn run_night(
         let mut running_write = running.write().await;
         for map in [
             &result.detective_results,
+            &result.inspector_results,
+            &result.inspector_target_notices,
             &result.spy_results,
             &result.contractor_results,
             &result.witch_results,
@@ -1018,6 +1023,7 @@ pub fn night_placeholder(role: Role) -> &'static str {
         Role::Doctor => "보호할 대상을 선택하세요",
         Role::Nurse => "처방/치료 대상을 선택하세요",
         Role::Police => "조사할 대상을 선택하세요",
+        Role::Inspector => "수사할 대상을 선택하세요",
         Role::Vigilante => "숙청할 대상을 선택하세요",
         Role::Hypnotist => "최면을 걸 대상을 선택하세요",
         Role::Mercenary => "처형할 대상을 선택하세요",
@@ -1100,6 +1106,8 @@ pub async fn send_private_result_maps(
 ) {
     let mut maps = vec![
         result.detective_results.clone(),
+        result.inspector_results.clone(),
+        result.inspector_target_notices.clone(),
         result.spy_results.clone(),
         result.contractor_results.clone(),
         result.witch_results.clone(),

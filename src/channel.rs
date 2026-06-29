@@ -817,6 +817,7 @@ pub fn enabled_special_roles(config: &config::BotConfig, pool: &[Role]) -> Vec<R
     pool.iter()
         .copied()
         .filter(|role| match role {
+            Role::Inspector => config.enable_inspector,
             Role::Detective => config.enable_detective,
             Role::Shaman => config.enable_shaman,
             Role::Graverobber => config.enable_graverobber,
@@ -1295,6 +1296,7 @@ pub fn enabled_special_role_names(config: &config::BotConfig) -> String {
         Role::Judge,
         Role::Reporter,
         Role::Hacker,
+        Role::Inspector,
         Role::Terrorist,
         Role::Lover,
         Role::Priest,
@@ -1310,6 +1312,7 @@ pub fn enabled_special_role_names(config: &config::BotConfig) -> String {
     ]
     .into_iter()
     .filter(|role| match role {
+        Role::Inspector => config.enable_inspector,
         Role::Detective => config.enable_detective,
         Role::Shaman => config.enable_shaman,
         Role::Graverobber => config.enable_graverobber,
