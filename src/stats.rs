@@ -91,6 +91,8 @@ pub struct RatingHistoryItem {
     pub delta: i64,
     pub team_delta: i64,
     pub role_delta: i64,
+    #[serde(default)]
+    pub streak_delta: i64,
     pub role: String,
     pub team: String,
     pub winner: String,
@@ -107,6 +109,7 @@ pub struct GameRatingLogItem {
     pub delta: i64,
     pub team_delta: i64,
     pub role_delta: i64,
+    pub streak_delta: i64,
     pub reasons: Vec<String>,
 }
 
@@ -256,6 +259,7 @@ pub fn record_game_stats(
             delta: rating_change.delta,
             team_delta: rating_change.team_delta,
             role_delta: rating_change.role_delta,
+            streak_delta: rating_change.streak_delta,
             reasons: rating_change.reasons.clone(),
         });
         entry.rating_history.push(RatingHistoryItem {
@@ -265,6 +269,7 @@ pub fn record_game_stats(
             delta: rating_change.delta,
             team_delta: rating_change.team_delta,
             role_delta: rating_change.role_delta,
+            streak_delta: rating_change.streak_delta,
             role: role.value().to_string(),
             team,
             winner: winner.value().to_string(),
@@ -295,8 +300,13 @@ pub fn game_rating_log_chunks(logs: &[GameRatingLogItem], max_chars: usize) -> V
         } else {
             item.reasons.join(", ")
         };
+        let streak_text = if item.streak_delta == 0 {
+            String::new()
+        } else {
+            format!(" / 연승 {:+}", item.streak_delta)
+        };
         let line = format!(
-            "- {} ({}) {} -> {} ({:+}) [팀 {:+} / 직업 {:+}]\n  사유: {}\n",
+            "- {} ({}) {} -> {} ({:+}) [팀 {:+} / 직업 {:+}{}]\n  사유: {}\n",
             item.name,
             item.role,
             item.before,
@@ -304,6 +314,7 @@ pub fn game_rating_log_chunks(logs: &[GameRatingLogItem], max_chars: usize) -> V
             item.delta,
             item.team_delta,
             item.role_delta,
+            streak_text,
             reasons
         );
         if !current.is_empty() && current.len() + line.len() > max_chars {
@@ -385,6 +396,7 @@ struct RatingChange {
     delta: i64,
     team_delta: i64,
     role_delta: i64,
+    streak_delta: i64,
     reasons: Vec<String>,
 }
 
@@ -396,6 +408,7 @@ impl RatingChange {
             delta: 0,
             team_delta: 0,
             role_delta: 0,
+            streak_delta: 0,
             reasons: vec![if won {
                 "소속 진영 승리".to_string()
             } else {
@@ -432,8 +445,13 @@ fn rating_change_for_player(
         RATING_DELTA_CAP,
     );
     let (role_delta, mut role_reasons) = role_rating_adjustment(game, player, initial_role, won);
-    let combined_delta = clamp(team_delta + role_delta, -RATING_DELTA_CAP, RATING_DELTA_CAP);
-    let final_delta = final_rating_delta(team_delta, role_delta, won);
+    let streak_delta = win_streak_rating_bonus(entry, won);
+    let combined_delta = clamp(
+        team_delta + role_delta + streak_delta,
+        -RATING_DELTA_CAP,
+        RATING_DELTA_CAP,
+    );
+    let final_delta = final_rating_delta(team_delta, role_delta + streak_delta, won);
     let after = (old_rating + final_delta).max(0);
     let mut reasons = vec![if won {
         "소속 진영 승리".to_string()
@@ -441,10 +459,14 @@ fn rating_change_for_player(
         "소속 진영 패배".to_string()
     }];
     reasons.append(&mut role_reasons);
+    if streak_delta > 0 {
+        let next_streak = entry.map_or(1, |entry| entry.win_streak.saturating_add(1));
+        reasons.push(format!("{next_streak}연승 보너스 +{streak_delta}"));
+    }
     if (rating_multiplier - 1.0).abs() > f64::EPSILON {
         reasons.push(format!("레이팅 구간 보정 x{rating_multiplier:.2}"));
     }
-    if combined_delta != team_delta + role_delta {
+    if combined_delta != team_delta + role_delta + streak_delta {
         reasons.push("전체 레이팅 변동 상한 적용".to_string());
     }
     if !won && final_delta != combined_delta {
@@ -456,7 +478,20 @@ fn rating_change_for_player(
         delta: after - old_rating,
         team_delta,
         role_delta,
+        streak_delta,
         reasons,
+    }
+}
+
+fn win_streak_rating_bonus(entry: Option<&PlayerStats>, won: bool) -> i64 {
+    if !won {
+        return 0;
+    }
+    let next_streak = entry.map_or(1, |entry| entry.win_streak.saturating_add(1));
+    if next_streak <= 1 {
+        0
+    } else {
+        ((next_streak - 1) * 2).min(16)
     }
 }
 
@@ -869,12 +904,20 @@ pub fn rating_log_text(
             .cloned()
             .collect::<Vec<_>>()
             .join(", ");
+        let streak_text = if item.streak_delta == 0 {
+            String::new()
+        } else {
+            format!(", 연승 {:+}", item.streak_delta)
+        };
         let detail = if detail.is_empty() {
-            format!("팀 {:+}, 직업 {:+}", item.team_delta, item.role_delta)
+            format!(
+                "팀 {:+}, 직업 {:+}{}",
+                item.team_delta, item.role_delta, streak_text
+            )
         } else {
             format!(
-                "팀 {:+}, 직업 {:+} / {detail}",
-                item.team_delta, item.role_delta
+                "팀 {:+}, 직업 {:+}{} / {detail}",
+                item.team_delta, item.role_delta, streak_text
             )
         };
         lines.push(format!(
@@ -1009,6 +1052,7 @@ mod tests {
                 delta: 20,
                 team_delta: 15,
                 role_delta: 5,
+                streak_delta: 0,
                 reasons: vec![],
             },
             GameRatingLogItem {
@@ -1019,6 +1063,7 @@ mod tests {
                 delta: 30,
                 team_delta: 29,
                 role_delta: 1,
+                streak_delta: 0,
                 reasons: vec![],
             },
         ];
@@ -1126,6 +1171,66 @@ mod tests {
         let entries = leaderboard_entries(&ranking, "streak", 10);
         assert_eq!(entries[0].0, "2");
         assert_eq!(leaderboard_metric_name("streak"), "연승");
+    }
+
+    #[test]
+    fn win_streak_bonus_increases_rating_gain() {
+        let game = rating_test_game();
+        let roles = initial_roles(&game);
+        let citizen = game
+            .players
+            .iter()
+            .find(|player| game.is_citizen_team(player))
+            .unwrap();
+
+        let mut baseline = StatsFile::default();
+        baseline.users.insert(
+            citizen.user_id.to_string(),
+            PlayerStats {
+                name: citizen.name.clone(),
+                games: 4,
+                wins: 3,
+                losses: 1,
+                win_streak: 0,
+                best_win_streak: 3,
+                rating_games: 4,
+                ..Default::default()
+            },
+        );
+        let baseline_log = record_game_stats(&mut baseline, &game, &roles, 120, Winner::Citizen);
+        let baseline_item = baseline_log
+            .iter()
+            .find(|item| item.name == citizen.name)
+            .unwrap();
+
+        let mut streaking = StatsFile::default();
+        streaking.users.insert(
+            citizen.user_id.to_string(),
+            PlayerStats {
+                name: citizen.name.clone(),
+                games: 4,
+                wins: 4,
+                losses: 0,
+                win_streak: 4,
+                best_win_streak: 4,
+                rating_games: 4,
+                ..Default::default()
+            },
+        );
+        let streak_log = record_game_stats(&mut streaking, &game, &roles, 120, Winner::Citizen);
+        let streak_item = streak_log
+            .iter()
+            .find(|item| item.name == citizen.name)
+            .unwrap();
+
+        assert!(streak_item.delta > baseline_item.delta);
+        assert!(streak_item.streak_delta > baseline_item.streak_delta);
+        assert!(
+            streak_item
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("연승 보너스"))
+        );
     }
 
     #[test]

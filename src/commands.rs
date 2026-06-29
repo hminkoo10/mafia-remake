@@ -2236,8 +2236,12 @@ pub async fn show_leaderboard(
     #[description = "정렬 기준"] 기준: Option<LeaderboardMetric>,
 ) -> Result<(), Error> {
     let metric = 기준.map_or("wins", LeaderboardMetric::value);
-    let stats_file = ctx.data().stats.read().await;
-    if let Some(image) = render_leaderboard_image(&stats_file, metric) {
+    let stats_file = Arc::new(ctx.data().stats.read().await.clone());
+    let image_stats = Arc::clone(&stats_file);
+    if let Some(image) =
+        tokio::task::spawn_blocking(move || render_leaderboard_image(image_stats.as_ref(), metric))
+            .await?
+    {
         ctx.send(
             poise::CreateReply::default().attachment(serenity::CreateAttachment::bytes(
                 image,
@@ -2247,7 +2251,7 @@ pub async fn show_leaderboard(
         .await?;
         return Ok(());
     }
-    let text = stats::leaderboard_text(&stats_file, metric);
+    let text = stats::leaderboard_text(stats_file.as_ref(), metric);
     reply_embed(ctx, text, "리더보드", serenity::Colour::GOLD, false).await?;
     Ok(())
 }
@@ -2261,9 +2265,13 @@ pub async fn reset_leaderboard(ctx: Context<'_>) -> Result<(), Error> {
     if !require_manager(ctx).await? {
         return Ok(());
     }
-    let mut stats_file = ctx.data().stats.write().await;
-    *stats_file = stats::StatsFile::default();
-    stats::save_stats(&*ctx.data().stats_path, &stats_file)?;
+    let stats_snapshot = {
+        let mut stats_file = ctx.data().stats.write().await;
+        *stats_file = stats::StatsFile::default();
+        stats_file.clone()
+    };
+    let stats_path = ctx.data().stats_path.clone();
+    tokio::task::spawn_blocking(move || stats::save_stats(&*stats_path, &stats_snapshot)).await??;
     reply_embed(
         ctx,
         "리더보드와 개인 전적을 초기화했습니다.",

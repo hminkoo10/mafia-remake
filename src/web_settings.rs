@@ -1818,11 +1818,12 @@ async fn web_status_values(state: &WebSettingsState) -> Value {
 }
 
 async fn web_stats_summary(state: &WebSettingsState) -> Value {
-    let stats_read = state.stats.read().await;
-    let entries = stats_read.users.values().collect::<Vec<_>>();
+    let entries = {
+        let stats_read = state.stats.read().await;
+        stats_read.users.values().cloned().collect::<Vec<_>>()
+    };
     let played_entries = entries
         .iter()
-        .copied()
         .filter(|entry| entry.games > 0)
         .collect::<Vec<_>>();
     let total_player_games = played_entries.iter().map(|entry| entry.games).sum::<i64>();
@@ -1856,7 +1857,10 @@ async fn web_leaderboard_values(state: &WebSettingsState, metric: &str, limit: u
         "rating"
     };
     let safe_limit = limit.clamp(1, 50);
-    let stats_read = state.stats.read().await;
+    let stats_read = {
+        let stats_read = state.stats.read().await;
+        stats_read.clone()
+    };
     let entries = stats::leaderboard_entries(&stats_read, metric, safe_limit)
         .into_iter()
         .enumerate()
@@ -2433,10 +2437,11 @@ fn render_rating_page() -> String {
   <div class="card"><span>한 판 최대 변동</span><strong>±80점</strong></div>
   <div class="card"><span>역할 보정</span><strong>±14점</strong></div>
   <div class="card"><span>패배팀 최대 상승</span><strong>+5점</strong></div>
+  <div class="card"><span>연승 보너스</span><strong>최대 +16점</strong></div>
 </section>
 <section class="panel">
   <h2>점수가 오르는 기준</h2>
-  <p class="meta">기본은 승리입니다. 상대 평균 레이팅이 높을수록, 내 현재 레이팅이 낮을수록 승리 보상이 커집니다. 여기에 역할 기여 점수가 더해집니다.</p>
+  <p class="meta">기본은 승리입니다. 상대 평균 레이팅이 높을수록, 내 현재 레이팅이 낮을수록 승리 보상이 커집니다. 여기에 역할 기여 점수와 연승 보너스가 더해집니다. 연승 보너스는 이번 승리 후 연승 수가 높을수록 커지고, 최대 +16점까지 반영됩니다.</p>
   <table><thead><tr><th>내 구간</th><th>이겼을 때</th><th>졌을 때</th><th>느낌</th></tr></thead><tbody>{gain_rows}</tbody></table>
 </section>
 <section class="panel">

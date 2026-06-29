@@ -2103,18 +2103,26 @@ pub async fn announce_winner(
     let mut rating_log_chunks = Vec::new();
     let mut rank_change_chunks = Vec::new();
     if let Some((game_snapshot, initial_roles, elapsed_seconds)) = record_payload {
-        let mut stats_file = data.stats.write().await;
-        let rating_log = stats::record_game_stats(
-            &mut stats_file,
-            &game_snapshot,
-            &initial_roles,
-            elapsed_seconds,
-            winner,
-        );
+        let (rating_log, stats_snapshot) = {
+            let mut stats_file = data.stats.write().await;
+            let rating_log = stats::record_game_stats(
+                &mut stats_file,
+                &game_snapshot,
+                &initial_roles,
+                elapsed_seconds,
+                winner,
+            );
+            (rating_log, stats_file.clone())
+        };
         rating_log_chunks = stats::game_rating_log_chunks(&rating_log, 3500);
         rank_change_chunks = stats::game_rank_change_chunks(&rating_log, 3500);
-        if let Err(error) = stats::save_stats(&*data.stats_path, &stats_file) {
-            eprintln!("failed to save stats after game end: {error:?}");
+        let stats_path = data.stats_path.clone();
+        match tokio::task::spawn_blocking(move || stats::save_stats(&*stats_path, &stats_snapshot))
+            .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("failed to save stats after game end: {error:?}"),
+            Err(error) => eprintln!("failed to join stats save task after game end: {error:?}"),
         }
     }
     if let Err(error) = send_game_embed(
