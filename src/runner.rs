@@ -2131,6 +2131,7 @@ pub async fn announce_winner(
     };
     upsert_game_status(ctx, running).await;
     let mut rating_log_chunks = Vec::new();
+    let mut rank_change_chunks = Vec::new();
     if let Some((game_snapshot, initial_roles, elapsed_seconds)) = record_payload {
         let mut stats_file = data.stats.write().await;
         let rating_log = stats::record_game_stats(
@@ -2141,6 +2142,7 @@ pub async fn announce_winner(
             winner,
         );
         rating_log_chunks = stats::game_rating_log_chunks(&rating_log, 3500);
+        rank_change_chunks = stats::game_rank_change_chunks(&rating_log, 3500);
         if let Err(error) = stats::save_stats(&*data.stats_path, &stats_file) {
             eprintln!("failed to save stats after game end: {error:?}");
         }
@@ -2168,6 +2170,27 @@ pub async fn announce_winner(
     .await
     {
         eprintln!("failed to announce game winner: {error:?}");
+    }
+    for (index, chunk) in rank_change_chunks.into_iter().enumerate() {
+        let title = if index == 0 {
+            "이번 판 랭크 변동".to_string()
+        } else {
+            format!("이번 판 랭크 변동 {}", index + 1)
+        };
+        if let Err(error) = send_game_embed(
+            ctx,
+            running,
+            chunk,
+            &title,
+            serenity::Colour::GOLD,
+            vec![],
+            false,
+            true,
+        )
+        .await
+        {
+            eprintln!("failed to announce rank changes: {error:?}");
+        }
     }
     for (index, chunk) in rating_log_chunks.into_iter().enumerate() {
         let title = if index == 0 {

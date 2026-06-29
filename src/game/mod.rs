@@ -1273,7 +1273,7 @@ mod tests {
     }
 
     #[test]
-    fn mercenary_does_not_arm_when_client_dies_before_contract() {
+    fn mercenary_arms_when_client_dies_first_night() {
         let mut game = mercenary_test_game();
         let mafia_id = 1;
         let client_id = game.mercenary_client(2).unwrap().user_id;
@@ -1282,7 +1282,14 @@ mod tests {
         let result = game.resolve_night().unwrap();
 
         assert!(result.killed_players.iter().any(|p| p.user_id == client_id));
-        assert!(!game.mercenary_armed_ids.contains(&2));
+        assert!(game.mercenary_armed_ids.contains(&2));
+        assert!(game.mercenary_contract_received_ids.contains(&2));
+        assert!(
+            result
+                .mercenary_results
+                .get(&2)
+                .is_some_and(|text| text.contains("의뢰인"))
+        );
     }
 
     #[test]

@@ -309,6 +309,43 @@ pub fn game_rating_log_chunks(logs: &[GameRatingLogItem], max_chars: usize) -> V
     chunks
 }
 
+pub fn game_rank_change_chunks(logs: &[GameRatingLogItem], max_chars: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for item in logs {
+        let before_rank = rating_rank(item.before);
+        let after_rank = rating_rank(item.after);
+        if before_rank == after_rank {
+            continue;
+        }
+        let direction = if item.after > item.before {
+            "승급"
+        } else {
+            "강등"
+        };
+        let line = format!(
+            "- {} ({}) {}: {} -> {} / {} -> {} ({:+})\n",
+            item.name,
+            item.role,
+            direction,
+            before_rank,
+            after_rank,
+            item.before,
+            item.after,
+            item.delta
+        );
+        if !current.is_empty() && current.len() + line.len() > max_chars {
+            chunks.push(current.trim_end().to_string());
+            current.clear();
+        }
+        current.push_str(&line);
+    }
+    if !current.is_empty() {
+        chunks.push(current.trim_end().to_string());
+    }
+    chunks
+}
+
 pub fn role_appearance_counts(stats: &StatsFile) -> HashMap<Role, i64> {
     let mut counts = HashMap::new();
     for entry in stats.users.values() {
@@ -638,41 +675,41 @@ fn opponent_average_rating(
 fn rating_k(entry: Option<&PlayerStats>) -> i64 {
     let rating_games = entry.map_or(0, |entry| entry.rating_games);
     if rating_games < 10 {
-        64
+        56
     } else if rating_games < 30 {
-        52
+        48
     } else if rating_games < 70 {
-        44
+        40
     } else {
-        36
+        34
     }
 }
 
 fn rating_progression_multiplier(rating: i64, won: bool) -> f64 {
     if won {
-        if rating < 900 {
-            1.70
-        } else if rating < 1100 {
-            1.35
-        } else if rating < 1300 {
-            1.10
-        } else if rating < 1500 {
-            0.85
-        } else if rating < 1700 {
-            0.70
+        if rating < 950 {
+            1.45
+        } else if rating < 1125 {
+            1.15
+        } else if rating < 1325 {
+            0.95
+        } else if rating < 1575 {
+            0.78
+        } else if rating < 1900 {
+            0.62
         } else {
-            0.55
+            0.48
         }
-    } else if rating < 900 {
-        0.55
-    } else if rating < 1100 {
-        0.75
-    } else if rating < 1300 {
+    } else if rating < 950 {
+        0.60
+    } else if rating < 1125 {
+        0.78
+    } else if rating < 1325 {
         0.95
-    } else if rating < 1500 {
-        1.15
-    } else if rating < 1700 {
-        1.35
+    } else if rating < 1575 {
+        1.12
+    } else if rating < 1900 {
+        1.32
     } else {
         1.55
     }
@@ -706,15 +743,15 @@ pub fn win_rate_text(wins: i64, games: i64) -> String {
 }
 
 pub fn rating_rank(rating: i64) -> &'static str {
-    if rating < 900 {
+    if rating < 950 {
         "C"
     } else if rating < 1100 {
         "B"
     } else if rating < 1300 {
         "A"
-    } else if rating < 1500 {
+    } else if rating < 1550 {
         "S"
-    } else if rating < 1700 {
+    } else if rating < 1850 {
         "SS"
     } else {
         "X"
@@ -940,12 +977,45 @@ mod tests {
 
     #[test]
     fn rating_rank_maps_rating_bands() {
-        assert_eq!(rating_rank(899), "C");
-        assert_eq!(rating_rank(900), "B");
+        assert_eq!(rating_rank(949), "C");
+        assert_eq!(rating_rank(950), "B");
         assert_eq!(rating_rank(1100), "A");
         assert_eq!(rating_rank(1300), "S");
-        assert_eq!(rating_rank(1500), "SS");
-        assert_eq!(rating_rank(1700), "X");
+        assert_eq!(rating_rank(1550), "SS");
+        assert_eq!(rating_rank(1850), "X");
+    }
+
+    #[test]
+    fn rank_change_log_only_lists_rank_crossings() {
+        let logs = vec![
+            GameRatingLogItem {
+                name: "Alpha".to_string(),
+                role: Role::Doctor.value().to_string(),
+                before: 1090,
+                after: 1110,
+                delta: 20,
+                team_delta: 15,
+                role_delta: 5,
+                reasons: vec![],
+            },
+            GameRatingLogItem {
+                name: "Beta".to_string(),
+                role: Role::Mafia.value().to_string(),
+                before: 1000,
+                after: 1030,
+                delta: 30,
+                team_delta: 29,
+                role_delta: 1,
+                reasons: vec![],
+            },
+        ];
+
+        let chunks = game_rank_change_chunks(&logs, 3500);
+
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].contains("Alpha"));
+        assert!(chunks[0].contains("B -> A"));
+        assert!(!chunks[0].contains("Beta"));
     }
 
     #[test]

@@ -1136,7 +1136,6 @@ impl MafiaGame {
         let mut results = HashMap::new();
         for (mercenary_id, client_id) in pairs {
             if !killed_ids.contains(&client_id)
-                || !self.mercenary_contract_received_ids.contains(&mercenary_id)
                 || !self
                     .get_player(mercenary_id)
                     .is_some_and(|player| player.alive && player.role == Role::Mercenary)
@@ -1144,6 +1143,7 @@ impl MafiaGame {
                 continue;
             }
             if self.mercenary_armed_ids.insert(mercenary_id) {
+                self.mercenary_contract_received_ids.insert(mercenary_id);
                 let client_name = self
                     .get_player(client_id)
                     .map(|player| player.name.clone())
