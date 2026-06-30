@@ -1549,6 +1549,7 @@ pub async fn cleanup_stuck_game(ctx: Context<'_>) -> Result<(), Error> {
     let Some(guild_id) = ctx.guild_id() else {
         return Ok(());
     };
+    ctx.defer().await?;
     let cleaned_running_game = if let Some((_id, running)) = ctx.data().games.remove(&guild_id) {
         halt_running_game(&running).await;
         cleanup_game(ctx.serenity_context(), ctx.data(), &running).await;
@@ -2273,6 +2274,7 @@ pub async fn reset_leaderboard(ctx: Context<'_>) -> Result<(), Error> {
     if !require_manager(ctx).await? {
         return Ok(());
     }
+    ctx.defer().await?;
     let stats_snapshot = {
         let mut stats_file = ctx.data().stats.write().await;
         *stats_file = stats::StatsFile::default();
