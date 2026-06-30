@@ -1543,13 +1543,13 @@ pub async fn stop_game(ctx: Context<'_>) -> Result<(), Error> {
     description_localized("ko", "비정상 종료된 마피아 게임 채널과 역할을 강제로 정리합니다.")
 )]
 pub async fn cleanup_stuck_game(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.defer().await?;
     if !require_manager(ctx).await? {
         return Ok(());
     }
     let Some(guild_id) = ctx.guild_id() else {
         return Ok(());
     };
-    ctx.defer().await?;
     let cleaned_running_game = if let Some((_id, running)) = ctx.data().games.remove(&guild_id) {
         halt_running_game(&running).await;
         cleanup_game(ctx.serenity_context(), ctx.data(), &running).await;
@@ -2271,10 +2271,10 @@ pub async fn show_leaderboard(
     description_localized("ko", "마피아 게임 전적과 리더보드를 초기화합니다.")
 )]
 pub async fn reset_leaderboard(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.defer().await?;
     if !require_manager(ctx).await? {
         return Ok(());
     }
-    ctx.defer().await?;
     let stats_snapshot = {
         let mut stats_file = ctx.data().stats.write().await;
         *stats_file = stats::StatsFile::default();
