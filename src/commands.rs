@@ -40,6 +40,31 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
 
+async fn defer_best_effort(ctx: Context<'_>, command_name: &str) -> bool {
+    match ctx.defer().await {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("failed to defer {command_name}: {error:?}");
+            false
+        }
+    }
+}
+
+async fn reply_embed_with_channel_fallback(
+    ctx: Context<'_>,
+    message: impl Into<String>,
+    title: &str,
+    color: serenity::Colour,
+    ephemeral: bool,
+) -> Result<(), Error> {
+    let message = message.into();
+    if let Err(error) = reply_embed(ctx, message.clone(), title, color, ephemeral).await {
+        eprintln!("failed to send interaction reply '{title}': {error:?}");
+        send_channel_embed(ctx.http(), ctx.channel_id(), message, title, color, vec![]).await?;
+    }
+    Ok(())
+}
+
 #[poise::command(
     slash_command,
     rename = "마피아시작",
@@ -1543,9 +1568,20 @@ pub async fn stop_game(ctx: Context<'_>) -> Result<(), Error> {
     description_localized("ko", "비정상 종료된 마피아 게임 채널과 역할을 강제로 정리합니다.")
 )]
 pub async fn cleanup_stuck_game(ctx: Context<'_>) -> Result<(), Error> {
-    ctx.defer().await?;
+    let deferred = defer_best_effort(ctx, "마피아정리").await;
     if !require_manager(ctx).await? {
         return Ok(());
+    }
+    if !deferred {
+        let _ = send_channel_embed(
+            ctx.http(),
+            ctx.channel_id(),
+            "마피아 정리를 시작했습니다.",
+            "마피아 정리",
+            serenity::Colour::GOLD,
+            vec![],
+        )
+        .await;
     }
     let Some(guild_id) = ctx.guild_id() else {
         return Ok(());
@@ -1564,7 +1600,7 @@ pub async fn cleanup_stuck_game(ctx: Context<'_>) -> Result<(), Error> {
         !cleaned_running_game,
     )
     .await;
-    reply_embed(
+    reply_embed_with_channel_fallback(
         ctx,
         format!(
             "남아 있던 게임 채널, 역할, 권한, 슬로우모드를 정리했습니다.\n추가 삭제 채널: {}개\n역할 제거: {}개",
@@ -2271,9 +2307,20 @@ pub async fn show_leaderboard(
     description_localized("ko", "마피아 게임 전적과 리더보드를 초기화합니다.")
 )]
 pub async fn reset_leaderboard(ctx: Context<'_>) -> Result<(), Error> {
-    ctx.defer().await?;
+    let deferred = defer_best_effort(ctx, "리더보드초기화").await;
     if !require_manager(ctx).await? {
         return Ok(());
+    }
+    if !deferred {
+        let _ = send_channel_embed(
+            ctx.http(),
+            ctx.channel_id(),
+            "리더보드 초기화를 시작했습니다.",
+            "리더보드",
+            serenity::Colour::GOLD,
+            vec![],
+        )
+        .await;
     }
     let stats_snapshot = {
         let mut stats_file = ctx.data().stats.write().await;
@@ -2282,7 +2329,7 @@ pub async fn reset_leaderboard(ctx: Context<'_>) -> Result<(), Error> {
     };
     let stats_path = ctx.data().stats_path.clone();
     tokio::task::spawn_blocking(move || stats::save_stats(&*stats_path, &stats_snapshot)).await??;
-    reply_embed(
+    reply_embed_with_channel_fallback(
         ctx,
         "리더보드와 개인 전적을 초기화했습니다.",
         "리더보드",
