@@ -2094,6 +2094,54 @@ mod tests {
     }
 
     #[test]
+    fn single_submitted_mafia_attack_resolves_even_if_other_mafia_waits() {
+        let mut game = MafiaGame::new(basic_players(), 2, 0, 0, Vec::new()).unwrap();
+        let mafia = game
+            .players
+            .iter()
+            .filter(|player| player.role == Role::Mafia)
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        let target = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Citizen)
+            .unwrap()
+            .user_id;
+
+        game.submit_night_action(mafia[0], Some(target)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert_eq!(result.killed.unwrap().user_id, target);
+    }
+
+    #[test]
+    fn split_submitted_mafia_attacks_do_not_resolve() {
+        let mut game = MafiaGame::new(basic_players(), 2, 0, 0, Vec::new()).unwrap();
+        let mafia = game
+            .players
+            .iter()
+            .filter(|player| player.role == Role::Mafia)
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        let targets = game
+            .players
+            .iter()
+            .filter(|player| player.role == Role::Citizen)
+            .map(|player| player.user_id)
+            .take(2)
+            .collect::<Vec<_>>();
+
+        game.submit_night_action(mafia[0], Some(targets[0]))
+            .unwrap();
+        game.submit_night_action(mafia[1], Some(targets[1]))
+            .unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(result.killed.is_none());
+    }
+
+    #[test]
     fn madam_seduction_lasts_until_following_vote_ends() {
         let mut game = MafiaGame::new(basic_players(), 1, 1, 0, vec![Role::Madam]).unwrap();
         let madam_id = game
