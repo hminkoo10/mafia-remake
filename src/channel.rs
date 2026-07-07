@@ -851,7 +851,7 @@ pub fn enabled_special_roles(config: &config::BotConfig, pool: &[Role]) -> Vec<R
 pub fn choose_special_roles(config: &config::BotConfig) -> Result<Vec<Role>> {
     let mut rng = system_random::rng();
     let mut selected = Vec::new();
-    let mut citizen_candidates = enabled_special_roles(config, CITIZEN_SPECIAL_ROLES);
+    let mut citizen_candidates = assignable_special_roles(config, CITIZEN_SPECIAL_ROLES);
     citizen_candidates.shuffle(&mut rng);
     let mut citizen_selected = Vec::new();
     if !select_special_roles_for_slots(
@@ -869,7 +869,7 @@ pub fn choose_special_roles(config: &config::BotConfig) -> Result<Vec<Role>> {
         (MAFIA_SPECIAL_ROLES, config.mafia_special_count as usize),
         (NEUTRAL_SPECIAL_ROLES, config.neutral_special_count as usize),
     ] {
-        let candidates = enabled_special_roles(config, pool);
+        let candidates = assignable_special_roles(config, pool);
         if count > candidates.len() {
             bail!(
                 "{} 중 활성화된 역할보다 선택할 특수룰 수가 많습니다.",
@@ -926,7 +926,7 @@ fn balanced_special_candidates(
     pool: &[Role],
     role_history: &HashMap<Role, i64>,
 ) -> Vec<Role> {
-    let mut candidates = enabled_special_roles(config, pool);
+    let mut candidates = assignable_special_roles(config, pool);
     candidates.shuffle(&mut system_random::rng());
     candidates.sort_by_key(|role| {
         (
@@ -934,6 +934,14 @@ fn balanced_special_candidates(
             special_role_player_count(*role),
         )
     });
+    candidates
+}
+
+fn assignable_special_roles(config: &config::BotConfig, pool: &[Role]) -> Vec<Role> {
+    let mut candidates = enabled_special_roles(config, pool);
+    if config.default_police_count > 0 {
+        candidates.retain(|role| !role.is_investigation_role());
+    }
     candidates
 }
 
@@ -5070,6 +5078,82 @@ mod tests {
             day_notify: Arc::new(Notify::new()),
             stats_recorded: false,
         }
+    }
+
+    fn selection_test_config() -> config::BotConfig {
+        config::BotConfig {
+            game_enabled: true,
+            participant_role: "참가자".to_string(),
+            manager_role: "관리자".to_string(),
+            default_mafia_count: 1,
+            default_doctor_count: 0,
+            default_police_count: 1,
+            default_joker_count: 0,
+            max_player_count: 0,
+            night_seconds: 30,
+            discussion_seconds: 30,
+            vote_seconds: 30,
+            chat_slowmode_seconds: 0,
+            reveal_death_roles: false,
+            reveal_public_police_status: true,
+            reveal_morning_mafia_count: true,
+            citizen_special_count: 1,
+            mafia_special_count: 0,
+            neutral_special_count: 0,
+            enable_detective: true,
+            enable_inspector: true,
+            enable_graverobber: false,
+            enable_spy: false,
+            enable_contractor: false,
+            enable_witch: false,
+            enable_scientist: false,
+            enable_madam: false,
+            enable_godfather: false,
+            enable_joker: false,
+            enable_politician: false,
+            enable_judge: false,
+            enable_reporter: false,
+            enable_hacker: false,
+            enable_terrorist: false,
+            enable_lover: false,
+            enable_shaman: false,
+            enable_priest: false,
+            enable_soldier: false,
+            enable_nurse: false,
+            enable_gangster: false,
+            enable_prophet: false,
+            enable_psychologist: false,
+            enable_hypnotist: false,
+            enable_mercenary: false,
+            enable_thief: false,
+            enable_cult_team: false,
+            use_agent: true,
+            use_vigilante: true,
+            anonymous_mode: false,
+            anonymous_name_mode: "animal".to_string(),
+            blacklist_user_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn base_investigation_role_filters_investigation_specials() {
+        let config = selection_test_config();
+        let mut role_history = HashMap::new();
+        role_history.insert(Role::Inspector, 0);
+        role_history.insert(Role::Detective, 100);
+
+        let special_roles = choose_special_roles_balanced(&config, &role_history).unwrap();
+        let role_counts =
+            selected_role_counts_balanced(&config, &special_roles, &role_history).unwrap();
+        let investigation_count = role_counts
+            .iter()
+            .filter(|(role, _)| role.is_investigation_role())
+            .map(|(_, count)| *count)
+            .sum::<usize>();
+
+        assert_eq!(special_roles, vec![Role::Detective]);
+        assert!(!role_counts.contains_key(&Role::Inspector));
+        assert_eq!(investigation_count, config.default_police_count as usize);
     }
 
     #[test]
