@@ -204,6 +204,13 @@ async fn event_handler(
                 eprintln!("component error: {error:?}");
             }
         }
+        serenity::FullEvent::InteractionCreate {
+            interaction: serenity::Interaction::Modal(modal),
+        } => {
+            if let Err(error) = commands::handle_modal(ctx, data, modal).await {
+                eprintln!("modal error: {error:?}");
+            }
+        }
         serenity::FullEvent::Message { new_message } => {
             if let Err(error) = commands::handle_message_event(ctx, data, new_message).await {
                 eprintln!("message event error: {error:?}");

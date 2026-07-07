@@ -965,7 +965,7 @@ pub fn contractor_contract_components(
     targets: &[Player],
 ) -> Vec<serenity::CreateActionRow> {
     (0..2)
-        .flat_map(|slot| {
+        .map(|slot| {
             let target_options = targets
                 .iter()
                 .take(25)
@@ -976,45 +976,57 @@ pub fn contractor_contract_components(
                     )
                 })
                 .collect::<Vec<_>>();
-            let role_options = CONTRACTOR_GUESS_ROLES
-                .iter()
-                .map(|role| serenity::CreateSelectMenuOption::new(role.value(), role.value()))
-                .collect::<Vec<_>>();
-            [
-                serenity::CreateActionRow::SelectMenu(
-                    serenity::CreateSelectMenu::new(
-                        format!("contractor_target:{}:{}:{}", guild_id.get(), actor_id, slot),
-                        serenity::CreateSelectMenuKind::String {
-                            options: target_options,
-                        },
-                    )
-                    .placeholder(format!("{}번째 청부 대상", slot + 1))
-                    .min_values(1)
-                    .max_values(1),
-                ),
-                serenity::CreateActionRow::SelectMenu(
-                    serenity::CreateSelectMenu::new(
-                        format!("contractor_role:{}:{}:{}", guild_id.get(), actor_id, slot),
-                        serenity::CreateSelectMenuKind::String {
-                            options: role_options,
-                        },
-                    )
-                    .placeholder(format!("{}번째 대상 직업 추측", slot + 1))
-                    .min_values(1)
-                    .max_values(1),
-                ),
-            ]
+            serenity::CreateActionRow::SelectMenu(
+                serenity::CreateSelectMenu::new(
+                    format!("contractor_target:{}:{}:{}", guild_id.get(), actor_id, slot),
+                    serenity::CreateSelectMenuKind::String {
+                        options: target_options,
+                    },
+                )
+                .placeholder(format!("{}번째 청부 대상", slot + 1))
+                .min_values(1)
+                .max_values(1),
+            )
         })
         .chain([serenity::CreateActionRow::Buttons(vec![
             serenity::CreateButton::new(format!(
-                "contractor_submit:{}:{}",
+                "contractor_roles:{}:{}",
                 guild_id.get(),
                 actor_id
             ))
-            .label("청부 확정")
+            .label("직업 입력/청부 확정")
             .style(serenity::ButtonStyle::Danger),
         ])])
         .collect()
+}
+
+pub fn contractor_role_modal(guild_id: serenity::GuildId, actor_id: u64) -> serenity::CreateModal {
+    serenity::CreateModal::new(
+        format!("contractor_roles:{}:{}", guild_id.get(), actor_id),
+        "청부 직업 입력",
+    )
+    .components(vec![
+        serenity::CreateActionRow::InputText(
+            serenity::CreateInputText::new(
+                serenity::InputTextStyle::Short,
+                "첫 번째 대상 직업",
+                "first_role",
+            )
+            .placeholder("예: 마피아")
+            .min_length(1)
+            .max_length(30),
+        ),
+        serenity::CreateActionRow::InputText(
+            serenity::CreateInputText::new(
+                serenity::InputTextStyle::Short,
+                "두 번째 대상 직업",
+                "second_role",
+            )
+            .placeholder("예: 시민")
+            .min_length(1)
+            .max_length(30),
+        ),
+    ])
 }
 
 pub fn night_placeholder(role: Role) -> &'static str {
@@ -2259,5 +2271,24 @@ mod tests {
             confirmation_rejection_message(&result, context),
             "반대가 많아 처형하지 않습니다."
         );
+    }
+
+    #[test]
+    fn contractor_components_stay_within_discord_limits() {
+        let targets = (0..30)
+            .map(|index| Player::new(1000 + index, format!("대상{index}"), Role::Citizen))
+            .collect::<Vec<_>>();
+        let components = contractor_contract_components(serenity::GuildId::new(1), 42, &targets);
+        let json = serde_json::to_value(&components).unwrap();
+        let rows = json.as_array().unwrap();
+
+        assert!(rows.len() <= 5);
+        for row in rows {
+            for component in row["components"].as_array().unwrap() {
+                if let Some(options) = component.get("options").and_then(|value| value.as_array()) {
+                    assert!(options.len() <= 25);
+                }
+            }
+        }
     }
 }
