@@ -1286,6 +1286,8 @@ mod tests {
             reveal_death_roles: true,
             anonymous_enabled: false,
             started_at: Instant::now(),
+            started_at_iso: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            ended_at_iso: None,
             activity_game_key: "test-game".to_string(),
             phase_deadline: None,
             initial_roles,

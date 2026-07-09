@@ -259,6 +259,8 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         anonymous_enabled: config_snapshot.anonymous_mode,
         game,
         started_at: Instant::now(),
+        started_at_iso: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        ended_at_iso: None,
         activity_game_key: uuid::Uuid::new_v4().to_string(),
         phase_deadline: None,
         initial_roles,

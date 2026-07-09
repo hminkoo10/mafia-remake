@@ -1,4 +1,5 @@
 use anyhow::{Context as AnyhowContext, Result};
+use chrono::{SecondsFormat, Utc};
 use dashmap::DashMap;
 use mafia_remake::game::MafiaGame;
 use mafia_remake::model::{Player, Role, Winner};
@@ -93,6 +94,7 @@ struct Data {
     stats_path: Arc<PathBuf>,
     games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>>,
     completed_replays: Arc<RwLock<VecDeque<Value>>>,
+    completed_replays_path: Arc<PathBuf>,
     recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>>,
     web_sessions: Arc<DashMap<String, web_settings::WebSettingsSession>>,
     web_base_url: Arc<String>,
@@ -115,6 +117,8 @@ struct RunningGame {
     reveal_death_roles: bool,
     anonymous_enabled: bool,
     started_at: Instant,
+    started_at_iso: String,
+    ended_at_iso: Option<String>,
     activity_game_key: String,
     phase_deadline: Option<Instant>,
     initial_roles: HashMap<u64, Role>,
@@ -235,6 +239,8 @@ impl RunningGame {
         self.next_replay_sequence = self.next_replay_sequence.saturating_add(1);
         self.replay_events.push(json!({
             "seq": seq,
+            "id": format!("e_{seq:06}"),
+            "timestamp": Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
             "elapsed_ms": self.elapsed_ms(),
             "day_number": self.game.day_number,
             "phase": self.game.phase.value(),
@@ -355,9 +361,12 @@ impl RunningGame {
     ) -> Value {
         json!({
             "game_key": self.activity_game_key.clone(),
+            "game_id": self.activity_game_key.clone(),
             "guild_id": self.guild_id.get(),
             "channel_id": self.channel_id.get(),
             "status": status,
+            "started_at": self.started_at_iso.clone(),
+            "ended_at": self.ended_at_iso.clone(),
             "phase": self.game.phase.value(),
             "phase_key": format!("{:?}", self.game.phase),
             "day_number": self.game.day_number,
@@ -373,9 +382,12 @@ impl RunningGame {
     fn replay_summary(&self, status: &str, winner: Option<Winner>) -> Value {
         json!({
             "game_key": self.activity_game_key.clone(),
+            "game_id": self.activity_game_key.clone(),
             "guild_id": self.guild_id.get(),
             "channel_id": self.channel_id.get(),
             "status": status,
+            "started_at": self.started_at_iso.clone(),
+            "ended_at": self.ended_at_iso.clone(),
             "phase": self.game.phase.value(),
             "phase_key": format!("{:?}", self.game.phase),
             "day_number": self.game.day_number,
@@ -543,9 +555,15 @@ async fn main() -> Result<()> {
     let config_path = workspace_root.join("config.json");
     let api_keys_path = workspace_root.join("api_keys.json");
     let stats_path = workspace_root.join("stats.json");
+    let completed_replays_path = workspace_root.join("replays.json");
     let config = config::load_config(&config_path)?;
     let api_keys = web_settings::load_api_key_store(&api_keys_path)?;
     let stats = stats::load_stats(&stats_path).unwrap_or_default();
+    let mut loaded_replays =
+        web_settings::load_completed_replays(&completed_replays_path).unwrap_or_default();
+    while loaded_replays.len() > COMPLETED_REPLAY_LIMIT {
+        loaded_replays.pop_back();
+    }
     let web_host = std::env::var("WEB_SETTINGS_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let web_port = std::env::var("WEB_SETTINGS_PORT")
         .unwrap_or_else(|_| "8800".to_string())
@@ -576,7 +594,7 @@ async fn main() -> Result<()> {
 
     // 공유 상태를 Discord 연결 전에 먼저 생성
     let games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>> = Arc::new(DashMap::new());
-    let completed_replays: Arc<RwLock<VecDeque<Value>>> = Arc::new(RwLock::new(VecDeque::new()));
+    let completed_replays: Arc<RwLock<VecDeque<Value>>> = Arc::new(RwLock::new(loaded_replays));
     let recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>> =
         Arc::new(DashMap::new());
     let config_arc = Arc::new(RwLock::new(config));
@@ -587,6 +605,7 @@ async fn main() -> Result<()> {
     let config_path_arc = Arc::new(config_path);
     let api_keys_path_arc = Arc::new(api_keys_path);
     let stats_path_arc = Arc::new(stats_path);
+    let completed_replays_path_arc = Arc::new(completed_replays_path);
     let (activity_discord_update_tx, _) = tokio::sync::broadcast::channel(64);
 
     // Activity 서버를 Discord 연결 전에 즉시 시작 (Fly.io health check 통과용)
@@ -633,6 +652,7 @@ async fn main() -> Result<()> {
     let config_path_setup = config_path_arc.clone();
     let api_keys_path_setup = api_keys_path_arc.clone();
     let stats_path_setup = stats_path_arc.clone();
+    let completed_replays_path_setup = completed_replays_path_arc.clone();
     let activity_discord_update_setup = activity_discord_update_tx.clone();
 
     let framework = poise::Framework::builder()
@@ -715,6 +735,7 @@ async fn main() -> Result<()> {
                     stats_path: stats_path_setup,
                     games: games_setup.clone(),
                     completed_replays: completed_replays_setup.clone(),
+                    completed_replays_path: completed_replays_path_setup,
                     recruitments: recruitments_setup.clone(),
                     web_sessions: web_sessions_setup.clone(),
                     web_base_url: Arc::new(web_base_url.clone()),

@@ -2700,6 +2700,10 @@ pub async fn announce_winner(
         let mut running_write = running.write().await;
         running_write.game.phase = Phase::Ended;
         let elapsed_seconds = running_write.started_at.elapsed().as_secs() as i64;
+        if running_write.ended_at_iso.is_none() {
+            running_write.ended_at_iso =
+                Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        }
         let record_payload = if running_write.stats_recorded {
             None
         } else {
@@ -2774,6 +2778,22 @@ pub async fn announce_winner(
         while completed_replays.len() > COMPLETED_REPLAY_LIMIT {
             completed_replays.pop_back();
         }
+        let completed_replays_path = data.completed_replays_path.clone();
+        let completed_replays_snapshot = completed_replays.clone();
+        tokio::spawn(async move {
+            match tokio::task::spawn_blocking(move || {
+                crate::web_settings::save_completed_replays(
+                    &*completed_replays_path,
+                    &completed_replays_snapshot,
+                )
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("failed to save replay history: {error:?}"),
+                Err(error) => eprintln!("failed to join replay history save task: {error:?}"),
+            }
+        });
     }
     let rows = {
         let running_read = running.read().await;

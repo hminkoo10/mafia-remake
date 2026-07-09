@@ -597,6 +597,43 @@ fn save_api_key_store(path: impl AsRef<Path>, store: &ApiKeyStore) -> Result<()>
     Ok(())
 }
 
+pub fn load_completed_replays(path: impl AsRef<Path>) -> Result<VecDeque<Value>> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(VecDeque::new());
+    }
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("replays JSON file read failed: {}", path.display()))?;
+    let values = serde_json::from_str::<Vec<Value>>(&text)
+        .with_context(|| format!("replays JSON parse failed: {}", path.display()))?;
+    Ok(values.into())
+}
+
+pub fn save_completed_replays(path: impl AsRef<Path>, replays: &VecDeque<Value>) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("replays directory create failed: {}", parent.display()))?;
+    }
+    let values = replays.iter().cloned().collect::<Vec<_>>();
+    let text = serde_json::to_string_pretty(&values).context("replays JSON serialize failed")?;
+    let temp_path = path.with_file_name(format!(
+        "{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("replays.json")
+    ));
+    fs::write(&temp_path, format!("{text}\n"))
+        .with_context(|| format!("replays temp write failed: {}", temp_path.display()))?;
+    if path.exists() {
+        fs::remove_file(path)
+            .with_context(|| format!("replays old file replace failed: {}", path.display()))?;
+    }
+    fs::rename(&temp_path, path)
+        .with_context(|| format!("replays file replace failed: {}", path.display()))?;
+    Ok(())
+}
+
 fn api_key_hash(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -1391,6 +1428,341 @@ async fn api_replay_by_key(
         .cloned()
 }
 
+fn json_page_params(query: &HashMap<String, String>, default_limit: usize) -> (usize, usize) {
+    let page = query
+        .get("page")
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1);
+    let per_page = query
+        .get("per_page")
+        .or_else(|| query.get("limit"))
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default_limit)
+        .min(100);
+    (page, per_page)
+}
+
+fn slug_key(value: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in value.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if index > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    out
+}
+
+fn winner_slug(replay: &Value) -> Option<String> {
+    replay["winner_key"].as_str().map(slug_key)
+}
+
+fn player_id_string(value: &Value) -> Option<String> {
+    value
+        .as_u64()
+        .map(|id| id.to_string())
+        .or_else(|| value.as_str().map(str::to_string))
+}
+
+fn participant_id(participant: &Value) -> Option<String> {
+    player_id_string(&participant["user_id"])
+}
+
+fn participant_for_user<'a>(replay: &'a Value, user_id: &str) -> Option<&'a Value> {
+    replay["participants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|participant| participant_id(participant).as_deref() == Some(user_id))
+}
+
+fn participant_nickname(participant: &Value) -> String {
+    participant["name"]
+        .as_str()
+        .or_else(|| participant["nickname"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn participant_role_slug(participant: &Value) -> String {
+    participant["final_role_key"]
+        .as_str()
+        .or_else(|| participant["role_key"].as_str())
+        .map(slug_key)
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn participant_survived(participant: &Value) -> bool {
+    participant["alive"].as_bool().unwrap_or(false)
+}
+
+fn participant_revealed_role(replay: &Value, user_id: &str) -> Option<String> {
+    participant_for_user(replay, user_id).map(participant_role_slug)
+}
+
+fn participant_won(participant: &Value, replay: &Value) -> bool {
+    let Some(winner) = winner_slug(replay) else {
+        return false;
+    };
+    participant["final_team"].as_str() == Some(winner.as_str())
+}
+
+fn death_info_for(replay: &Value, user_id: &str) -> (Option<u64>, Option<String>) {
+    let Some(events) = replay["events"].as_array() else {
+        return (None, None);
+    };
+    for event in events {
+        let round = event["day_number"].as_u64();
+        let details = &event["details"];
+        match event["kind"].as_str().unwrap_or_default() {
+            "confirmation_vote_resolved" => {
+                if player_id_string(&details["executed_user_id"]).as_deref() == Some(user_id) {
+                    return (round, Some("execution".to_string()));
+                }
+                if details["extra_killed_user_ids"]
+                    .as_array()
+                    .is_some_and(|ids| {
+                        ids.iter()
+                            .any(|id| player_id_string(id).as_deref() == Some(user_id))
+                    })
+                {
+                    return (round, Some("other".to_string()));
+                }
+            }
+            "night_resolved" => {
+                let killed = details["killed_user_ids"].as_array().is_some_and(|ids| {
+                    ids.iter()
+                        .any(|id| player_id_string(id).as_deref() == Some(user_id))
+                });
+                if !killed {
+                    continue;
+                }
+                let list_has = |name: &str| {
+                    details[name].as_array().is_some_and(|ids| {
+                        ids.iter()
+                            .any(|id| player_id_string(id).as_deref() == Some(user_id))
+                    })
+                };
+                let cause = if player_id_string(&details["mafia_target_user_id"]).as_deref()
+                    == Some(user_id)
+                {
+                    "mafia_kill"
+                } else if list_has("contractor_kill_user_ids") {
+                    "contractor_kill"
+                } else if list_has("vigilante_kill_user_ids") {
+                    "vigilante_kill"
+                } else if list_has("mercenary_kill_user_ids") {
+                    "mercenary_kill"
+                } else {
+                    "other"
+                };
+                return (round, Some(cause.to_string()));
+            }
+            _ => {}
+        }
+    }
+    (None, None)
+}
+
+fn compatible_game_summary(replay: &Value) -> Value {
+    let participants = replay["participants"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    json!({
+        "game_id": replay["game_key"].clone(),
+        "started_at": replay["started_at"].clone(),
+        "ended_at": replay["ended_at"].clone(),
+        "player_count": participants.len(),
+        "winner": winner_slug(replay),
+        "rounds": replay["day_number"].clone(),
+    })
+}
+
+fn compatible_game_detail(replay: &Value) -> Value {
+    let players = replay["participants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|participant| {
+            json!({
+                "user_id": participant_id(participant),
+                "nickname": participant_nickname(participant),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut value = compatible_game_summary(replay);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("players".to_string(), Value::Array(players));
+    }
+    value
+}
+
+fn compatible_game_result(replay: &Value) -> Value {
+    let players = replay["participants"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|participant| {
+            let user_id = participant_id(participant).unwrap_or_default();
+            let (died_at_round, cause_of_death) = death_info_for(replay, &user_id);
+            json!({
+                "user_id": user_id,
+                "nickname": participant_nickname(participant),
+                "role": participant_role_slug(participant),
+                "role_name": participant["final_role"].clone(),
+                "survived": participant_survived(participant),
+                "died_at_round": died_at_round,
+                "cause_of_death": cause_of_death,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "game_id": replay["game_key"].clone(),
+        "winner": winner_slug(replay),
+        "ended_at": replay["ended_at"].clone(),
+        "total_rounds": replay["day_number"].clone(),
+        "players": players,
+    })
+}
+
+fn compatible_event_type(kind: &str) -> String {
+    match kind {
+        "game_started" => "game_start".to_string(),
+        "phase_started" => "phase_change".to_string(),
+        "day_vote" | "confirmation_vote" | "day_skip_vote" | "day_extension_vote" => {
+            "vote".to_string()
+        }
+        "night_action"
+        | "contractor_contract"
+        | "hacker_action"
+        | "vigilante_investigation"
+        | "psychologist_observation"
+        | "hypnotist_wake" => "role_action".to_string(),
+        "game_ended" => "game_end".to_string(),
+        _ => kind.to_string(),
+    }
+}
+
+fn compatible_events(replay: &Value) -> Value {
+    let mut events = Vec::new();
+    for event in replay["events"].as_array().into_iter().flatten() {
+        let kind = event["kind"].as_str().unwrap_or_default();
+        let event_id = event["id"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("e_{:06}", event["seq"].as_u64().unwrap_or_default()));
+        let actor_id = event["actor"]["user_id"].as_u64().map(|id| id.to_string());
+        let target_id = event["target_user_ids"]
+            .as_array()
+            .and_then(|ids| ids.first())
+            .and_then(player_id_string);
+        events.push(json!({
+            "id": event_id,
+            "timestamp": event["timestamp"].clone(),
+            "round": event["day_number"].clone(),
+            "type": compatible_event_type(kind),
+            "actor_id": actor_id,
+            "target_id": target_id,
+            "payload": event["details"].clone(),
+        }));
+
+        if kind == "night_resolved" {
+            for target in event["details"]["killed_user_ids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let Some(target_id) = player_id_string(target) else {
+                    continue;
+                };
+                let (_, cause) = death_info_for(replay, &target_id);
+                let role_revealed = participant_revealed_role(replay, &target_id);
+                events.push(json!({
+                    "id": format!("{event_id}_death_{target_id}"),
+                    "timestamp": event["timestamp"].clone(),
+                    "round": event["day_number"].clone(),
+                    "type": "death",
+                    "actor_id": Value::Null,
+                    "target_id": target_id,
+                    "payload": {
+                        "cause": cause.unwrap_or_else(|| "other".to_string()),
+                        "role_revealed": role_revealed,
+                    },
+                }));
+            }
+        } else if kind == "confirmation_vote_resolved" {
+            if let Some(target_id) = player_id_string(&event["details"]["executed_user_id"]) {
+                let role_revealed = participant_revealed_role(replay, &target_id);
+                let vote_count = event["details"]["vote_counts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|count| count["approve"].as_bool() == Some(true))
+                    .and_then(|count| count["count"].as_i64());
+                events.push(json!({
+                    "id": format!("{event_id}_death_{target_id}"),
+                    "timestamp": event["timestamp"].clone(),
+                    "round": event["day_number"].clone(),
+                    "type": "death",
+                    "actor_id": Value::Null,
+                    "target_id": target_id,
+                    "payload": {
+                        "cause": "execution",
+                        "role_revealed": role_revealed,
+                        "vote_count": vote_count,
+                    },
+                }));
+            }
+        }
+    }
+    json!({
+        "game_id": replay["game_key"].clone(),
+        "events": events,
+    })
+}
+
+async fn api_recent_games_value(
+    state: &WebSettingsState,
+    guild_id: u64,
+    query: &HashMap<String, String>,
+) -> Value {
+    let (page, per_page) = json_page_params(query, 10);
+    let completed_replays = state.completed_replays.read().await;
+    let all = completed_replays
+        .iter()
+        .filter(|replay| replay["guild_id"].as_u64() == Some(guild_id))
+        .map(compatible_game_summary)
+        .collect::<Vec<_>>();
+    let total = all.len();
+    let start = per_page.saturating_mul(page.saturating_sub(1));
+    let data = all
+        .into_iter()
+        .skip(start)
+        .take(per_page)
+        .collect::<Vec<_>>();
+    json!({
+        "data": data,
+        "total": total,
+        "current_page": page,
+        "per_page": per_page,
+    })
+}
+
+async fn replay_for_compatible_game(
+    state: &WebSettingsState,
+    guild_id: u64,
+    game_key: &str,
+) -> Option<Value> {
+    api_replay_by_key(state, guild_id, game_key).await
+}
+
 async fn api_recruitment_value(state: &WebSettingsState, guild_id: u64) -> Option<Value> {
     let recruitment = state
         .recruitments
@@ -1551,7 +1923,11 @@ async fn route_protected_api_request(
     path: &str,
     query: &str,
 ) -> Option<String> {
-    if !path.starts_with("/api/v1/") {
+    let compatible_api_path = path == "/games/recent"
+        || path == "/stats/leaderboard"
+        || path.starts_with("/game/")
+        || path.starts_with("/stats/user/");
+    if !path.starts_with("/api/v1/") && !compatible_api_path {
         return None;
     }
     let key = match authenticate_api_key(state, request).await {
@@ -1566,12 +1942,18 @@ async fn route_protected_api_request(
             json_response(json!({"settings": status["settings"].clone()}))
         }
         ("GET", "/api/v1/stats") => json_response(web_stats_summary(state).await),
+        ("GET", "/api/v1/stats/leaderboard") | ("GET", "/stats/leaderboard") => {
+            json_response(compatible_leaderboard_values(state, key.guild_id, &query).await)
+        }
         ("GET", "/api/v1/games") => {
             let games = api_game_value(state, key.guild_id)
                 .await
                 .into_iter()
                 .collect::<Vec<_>>();
             json_response(json!({"games": games}))
+        }
+        ("GET", "/api/v1/games/recent") | ("GET", "/games/recent") => {
+            json_response(api_recent_games_value(state, key.guild_id, &query).await)
         }
         ("GET", "/api/v1/replays") => {
             json_response(api_replay_summaries(state, key.guild_id).await)
@@ -1584,7 +1966,50 @@ async fn route_protected_api_request(
             json_response(web_leaderboard_values(state, "rating", limit).await)
         }
         _ => {
-            if let Some(metric) = path.strip_prefix("/api/v1/leaderboard/") {
+            if let Some(user_path) = path
+                .strip_prefix("/api/v1/stats/user/")
+                .or_else(|| path.strip_prefix("/stats/user/"))
+            {
+                if let Some(user_id) = user_path.strip_suffix("/games") {
+                    if request.method == "GET" {
+                        json_response(
+                            compatible_user_games_value(state, key.guild_id, user_id, &query).await,
+                        )
+                    } else {
+                        json_error("404 Not Found", "API endpoint not found")
+                    }
+                } else if request.method == "GET" {
+                    compatible_user_stats_value(state, key.guild_id, user_path)
+                        .await
+                        .map(json_response)
+                        .unwrap_or_else(|| json_error("404 Not Found", "user not found"))
+                } else {
+                    json_error("404 Not Found", "API endpoint not found")
+                }
+            } else if let Some(game_path) = path
+                .strip_prefix("/api/v1/game/")
+                .or_else(|| path.strip_prefix("/game/"))
+            {
+                let (game_key, suffix) = game_path
+                    .split_once('/')
+                    .map_or((game_path, None), |(game_key, suffix)| {
+                        (game_key, Some(suffix))
+                    });
+                if request.method != "GET" {
+                    json_error("404 Not Found", "API endpoint not found")
+                } else if let Some(replay) =
+                    replay_for_compatible_game(state, key.guild_id, game_key).await
+                {
+                    match suffix {
+                        None => json_response(compatible_game_detail(&replay)),
+                        Some("result") => json_response(compatible_game_result(&replay)),
+                        Some("events") => json_response(compatible_events(&replay)),
+                        _ => json_error("404 Not Found", "API endpoint not found"),
+                    }
+                } else {
+                    json_error("404 Not Found", "game not found")
+                }
+            } else if let Some(metric) = path.strip_prefix("/api/v1/leaderboard/") {
                 if !WEB_LEADERBOARD_METRICS.contains(&metric) {
                     json_error("400 Bad Request", "unsupported leaderboard metric")
                 } else {
@@ -2043,6 +2468,242 @@ async fn web_leaderboard_values(state: &WebSettingsState, metric: &str, limit: u
             .collect::<Vec<_>>(),
         "limit": safe_limit,
         "entries": entries,
+    })
+}
+
+fn most_played_role(entry: &stats::PlayerStats) -> Option<String> {
+    entry
+        .roles
+        .iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(role, _)| role.clone())
+}
+
+fn compatible_user_game_rows(replays: &[Value], user_id: &str) -> Vec<Value> {
+    let mut rows = Vec::new();
+    for replay in replays {
+        let Some(participant) = replay["participants"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|participant| participant_id(participant).as_deref() == Some(user_id))
+        else {
+            continue;
+        };
+        rows.push(json!({
+            "game_id": replay["game_key"].clone(),
+            "ended_at": replay["ended_at"].clone(),
+            "role": participant_role_slug(participant),
+            "role_name": participant["final_role"].clone(),
+            "result": if participant_won(participant, replay) { "win" } else { "loss" },
+            "survived": participant_survived(participant),
+        }));
+    }
+    rows
+}
+
+fn compatible_user_recent_counts(
+    replays: &[Value],
+    user_id: &str,
+) -> (
+    i64,
+    HashMap<String, i64>,
+    HashMap<String, f64>,
+    i64,
+    i64,
+    i64,
+) {
+    let mut survived = 0;
+    let mut role_counts: HashMap<String, i64> = HashMap::new();
+    let mut role_wins: HashMap<String, i64> = HashMap::new();
+    let mut role_games: HashMap<String, i64> = HashMap::new();
+    let mut executed = 0;
+    let mut killed_by_mafia = 0;
+    for replay in replays {
+        let Some(participant) = replay["participants"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|participant| participant_id(participant).as_deref() == Some(user_id))
+        else {
+            continue;
+        };
+        let role = participant_role_slug(participant);
+        *role_counts.entry(role.clone()).or_default() += 1;
+        *role_games.entry(role.clone()).or_default() += 1;
+        if participant_won(participant, replay) {
+            *role_wins.entry(role).or_default() += 1;
+        }
+        if participant_survived(participant) {
+            survived += 1;
+        } else {
+            let (_, cause) = death_info_for(replay, user_id);
+            match cause.as_deref() {
+                Some("execution") => executed += 1,
+                Some("mafia_kill") => killed_by_mafia += 1,
+                _ => {}
+            }
+        }
+    }
+    let win_rate_by_role = role_games
+        .iter()
+        .map(|(role, games)| {
+            let wins = role_wins.get(role).copied().unwrap_or(0);
+            let rate = if *games > 0 {
+                ((wins as f64 / *games as f64) * 1000.0).round() / 1000.0
+            } else {
+                0.0
+            };
+            (role.clone(), rate)
+        })
+        .collect::<HashMap<_, _>>();
+    (
+        survived,
+        role_counts,
+        win_rate_by_role,
+        executed,
+        killed_by_mafia,
+        0,
+    )
+}
+
+async fn compatible_leaderboard_values(
+    state: &WebSettingsState,
+    guild_id: u64,
+    query: &HashMap<String, String>,
+) -> Value {
+    let sort = query.get("sort").map(String::as_str).unwrap_or("rating");
+    let limit = query
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20)
+        .clamp(1, 100);
+    let metric = match sort {
+        "winrate" => "winrate",
+        "games" => "games",
+        "wins" => "wins",
+        "kills" => "wins",
+        "rating" => "rating",
+        _ => "rating",
+    };
+    let stats_read = state.stats.read().await.clone();
+    let replays = state
+        .completed_replays
+        .read()
+        .await
+        .iter()
+        .filter(|replay| replay["guild_id"].as_u64() == Some(guild_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let data = stats::leaderboard_entries(&stats_read, metric, limit)
+        .into_iter()
+        .map(|(user_id, entry)| {
+            let (_, _, _, executed, killed_by_mafia, kills) =
+                compatible_user_recent_counts(&replays, &user_id);
+            let win_rate = if entry.games > 0 {
+                ((entry.wins as f64 / entry.games as f64) * 1000.0).round() / 1000.0
+            } else {
+                0.0
+            };
+            json!({
+                "user_id": user_id,
+                "nickname": entry.name,
+                "games_played": entry.games,
+                "wins": entry.wins,
+                "losses": entry.losses,
+                "win_rate": win_rate,
+                "rating": entry.rating,
+                "rating_rank": stats::rating_rank(entry.rating),
+                "win_streak": entry.win_streak,
+                "best_win_streak": entry.best_win_streak,
+                "most_played_role": most_played_role(&entry),
+                "times_executed": executed,
+                "times_killed_by_mafia": killed_by_mafia,
+                "kills": kills,
+                "most_frequent_killer": Value::Null,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({"data": data})
+}
+
+async fn compatible_user_stats_value(
+    state: &WebSettingsState,
+    guild_id: u64,
+    user_id: &str,
+) -> Option<Value> {
+    let stats_read = state.stats.read().await.clone();
+    let entry = stats_read.users.get(user_id).cloned()?;
+    let replays = state
+        .completed_replays
+        .read()
+        .await
+        .iter()
+        .filter(|replay| replay["guild_id"].as_u64() == Some(guild_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let (survived, recent_role_counts, win_rate_by_role, executed, killed_by_mafia, kills) =
+        compatible_user_recent_counts(&replays, user_id);
+    let role_play_count = if recent_role_counts.is_empty() {
+        entry.roles.clone()
+    } else {
+        recent_role_counts
+    };
+    let win_rate = if entry.games > 0 {
+        ((entry.wins as f64 / entry.games as f64) * 1000.0).round() / 1000.0
+    } else {
+        0.0
+    };
+    Some(json!({
+        "user_id": user_id,
+        "nickname": entry.name,
+        "total_games": entry.games,
+        "wins": entry.wins,
+        "losses": entry.losses,
+        "win_rate": win_rate,
+        "rating": entry.rating,
+        "rating_rank": stats::rating_rank(entry.rating),
+        "win_streak": entry.win_streak,
+        "best_win_streak": entry.best_win_streak,
+        "win_rate_by_role": win_rate_by_role,
+        "role_play_count": role_play_count,
+        "most_killed_by": Value::Null,
+        "most_killed": Value::Null,
+        "kills": kills,
+        "times_executed": executed,
+        "times_killed_by_mafia": killed_by_mafia,
+        "times_survived": survived,
+    }))
+}
+
+async fn compatible_user_games_value(
+    state: &WebSettingsState,
+    guild_id: u64,
+    user_id: &str,
+    query: &HashMap<String, String>,
+) -> Value {
+    let (page, per_page) = json_page_params(query, 20);
+    let replays = state
+        .completed_replays
+        .read()
+        .await
+        .iter()
+        .filter(|replay| replay["guild_id"].as_u64() == Some(guild_id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let rows = compatible_user_game_rows(&replays, user_id);
+    let total = rows.len();
+    let start = per_page.saturating_mul(page.saturating_sub(1));
+    let data = rows
+        .into_iter()
+        .skip(start)
+        .take(per_page)
+        .collect::<Vec<_>>();
+    json!({
+        "data": data,
+        "total": total,
+        "current_page": page,
+        "per_page": per_page,
     })
 }
 
@@ -2769,12 +3430,68 @@ fn render_api_docs_page(base_url: &str) -> String {
         ),
         ("GET /api/v1/stats", "전적 요약을 반환합니다. API 키 필요."),
         (
+            "GET /api/v1/stats/leaderboard",
+            "Laravel-friendly leaderboard JSON. Query: sort, limit. API key required.",
+        ),
+        (
+            "GET /stats/leaderboard",
+            "Alias for Laravel spec. Query: sort, limit. API key required.",
+        ),
+        (
+            "GET /api/v1/stats/user/{user_id}",
+            "Laravel-friendly user profile stats. API key required.",
+        ),
+        (
+            "GET /api/v1/stats/user/{user_id}/games",
+            "Laravel-friendly user game history. Query: page, per_page. API key required.",
+        ),
+        (
+            "GET /stats/user/{user_id}",
+            "Alias for Laravel spec. API key required.",
+        ),
+        (
+            "GET /stats/user/{user_id}/games",
+            "Alias for Laravel spec. Query: page, per_page. API key required.",
+        ),
+        (
             "GET /api/v1/leaderboard/{metric}",
             "보호 리더보드를 반환합니다. streak 정렬과 win_streak 필드가 포함됩니다. API 키 필요.",
         ),
         (
             "GET /api/v1/games",
             "키 발급 서버의 진행 중 게임을 반환합니다. API 키 필요.",
+        ),
+        (
+            "GET /api/v1/games/recent",
+            "Laravel-friendly recent completed games. Query: page, limit/per_page. API key required.",
+        ),
+        (
+            "GET /games/recent",
+            "Alias for Laravel spec. Query: page, limit/per_page. API key required.",
+        ),
+        (
+            "GET /api/v1/game/{game_key}",
+            "Laravel-friendly completed game summary by replay game_key. API key required.",
+        ),
+        (
+            "GET /api/v1/game/{game_key}/result",
+            "Laravel-friendly completed game result summary. API key required.",
+        ),
+        (
+            "GET /api/v1/game/{game_key}/events",
+            "Laravel-friendly replay timeline events. API key required.",
+        ),
+        (
+            "GET /game/{game_key}",
+            "Alias for Laravel spec. API key required.",
+        ),
+        (
+            "GET /game/{game_key}/result",
+            "Alias for Laravel spec. API key required.",
+        ),
+        (
+            "GET /game/{game_key}/events",
+            "Alias for Laravel spec. API key required.",
         ),
         (
             "GET /api/v1/games/{guild_id}",
@@ -3759,6 +4476,228 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protected_compatible_stats_and_replay_api_match_laravel_contract() {
+        let state = test_state();
+        let raw_key = {
+            let mut store = state.api_keys.write().await;
+            issue_api_key(&mut store, 1, 2, "laravel".to_string())
+        };
+        let mut roles = HashMap::new();
+        roles.insert("mafia".to_string(), 2);
+        state.stats.write().await.users.insert(
+            "11".to_string(),
+            stats::PlayerStats {
+                name: "Alice".to_string(),
+                games: 3,
+                wins: 2,
+                losses: 1,
+                rating: 1120,
+                roles,
+                ..Default::default()
+            },
+        );
+        state.completed_replays.write().await.push_front(json!({
+            "game_key": "game-1",
+            "game_id": "game-1",
+            "guild_id": 1,
+            "channel_id": 10,
+            "status": "completed",
+            "started_at": "2026-07-08T21:00:00Z",
+            "ended_at": "2026-07-08T21:45:00Z",
+            "phase": "Ended",
+            "phase_key": "Ended",
+            "day_number": 3,
+            "elapsed_seconds": 123,
+            "winner": "Citizen",
+            "winner_key": "Citizen",
+            "participants": [
+                {
+                    "user_id": 11,
+                    "name": "Alice",
+                    "initial_role": "Mafia",
+                    "initial_role_key": "Mafia",
+                    "initial_team": "mafia",
+                    "final_role": "Mafia",
+                    "final_role_key": "Mafia",
+                    "final_team": "mafia",
+                    "alive": true,
+                    "death_order": null
+                },
+                {
+                    "user_id": 12,
+                    "name": "Bob",
+                    "initial_role": "Citizen",
+                    "initial_role_key": "Citizen",
+                    "initial_team": "citizen",
+                    "final_role": "Citizen",
+                    "final_role_key": "Citizen",
+                    "final_team": "citizen",
+                    "alive": false,
+                    "death_order": 1
+                }
+            ],
+            "events": [
+                {
+                    "seq": 0,
+                    "id": "e_000000",
+                    "timestamp": "2026-07-08T21:00:00Z",
+                    "day_number": 0,
+                    "phase": "Recruiting",
+                    "phase_key": "Recruiting",
+                    "kind": "game_started",
+                    "actor": null,
+                    "target_user_ids": [],
+                    "details": {"player_count": 2}
+                },
+                {
+                    "seq": 1,
+                    "id": "e_000001",
+                    "timestamp": "2026-07-08T21:10:00Z",
+                    "day_number": 1,
+                    "phase": "Day",
+                    "phase_key": "Day",
+                    "kind": "day_vote",
+                    "actor": {"user_id": 11, "name": "Alice"},
+                    "target_user_ids": [12],
+                    "details": {"choice": "player"}
+                },
+                {
+                    "seq": 2,
+                    "id": "e_000002",
+                    "timestamp": "2026-07-08T21:12:00Z",
+                    "day_number": 1,
+                    "phase": "ConfirmationVote",
+                    "phase_key": "ConfirmationVote",
+                    "kind": "confirmation_vote_resolved",
+                    "actor": null,
+                    "target_user_ids": [12],
+                    "details": {
+                        "executed_user_id": 12,
+                        "approved": true,
+                        "vote_counts": [{"approve": true, "count": 2}]
+                    }
+                }
+            ],
+            "rating_log": [],
+        }));
+
+        let recent_response = route_request(
+            &state,
+            api_request(
+                "GET",
+                "/api/v1/games/recent?limit=5",
+                Some(("X-API-Key", &raw_key)),
+            ),
+        )
+        .await;
+        assert!(recent_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(recent_response.contains(r#""player_count":2"#));
+
+        let recent_alias_response = route_request(
+            &state,
+            api_request(
+                "GET",
+                "/games/recent?limit=5",
+                Some(("X-API-Key", &raw_key)),
+            ),
+        )
+        .await;
+        assert!(recent_alias_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(recent_alias_response.contains(r#""player_count":2"#));
+
+        let game_response = route_request(
+            &state,
+            api_request("GET", "/api/v1/game/game-1", Some(("X-API-Key", &raw_key))),
+        )
+        .await;
+        assert!(game_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(game_response.contains(r#""nickname":"Alice""#));
+
+        let result_response = route_request(
+            &state,
+            api_request(
+                "GET",
+                "/api/v1/game/game-1/result",
+                Some(("X-API-Key", &raw_key)),
+            ),
+        )
+        .await;
+        assert!(result_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(result_response.contains(r#""cause_of_death":"execution""#));
+
+        let events_response = route_request(
+            &state,
+            api_request(
+                "GET",
+                "/api/v1/game/game-1/events",
+                Some(("X-API-Key", &raw_key)),
+            ),
+        )
+        .await;
+        assert!(events_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(events_response.contains(r#""type":"vote""#));
+        assert!(events_response.contains(r#""type":"death""#));
+        assert!(events_response.contains(r#""role_revealed":"citizen""#));
+        assert!(events_response.contains(r#""vote_count":2"#));
+
+        let events_alias_response = route_request(
+            &state,
+            api_request("GET", "/game/game-1/events", Some(("X-API-Key", &raw_key))),
+        )
+        .await;
+        assert!(events_alias_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(events_alias_response.contains(r#""type":"death""#));
+
+        let leaderboard_response = route_request(
+            &state,
+            api_request(
+                "GET",
+                "/api/v1/stats/leaderboard?sort=games&limit=5",
+                Some(("X-API-Key", &raw_key)),
+            ),
+        )
+        .await;
+        assert!(leaderboard_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(leaderboard_response.contains(r#""nickname":"Alice""#));
+
+        let user_response = route_request(
+            &state,
+            api_request(
+                "GET",
+                "/api/v1/stats/user/11",
+                Some(("X-API-Key", &raw_key)),
+            ),
+        )
+        .await;
+        assert!(user_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(user_response.contains(r#""total_games":3"#));
+
+        let user_games_response = route_request(
+            &state,
+            api_request(
+                "GET",
+                "/api/v1/stats/user/11/games?per_page=5",
+                Some(("X-API-Key", &raw_key)),
+            ),
+        )
+        .await;
+        assert!(user_games_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(user_games_response.contains(r#""result":"loss""#));
+
+        let user_games_alias_response = route_request(
+            &state,
+            api_request(
+                "GET",
+                "/stats/user/11/games?per_page=5",
+                Some(("X-API-Key", &raw_key)),
+            ),
+        )
+        .await;
+        assert!(user_games_alias_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(user_games_alias_response.contains(r#""result":"loss""#));
+    }
+
+    #[tokio::test]
     async fn api_key_management_issues_and_revokes_key() {
         let mut state = test_state();
         let key_path = std::env::temp_dir().join(format!("mafia-api-keys-{}.json", Uuid::new_v4()));
@@ -3868,6 +4807,12 @@ mod tests {
 
         assert!(html.contains("공개 조회 API"));
         assert!(html.contains("보호 관리 API"));
+        assert!(html.contains("/api/v1/games/recent"));
+        assert!(html.contains("/api/v1/game/{game_key}/events"));
+        assert!(html.contains("/api/v1/stats/user/{user_id}/games"));
+        assert!(html.contains("GET /games/recent"));
+        assert!(html.contains("GET /game/{game_key}/events"));
+        assert!(html.contains("GET /stats/user/{user_id}/games"));
         assert!(html.contains("/api/v1/games/{guild_id}/actions"));
         assert!(html.contains("/api/v1/games/{guild_id}/replay"));
         assert!(html.contains("/api/v1/replays/{game_key}"));

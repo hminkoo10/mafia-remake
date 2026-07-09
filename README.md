@@ -334,8 +334,17 @@ Discord 앱 내 임베디드 UI에서 게임을 진행할 수 있습니다.
 | `GET /api/v1/me` | 현재 API 키 정보 |
 | `GET /api/v1/config` | 게임 설정 요약 |
 | `GET /api/v1/stats` | 전적 요약 |
+| `GET /api/v1/stats/leaderboard` | Laravel-friendly 리더보드 (`sort`, `limit`) |
+| `GET /api/v1/stats/user/{user_id}` | Laravel-friendly 개인 전적 프로필 |
+| `GET /api/v1/stats/user/{user_id}/games` | Laravel-friendly 개인 게임 이력 (`page`, `per_page`) |
+| `GET /stats/leaderboard`, `/stats/user/{user_id}`, `/stats/user/{user_id}/games` | Laravel 명세 호환 alias. API 키 필요 |
 | `GET /api/v1/leaderboard/{metric}` | 보호 리더보드 조회 |
 | `GET /api/v1/games` | 키 발급 서버의 진행 중 게임 목록 |
+| `GET /api/v1/games/recent` | Laravel-friendly 최근 종료 게임 목록 (`page`, `limit`/`per_page`) |
+| `GET /api/v1/game/{game_key}` | Laravel-friendly 종료 게임 요약 |
+| `GET /api/v1/game/{game_key}/result` | Laravel-friendly 종료 게임 결과 요약 |
+| `GET /api/v1/game/{game_key}/events` | Laravel-friendly 리플레이 이벤트 타임라인 |
+| `GET /games/recent`, `/game/{game_key}`, `/game/{game_key}/result`, `/game/{game_key}/events` | Laravel 명세 호환 alias. API 키 필요 |
 | `GET /api/v1/games/{guild_id}` | 참가자·직업·단계·타이머를 포함한 게임 상세 |
 | `GET /api/v1/games/{guild_id}/replay` | 참가자, 투표, 직업 행동, 단계 결과, 레이팅 로그를 포함한 전체 리플레이 |
 | `POST /api/v1/games/{guild_id}/actions` | `skip_day`, `extend_day`, `stop` 작업 |
