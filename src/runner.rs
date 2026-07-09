@@ -418,6 +418,7 @@ pub async fn run_night(
     for player in &restored_frogs {
         set_frog_channel_member_access(ctx, running, player, false, false).await;
         restore_frog_game_channel_permission(ctx, running, player).await;
+        restore_private_role_channels_for_player(ctx, data, running, player).await;
     }
     for (user_id, message) in hacker_results.into_iter().chain(vigilante_results) {
         let player = running.read().await.game.get_player(user_id).cloned();

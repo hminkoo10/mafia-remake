@@ -3666,6 +3666,39 @@ pub async fn grant_private_role_member_access(
     set_private_role_member_view_access(ctx, running, role, player, true, can_chat).await;
 }
 
+pub fn private_roles_to_restore(running: &RunningGame, player: &Player) -> Vec<Role> {
+    if !player.alive || running.game.is_frog(player) || running.game.is_madam_seduced(player) {
+        return Vec::new();
+    }
+    let mut roles = Vec::new();
+    if PRIVATE_CHAT_ROLES.contains(&player.role)
+        && (player.role != Role::Lover || lover_chat_is_open(&running.game))
+    {
+        roles.push(player.role);
+    }
+    if running.game.is_known_mafia_team(player) {
+        roles.push(Role::Mafia);
+    }
+    roles.sort_by_key(|role| role.value());
+    roles.dedup();
+    roles
+}
+
+pub async fn restore_private_role_channels_for_player(
+    ctx: &serenity::Context,
+    data: &Data,
+    running: &Arc<RwLock<RunningGame>>,
+    player: &Player,
+) {
+    let grant_roles = {
+        let running_read = running.read().await;
+        private_roles_to_restore(&running_read, player)
+    };
+    for role in grant_roles {
+        grant_private_role_member_access(ctx, data, running, role, player).await;
+    }
+}
+
 pub async fn sync_private_role_chat_permissions(
     ctx: &serenity::Context,
     data: &Data,
@@ -5247,6 +5280,30 @@ mod tests {
             .unwrap();
 
         assert!(private_role_member_can_chat(&game, Role::Doctor, &doctor));
+    }
+
+    #[test]
+    fn restored_mafia_frog_gets_mafia_private_role_back() {
+        let mut running = dead_chat_test_running();
+        let mafia = running
+            .game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Mafia)
+            .cloned()
+            .unwrap();
+        running.game.frog_user_ids.insert(mafia.user_id);
+
+        let restored = running.game.restore_frogs();
+        let restored_mafia = restored
+            .iter()
+            .find(|player| player.user_id == mafia.user_id)
+            .unwrap();
+
+        assert_eq!(
+            private_roles_to_restore(&running, restored_mafia),
+            vec![Role::Mafia]
+        );
     }
 
     #[test]
