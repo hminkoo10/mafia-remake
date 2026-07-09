@@ -250,7 +250,7 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         },
     )?;
     let initial_roles = game.players.iter().map(|p| (p.user_id, p.role)).collect();
-    let running = Arc::new(RwLock::new(RunningGame {
+    let mut running_game = RunningGame {
         guild_id,
         channel_id,
         participant_user_ids,
@@ -305,12 +305,24 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         night_timed_events_due: false,
         contractor_contract_drafts: HashMap::new(),
         activity_night_results: HashMap::new(),
+        replay_events: Vec::new(),
+        next_replay_sequence: 1,
         night_notify: Arc::new(Notify::new()),
         vote_notify: Arc::new(Notify::new()),
         confirm_notify: Arc::new(Notify::new()),
         day_notify: Arc::new(Notify::new()),
         stats_recorded: false,
-    }));
+    };
+    running_game.record_replay_event(
+        "game_started",
+        None,
+        &[],
+        serde_json::json!({
+            "participant_count": running_game.game.players.len(),
+            "spectator_count": running_game.spectator_user_ids.len(),
+        }),
+    );
+    let running = Arc::new(RwLock::new(running_game));
     ctx.data().games.insert(guild_id, running.clone());
     let data = ctx.data().clone();
     let serenity_ctx = ctx.serenity_context().clone();
@@ -698,6 +710,18 @@ pub async fn handle_contractor_role_modal_submit(
                 return Ok(());
             }
         };
+        running_write.record_replay_event(
+            "contractor_contract",
+            Some(actor_id),
+            &[first_target_id, second_target_id],
+            serde_json::json!({
+                "guesses": [
+                    {"target_user_id": first_target_id, "role": first_role.value(), "role_key": format!("{:?}", first_role)},
+                    {"target_user_id": second_target_id, "role": second_role.value(), "role_key": format!("{:?}", second_role)}
+                ],
+                "message": message.clone(),
+            }),
+        );
         running_write.contractor_contract_drafts.remove(&actor_id);
         let newly_contacted_mafia = running_write
             .game
@@ -791,6 +815,18 @@ pub async fn handle_contractor_submit(
                 return Ok(());
             }
         };
+        running_write.record_replay_event(
+            "contractor_contract",
+            Some(actor_id),
+            &[first_target_id, second_target_id],
+            serde_json::json!({
+                "guesses": [
+                    {"target_user_id": first_target_id, "role": first_role.value(), "role_key": format!("{:?}", first_role)},
+                    {"target_user_id": second_target_id, "role": second_role.value(), "role_key": format!("{:?}", second_role)}
+                ],
+                "message": message.clone(),
+            }),
+        );
         running_write.contractor_contract_drafts.remove(&actor_id);
         let targets = running_write
             .game
@@ -888,6 +924,17 @@ pub async fn handle_skip_day(
         }
         running_write.day_skip_voter_ids.insert(user_id);
         let vote_count = running_write.day_skip_voter_ids.len();
+        running_write.record_replay_event(
+            "day_skip_vote",
+            Some(user_id),
+            &[],
+            serde_json::json!({
+                "vote_count": vote_count,
+                "required_votes": required_votes,
+                "alive_count": alive_ids.len(),
+                "confirmed": vote_count >= required_votes,
+            }),
+        );
         if vote_count < required_votes {
             return send_component_private(
                 ctx,
@@ -984,6 +1031,17 @@ pub async fn handle_day_extension(
         }
         running_write.day_extension_voter_ids.insert(user_id);
         let vote_count = running_write.day_extension_voter_ids.len();
+        running_write.record_replay_event(
+            "day_extension_vote",
+            Some(user_id),
+            &[],
+            serde_json::json!({
+                "vote_count": vote_count,
+                "required_votes": required_votes,
+                "alive_count": alive_ids.len(),
+                "confirmed": vote_count >= required_votes,
+            }),
+        );
         if vote_count < required_votes {
             return send_component_private(
                 ctx,
@@ -1246,6 +1304,21 @@ pub async fn handle_night_action(
         };
         let cult_bells = running_write.game.consume_cult_bells();
         let actor = running_write.game.get_player(actor_id).cloned();
+        let effective_role = actor
+            .as_ref()
+            .map(|actor| effective_night_role(&running_write.game, actor));
+        let target_ids = target_id.into_iter().collect::<Vec<_>>();
+        running_write.record_replay_event(
+            "night_action",
+            Some(actor_id),
+            &target_ids,
+            serde_json::json!({
+                "choice": if target_ids.is_empty() { "skip" } else { "player" },
+                "effective_role": effective_role.map(|role| role.value()),
+                "effective_role_key": effective_role.map(|role| format!("{:?}", role)),
+                "message": message.clone(),
+            }),
+        );
         let newly_contacted_mafia = actor
             .as_ref()
             .filter(|actor| {
@@ -1441,6 +1514,16 @@ pub async fn handle_day_vote(
                 return Ok(());
             }
         };
+        let target_ids = target_id.into_iter().collect::<Vec<_>>();
+        running_write.record_replay_event(
+            "day_vote",
+            Some(component.user.id.get()),
+            &target_ids,
+            serde_json::json!({
+                "choice": if target_ids.is_empty() { "skip" } else { "player" },
+                "message": message.clone(),
+            }),
+        );
         (message, running_write.game.all_day_votes_submitted())
     };
     if done {
@@ -1473,6 +1556,16 @@ pub async fn handle_confirm_vote(
                 return Ok(());
             }
         };
+        running_write.record_replay_event(
+            "confirmation_vote",
+            Some(component.user.id.get()),
+            &[],
+            serde_json::json!({
+                "approve": approve,
+                "choice": if approve { "approve" } else { "reject" },
+                "message": message.clone(),
+            }),
+        );
         (message, running_write.game.all_confirm_votes_submitted())
     };
     if done {
@@ -1499,6 +1592,7 @@ pub async fn handle_hacker(
         guild_id,
         actor_id,
         value,
+        "hacker_action",
         "해킹 완료",
         |game, actor, target| game.submit_hacker_action(actor, target),
         |_, _, message| format!("{message}\n밤이 시작될 때 대상의 직업을 확인합니다."),
@@ -1523,6 +1617,7 @@ pub async fn handle_vigilante(
         guild_id,
         actor_id,
         value,
+        "vigilante_investigation",
         "숙청 조사 완료",
         |game, actor, target| game.submit_vigilante_investigation(actor, target),
         |game, actor, message| {
@@ -1580,7 +1675,7 @@ pub async fn handle_psychologist(
     };
     let message = {
         let mut running_write = running.write().await;
-        match running_write
+        let message = match running_write
             .game
             .submit_psychologist_observation(actor_id, first, second)
         {
@@ -1589,7 +1684,16 @@ pub async fn handle_psychologist(
                 send_component_private(ctx, component, error.to_string()).await?;
                 return Ok(());
             }
-        }
+        };
+        running_write.record_replay_event(
+            "psychologist_observation",
+            Some(actor_id),
+            &[first, second],
+            serde_json::json!({
+                "message": message.clone(),
+            }),
+        );
+        message
     };
     ack_component(ctx, component).await;
     component
@@ -1626,8 +1730,27 @@ pub async fn handle_hypnotist(
     };
     let message = {
         let mut running_write = running.write().await;
+        let mut target_ids = running_write
+            .game
+            .hypnotized_targets
+            .get(&actor_id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>();
+        target_ids.sort_unstable();
         match running_write.game.submit_hypnotist_wake(actor_id) {
-            Ok(message) => message,
+            Ok(message) => {
+                running_write.record_replay_event(
+                    "hypnotist_wake",
+                    Some(actor_id),
+                    &target_ids,
+                    serde_json::json!({
+                        "message": message.clone(),
+                    }),
+                );
+                message
+            }
             Err(error) => {
                 send_component_private(ctx, component, error.to_string()).await?;
                 return Ok(());
@@ -1659,6 +1782,7 @@ pub async fn handle_day_action<F, G>(
     guild_id: serenity::GuildId,
     actor_id: u64,
     target_id: Option<u64>,
+    replay_kind: &'static str,
     title: &'static str,
     apply: F,
     finish_message: G,
@@ -1693,6 +1817,14 @@ where
             }
         };
         let message = finish_message(&mut running_write.game, actor_id, message);
+        running_write.record_replay_event(
+            replay_kind,
+            Some(actor_id),
+            &[target_id],
+            serde_json::json!({
+                "message": message.clone(),
+            }),
+        );
         let newly_contacted_mafia = running_write
             .game
             .get_player(actor_id)

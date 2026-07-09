@@ -4,8 +4,8 @@
 #![allow(unused_imports, clippy::too_many_arguments, clippy::collapsible_if)]
 
 use super::{
-    CONFIRM_VOTE_SECONDS, Context, DAY_EXTENSION_VOTE_SECONDS, DISCUSSION_EXTENSION_SECONDS, Data,
-    Error, PRIVATE_CHAT_ROLES, RunningGame,
+    COMPLETED_REPLAY_LIMIT, CONFIRM_VOTE_SECONDS, Context, DAY_EXTENSION_VOTE_SECONDS,
+    DISCUSSION_EXTENSION_SECONDS, Data, Error, PRIVATE_CHAT_ROLES, RunningGame,
 };
 use crate::channel::*;
 use crate::commands::{draw_lb_text, fill_circle, fill_rect, image_color, truncate_for_board};
@@ -396,6 +396,15 @@ pub async fn run_night(
         running_write.night_timed_events_due = config.night_seconds <= 10;
         running_write.contractor_contract_drafts.clear();
         running_write.activity_night_results.clear();
+        running_write.record_replay_event(
+            "phase_started",
+            None,
+            &[],
+            serde_json::json!({
+                "phase": "night",
+                "duration_seconds": config.night_seconds,
+            }),
+        );
         let restored_frogs = running_write.game.restore_frogs();
         let hacker_results = running_write.game.consume_hacker_results();
         let vigilante_results = running_write.game.consume_vigilante_results();
@@ -539,6 +548,57 @@ pub async fn run_night(
         let mut running_write = running.write().await;
         running_write.game.resolve_night()?
     };
+    {
+        let mut running_write = running.write().await;
+        let killed_ids = result
+            .killed_players
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        let private_results = serde_json::json!({
+            "detective": running_write.replay_text_results(&result.detective_results),
+            "inspector": running_write.replay_text_results(&result.inspector_results),
+            "inspector_target_notices": running_write.replay_text_results(&result.inspector_target_notices),
+            "spy": running_write.replay_text_results(&result.spy_results),
+            "contractor": running_write.replay_text_results(&result.contractor_results),
+            "witch": running_write.replay_text_results(&result.witch_results),
+            "godfather": running_write.replay_text_results(&result.godfather_results),
+            "shaman": running_write.replay_text_results(&result.shaman_results),
+            "priest": running_write.replay_text_results(&result.priest_results),
+            "agent": running_write.replay_text_results(&result.agent_results),
+            "thief_police": running_write.replay_text_results(&result.thief_police_results),
+            "reporter": running_write.replay_text_results(&result.reporter_results),
+            "vigilante": running_write.replay_text_results(&result.vigilante_results),
+            "mercenary": running_write.replay_text_results(&result.mercenary_results),
+            "nurse": running_write.replay_text_results(&result.nurse_results),
+            "gangster": running_write.replay_text_results(&result.gangster_results),
+            "cult": running_write.replay_text_results(&result.cult_results),
+            "fanatic": running_write.replay_text_results(&result.fanatic_results),
+        });
+        let details = serde_json::json!({
+            "mafia_target_user_id": result.mafia_target.as_ref().map(|player| player.user_id),
+            "protected_user_id": result.protected.as_ref().map(|player| player.user_id),
+            "police_target_user_id": result.police_target.as_ref().map(|player| player.user_id),
+            "police_target_is_mafia": result.police_target_is_mafia,
+            "killed_user_ids": killed_ids.clone(),
+            "contractor_kill_user_ids": result.contractor_kills.iter().map(|player| player.user_id).collect::<Vec<_>>(),
+            "vigilante_kill_user_ids": result.vigilante_kills.iter().map(|player| player.user_id).collect::<Vec<_>>(),
+            "mercenary_kill_user_ids": result.mercenary_kills.iter().map(|player| player.user_id).collect::<Vec<_>>(),
+            "priest_revive_user_ids": result.priest_revives.iter().map(|player| player.user_id).collect::<Vec<_>>(),
+            "shaman_purification_user_ids": result.shaman_purifications.clone(),
+            "contacts": {
+                "spy": result.spy_contacts.clone(),
+                "contractor": result.contractor_contacts.clone(),
+                "witch": result.witch_contacts.clone(),
+                "godfather": result.godfather_contacts.clone(),
+                "nurse": result.nurse_contacts.clone(),
+                "fanatic_inherits": result.fanatic_inherits.clone(),
+            },
+            "private_results": private_results,
+            "cult_bells": result.cult_bells,
+        });
+        running_write.record_replay_event("night_resolved", None, &killed_ids, details);
+    }
     // Activity 프론트엔드용 밤 행동 결과 저장
     {
         let mut running_write = running.write().await;
@@ -1292,6 +1352,17 @@ pub async fn run_day(
         running_write.day_extension_voter_ids.clear();
         running_write.day_extension_active = false;
         running_write.day_extension_confirmed = false;
+        let mercenary_contracts = running_write.game.receive_mercenary_contracts();
+        running_write.record_replay_event(
+            "phase_started",
+            None,
+            &[],
+            serde_json::json!({
+                "phase": "day",
+                "duration_seconds": config.discussion_seconds,
+                "mercenary_contract_count": mercenary_contracts.len(),
+            }),
+        );
         (
             running_write.guild_id,
             running_write.day_notify.clone(),
@@ -1300,7 +1371,7 @@ pub async fn run_day(
             running_write.game.vigilante_day_actors(),
             running_write.game.psychologist_day_actors(),
             running_write.game.hypnotist_day_actors(),
-            running_write.game.receive_mercenary_contracts(),
+            mercenary_contracts,
         )
     };
     unlock_pending_dead_chats(ctx, data, running).await;
@@ -1734,6 +1805,15 @@ pub async fn run_vote(
             Some(Instant::now() + Duration::from_secs(config.vote_seconds));
         running_write.day_chat_open = false;
         running_write.final_defense_user_id = None;
+        running_write.record_replay_event(
+            "phase_started",
+            None,
+            &[],
+            serde_json::json!({
+                "phase": "vote",
+                "duration_seconds": config.vote_seconds,
+            }),
+        );
         (
             running_write.guild_id,
             running_write.vote_notify.clone(),
@@ -1788,7 +1868,28 @@ pub async fn run_vote(
     }
     let vote_result = {
         let mut running_write = running.write().await;
-        running_write.game.resolve_nomination_vote()?
+        let result = running_write.game.resolve_nomination_vote()?;
+        let target_ids = result
+            .executed
+            .as_ref()
+            .map(|player| vec![player.user_id])
+            .unwrap_or_default();
+        let vote_counts = running_write.replay_vote_counts(&result.vote_counts);
+        running_write.record_replay_event(
+            "nomination_vote_resolved",
+            None,
+            &target_ids,
+            serde_json::json!({
+                "executed_user_id": result.executed.as_ref().map(|player| player.user_id),
+                "tied": result.tied,
+                "skipped": result.skipped,
+                "vote_counts": vote_counts,
+                "madam_seduced_user_ids": result.madam_seduced.iter().map(|player| player.user_id).collect::<Vec<_>>(),
+                "madam_newly_contacted_user_ids": result.madam_newly_contacted.iter().map(|player| player.user_id).collect::<Vec<_>>(),
+                "blocked_voter_user_ids": result.blocked_voters.iter().map(|player| player.user_id).collect::<Vec<_>>(),
+            }),
+        );
+        result
     };
     handle_madam_seduction_result(ctx, data, running, &vote_result).await;
     sync_cult_team_channel_access(ctx, data, running).await;
@@ -1869,6 +1970,16 @@ pub async fn run_vote(
         running_write.phase_deadline =
             Some(Instant::now() + Duration::from_secs(CONFIRM_VOTE_SECONDS));
         running_write.final_defense_user_id = None;
+        running_write.record_replay_event(
+            "phase_started",
+            None,
+            &[nominee.user_id],
+            serde_json::json!({
+                "phase": "confirm_vote",
+                "duration_seconds": CONFIRM_VOTE_SECONDS,
+                "nominee_user_id": nominee.user_id,
+            }),
+        );
     }
     restore_member_game_channel_chat(ctx, running).await;
     upsert_game_status(ctx, running).await;
@@ -1908,9 +2019,34 @@ pub async fn run_vote(
     };
     let confirm_result = {
         let mut running_write = running.write().await;
-        running_write
+        let result = running_write
             .game
-            .resolve_confirmation_vote(nominee.user_id)?
+            .resolve_confirmation_vote(nominee.user_id)?;
+        let mut target_ids = result
+            .executed
+            .as_ref()
+            .map(|player| vec![player.user_id])
+            .unwrap_or_default();
+        target_ids.extend(result.extra_killed.iter().map(|player| player.user_id));
+        let vote_counts = running_write.replay_confirm_vote_counts(&result.vote_counts);
+        running_write.record_replay_event(
+            "confirmation_vote_resolved",
+            None,
+            &target_ids,
+            serde_json::json!({
+                "nominee_user_id": nominee.user_id,
+                "executed_user_id": result.executed.as_ref().map(|player| player.user_id),
+                "extra_killed_user_ids": result.extra_killed.iter().map(|player| player.user_id).collect::<Vec<_>>(),
+                "approved": result.approved,
+                "tied": result.tied,
+                "blocked_by_politician": result.blocked_by_politician,
+                "vote_counts": vote_counts,
+                "judge_user_id": result.judge.as_ref().map(|player| player.user_id),
+                "judge_choice": result.judge_choice,
+                "decided_by_judge": result.decided_by_judge,
+            }),
+        );
+        result
     };
     set_channel_slowmode(ctx, running, config.chat_slowmode_seconds).await;
     let summary = confirmation_vote_summary(&confirm_result, confirm_context);
@@ -2568,6 +2704,16 @@ pub async fn announce_winner(
             None
         } else {
             running_write.stats_recorded = true;
+            running_write.record_replay_event(
+                "game_ended",
+                None,
+                &[],
+                serde_json::json!({
+                    "winner": winner.value(),
+                    "winner_key": format!("{:?}", winner),
+                    "elapsed_seconds": elapsed_seconds,
+                }),
+            );
             Some((
                 running_write.game.clone(),
                 running_write.initial_roles.clone(),
@@ -2606,6 +2752,27 @@ pub async fn announce_winner(
             Ok(Ok(())) => {}
             Ok(Err(error)) => eprintln!("failed to save stats after game end: {error:?}"),
             Err(error) => eprintln!("failed to join stats save task after game end: {error:?}"),
+        }
+    }
+    let completed_replay = {
+        let running_read = running.read().await;
+        running_read.replay_snapshot("completed", Some(winner), &rating_log)
+    };
+    {
+        let mut completed_replays = data.completed_replays.write().await;
+        let game_key = completed_replay["game_key"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if let Some(index) = completed_replays
+            .iter()
+            .position(|replay| replay["game_key"].as_str() == Some(game_key.as_str()))
+        {
+            completed_replays.remove(index);
+        }
+        completed_replays.push_front(completed_replay);
+        while completed_replays.len() > COMPLETED_REPLAY_LIMIT {
+            completed_replays.pop_back();
         }
     }
     let rows = {

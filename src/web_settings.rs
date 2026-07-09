@@ -13,7 +13,7 @@ use rustls::ServerConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as FmtWrite;
 use std::fs::{self, File};
 use std::io::BufReader;
@@ -547,6 +547,7 @@ pub struct WebSettingsState {
     pub api_keys_path: Arc<PathBuf>,
     pub stats: Arc<RwLock<StatsFile>>,
     pub games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>>,
+    pub completed_replays: Arc<RwLock<VecDeque<Value>>>,
     pub recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>>,
     pub sessions: Arc<DashMap<String, WebSettingsSession>>,
     pub started_at: Instant,
@@ -1268,6 +1269,7 @@ async fn api_game_value(state: &WebSettingsState, guild_id: u64) -> Option<Value
     players.sort_by_key(|player| player["name"].as_str().unwrap_or_default().to_lowercase());
     Some(json!({
         "guild_id": guild_id,
+        "game_key": running.activity_game_key.clone(),
         "channel_id": running.channel_id.get(),
         "phase": running.game.phase.value(),
         "day_number": running.game.day_number,
@@ -1279,8 +1281,114 @@ async fn api_game_value(state: &WebSettingsState, guild_id: u64) -> Option<Value
         "phase_remaining_seconds": running.phase_deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()).as_secs()),
         "day_skip_votes": running.day_skip_voter_ids.len(),
         "day_skip_confirmed": running.day_skip_confirmed,
+        "replay_event_count": running.replay_events.len(),
         "players": players,
     }))
+}
+
+async fn api_game_replay_value(state: &WebSettingsState, guild_id: u64) -> Option<Value> {
+    if let Some(running) = state
+        .games
+        .get(&serenity::GuildId::new(guild_id))
+        .map(|entry| entry.value().clone())
+    {
+        let running = running.read().await;
+        let winner = running.game.winner();
+        let status = if running.game.phase == Phase::Ended {
+            "completed"
+        } else {
+            "active"
+        };
+        return Some(running.replay_snapshot(status, winner, &[]));
+    }
+    latest_completed_replay_for_guild(state, guild_id).await
+}
+
+async fn latest_completed_replay_for_guild(
+    state: &WebSettingsState,
+    guild_id: u64,
+) -> Option<Value> {
+    let completed_replays = state.completed_replays.read().await;
+    completed_replays
+        .iter()
+        .find(|replay| replay["guild_id"].as_u64() == Some(guild_id))
+        .cloned()
+}
+
+async fn api_replay_summaries(state: &WebSettingsState, guild_id: u64) -> Value {
+    let mut replays = Vec::new();
+    if let Some(running) = state
+        .games
+        .get(&serenity::GuildId::new(guild_id))
+        .map(|entry| entry.value().clone())
+    {
+        let running = running.read().await;
+        replays.push(running.replay_summary("active", running.game.winner()));
+    }
+    {
+        let completed_replays = state.completed_replays.read().await;
+        replays.extend(
+            completed_replays
+                .iter()
+                .filter(|replay| replay["guild_id"].as_u64() == Some(guild_id))
+                .map(|replay| {
+                    let event_count = replay["events"]
+                        .as_array()
+                        .map(Vec::len)
+                        .unwrap_or_default();
+                    let participant_count = replay["participants"]
+                        .as_array()
+                        .map(Vec::len)
+                        .unwrap_or_default();
+                    json!({
+                        "game_key": replay["game_key"].clone(),
+                        "guild_id": replay["guild_id"].clone(),
+                        "channel_id": replay["channel_id"].clone(),
+                        "status": replay["status"].clone(),
+                        "phase": replay["phase"].clone(),
+                        "phase_key": replay["phase_key"].clone(),
+                        "day_number": replay["day_number"].clone(),
+                        "elapsed_seconds": replay["elapsed_seconds"].clone(),
+                        "winner": replay["winner"].clone(),
+                        "winner_key": replay["winner_key"].clone(),
+                        "participant_count": participant_count,
+                        "event_count": event_count,
+                    })
+                }),
+        );
+    }
+    json!({"replays": replays})
+}
+
+async fn api_replay_by_key(
+    state: &WebSettingsState,
+    guild_id: u64,
+    game_key: &str,
+) -> Option<Value> {
+    if let Some(running) = state
+        .games
+        .get(&serenity::GuildId::new(guild_id))
+        .map(|entry| entry.value().clone())
+    {
+        let running = running.read().await;
+        if running.activity_game_key == game_key {
+            let winner = running.game.winner();
+            let status = if running.game.phase == Phase::Ended {
+                "completed"
+            } else {
+                "active"
+            };
+            return Some(running.replay_snapshot(status, winner, &[]));
+        }
+    }
+    let completed_replays = state.completed_replays.read().await;
+    completed_replays
+        .iter()
+        .find(|replay| {
+            replay["guild_id"].as_u64() == Some(guild_id)
+                && replay["game_key"].as_str() == Some(game_key)
+        })
+        .cloned()
 }
 
 async fn api_recruitment_value(state: &WebSettingsState, guild_id: u64) -> Option<Value> {
@@ -1465,6 +1573,9 @@ async fn route_protected_api_request(
                 .collect::<Vec<_>>();
             json_response(json!({"games": games}))
         }
+        ("GET", "/api/v1/replays") => {
+            json_response(api_replay_summaries(state, key.guild_id).await)
+        }
         ("GET", "/api/v1/leaderboard") => {
             let limit = query
                 .get("limit")
@@ -1483,6 +1594,15 @@ async fn route_protected_api_request(
                         .unwrap_or(10);
                     json_response(web_leaderboard_values(state, metric, limit).await)
                 }
+            } else if let Some(game_key) = path.strip_prefix("/api/v1/replays/") {
+                if request.method == "GET" {
+                    api_replay_by_key(state, key.guild_id, game_key)
+                        .await
+                        .map(json_response)
+                        .unwrap_or_else(|| json_error("404 Not Found", "replay not found"))
+                } else {
+                    json_error("404 Not Found", "API endpoint not found")
+                }
             } else if let Some((guild_id, suffix)) = parse_api_guild_path(path, "/api/v1/games/") {
                 if let Err(error) = require_key_guild(&key, guild_id) {
                     error.response()
@@ -1491,6 +1611,11 @@ async fn route_protected_api_request(
                         .await
                         .map(json_response)
                         .unwrap_or_else(|| json_error("404 Not Found", "game not found"))
+                } else if suffix == Some("replay") && request.method == "GET" {
+                    api_game_replay_value(state, guild_id)
+                        .await
+                        .map(json_response)
+                        .unwrap_or_else(|| json_error("404 Not Found", "replay not found"))
                 } else if suffix == Some("actions") && request.method == "POST" {
                     let action =
                         serde_json::from_str::<Value>(&request.body)
@@ -2656,8 +2781,20 @@ fn render_api_docs_page(base_url: &str) -> String {
             "참가자, 직업, 단계, 타이머를 포함한 게임 상세를 반환합니다. API 키 필요.",
         ),
         (
+            "GET /api/v1/games/{guild_id}/replay",
+            "Replay JSON with participants, votes, role actions, phase results, and rating log. API key required.",
+        ),
+        (
             "POST /api/v1/games/{guild_id}/actions",
             "JSON action: skip_day, extend_day 또는 stop. API 키 필요.",
+        ),
+        (
+            "GET /api/v1/replays",
+            "Recent replay summaries for the API key guild. Includes active game and completed games.",
+        ),
+        (
+            "GET /api/v1/replays/{game_key}",
+            "Full replay JSON by game_key. API key required.",
         ),
         (
             "GET /api/v1/recruitments/{guild_id}",
@@ -3376,6 +3513,7 @@ mod tests {
             api_keys_path: Arc::new(PathBuf::from("unused-api-keys.json")),
             stats: Arc::new(RwLock::new(StatsFile::default())),
             games: Arc::new(DashMap::new()),
+            completed_replays: Arc::new(RwLock::new(VecDeque::new())),
             recruitments: Arc::new(DashMap::new()),
             sessions: Arc::new(DashMap::new()),
             started_at: Instant::now(),
@@ -3564,6 +3702,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protected_replay_api_returns_completed_replay() {
+        let state = test_state();
+        let raw_key = {
+            let mut store = state.api_keys.write().await;
+            issue_api_key(&mut store, 1, 2, "replay".to_string())
+        };
+        state.completed_replays.write().await.push_front(json!({
+            "game_key": "game-1",
+            "guild_id": 1,
+            "channel_id": 10,
+            "status": "completed",
+            "phase": "종료",
+            "phase_key": "Ended",
+            "day_number": 3,
+            "elapsed_seconds": 123,
+            "winner": "시민",
+            "winner_key": "Citizen",
+            "participants": [],
+            "events": [{"kind": "day_vote"}],
+            "rating_log": [],
+        }));
+
+        let list_response = route_request(
+            &state,
+            api_request("GET", "/api/v1/replays", Some(("X-API-Key", &raw_key))),
+        )
+        .await;
+        assert!(list_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(list_response.contains("game-1"));
+        assert!(list_response.contains(r#""event_count":1"#));
+
+        let replay_response = route_request(
+            &state,
+            api_request(
+                "GET",
+                "/api/v1/replays/game-1",
+                Some(("X-API-Key", &raw_key)),
+            ),
+        )
+        .await;
+        assert!(replay_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(replay_response.contains("day_vote"));
+
+        let guild_response = route_request(
+            &state,
+            api_request(
+                "GET",
+                "/api/v1/games/1/replay",
+                Some(("X-API-Key", &raw_key)),
+            ),
+        )
+        .await;
+        assert!(guild_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(guild_response.contains("game-1"));
+    }
+
+    #[tokio::test]
     async fn api_key_management_issues_and_revokes_key() {
         let mut state = test_state();
         let key_path = std::env::temp_dir().join(format!("mafia-api-keys-{}.json", Uuid::new_v4()));
@@ -3674,6 +3869,8 @@ mod tests {
         assert!(html.contains("공개 조회 API"));
         assert!(html.contains("보호 관리 API"));
         assert!(html.contains("/api/v1/games/{guild_id}/actions"));
+        assert!(html.contains("/api/v1/games/{guild_id}/replay"));
+        assert!(html.contains("/api/v1/replays/{game_key}"));
         assert!(html.contains("https://mafia.example/api/v1/games/123"));
         assert!(!html.contains("example.com"));
         assert!(html.contains("overflow-wrap: anywhere"));

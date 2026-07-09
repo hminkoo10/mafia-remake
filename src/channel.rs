@@ -5105,6 +5105,8 @@ mod tests {
             night_timed_events_due: false,
             contractor_contract_drafts: Default::default(),
             activity_night_results: Default::default(),
+            replay_events: Default::default(),
+            next_replay_sequence: 1,
             night_notify: Arc::new(Notify::new()),
             vote_notify: Arc::new(Notify::new()),
             confirm_notify: Arc::new(Notify::new()),

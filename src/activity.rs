@@ -580,6 +580,22 @@ async fn action_handler(
             match running.game.submit_night_action(user_id, target) {
                 Ok(selection_message) => {
                     let actor = running.game.get_player(user_id).cloned();
+                    let effective_role = actor
+                        .as_ref()
+                        .map(|actor| effective_night_role(&running.game, actor));
+                    let target_ids = target.into_iter().collect::<Vec<_>>();
+                    running.record_replay_event(
+                        "night_action",
+                        Some(user_id),
+                        &target_ids,
+                        serde_json::json!({
+                            "choice": if target_ids.is_empty() { "skip" } else { "player" },
+                            "effective_role": effective_role.map(|role| role.value()),
+                            "effective_role_key": effective_role.map(|role| format!("{:?}", role)),
+                            "message": selection_message.clone(),
+                            "source": "activity",
+                        }),
+                    );
                     if actor.as_ref().is_some_and(|player| {
                         player.role == Role::Mafia
                             || (player.role == Role::Thief
@@ -603,29 +619,49 @@ async fn action_handler(
                 .target_id
                 .as_deref()
                 .and_then(|s| s.parse::<u64>().ok());
-            running
-                .game
-                .submit_day_vote(user_id, target)
-                .map_err(|e| e.to_string())
-                .map(|_| {
+            match running.game.submit_day_vote(user_id, target) {
+                Ok(message) => {
+                    let target_ids = target.into_iter().collect::<Vec<_>>();
+                    running.record_replay_event(
+                        "day_vote",
+                        Some(user_id),
+                        &target_ids,
+                        serde_json::json!({
+                            "choice": if target_ids.is_empty() { "skip" } else { "player" },
+                            "message": message,
+                            "source": "activity",
+                        }),
+                    );
                     if running.game.all_day_votes_submitted() {
                         running.vote_notify.notify_one();
                     }
-                    None
-                })
+                    Ok(None)
+                }
+                Err(error) => Err(error.to_string()),
+            }
         }
         "confirm_vote" => {
             let agree = body.confirm.unwrap_or(false);
-            running
-                .game
-                .submit_confirmation_vote(user_id, agree)
-                .map_err(|e| e.to_string())
-                .map(|_| {
+            match running.game.submit_confirmation_vote(user_id, agree) {
+                Ok(message) => {
+                    running.record_replay_event(
+                        "confirmation_vote",
+                        Some(user_id),
+                        &[],
+                        serde_json::json!({
+                            "approve": agree,
+                            "choice": if agree { "approve" } else { "reject" },
+                            "message": message,
+                            "source": "activity",
+                        }),
+                    );
                     if running.game.all_confirm_votes_submitted() {
                         running.confirm_notify.notify_one();
                     }
-                    None
-                })
+                    Ok(None)
+                }
+                Err(error) => Err(error.to_string()),
+            }
         }
         "skip_vote" => {
             if running.game.phase != Phase::Day {
@@ -650,7 +686,20 @@ async fn action_handler(
             }
             running.day_skip_voter_ids.insert(user_id);
             let required_votes = majority_required(alive_ids.len());
-            if running.day_skip_voter_ids.len() >= required_votes {
+            let vote_count = running.day_skip_voter_ids.len();
+            running.record_replay_event(
+                "day_skip_vote",
+                Some(user_id),
+                &[],
+                serde_json::json!({
+                    "vote_count": vote_count,
+                    "required_votes": required_votes,
+                    "alive_count": alive_ids.len(),
+                    "confirmed": vote_count >= required_votes,
+                    "source": "activity",
+                }),
+            );
+            if vote_count >= required_votes {
                 running.day_skip_confirmed = true;
                 running.day_extension_active = false;
                 running.day_notify.notify_waiters();
@@ -708,16 +757,31 @@ async fn action_handler(
                     .into_response();
                 }
             };
-            running
+            match running
                 .game
                 .submit_contractor_contract(user_id, t1, r1, t2, r2)
-                .map_err(|e| e.to_string())
-                .map(|_| {
+            {
+                Ok(message) => {
+                    running.record_replay_event(
+                        "contractor_contract",
+                        Some(user_id),
+                        &[t1, t2],
+                        serde_json::json!({
+                            "guesses": [
+                                {"target_user_id": t1, "role": r1.value(), "role_key": format!("{:?}", r1)},
+                                {"target_user_id": t2, "role": r2.value(), "role_key": format!("{:?}", r2)}
+                            ],
+                            "message": message,
+                            "source": "activity",
+                        }),
+                    );
                     if running.game.should_finish_night_early() {
                         running.night_notify.notify_one();
                     }
-                    None
-                })
+                    Ok(None)
+                }
+                Err(error) => Err(error.to_string()),
+            }
         }
         "hacker_action" => {
             let Some(target_id) = body.target_id.as_deref().and_then(|id| id.parse().ok()) else {
@@ -727,11 +791,21 @@ async fn action_handler(
                 })
                 .into_response();
             };
-            running
-                .game
-                .submit_hacker_action(user_id, target_id)
-                .map(Some)
-                .map_err(|e| e.to_string())
+            match running.game.submit_hacker_action(user_id, target_id) {
+                Ok(message) => {
+                    running.record_replay_event(
+                        "hacker_action",
+                        Some(user_id),
+                        &[target_id],
+                        serde_json::json!({
+                            "message": message.clone(),
+                            "source": "activity",
+                        }),
+                    );
+                    Ok(Some(message))
+                }
+                Err(error) => Err(error.to_string()),
+            }
         }
         "vigilante_action" => {
             let Some(target_id) = body.target_id.as_deref().and_then(|id| id.parse().ok()) else {
@@ -741,11 +815,24 @@ async fn action_handler(
                 })
                 .into_response();
             };
-            running
+            match running
                 .game
                 .submit_vigilante_investigation(user_id, target_id)
-                .map(Some)
-                .map_err(|e| e.to_string())
+            {
+                Ok(message) => {
+                    running.record_replay_event(
+                        "vigilante_investigation",
+                        Some(user_id),
+                        &[target_id],
+                        serde_json::json!({
+                            "message": message.clone(),
+                            "source": "activity",
+                        }),
+                    );
+                    Ok(Some(message))
+                }
+                Err(error) => Err(error.to_string()),
+            }
         }
         "psychologist_action" => {
             let (Some(first_target_id), Some(second_target_id)) = (
@@ -760,17 +847,52 @@ async fn action_handler(
                 })
                 .into_response();
             };
-            running
-                .game
-                .submit_psychologist_observation(user_id, first_target_id, second_target_id)
-                .map(Some)
-                .map_err(|e| e.to_string())
+            match running.game.submit_psychologist_observation(
+                user_id,
+                first_target_id,
+                second_target_id,
+            ) {
+                Ok(message) => {
+                    running.record_replay_event(
+                        "psychologist_observation",
+                        Some(user_id),
+                        &[first_target_id, second_target_id],
+                        serde_json::json!({
+                            "message": message.clone(),
+                            "source": "activity",
+                        }),
+                    );
+                    Ok(Some(message))
+                }
+                Err(error) => Err(error.to_string()),
+            }
         }
-        "hypnotist_action" => running
-            .game
-            .submit_hypnotist_wake(user_id)
-            .map(Some)
-            .map_err(|e| e.to_string()),
+        "hypnotist_action" => {
+            let mut target_ids = running
+                .game
+                .hypnotized_targets
+                .get(&user_id)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<Vec<_>>();
+            target_ids.sort_unstable();
+            match running.game.submit_hypnotist_wake(user_id) {
+                Ok(message) => {
+                    running.record_replay_event(
+                        "hypnotist_wake",
+                        Some(user_id),
+                        &target_ids,
+                        serde_json::json!({
+                            "message": message.clone(),
+                            "source": "activity",
+                        }),
+                    );
+                    Ok(Some(message))
+                }
+                Err(error) => Err(error.to_string()),
+            }
+        }
         "thief_action" => Ok(Some(
             "도벽은 별도 행동이 아니라 지목 투표한 대상에게 자동으로 적용됩니다.".to_string(),
         )),
@@ -1210,6 +1332,8 @@ mod tests {
             night_timed_events_due: false,
             contractor_contract_drafts: Default::default(),
             activity_night_results: Default::default(),
+            replay_events: Default::default(),
+            next_replay_sequence: 1,
             night_notify: Arc::new(tokio::sync::Notify::new()),
             vote_notify: Arc::new(tokio::sync::Notify::new()),
             confirm_notify: Arc::new(tokio::sync::Notify::new()),

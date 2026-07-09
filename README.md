@@ -337,7 +337,10 @@ Discord 앱 내 임베디드 UI에서 게임을 진행할 수 있습니다.
 | `GET /api/v1/leaderboard/{metric}` | 보호 리더보드 조회 |
 | `GET /api/v1/games` | 키 발급 서버의 진행 중 게임 목록 |
 | `GET /api/v1/games/{guild_id}` | 참가자·직업·단계·타이머를 포함한 게임 상세 |
+| `GET /api/v1/games/{guild_id}/replay` | 참가자, 투표, 직업 행동, 단계 결과, 레이팅 로그를 포함한 전체 리플레이 |
 | `POST /api/v1/games/{guild_id}/actions` | `skip_day`, `extend_day`, `stop` 작업 |
+| `GET /api/v1/replays` | API 키 서버의 진행 중/최근 종료 리플레이 목록 |
+| `GET /api/v1/replays/{game_key}` | `game_key`로 전체 리플레이 조회 |
 | `GET /api/v1/recruitments/{guild_id}` | 모집 인원·역할 구성·관전자 상세 |
 | `POST /api/v1/recruitments/{guild_id}/actions` | `start` 또는 `cancel` 작업 |
 

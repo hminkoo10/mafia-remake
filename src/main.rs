@@ -1,12 +1,13 @@
 use anyhow::{Context as AnyhowContext, Result};
 use dashmap::DashMap;
 use mafia_remake::game::MafiaGame;
-use mafia_remake::model::Role;
+use mafia_remake::model::{Player, Role, Winner};
 use mafia_remake::{config, stats};
 use poise::serenity_prelude as serenity;
+use serde_json::{Value, json};
 pub(crate) mod web_settings;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::{path::PathBuf, sync::Arc, time::Instant};
 use tokio::sync::{Notify, RwLock};
 
@@ -15,6 +16,7 @@ const MAX_GAME_PLAYERS: usize = 24;
 const DAY_EXTENSION_VOTE_SECONDS: u64 = 10;
 const DISCUSSION_EXTENSION_SECONDS: u64 = 60;
 const CONFIRM_VOTE_SECONDS: u64 = 15;
+const COMPLETED_REPLAY_LIMIT: usize = 100;
 const GAME_NOTIFICATION_ROLE: &str = "게임알림";
 const SPECTATOR_ROLE: &str = "관전자";
 const DEAD_PLAYER_ROLE: &str = "사망자";
@@ -90,6 +92,7 @@ struct Data {
     stats: Arc<RwLock<stats::StatsFile>>,
     stats_path: Arc<PathBuf>,
     games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>>,
+    completed_replays: Arc<RwLock<VecDeque<Value>>>,
     recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>>,
     web_sessions: Arc<DashMap<String, web_settings::WebSettingsSession>>,
     web_base_url: Arc<String>,
@@ -160,11 +163,229 @@ struct RunningGame {
     contractor_contract_drafts: HashMap<u64, ContractorContractDraft>,
     /// Activity 프론트엔드에 표시할 밤 행동 결과 (user_id → 결과 텍스트)
     activity_night_results: HashMap<u64, String>,
+    replay_events: Vec<Value>,
+    next_replay_sequence: u64,
     night_notify: Arc<Notify>,
     vote_notify: Arc<Notify>,
     confirm_notify: Arc<Notify>,
     day_notify: Arc<Notify>,
     stats_recorded: bool,
+}
+
+impl RunningGame {
+    fn elapsed_ms(&self) -> u64 {
+        self.started_at
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64
+    }
+
+    fn role_team_key(role: Role) -> &'static str {
+        if role == Role::Joker {
+            "joker"
+        } else if role == Role::CultLeader || role == Role::Fanatic {
+            "cult"
+        } else if role.is_mafia_team() {
+            "mafia"
+        } else {
+            "citizen"
+        }
+    }
+
+    fn player_team_key(&self, player: &Player) -> &'static str {
+        if player.role == Role::Joker {
+            "joker"
+        } else if self.game.is_cult_team(player) || player.role == Role::Fanatic {
+            "cult"
+        } else if self.game.is_mafia_team(player) {
+            "mafia"
+        } else {
+            "citizen"
+        }
+    }
+
+    fn replay_player_value(&self, user_id: u64) -> Option<Value> {
+        self.game.get_player(user_id).map(|player| {
+            json!({
+                "user_id": player.user_id,
+                "name": player.name.clone(),
+                "role": player.role.value(),
+                "role_key": format!("{:?}", player.role),
+                "team": self.player_team_key(player),
+                "alive": player.alive,
+            })
+        })
+    }
+
+    fn replay_target_values(&self, target_ids: &[u64]) -> Vec<Value> {
+        target_ids
+            .iter()
+            .filter_map(|user_id| self.replay_player_value(*user_id))
+            .collect()
+    }
+
+    fn record_replay_event(
+        &mut self,
+        kind: impl Into<String>,
+        actor_id: Option<u64>,
+        target_ids: &[u64],
+        details: Value,
+    ) {
+        let seq = self.next_replay_sequence;
+        self.next_replay_sequence = self.next_replay_sequence.saturating_add(1);
+        self.replay_events.push(json!({
+            "seq": seq,
+            "elapsed_ms": self.elapsed_ms(),
+            "day_number": self.game.day_number,
+            "phase": self.game.phase.value(),
+            "phase_key": format!("{:?}", self.game.phase),
+            "kind": kind.into(),
+            "actor": actor_id.and_then(|user_id| self.replay_player_value(user_id)),
+            "target_user_ids": target_ids.to_vec(),
+            "targets": self.replay_target_values(target_ids),
+            "details": details,
+        }));
+    }
+
+    fn replay_vote_counts(&self, counts: &HashMap<Option<u64>, i32>) -> Vec<Value> {
+        let mut values = counts
+            .iter()
+            .map(|(target_id, count)| {
+                json!({
+                    "target_user_id": *target_id,
+                    "target": target_id.and_then(|user_id| self.replay_player_value(user_id)),
+                    "choice": if target_id.is_some() { "player" } else { "skip" },
+                    "count": *count,
+                })
+            })
+            .collect::<Vec<_>>();
+        values.sort_by_key(|value| {
+            (
+                value["choice"].as_str().unwrap_or_default().to_string(),
+                value["target_user_id"].as_u64().unwrap_or_default(),
+            )
+        });
+        values
+    }
+
+    fn replay_confirm_vote_counts(&self, counts: &HashMap<bool, i32>) -> Vec<Value> {
+        let mut values = counts
+            .iter()
+            .map(|(approved, count)| json!({"approve": *approved, "count": *count}))
+            .collect::<Vec<_>>();
+        values.sort_by_key(|value| value["approve"].as_bool().unwrap_or(false));
+        values
+    }
+
+    fn replay_text_results(&self, results: &HashMap<u64, String>) -> Vec<Value> {
+        let mut values = results
+            .iter()
+            .map(|(user_id, text)| {
+                json!({
+                    "user_id": user_id,
+                    "player": self.replay_player_value(*user_id),
+                    "text": text.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        values.sort_by_key(|value| value["user_id"].as_u64().unwrap_or_default());
+        values
+    }
+
+    fn replay_participants(&self) -> Vec<Value> {
+        let mut players = self
+            .game
+            .players
+            .iter()
+            .map(|player| {
+                let initial_role = self
+                    .initial_roles
+                    .get(&player.user_id)
+                    .copied()
+                    .unwrap_or(player.role);
+                let death_order = self
+                    .game
+                    .death_order
+                    .iter()
+                    .position(|user_id| *user_id == player.user_id)
+                    .map(|index| index + 1);
+                json!({
+                    "user_id": player.user_id,
+                    "name": player.name.clone(),
+                    "initial_role": initial_role.value(),
+                    "initial_role_key": format!("{:?}", initial_role),
+                    "initial_team": Self::role_team_key(initial_role),
+                    "final_role": player.role.value(),
+                    "final_role_key": format!("{:?}", player.role),
+                    "final_team": self.player_team_key(player),
+                    "alive": player.alive,
+                    "death_order": death_order,
+                })
+            })
+            .collect::<Vec<_>>();
+        players.sort_by_key(|player| player["name"].as_str().unwrap_or_default().to_lowercase());
+        players
+    }
+
+    fn replay_rating_log(rating_log: &[stats::GameRatingLogItem]) -> Vec<Value> {
+        rating_log
+            .iter()
+            .map(|item| {
+                json!({
+                    "user_id": item.user_id,
+                    "name": item.name.clone(),
+                    "role": item.role.clone(),
+                    "before": item.before,
+                    "after": item.after,
+                    "delta": item.delta,
+                    "team_delta": item.team_delta,
+                    "role_delta": item.role_delta,
+                    "streak_delta": item.streak_delta,
+                    "reasons": item.reasons.clone(),
+                })
+            })
+            .collect()
+    }
+
+    fn replay_snapshot(
+        &self,
+        status: &str,
+        winner: Option<Winner>,
+        rating_log: &[stats::GameRatingLogItem],
+    ) -> Value {
+        json!({
+            "game_key": self.activity_game_key.clone(),
+            "guild_id": self.guild_id.get(),
+            "channel_id": self.channel_id.get(),
+            "status": status,
+            "phase": self.game.phase.value(),
+            "phase_key": format!("{:?}", self.game.phase),
+            "day_number": self.game.day_number,
+            "elapsed_seconds": self.started_at.elapsed().as_secs(),
+            "winner": winner.map(|winner| winner.value()),
+            "winner_key": winner.map(|winner| format!("{:?}", winner)),
+            "participants": self.replay_participants(),
+            "events": self.replay_events.clone(),
+            "rating_log": Self::replay_rating_log(rating_log),
+        })
+    }
+
+    fn replay_summary(&self, status: &str, winner: Option<Winner>) -> Value {
+        json!({
+            "game_key": self.activity_game_key.clone(),
+            "guild_id": self.guild_id.get(),
+            "channel_id": self.channel_id.get(),
+            "status": status,
+            "phase": self.game.phase.value(),
+            "phase_key": format!("{:?}", self.game.phase),
+            "day_number": self.game.day_number,
+            "elapsed_seconds": self.started_at.elapsed().as_secs(),
+            "winner": winner.map(|winner| winner.value()),
+            "winner_key": winner.map(|winner| format!("{:?}", winner)),
+            "participant_count": self.game.players.len(),
+            "event_count": self.replay_events.len(),
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -355,6 +576,7 @@ async fn main() -> Result<()> {
 
     // 공유 상태를 Discord 연결 전에 먼저 생성
     let games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>> = Arc::new(DashMap::new());
+    let completed_replays: Arc<RwLock<VecDeque<Value>>> = Arc::new(RwLock::new(VecDeque::new()));
     let recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>> =
         Arc::new(DashMap::new());
     let config_arc = Arc::new(RwLock::new(config));
@@ -402,6 +624,7 @@ async fn main() -> Result<()> {
         | serenity::GatewayIntents::GUILD_PRESENCES;
 
     let games_setup = games.clone();
+    let completed_replays_setup = completed_replays.clone();
     let recruitments_setup = recruitments.clone();
     let config_setup = config_arc.clone();
     let api_keys_setup = api_keys_arc.clone();
@@ -491,6 +714,7 @@ async fn main() -> Result<()> {
                     stats: stats_setup.clone(),
                     stats_path: stats_path_setup,
                     games: games_setup.clone(),
+                    completed_replays: completed_replays_setup.clone(),
                     recruitments: recruitments_setup.clone(),
                     web_sessions: web_sessions_setup.clone(),
                     web_base_url: Arc::new(web_base_url.clone()),
@@ -503,6 +727,7 @@ async fn main() -> Result<()> {
                     api_keys_path: api_keys_path_setup,
                     stats: stats_setup,
                     games: games_setup,
+                    completed_replays: completed_replays_setup,
                     recruitments: recruitments_setup,
                     sessions: web_sessions_setup,
                     started_at: Instant::now(),
