@@ -8,9 +8,12 @@ use super::{
     Error, PRIVATE_CHAT_ROLES, RunningGame,
 };
 use crate::channel::*;
+use crate::commands::{draw_lb_text, fill_circle, fill_rect, image_color, truncate_for_board};
 use crate::embed::*;
+use ab_glyph::FontArc;
 use anyhow::{Context as AnyhowContext, Result, bail};
 use dashmap::{DashMap, mapref::entry::Entry};
+use image::{ImageFormat, Rgb, RgbImage};
 use mafia_remake::config;
 use mafia_remake::game::{MafiaGame, majority_required};
 use mafia_remake::model::{
@@ -22,6 +25,7 @@ use poise::serenity_prelude::Mentionable;
 use rand::seq::{IndexedRandom, SliceRandom};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::io::Cursor;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
@@ -2080,6 +2084,473 @@ fn confirmation_rejection_message(
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct GameResultImageRow {
+    name: String,
+    role: String,
+    team: String,
+    alive: bool,
+    before: Option<i64>,
+    after: Option<i64>,
+    delta: Option<i64>,
+    team_delta: Option<i64>,
+    role_delta: Option<i64>,
+    streak_delta: Option<i64>,
+    reasons: Vec<String>,
+}
+
+pub fn winner_result_text(winner: Winner) -> &'static str {
+    match winner {
+        Winner::Mafia => "마피아 승리!",
+        Winner::Joker => "조커 승리!",
+        Winner::Cult => "교주팀 승리!",
+        Winner::Citizen => "시민 승리!",
+    }
+}
+
+pub fn game_result_display_name(running: &RunningGame, player: &Player) -> String {
+    if running.anonymous_enabled {
+        let alias = running
+            .anonymous_aliases
+            .get(&player.user_id)
+            .map(String::as_str)
+            .unwrap_or("익명");
+        let real_name = running
+            .anonymous_original_names
+            .get(&player.user_id)
+            .map(String::as_str)
+            .unwrap_or(&player.name);
+        format!("{alias} = {real_name}")
+    } else {
+        player.name.clone()
+    }
+}
+
+pub fn game_result_rows(
+    running: &RunningGame,
+    rating_log: &[stats::GameRatingLogItem],
+) -> Vec<GameResultImageRow> {
+    let rating_by_id = rating_log
+        .iter()
+        .map(|item| (item.user_id, item))
+        .collect::<HashMap<_, _>>();
+    let mut players = running.game.players.clone();
+    players.sort_by_key(|player| game_result_display_name(running, player).to_lowercase());
+    players
+        .iter()
+        .map(|player| {
+            let initial_role = running
+                .initial_roles
+                .get(&player.user_id)
+                .copied()
+                .unwrap_or(player.role);
+            let role = if initial_role == player.role {
+                player.role.value().to_string()
+            } else {
+                format!("{} -> {}", initial_role.value(), player.role.value())
+            };
+            let rating = rating_by_id.get(&player.user_id).copied();
+            GameResultImageRow {
+                name: game_result_display_name(running, player),
+                role,
+                team: final_team_text(&running.game, player).to_string(),
+                alive: player.alive,
+                before: rating.map(|item| item.before),
+                after: rating.map(|item| item.after),
+                delta: rating.map(|item| item.delta),
+                team_delta: rating.map(|item| item.team_delta),
+                role_delta: rating.map(|item| item.role_delta),
+                streak_delta: rating.map(|item| item.streak_delta),
+                reasons: rating.map_or_else(Vec::new, |item| item.reasons.clone()),
+            }
+        })
+        .collect()
+}
+
+pub fn render_game_result_image(
+    winner: Winner,
+    elapsed_seconds: i64,
+    rows: Vec<GameResultImageRow>,
+) -> Option<Vec<u8>> {
+    const WIDTH: u32 = 1420;
+    const TOP: i32 = 44;
+    const SIDE: i32 = 46;
+    const HEADER_HEIGHT: i32 = 172;
+    const ROW_HEIGHT: i32 = 112;
+    const FOOTER: i32 = 56;
+
+    let table_top = TOP + HEADER_HEIGHT + 26;
+    let height = (table_top + ROW_HEIGHT * rows.len() as i32 + FOOTER).max(520) as u32;
+    let mut image = RgbImage::from_pixel(WIDTH, height, image_color("#edf2f7"));
+    let font = FontArc::try_from_slice(include_bytes!("../MalangmalangR.ttf")).ok()?;
+    let text = image_color("#172033");
+    let muted = image_color("#64748b");
+    let soft = image_color("#f8fafc");
+    let white = image_color("#ffffff");
+    let line = image_color("#d9e2ef");
+    let accent = winner_color(winner);
+
+    fill_rect(&mut image, 0, 0, WIDTH, 18, accent);
+    fill_rect(&mut image, SIDE, TOP, WIDTH - SIDE as u32 * 2, 150, white);
+    fill_rect(&mut image, SIDE, TOP, 10, 150, accent);
+    draw_lb_text(
+        &mut image,
+        &font,
+        48.0,
+        SIDE + 30,
+        TOP + 24,
+        winner_result_text(winner),
+        text,
+    );
+    draw_lb_text(
+        &mut image,
+        &font,
+        25.0,
+        SIDE + 34,
+        TOP + 88,
+        format!(
+            "플레이 시간 {} · 참가자 {}명 · 최종 역할 / 랭크 / 레이팅 정리",
+            stats::play_duration_text(elapsed_seconds),
+            rows.len()
+        ),
+        muted,
+    );
+    let badge_x = WIDTH as i32 - SIDE - 252;
+    fill_rect(&mut image, badge_x, TOP + 44, 220, 54, accent);
+    draw_lb_text(
+        &mut image,
+        &font,
+        28.0,
+        badge_x + 32,
+        TOP + 58,
+        winner.value(),
+        image_color("#ffffff"),
+    );
+
+    fill_rect(
+        &mut image,
+        SIDE,
+        table_top - 52,
+        WIDTH - SIDE as u32 * 2,
+        52,
+        image_color("#1f2937"),
+    );
+    for (x, label) in [
+        (SIDE + 38, "플레이어"),
+        (SIDE + 372, "최종 역할"),
+        (SIDE + 640, "레이팅"),
+        (SIDE + 910, "변동"),
+        (SIDE + 1088, "랭크/사유"),
+    ] {
+        draw_lb_text(
+            &mut image,
+            &font,
+            23.0,
+            x,
+            table_top - 38,
+            label,
+            image_color("#f8fafc"),
+        );
+    }
+
+    for (index, row) in rows.iter().enumerate() {
+        let y = table_top + index as i32 * ROW_HEIGHT;
+        let row_fill = if index % 2 == 0 { white } else { soft };
+        fill_rect(
+            &mut image,
+            SIDE,
+            y,
+            WIDTH - SIDE as u32 * 2,
+            ROW_HEIGHT as u32,
+            row_fill,
+        );
+        fill_rect(
+            &mut image,
+            SIDE,
+            y + ROW_HEIGHT - 1,
+            WIDTH - SIDE as u32 * 2,
+            1,
+            line,
+        );
+        fill_rect(
+            &mut image,
+            SIDE,
+            y,
+            8,
+            ROW_HEIGHT as u32,
+            team_color(&row.team),
+        );
+        fill_circle(
+            &mut image,
+            (SIDE + 32, y + 46),
+            16,
+            if row.alive {
+                image_color("#22c55e")
+            } else {
+                image_color("#ef4444")
+            },
+        );
+        draw_lb_text(
+            &mut image,
+            &font,
+            28.0,
+            SIDE + 62,
+            y + 18,
+            truncate_for_board(&row.name, 18),
+            text,
+        );
+        draw_lb_text(
+            &mut image,
+            &font,
+            20.0,
+            SIDE + 64,
+            y + 58,
+            if row.alive { "생존" } else { "사망" },
+            muted,
+        );
+        draw_lb_text(
+            &mut image,
+            &font,
+            26.0,
+            SIDE + 372,
+            y + 20,
+            truncate_for_board(&row.role, 15),
+            text,
+        );
+        draw_lb_text(
+            &mut image,
+            &font,
+            20.0,
+            SIDE + 374,
+            y + 58,
+            &row.team,
+            team_color(&row.team),
+        );
+        draw_rating_block(&mut image, &font, row, SIDE + 640, y, text, muted);
+        draw_delta_badge(&mut image, &font, row, SIDE + 910, y);
+        draw_rank_and_reason(&mut image, &font, row, SIDE + 1088, y, text, muted);
+    }
+
+    draw_lb_text(
+        &mut image,
+        &font,
+        19.0,
+        SIDE,
+        height as i32 - 34,
+        "마피아 게임 진행 메시지",
+        muted,
+    );
+    let mut bytes = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image)
+        .write_to(&mut bytes, ImageFormat::Png)
+        .ok()?;
+    Some(bytes.into_inner())
+}
+
+fn draw_rating_block(
+    image: &mut RgbImage,
+    font: &FontArc,
+    row: &GameResultImageRow,
+    x: i32,
+    y: i32,
+    text: Rgb<u8>,
+    muted: Rgb<u8>,
+) {
+    if let (Some(before), Some(after)) = (row.before, row.after) {
+        draw_lb_text(
+            image,
+            font,
+            25.0,
+            x,
+            y + 20,
+            format!("{before} -> {after}"),
+            text,
+        );
+        draw_lb_text(
+            image,
+            font,
+            20.0,
+            x,
+            y + 58,
+            format!(
+                "{} -> {}",
+                stats::rating_rank(before),
+                stats::rating_rank(after)
+            ),
+            muted,
+        );
+    } else {
+        draw_lb_text(image, font, 24.0, x, y + 34, "기록 없음", muted);
+    }
+}
+
+fn draw_delta_badge(
+    image: &mut RgbImage,
+    font: &FontArc,
+    row: &GameResultImageRow,
+    x: i32,
+    y: i32,
+) {
+    let Some(delta) = row.delta else {
+        draw_lb_text(image, font, 23.0, x, y + 34, "-", image_color("#94a3b8"));
+        return;
+    };
+    let fill = if delta > 0 {
+        image_color("#dcfce7")
+    } else if delta < 0 {
+        image_color("#fee2e2")
+    } else {
+        image_color("#e2e8f0")
+    };
+    let color = if delta > 0 {
+        image_color("#15803d")
+    } else if delta < 0 {
+        image_color("#b91c1c")
+    } else {
+        image_color("#475569")
+    };
+    fill_rect(image, x, y + 22, 128, 42, fill);
+    draw_lb_text(
+        image,
+        font,
+        25.0,
+        x + 18,
+        y + 30,
+        format!("{delta:+}"),
+        color,
+    );
+    let detail = format!(
+        "팀 {:+} / 직업 {:+} / 연승 {:+}",
+        row.team_delta.unwrap_or(0),
+        row.role_delta.unwrap_or(0),
+        row.streak_delta.unwrap_or(0)
+    );
+    draw_lb_text(
+        image,
+        font,
+        18.0,
+        x,
+        y + 70,
+        truncate_for_board(&detail, 18),
+        image_color("#64748b"),
+    );
+}
+
+fn draw_rank_and_reason(
+    image: &mut RgbImage,
+    font: &FontArc,
+    row: &GameResultImageRow,
+    x: i32,
+    y: i32,
+    text: Rgb<u8>,
+    muted: Rgb<u8>,
+) {
+    if let (Some(before), Some(after)) = (row.before, row.after) {
+        let before_rank = stats::rating_rank(before);
+        let after_rank = stats::rating_rank(after);
+        let rank_text = if before_rank == after_rank {
+            format!("{after_rank} 랭크 유지")
+        } else if after > before {
+            format!("승급 {before_rank} -> {after_rank}")
+        } else {
+            format!("강등 {before_rank} -> {after_rank}")
+        };
+        draw_lb_text(image, font, 24.0, x, y + 18, rank_text, text);
+    } else {
+        draw_lb_text(image, font, 24.0, x, y + 18, "랭크 기록 없음", muted);
+    }
+    let reason = if row.reasons.is_empty() {
+        "사유 없음".to_string()
+    } else {
+        row.reasons.join(", ")
+    };
+    draw_lb_text(
+        image,
+        font,
+        18.0,
+        x,
+        y + 56,
+        truncate_for_board(&reason, 34),
+        muted,
+    );
+}
+
+fn winner_color(winner: Winner) -> Rgb<u8> {
+    match winner {
+        Winner::Mafia => image_color("#dc2626"),
+        Winner::Joker => image_color("#7c3aed"),
+        Winner::Cult => image_color("#0891b2"),
+        Winner::Citizen => image_color("#16a34a"),
+    }
+}
+
+fn team_color(team: &str) -> Rgb<u8> {
+    match team {
+        "마피아팀" => image_color("#dc2626"),
+        "교주팀" => image_color("#0891b2"),
+        "중립" => image_color("#7c3aed"),
+        _ => image_color("#16a34a"),
+    }
+}
+
+pub async fn send_game_result_image(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    image: Vec<u8>,
+) -> serenity::Result<serenity::Message> {
+    const FILENAME: &str = "mafia_game_result.png";
+    let (channel_id, anonymous_enabled, targets) = {
+        let running_read = running.read().await;
+        let targets = if running_read.anonymous_enabled {
+            running_read
+                .game
+                .players
+                .iter()
+                .filter_map(|player| {
+                    running_read
+                        .anonymous_input_channel_ids
+                        .get(&player.user_id)
+                        .copied()
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        (
+            running_read.channel_id,
+            running_read.anonymous_enabled,
+            targets,
+        )
+    };
+    let embed = make_embed(
+        "게임 종료 결과를 이미지로 정리했습니다.",
+        "게임 종료",
+        serenity::Colour::DARK_GREEN,
+    )
+    .attachment(FILENAME);
+    let sent = channel_id
+        .send_message(
+            &ctx.http,
+            serenity::CreateMessage::new()
+                .embed(embed.clone())
+                .add_file(serenity::CreateAttachment::bytes(image.clone(), FILENAME)),
+        )
+        .await?;
+    if anonymous_enabled {
+        for target in targets {
+            let _ = target
+                .send_message(
+                    &ctx.http,
+                    serenity::CreateMessage::new()
+                        .embed(embed.clone())
+                        .add_file(serenity::CreateAttachment::bytes(image.clone(), FILENAME)),
+                )
+                .await;
+        }
+    }
+    Ok(sent)
+}
+
 pub async fn announce_winner(
     ctx: &serenity::Context,
     data: &Data,
@@ -2110,10 +2581,11 @@ pub async fn announce_winner(
         )
     };
     upsert_game_status(ctx, running).await;
+    let mut rating_log = Vec::new();
     let mut rating_log_chunks = Vec::new();
     let mut rank_change_chunks = Vec::new();
     if let Some((game_snapshot, initial_roles, elapsed_seconds)) = record_payload {
-        let (rating_log, stats_snapshot) = {
+        let (recorded_rating_log, stats_snapshot) = {
             let mut stats_file = data.stats.write().await;
             let rating_log = stats::record_game_stats(
                 &mut stats_file,
@@ -2124,8 +2596,9 @@ pub async fn announce_winner(
             );
             (rating_log, stats_file.clone())
         };
-        rating_log_chunks = stats::game_rating_log_chunks(&rating_log, 3500);
-        rank_change_chunks = stats::game_rank_change_chunks(&rating_log, 3500);
+        rating_log_chunks = stats::game_rating_log_chunks(&recorded_rating_log, 3500);
+        rank_change_chunks = stats::game_rank_change_chunks(&recorded_rating_log, 3500);
+        rating_log = recorded_rating_log;
         let stats_path = data.stats_path.clone();
         match tokio::task::spawn_blocking(move || stats::save_stats(&*stats_path, &stats_snapshot))
             .await
@@ -2135,17 +2608,28 @@ pub async fn announce_winner(
             Err(error) => eprintln!("failed to join stats save task after game end: {error:?}"),
         }
     }
+    let rows = {
+        let running_read = running.read().await;
+        game_result_rows(&running_read, &rating_log)
+    };
+    match tokio::task::spawn_blocking(move || {
+        render_game_result_image(winner, elapsed_seconds, rows)
+    })
+    .await
+    {
+        Ok(Some(image)) => match send_game_result_image(ctx, running, image).await {
+            Ok(_) => return Ok(true),
+            Err(error) => eprintln!("failed to announce game result image: {error:?}"),
+        },
+        Ok(None) => eprintln!("failed to render game result image"),
+        Err(error) => eprintln!("failed to join game result image task: {error:?}"),
+    }
     if let Err(error) = send_game_embed(
         ctx,
         running,
         format!(
             "{}\n플레이 시간: **{}**\n\n최종 역할 공개\n{}",
-            match winner {
-                Winner::Mafia => "마피아 승리!",
-                Winner::Joker => "조커 승리!",
-                Winner::Cult => "교주팀 승리!",
-                Winner::Citizen => "시민 승리!",
-            },
+            winner_result_text(winner),
             stats::play_duration_text(elapsed_seconds),
             roles_text
         ),
@@ -2291,5 +2775,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn game_result_image_renders_png() {
+        let rows = vec![
+            GameResultImageRow {
+                name: "Alpha".to_string(),
+                role: Role::Mafia.value().to_string(),
+                team: "마피아팀".to_string(),
+                alive: true,
+                before: Some(1000),
+                after: Some(1032),
+                delta: Some(32),
+                team_delta: Some(24),
+                role_delta: Some(4),
+                streak_delta: Some(4),
+                reasons: vec!["소속 진영 승리".to_string()],
+            },
+            GameResultImageRow {
+                name: "Beta".to_string(),
+                role: Role::Doctor.value().to_string(),
+                team: "시민팀".to_string(),
+                alive: false,
+                before: Some(1000),
+                after: Some(982),
+                delta: Some(-18),
+                team_delta: Some(-20),
+                role_delta: Some(2),
+                streak_delta: Some(0),
+                reasons: vec!["패배".to_string()],
+            },
+        ];
+
+        let image = render_game_result_image(Winner::Mafia, 310, rows).unwrap();
+
+        assert!(image.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(image.len() > 1024);
     }
 }

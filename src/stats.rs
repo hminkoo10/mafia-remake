@@ -104,6 +104,7 @@ pub struct RatingHistoryItem {
 
 #[derive(Debug, Clone)]
 pub struct GameRatingLogItem {
+    pub user_id: u64,
     pub name: String,
     pub role: String,
     pub before: i64,
@@ -254,6 +255,7 @@ pub fn record_game_stats(
         entry.rating_games += 1;
         entry.rating_peak = entry.rating_peak.max(entry.rating);
         rating_log.push(GameRatingLogItem {
+            user_id: player.user_id,
             name: player.name.clone(),
             role: role.value().to_string(),
             before: rating_change.before,
@@ -1064,6 +1066,7 @@ mod tests {
     fn rank_change_log_only_lists_rank_crossings() {
         let logs = vec![
             GameRatingLogItem {
+                user_id: 1,
                 name: "Alpha".to_string(),
                 role: Role::Doctor.value().to_string(),
                 before: 1090,
@@ -1075,6 +1078,7 @@ mod tests {
                 reasons: vec![],
             },
             GameRatingLogItem {
+                user_id: 2,
                 name: "Beta".to_string(),
                 role: Role::Mafia.value().to_string(),
                 before: 1000,
