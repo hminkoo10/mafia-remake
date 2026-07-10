@@ -2300,15 +2300,21 @@ pub fn render_game_result_image(
     elapsed_seconds: i64,
     rows: Vec<GameResultImageRow>,
 ) -> Option<Vec<u8>> {
-    const WIDTH: u32 = 1420;
+    const WIDTH: u32 = 1920;
     const TOP: i32 = 44;
-    const SIDE: i32 = 46;
+    const SIDE: i32 = 56;
     const HEADER_HEIGHT: i32 = 172;
-    const ROW_HEIGHT: i32 = 112;
     const FOOTER: i32 = 56;
+    const COL_PLAYER: i32 = SIDE + 42;
+    const COL_ROLE: i32 = SIDE + 420;
+    const COL_RATING: i32 = SIDE + 720;
+    const COL_DELTA: i32 = SIDE + 1010;
+    const COL_REASON: i32 = SIDE + 1230;
 
     let table_top = TOP + HEADER_HEIGHT + 26;
-    let height = (table_top + ROW_HEIGHT * rows.len() as i32 + FOOTER).max(520) as u32;
+    let row_heights = rows.iter().map(game_result_row_height).collect::<Vec<_>>();
+    let table_height = row_heights.iter().sum::<i32>();
+    let height = (table_top + table_height + FOOTER).max(520) as u32;
     let mut image = RgbImage::from_pixel(WIDTH, height, image_color("#edf2f7"));
     let font = FontArc::try_from_slice(include_bytes!("../MalangmalangR.ttf")).ok()?;
     let text = image_color("#172033");
@@ -2343,8 +2349,8 @@ pub fn render_game_result_image(
         ),
         muted,
     );
-    let badge_x = WIDTH as i32 - SIDE - 252;
-    fill_rect(&mut image, badge_x, TOP + 44, 220, 54, accent);
+    let badge_x = WIDTH as i32 - SIDE - 282;
+    fill_rect(&mut image, badge_x, TOP + 44, 250, 54, accent);
     draw_lb_text(
         &mut image,
         &font,
@@ -2381,21 +2387,48 @@ pub fn render_game_result_image(
         );
     }
 
+    fill_rect(
+        &mut image,
+        SIDE,
+        table_top - 52,
+        WIDTH - SIDE as u32 * 2,
+        52,
+        image_color("#1f2937"),
+    );
+    for (x, label) in [
+        (COL_PLAYER, "플레이어"),
+        (COL_ROLE, "최종 역할"),
+        (COL_RATING, "레이팅"),
+        (COL_DELTA, "변동"),
+        (COL_REASON, "랭크/사유"),
+    ] {
+        draw_lb_text(
+            &mut image,
+            &font,
+            23.0,
+            x,
+            table_top - 38,
+            label,
+            image_color("#f8fafc"),
+        );
+    }
+
+    let mut y = table_top;
     for (index, row) in rows.iter().enumerate() {
-        let y = table_top + index as i32 * ROW_HEIGHT;
+        let row_height = row_heights[index];
         let row_fill = if index % 2 == 0 { white } else { soft };
         fill_rect(
             &mut image,
             SIDE,
             y,
             WIDTH - SIDE as u32 * 2,
-            ROW_HEIGHT as u32,
+            row_height as u32,
             row_fill,
         );
         fill_rect(
             &mut image,
             SIDE,
-            y + ROW_HEIGHT - 1,
+            y + row_height - 1,
             WIDTH - SIDE as u32 * 2,
             1,
             line,
@@ -2405,7 +2438,7 @@ pub fn render_game_result_image(
             SIDE,
             y,
             8,
-            ROW_HEIGHT as u32,
+            row_height as u32,
             team_color(&row.team),
         );
         fill_circle(
@@ -2422,16 +2455,16 @@ pub fn render_game_result_image(
             &mut image,
             &font,
             28.0,
-            SIDE + 62,
+            SIDE + 68,
             y + 18,
-            truncate_for_board(&row.name, 18),
+            truncate_for_board(&row.name, 22),
             text,
         );
         draw_lb_text(
             &mut image,
             &font,
             20.0,
-            SIDE + 64,
+            SIDE + 70,
             y + 58,
             if row.alive { "생존" } else { "사망" },
             muted,
@@ -2440,23 +2473,24 @@ pub fn render_game_result_image(
             &mut image,
             &font,
             26.0,
-            SIDE + 372,
+            COL_ROLE,
             y + 20,
-            truncate_for_board(&row.role, 15),
+            truncate_for_board(&row.role, 18),
             text,
         );
         draw_lb_text(
             &mut image,
             &font,
             20.0,
-            SIDE + 374,
+            COL_ROLE + 2,
             y + 58,
             &row.team,
             team_color(&row.team),
         );
-        draw_rating_block(&mut image, &font, row, SIDE + 640, y, text, muted);
-        draw_delta_badge(&mut image, &font, row, SIDE + 910, y);
-        draw_rank_and_reason(&mut image, &font, row, SIDE + 1088, y, text, muted);
+        draw_rating_block(&mut image, &font, row, COL_RATING, y, text, muted);
+        draw_delta_badge(&mut image, &font, row, COL_DELTA, y);
+        draw_rank_and_reason(&mut image, &font, row, COL_REASON, y, text, muted);
+        y += row_height;
     }
 
     draw_lb_text(
@@ -2473,6 +2507,71 @@ pub fn render_game_result_image(
         .write_to(&mut bytes, ImageFormat::Png)
         .ok()?;
     Some(bytes.into_inner())
+}
+
+fn game_result_reason_text(row: &GameResultImageRow) -> String {
+    if row.reasons.is_empty() {
+        "사유 없음".to_string()
+    } else {
+        row.reasons.join(", ")
+    }
+}
+
+fn wrap_result_reason(reason: &str) -> Vec<String> {
+    wrap_text_by_chars(reason, 32)
+}
+
+fn game_result_row_height(row: &GameResultImageRow) -> i32 {
+    let reason_lines = wrap_result_reason(&game_result_reason_text(row))
+        .len()
+        .max(1) as i32;
+    (86 + reason_lines * 24).max(118)
+}
+
+fn wrap_text_by_chars(text: &str, max_chars: usize) -> Vec<String> {
+    if text.trim().is_empty() {
+        return vec![String::new()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let separator = usize::from(!current.is_empty());
+        if current.chars().count() + separator + word.chars().count() > max_chars
+            && !current.is_empty()
+        {
+            lines.push(current);
+            current = String::new();
+        }
+        if word.chars().count() > max_chars {
+            if !current.is_empty() {
+                lines.push(current);
+                current = String::new();
+            }
+            let mut chunk = String::new();
+            for ch in word.chars() {
+                if chunk.chars().count() >= max_chars {
+                    lines.push(chunk);
+                    chunk = String::new();
+                }
+                chunk.push(ch);
+            }
+            if !chunk.is_empty() {
+                current = chunk;
+            }
+            continue;
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 fn draw_rating_block(
@@ -2587,20 +2686,18 @@ fn draw_rank_and_reason(
     } else {
         draw_lb_text(image, font, 24.0, x, y + 18, "랭크 기록 없음", muted);
     }
-    let reason = if row.reasons.is_empty() {
-        "사유 없음".to_string()
-    } else {
-        row.reasons.join(", ")
-    };
-    draw_lb_text(
-        image,
-        font,
-        18.0,
-        x,
-        y + 56,
-        truncate_for_board(&reason, 34),
-        muted,
-    );
+    let reason = game_result_reason_text(row);
+    for (index, line) in wrap_result_reason(&reason).iter().enumerate() {
+        draw_lb_text(
+            image,
+            font,
+            18.0,
+            x,
+            y + 56 + index as i32 * 24,
+            line,
+            muted,
+        );
+    }
 }
 
 fn winner_color(winner: Winner) -> Rgb<u8> {
@@ -2960,6 +3057,22 @@ mod tests {
     fn game_result_image_renders_png() {
         let rows = vec![
             GameResultImageRow {
+                name: "Long Reason".to_string(),
+                role: Role::Doctor.value().to_string(),
+                team: "시민팀".to_string(),
+                alive: true,
+                before: Some(1043),
+                after: Some(1077),
+                delta: Some(34),
+                team_delta: Some(29),
+                role_delta: Some(1),
+                streak_delta: Some(4),
+                reasons: vec![
+                    "소속 진영 승리, 의사 보호 운영 기여 +1, 3연승 보너스 +4, 레이팅 구간 보정 x1.20"
+                        .to_string(),
+                ],
+            },
+            GameResultImageRow {
                 name: "Alpha".to_string(),
                 role: Role::Mafia.value().to_string(),
                 team: "마피아팀".to_string(),
@@ -2991,5 +3104,8 @@ mod tests {
 
         assert!(image.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert!(image.len() > 1024);
+        let decoded = image::load_from_memory(&image).unwrap();
+        assert_eq!(decoded.width(), 1920);
+        assert!(decoded.height() > 520);
     }
 }
