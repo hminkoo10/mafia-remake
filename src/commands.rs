@@ -5897,28 +5897,34 @@ pub async fn handle_anonymous_message(
     }
 
     let body = anonymous_message_body(message);
-    let can_relay = {
+    let (can_relay, force_frog_croak) = {
         let running_read = running.read().await;
         let Some(player) = running_read.game.get_player(owner_id) else {
             return Ok(());
         };
+        let force_frog_croak = matches!(kind, AnonymousMessageKind::General { .. })
+            && can_use_frog_general_chat(&running_read, player);
         match kind {
-            AnonymousMessageKind::General { .. } => {
-                if running_read.game.is_madam_seduced(player) {
-                    false
-                } else {
-                    can_use_anonymous_general_chat(&running_read, player)
-                }
-            }
-            AnonymousMessageKind::Dead { .. } => can_use_anonymous_dead_chat(&running_read, player),
-            AnonymousMessageKind::Shaman { .. } => {
-                can_use_anonymous_shaman_chat(&running_read, player)
-            }
+            AnonymousMessageKind::General { .. } => (
+                can_use_anonymous_general_chat(&running_read, player) || force_frog_croak,
+                force_frog_croak,
+            ),
+            AnonymousMessageKind::Dead { .. } => (
+                can_use_anonymous_dead_chat(&running_read, player),
+                force_frog_croak,
+            ),
+            AnonymousMessageKind::Shaman { .. } => (
+                can_use_anonymous_shaman_chat(&running_read, player),
+                force_frog_croak,
+            ),
             AnonymousMessageKind::Role { role, .. } => {
                 if running_read.game.is_madam_seduced(player) {
-                    false
+                    (false, force_frog_croak)
                 } else {
-                    can_use_anonymous_role_chat(&running_read, player, role)
+                    (
+                        can_use_anonymous_role_chat(&running_read, player, role),
+                        force_frog_croak,
+                    )
                 }
             }
         }
@@ -5929,7 +5935,12 @@ pub async fn handle_anonymous_message(
 
     match kind {
         AnonymousMessageKind::General { .. } => {
-            relay_anonymous_general_message(ctx, &running, owner_id, &body).await;
+            let body = if force_frog_croak {
+                "개굴개굴"
+            } else {
+                &body
+            };
+            relay_anonymous_general_message(ctx, &running, owner_id, body).await;
         }
         AnonymousMessageKind::Dead { .. } => {
             relay_anonymous_dead_message(ctx, data, &running, owner_id, &body).await;
@@ -6037,6 +6048,25 @@ pub async fn handle_message_event(
         return Ok(());
     }
 
+    let frog_game_context = {
+        let running_read = running.read().await;
+        if running_read.channel_id != message.channel_id {
+            None
+        } else {
+            running_read
+                .game
+                .get_player(message.author.id.get())
+                .filter(|player| can_use_frog_general_chat(&running_read, player))
+                .map(|_| running_read.channel_id)
+        }
+    };
+    if let Some(channel_id) = frog_game_context {
+        let relay = send_anonymous_text(ctx, &running, channel_id, "개구리", "개굴개굴");
+        let delete = message.delete(&ctx.http);
+        let _ = tokio::join!(relay, delete);
+        return Ok(());
+    }
+
     let frog_context = {
         let running_read = running.read().await;
         if running_read.frog_channel_id != Some(message.channel_id) {
@@ -6055,24 +6085,8 @@ pub async fn handle_message_event(
             Some((running_read.channel_id, can_croak))
         }
     };
-    if let Some((game_channel_id, can_croak)) = frog_context {
-        if can_croak {
-            let croak_count = message.content.chars().count().max(1);
-            // Start both Discord requests together: waiting for deletion first made every croak
-            // pay for two sequential API round trips before it appeared in the main channel.
-            let relay = send_channel_embed(
-                &ctx.http,
-                game_channel_id,
-                format!("개구리: {}", "개굴".repeat(croak_count)),
-                "개구리 채팅",
-                serenity::Colour::DARK_GREEN,
-                vec![],
-            );
-            let delete = message.delete(&ctx.http);
-            let _ = tokio::join!(relay, delete);
-        } else {
-            let _ = message.delete(&ctx.http).await;
-        }
+    if frog_context.is_some() {
+        let _ = message.delete(&ctx.http).await;
     }
     Ok(())
 }

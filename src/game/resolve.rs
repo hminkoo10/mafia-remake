@@ -316,8 +316,7 @@ impl MafiaGame {
                 &mut killed_by_mafia_team_ids,
             );
         }
-        let terrorist_retaliations = self
-            .resolve_terrorist_night_retaliations(&killed_by_mafia_team_ids, &mut killed_players);
+        let terrorist_retaliations = self.resolve_terrorist_night_retaliations(&mut killed_players);
         for (actor_id, message) in self.activate_mercenaries_for_killed_clients(&killed_players) {
             mercenary_results
                 .entry(actor_id)
@@ -867,28 +866,17 @@ impl MafiaGame {
 
     fn resolve_terrorist_night_retaliations(
         &mut self,
-        killed_by_mafia_team_ids: &HashSet<u64>,
         killed_players: &mut Vec<Player>,
     ) -> Vec<(Player, Player)> {
         let mut retaliations = Vec::new();
-        for terrorist_id in killed_by_mafia_team_ids {
-            let Some(terrorist) = self.get_player(*terrorist_id).cloned() else {
+        let dead_terrorists = killed_players.clone();
+        for terrorist in dead_terrorists {
+            let Some(target) = self.terrorist_retaliation_target(&terrorist) else {
                 continue;
             };
-            if terrorist.role != Role::Terrorist {
-                continue;
-            }
-            let Some(target_id) = self.terrorist_targets.get(terrorist_id).copied() else {
-                continue;
-            };
-            let Some(target) = self.get_player(target_id).cloned() else {
-                continue;
-            };
-            if target.alive && self.is_mafia_team(&target) {
-                if let Some(killed) = self.mark_dead(target.user_id) {
-                    killed_players.push(killed.clone());
-                    retaliations.push((terrorist, killed));
-                }
+            if let Some(killed) = self.mark_dead(target.user_id) {
+                killed_players.push(killed.clone());
+                retaliations.push((terrorist, killed));
             }
         }
         retaliations

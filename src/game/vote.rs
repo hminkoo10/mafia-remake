@@ -212,20 +212,10 @@ impl MafiaGame {
                     self.joker_won = true;
                     self.joker_winner_id = Some(target.user_id);
                 }
-                if target.role == Role::Terrorist {
-                    if let Some(retaliation_id) =
-                        self.terrorist_targets.get(&target.user_id).copied()
-                    {
-                        if let Some(retaliation_target) = self.get_player(retaliation_id).cloned() {
-                            if retaliation_target.alive
-                                && !self.is_citizen_team(&retaliation_target)
-                            {
-                                if let Some(killed) = self.mark_dead(retaliation_target.user_id) {
-                                    extra_killed.push(killed);
-                                }
-                            }
-                        }
-                    }
+                if let Some(retaliation_target) = self.terrorist_retaliation_target(target)
+                    && let Some(killed) = self.mark_dead(retaliation_target.user_id)
+                {
+                    extra_killed.push(killed);
                 }
             }
         }

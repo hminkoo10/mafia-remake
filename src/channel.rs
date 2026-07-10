@@ -593,6 +593,17 @@ pub fn can_use_anonymous_general_chat(running: &RunningGame, player: &Player) ->
         && running.final_defense_user_id == Some(player.user_id)
 }
 
+pub fn can_use_frog_general_chat(running: &RunningGame, player: &Player) -> bool {
+    if !player.alive || !running.game.is_frog(player) || running.game.is_madam_seduced(player) {
+        return false;
+    }
+    if running.game.phase == Phase::Day && running.day_chat_open {
+        return true;
+    }
+    running.game.phase == Phase::FinalDefense
+        && running.final_defense_user_id == Some(player.user_id)
+}
+
 pub fn can_use_anonymous_role_chat(running: &RunningGame, player: &Player, role: Role) -> bool {
     if running.game.phase != Phase::Night {
         return false;
@@ -1575,7 +1586,6 @@ pub async fn setup_game_channels(
     sync_cult_team_channel_access(ctx, data, running).await;
     create_memo_channels(ctx, running, roles, category).await?;
     create_shaman_chat_channel(ctx, running, roles, category).await?;
-    create_frog_chat_channel(ctx, running, roles, category).await?;
     Ok(())
 }
 
@@ -2993,90 +3003,6 @@ pub async fn create_shaman_chat_channel(
     Ok(())
 }
 
-pub async fn create_frog_chat_channel(
-    ctx: &serenity::Context,
-    running: &Arc<RwLock<RunningGame>>,
-    roles: ChannelRoleIds,
-    category: Option<serenity::ChannelId>,
-) -> Result<()> {
-    let (guild_id, has_witch) = {
-        let running_read = running.read().await;
-        (
-            running_read.guild_id,
-            running_read
-                .game
-                .players
-                .iter()
-                .any(|player| player.role == Role::Witch),
-        )
-    };
-    if !has_witch {
-        return Ok(());
-    }
-    let mut overwrites = vec![dead_channel_overwrite(
-        serenity::PermissionOverwriteType::Role(roles.everyone),
-        false,
-        false,
-    )];
-    if let Some(role_id) = roles.participant {
-        overwrites.push(dead_channel_overwrite(
-            serenity::PermissionOverwriteType::Role(role_id),
-            false,
-            false,
-        ));
-    }
-    if let Some(role_id) = roles.spectator {
-        overwrites.push(spectator_channel_overwrite(role_id));
-    }
-    if let Some(role_id) = roles.manager {
-        overwrites.push(dead_channel_overwrite(
-            serenity::PermissionOverwriteType::Role(role_id),
-            false,
-            false,
-        ));
-    }
-    overwrites.push(dead_channel_overwrite(
-        serenity::PermissionOverwriteType::Member(roles.bot),
-        true,
-        true,
-    ));
-    let Some(channel) = create_text_channel_safe(
-        ctx,
-        guild_id,
-        FROG_CHAT_CHANNEL_NAME,
-        overwrites,
-        category,
-        "마피아 게임 개구리 채팅방 생성",
-        0,
-        None,
-    )
-    .await
-    else {
-        let channel_id = running.read().await.channel_id;
-        let _ = send_channel_embed(
-            &ctx.http,
-            channel_id,
-            "개구리 채팅방 생성에 실패했습니다. 봇에게 채널 관리 권한이 있는지 확인하세요.",
-            "마피아 게임",
-            serenity::Colour::RED,
-            vec![],
-        )
-        .await;
-        return Ok(());
-    };
-    running.write().await.frog_channel_id = Some(channel.id);
-    let _ = send_channel_embed(
-        &ctx.http,
-        channel.id,
-        "개구리 전용 채팅방입니다.\n저주에 걸린 참가자가 이곳에 쓴 말은 게임 채널에 개굴 소리로 전달됩니다.",
-        "개구리 채팅방",
-        serenity::Colour::DARK_GREEN,
-        vec![],
-    )
-    .await;
-    Ok(())
-}
-
 pub async fn set_frog_channel_member_access(
     ctx: &serenity::Context,
     running: &Arc<RwLock<RunningGame>>,
@@ -3097,43 +3023,6 @@ pub async fn set_frog_channel_member_access(
             ),
         )
         .await;
-}
-
-pub async fn set_frog_game_channel_permission(
-    ctx: &serenity::Context,
-    running: &Arc<RwLock<RunningGame>>,
-    player: &Player,
-    can_chat: bool,
-) {
-    let channel_id = running.read().await.channel_id;
-    let Some(channel) = channel_id
-        .to_channel(&ctx.http)
-        .await
-        .ok()
-        .and_then(|channel| channel.guild())
-    else {
-        return;
-    };
-    let kind = serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id));
-    let original = channel
-        .permission_overwrites
-        .iter()
-        .find(|overwrite| overwrite.kind == kind)
-        .cloned();
-    {
-        let mut running_write = running.write().await;
-        running_write
-            .frog_game_channel_overwrites
-            .entry(player.user_id)
-            .or_insert_with(|| original.clone());
-    }
-    let mut overwrite = original.unwrap_or(serenity::PermissionOverwrite {
-        allow: serenity::Permissions::empty(),
-        deny: serenity::Permissions::empty(),
-        kind,
-    });
-    set_chat_permission_bits(&mut overwrite, can_chat);
-    let _ = channel_id.create_permission(&ctx.http, overwrite).await;
 }
 
 pub async fn restore_frog_game_channel_permission(
@@ -4552,7 +4441,8 @@ pub async fn sync_anonymous_general_chat_permissions(
                 Some((
                     channel_id,
                     player.user_id,
-                    can_use_anonymous_general_chat(&running_read, player),
+                    can_use_anonymous_general_chat(&running_read, player)
+                        || can_use_frog_general_chat(&running_read, player),
                 ))
             })
             .collect::<Vec<_>>()

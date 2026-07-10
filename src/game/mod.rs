@@ -347,6 +347,34 @@ impl MafiaGame {
         !self.is_mafia_team(player) && !self.is_cult_team(player) && player.role != Role::Joker
     }
 
+    pub(crate) fn terrorist_retaliation_target(&self, terrorist: &Player) -> Option<Player> {
+        let can_retaliate = terrorist.role == Role::Terrorist
+            || (terrorist.role == Role::Thief
+                && self.thief_stolen_roles.get(&terrorist.user_id) == Some(&Role::Terrorist));
+        if !can_retaliate {
+            return None;
+        }
+        let target_id = self.terrorist_targets.get(&terrorist.user_id).copied()?;
+        let target = self.get_player(target_id)?.clone();
+        if !target.alive {
+            return None;
+        }
+        (self.retaliation_team_key(terrorist) != self.retaliation_team_key(&target))
+            .then_some(target)
+    }
+
+    fn retaliation_team_key(&self, player: &Player) -> &'static str {
+        if self.is_cult_team(player) {
+            "cult"
+        } else if self.is_mafia_team(player) {
+            "mafia"
+        } else if player.role == Role::Joker {
+            "joker"
+        } else {
+            "citizen"
+        }
+    }
+
     pub fn is_frog(&self, player: &Player) -> bool {
         player.alive && self.frog_user_ids.contains(&player.user_id)
     }
@@ -1264,6 +1292,111 @@ mod tests {
         assert!(status.contains("1일차 / 현재 단계: 밤"));
         assert!(status.contains("생존자(4명)"));
         assert!(status.contains("사망자: Two"));
+    }
+
+    #[test]
+    fn stolen_terrorist_retaliates_against_citizen_team_when_thief_dies_at_night() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Thief),
+            (3, Role::Citizen),
+            (4, Role::CultLeader),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.thief_stolen_roles.insert(2, Role::Terrorist);
+        game.terrorist_targets.insert(2, 3);
+        game.mafia_targets.insert(1, 2);
+
+        let result = game.resolve_night().unwrap();
+
+        assert!(!game.get_player(2).unwrap().alive);
+        assert!(!game.get_player(3).unwrap().alive);
+        assert!(
+            result
+                .terrorist_retaliations
+                .iter()
+                .any(|(terrorist, target)| terrorist.user_id == 2 && target.user_id == 3)
+        );
+    }
+
+    #[test]
+    fn terrorist_retaliates_against_cult_team_when_citizen_team_terrorist_dies() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Terrorist),
+            (3, Role::CultLeader),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.terrorist_targets.insert(2, 3);
+        game.mafia_targets.insert(1, 2);
+
+        let result = game.resolve_night().unwrap();
+
+        assert!(!game.get_player(2).unwrap().alive);
+        assert!(!game.get_player(3).unwrap().alive);
+        assert!(
+            result
+                .terrorist_retaliations
+                .iter()
+                .any(|(terrorist, target)| terrorist.user_id == 2 && target.user_id == 3)
+        );
+    }
+
+    #[test]
+    fn terrorist_does_not_retaliate_against_same_team_target() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Terrorist),
+            (3, Role::Citizen),
+            (4, Role::CultLeader),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.terrorist_targets.insert(2, 3);
+        game.mafia_targets.insert(1, 2);
+
+        let result = game.resolve_night().unwrap();
+
+        assert!(!game.get_player(2).unwrap().alive);
+        assert!(game.get_player(3).unwrap().alive);
+        assert!(result.terrorist_retaliations.is_empty());
+    }
+
+    #[test]
+    fn stolen_terrorist_retaliates_when_thief_is_executed() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Thief),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.phase = Phase::ConfirmVote;
+        game.thief_stolen_roles.insert(2, Role::Terrorist);
+        game.terrorist_targets.insert(2, 3);
+        game.confirm_votes.insert(1, true);
+
+        let result = game.resolve_confirmation_vote(2).unwrap();
+
+        assert_eq!(
+            result.executed.as_ref().map(|player| player.user_id),
+            Some(2)
+        );
+        assert!(result.extra_killed.iter().any(|player| player.user_id == 3));
+        assert!(!game.get_player(2).unwrap().alive);
+        assert!(!game.get_player(3).unwrap().alive);
     }
 
     #[test]
