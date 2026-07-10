@@ -83,12 +83,14 @@ impl MafiaGame {
                 ..Default::default()
             });
         }
-        let mut counts: HashMap<Option<u64>, i32> = HashMap::new();
+        let mut weighted_counts: HashMap<Option<u64>, i32> = HashMap::new();
+        let mut display_counts: HashMap<Option<u64>, i32> = HashMap::new();
         for (voter_id, target_id) in &live_votes {
-            *counts.entry(*target_id).or_default() += self.vote_weight(*voter_id);
+            *weighted_counts.entry(*target_id).or_default() += self.vote_weight(*voter_id);
+            *display_counts.entry(*target_id).or_default() += 1;
         }
-        let highest = counts.values().copied().max().unwrap_or(0);
-        let top = counts
+        let highest = weighted_counts.values().copied().max().unwrap_or(0);
+        let top = weighted_counts
             .iter()
             .filter(|(_, count)| **count == highest)
             .map(|(target_id, _)| *target_id)
@@ -97,7 +99,8 @@ impl MafiaGame {
             self.advance_to_next_night();
             return Ok(VoteResult {
                 tied: true,
-                vote_counts: counts,
+                weighted_vote_counts: weighted_counts,
+                vote_counts: display_counts,
                 madam_seduced,
                 madam_newly_contacted,
                 blocked_voters,
@@ -108,7 +111,8 @@ impl MafiaGame {
             self.advance_to_next_night();
             return Ok(VoteResult {
                 skipped: true,
-                vote_counts: counts,
+                weighted_vote_counts: weighted_counts,
+                vote_counts: display_counts,
                 madam_seduced,
                 madam_newly_contacted,
                 blocked_voters,
@@ -119,7 +123,8 @@ impl MafiaGame {
         self.phase = Phase::FinalDefense;
         Ok(VoteResult {
             executed: nominated,
-            vote_counts: counts,
+            weighted_vote_counts: weighted_counts,
+            vote_counts: display_counts,
             madam_seduced,
             madam_newly_contacted,
             blocked_voters,
@@ -163,12 +168,14 @@ impl MafiaGame {
             .filter(|(voter_id, _)| self.is_alive(**voter_id))
             .map(|(voter_id, approve)| (*voter_id, *approve))
             .collect::<HashMap<_, _>>();
-        let mut counts = HashMap::<bool, i32>::new();
+        let mut weighted_counts = HashMap::<bool, i32>::new();
+        let mut display_counts = HashMap::<bool, i32>::new();
         for (voter_id, approve) in &live_votes {
-            *counts.entry(*approve).or_default() += self.vote_weight(*voter_id);
+            *weighted_counts.entry(*approve).or_default() += self.vote_weight(*voter_id);
+            *display_counts.entry(*approve).or_default() += 1;
         }
-        let yes = *counts.get(&true).unwrap_or(&0);
-        let no = *counts.get(&false).unwrap_or(&0);
+        let yes = *weighted_counts.get(&true).unwrap_or(&0);
+        let no = *weighted_counts.get(&false).unwrap_or(&0);
         let target = self.get_player(target_id).cloned();
         let submitted_vote_count = yes + no;
         let required_yes = submitted_vote_count / 2 + 1;
@@ -227,7 +234,8 @@ impl MafiaGame {
             tied,
             blocked_by_politician,
             extra_killed,
-            vote_counts: counts,
+            weighted_vote_counts: weighted_counts,
+            vote_counts: display_counts,
             judge: if decided_by_judge { judge } else { None },
             judge_choice: if decided_by_judge { judge_choice } else { None },
             decided_by_judge,

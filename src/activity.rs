@@ -19,6 +19,7 @@ use axum::{
 };
 use dashmap::DashMap;
 use mafia_remake::{
+    config,
     game::{MafiaGame, majority_required},
     model::{Phase, Player, Role},
 };
@@ -46,6 +47,7 @@ include!(concat!(env!("OUT_DIR"), "/activity_static.rs"));
 #[derive(Clone)]
 pub struct ActivityState {
     pub games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>>,
+    pub config: Arc<RwLock<config::BotConfig>>,
     pub sessions: Arc<DashMap<String, ActivitySession>>,
     pub client_id: String,
     pub client_secret: String,
@@ -73,12 +75,14 @@ pub struct ActivitySession {
 impl ActivityState {
     pub fn new(
         games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>>,
+        config: Arc<RwLock<config::BotConfig>>,
         client_id: String,
         client_secret: String,
         discord_updates: broadcast::Sender<ActivityDiscordUpdate>,
     ) -> Self {
         Self {
             games,
+            config,
             sessions: Arc::new(DashMap::new()),
             client_id,
             client_secret,
@@ -136,6 +140,7 @@ pub struct GameStateDto {
     pub vote_targets: HashMap<String, u32>,
     pub vote_skip_count: u32,
     pub nominee: Option<String>,
+    pub show_confirm_counts: bool,
     pub confirm_yes: u32,
     pub confirm_no: u32,
     pub winner: Option<String>,
@@ -475,10 +480,11 @@ async fn state_handler(
     };
 
     let guild_key = serenity::GuildId::new(guild_id);
+    let show_confirm_counts = state.config.read().await.show_confirmation_vote_counts;
     let game_state = match state.games.get(&guild_key) {
         Some(running_arc) => {
             let mut running = running_arc.write().await;
-            build_game_state(&mut running, session.user_id)
+            build_game_state(&mut running, session.user_id, show_confirm_counts)
         }
         None => GameStateDto {
             game_key: String::new(),
@@ -499,6 +505,7 @@ async fn state_handler(
             vote_targets: HashMap::new(),
             vote_skip_count: 0,
             nominee: None,
+            show_confirm_counts: false,
             confirm_yes: 0,
             confirm_no: 0,
             winner: None,
@@ -944,10 +951,11 @@ async fn handle_ws(mut socket: WebSocket, state: ActivityState, user_id: u64, gu
     loop {
         tokio::select! {
             _ = interval.tick() => {
+                let show_confirm_counts = state.config.read().await.show_confirmation_vote_counts;
                 let dto = match state.games.get(&guild_key) {
                     Some(arc) => {
                         let mut running = arc.write().await;
-                        build_game_state(&mut running, user_id)
+                        build_game_state(&mut running, user_id, show_confirm_counts)
                     }
                     None => GameStateDto {
                         game_key: String::new(),
@@ -968,6 +976,7 @@ async fn handle_ws(mut socket: WebSocket, state: ActivityState, user_id: u64, gu
                         vote_targets: HashMap::new(),
                         vote_skip_count: 0,
                         nominee: None,
+                        show_confirm_counts: false,
                         confirm_yes: 0,
                         confirm_no: 0,
                         winner: None,
@@ -1003,7 +1012,11 @@ async fn handle_ws(mut socket: WebSocket, state: ActivityState, user_id: u64, gu
 // 게임 상태 직렬화 헬퍼
 // ─────────────────────────────────────────────
 
-fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
+fn build_game_state(
+    running: &mut RunningGame,
+    user_id: u64,
+    show_confirm_counts: bool,
+) -> GameStateDto {
     let game = &mut running.game;
     let phase_str = match game.phase {
         Phase::Night => "Night",
@@ -1179,7 +1192,11 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
     };
 
     // 찬반 현황
-    let (confirm_yes, confirm_no) = game.current_confirm_counts();
+    let (confirm_yes, confirm_no) = if show_confirm_counts {
+        game.current_confirm_counts()
+    } else {
+        (0, 0)
+    };
 
     // 승자
     let winner = game.winner().map(|w| format!("{w:?}"));
@@ -1243,6 +1260,7 @@ fn build_game_state(running: &mut RunningGame, user_id: u64) -> GameStateDto {
         vote_targets,
         vote_skip_count,
         nominee,
+        show_confirm_counts,
         confirm_yes: confirm_yes as u32,
         confirm_no: confirm_no as u32,
         winner,
@@ -1385,7 +1403,7 @@ mod tests {
         game.get_player_mut(2).unwrap().alive = false;
         let mut running = activity_test_running(game);
 
-        let state = build_game_state(&mut running, 1);
+        let state = build_game_state(&mut running, 1, true);
 
         assert!(
             !state
@@ -1436,12 +1454,12 @@ mod tests {
         running.game.day_votes.insert(1, Some(2));
         running.game.day_votes.insert(2, None);
 
-        let vote_state = build_game_state(&mut running, 1);
+        let vote_state = build_game_state(&mut running, 1, true);
         assert_eq!(vote_state.vote_targets.get("2"), Some(&1));
         assert_eq!(vote_state.vote_skip_count, 1);
 
         running.game.phase = Phase::Night;
-        let night_state = build_game_state(&mut running, 1);
+        let night_state = build_game_state(&mut running, 1, true);
         assert!(night_state.vote_targets.is_empty());
         assert_eq!(night_state.vote_skip_count, 0);
         assert_eq!(night_state.nominee, None);

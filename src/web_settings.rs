@@ -764,6 +764,12 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
         None,
     ),
     field(
+        "show_confirmation_vote_counts",
+        "찬반투표 집계 공개",
+        WebFieldKind::Bool,
+        None,
+    ),
+    field(
         "anonymous_mode",
         "익명 채팅 모드 사용",
         WebFieldKind::Bool,
@@ -3668,6 +3674,7 @@ fn config_value(config: &BotConfig, name: &str) -> String {
         "reveal_death_roles" => config.reveal_death_roles.to_string(),
         "reveal_public_police_status" => config.reveal_public_police_status.to_string(),
         "reveal_morning_mafia_count" => config.reveal_morning_mafia_count.to_string(),
+        "show_confirmation_vote_counts" => config.show_confirmation_vote_counts.to_string(),
         "anonymous_mode" => config.anonymous_mode.to_string(),
         "anonymous_name_mode" => config.anonymous_name_mode.clone(),
         "use_agent" => config.use_agent.to_string(),
@@ -3778,6 +3785,7 @@ fn set_bool(config: &mut BotConfig, name: &str, value: bool) -> std::result::Res
         "reveal_death_roles" => config.reveal_death_roles = value,
         "reveal_public_police_status" => config.reveal_public_police_status = value,
         "reveal_morning_mafia_count" => config.reveal_morning_mafia_count = value,
+        "show_confirmation_vote_counts" => config.show_confirmation_vote_counts = value,
         "anonymous_mode" => config.anonymous_mode = value,
         "use_agent" => config.use_agent = value,
         "use_vigilante" => config.use_vigilante = value,
@@ -4184,6 +4192,7 @@ mod tests {
             reveal_death_roles: true,
             reveal_public_police_status: true,
             reveal_morning_mafia_count: true,
+            show_confirmation_vote_counts: true,
             citizen_special_count: 0,
             mafia_special_count: 0,
             neutral_special_count: 0,
@@ -4574,7 +4583,8 @@ mod tests {
                     "details": {
                         "executed_user_id": 12,
                         "approved": true,
-                        "vote_counts": [{"approve": true, "count": 2}]
+                        "vote_counts": [{"approve": true, "count": 2}],
+                        "weighted_vote_counts": [{"approve": true, "count": 2}]
                     }
                 }
             ],

@@ -30,6 +30,7 @@ interface GameSnapshot {
   phase: Phase;
   dayNumber: number;
   nominee: string | null;
+  showConfirmCounts: boolean;
   confirmYes: number;
   confirmNo: number;
   actionResult: string | null;
@@ -817,7 +818,9 @@ function ActionConsole({
           <div>
             <span className="confirm-target">{nominee?.name ?? "대상 없음"}</span>
             <small>
-              찬성 {state.confirm_yes} · 반대 {state.confirm_no}
+              {state.show_confirm_counts
+                ? `찬성 ${state.confirm_yes} · 반대 ${state.confirm_no}`
+                : "찬반 집계 비공개"}
             </small>
           </div>
           <div className="command-row compact">
@@ -1048,6 +1051,14 @@ function VoteIntel({ state }: { state: GameState }) {
   }
 
   if (state.phase === "ConfirmVote") {
+    if (!state.show_confirm_counts) {
+      return (
+        <section className="panel vote-intel">
+          <div className="section-kicker">찬반 현황</div>
+          <div className="muted-line">찬반 집계 비공개</div>
+        </section>
+      );
+    }
     const total = Math.max(1, state.confirm_yes + state.confirm_no);
     return (
       <section className="panel vote-intel">
@@ -1341,6 +1352,7 @@ function snapshotGame(state: GameState): GameSnapshot {
     phase: state.phase,
     dayNumber: state.day_number,
     nominee: state.nominee,
+    showConfirmCounts: state.show_confirm_counts,
     confirmYes: state.confirm_yes,
     confirmNo: state.confirm_no,
     actionResult: state.my_action_result,
@@ -1378,7 +1390,10 @@ function diffGameEvents(previous: GameSnapshot, next: GameSnapshot, state: GameS
     events.push(makeEvent(`처형 후보 ${nominee?.name ?? "알 수 없음"}`, "vote"));
   }
 
-  if (next.confirmYes !== previous.confirmYes || next.confirmNo !== previous.confirmNo) {
+  if (
+    next.showConfirmCounts &&
+    (next.confirmYes !== previous.confirmYes || next.confirmNo !== previous.confirmNo)
+  ) {
     events.push(makeEvent(`찬반 ${next.confirmYes}/${next.confirmNo}`, "vote"));
   }
 

@@ -48,7 +48,9 @@ export function VotePanel({ state, onActionSent }: Props) {
           님을 처형할까요?
         </div>
         <div style={{ fontSize: 13, color: "#aaa", textAlign: "center" }}>
-          찬성 {state.confirm_yes} / 반대 {state.confirm_no}
+          {state.show_confirm_counts
+            ? `찬성 ${state.confirm_yes} / 반대 ${state.confirm_no}`
+            : "찬반 집계 비공개"}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <Button

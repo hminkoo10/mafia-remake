@@ -42,6 +42,7 @@ export interface GameState {
   vote_targets: Record<string, number>;
   vote_skip_count: number;
   nominee: string | null;
+  show_confirm_counts: boolean;
   confirm_yes: number;
   confirm_no: number;
   winner: string | null;

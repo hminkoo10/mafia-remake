@@ -27,6 +27,8 @@ pub struct BotConfig {
     pub reveal_public_police_status: bool,
     #[serde(default = "default_true")]
     pub reveal_morning_mafia_count: bool,
+    #[serde(default = "default_true")]
+    pub show_confirmation_vote_counts: bool,
     #[serde(default)]
     pub citizen_special_count: u32,
     #[serde(default)]

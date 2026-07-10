@@ -620,6 +620,7 @@ async fn main() -> Result<()> {
     let activity_tls_key = std::env::var("ACTIVITY_TLS_KEY").ok();
     let activity_state = activity::ActivityState::new(
         games.clone(),
+        config_arc.clone(),
         activity_client_id,
         activity_client_secret,
         activity_discord_update_tx.clone(),

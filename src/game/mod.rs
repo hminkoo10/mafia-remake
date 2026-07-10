@@ -1427,6 +1427,48 @@ mod tests {
         assert_eq!(result.executed.unwrap().user_id, 5);
     }
 
+    #[test]
+    fn politician_vote_displays_one_but_counts_as_two_for_nomination() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        game.get_player_mut(1).unwrap().role = Role::Politician;
+        game.phase = Phase::Vote;
+
+        game.submit_day_vote(1, Some(2)).unwrap();
+        game.submit_day_vote(3, Some(4)).unwrap();
+
+        let result = game.resolve_nomination_vote().unwrap();
+
+        assert_eq!(
+            result.executed.as_ref().map(|player| player.user_id),
+            Some(2)
+        );
+        assert_eq!(result.vote_counts.get(&Some(2)).copied(), Some(1));
+        assert_eq!(result.weighted_vote_counts.get(&Some(2)).copied(), Some(2));
+    }
+
+    #[test]
+    fn politician_confirm_vote_displays_one_but_counts_as_two() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        game.get_player_mut(1).unwrap().role = Role::Politician;
+        game.get_player_mut(2).unwrap().role = Role::Citizen;
+        game.phase = Phase::ConfirmVote;
+
+        game.submit_confirmation_vote(1, true).unwrap();
+        game.submit_confirmation_vote(3, false).unwrap();
+
+        let result = game.resolve_confirmation_vote(2).unwrap();
+
+        assert!(result.approved);
+        assert_eq!(
+            result.executed.as_ref().map(|player| player.user_id),
+            Some(2)
+        );
+        assert_eq!(result.vote_counts.get(&true).copied(), Some(1));
+        assert_eq!(result.vote_counts.get(&false).copied(), Some(1));
+        assert_eq!(result.weighted_vote_counts.get(&true).copied(), Some(2));
+        assert_eq!(result.weighted_vote_counts.get(&false).copied(), Some(1));
+    }
+
     fn mercenary_test_game() -> MafiaGame {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
         for (id, role) in [

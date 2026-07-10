@@ -338,6 +338,8 @@ pub struct VoteResult {
     pub executed: Option<Player>,
     pub tied: bool,
     pub skipped: bool,
+    #[serde(default)]
+    pub weighted_vote_counts: std::collections::HashMap<Option<u64>, i32>,
     pub vote_counts: std::collections::HashMap<Option<u64>, i32>,
     pub madam_seduced: Vec<Player>,
     pub madam_newly_contacted: Vec<Player>,
@@ -351,6 +353,8 @@ pub struct ConfirmVoteResult {
     pub tied: bool,
     pub blocked_by_politician: bool,
     pub extra_killed: Vec<Player>,
+    #[serde(default)]
+    pub weighted_vote_counts: std::collections::HashMap<bool, i32>,
     pub vote_counts: std::collections::HashMap<bool, i32>,
     pub judge: Option<Player>,
     pub judge_choice: Option<bool>,

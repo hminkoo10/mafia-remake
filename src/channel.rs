@@ -5024,6 +5024,7 @@ mod tests {
             reveal_death_roles: false,
             reveal_public_police_status: true,
             reveal_morning_mafia_count: true,
+            show_confirmation_vote_counts: true,
             citizen_special_count: 1,
             mafia_special_count: 0,
             neutral_special_count: 0,

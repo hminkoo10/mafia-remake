@@ -1867,6 +1867,7 @@ pub async fn run_vote(
             .map(|player| vec![player.user_id])
             .unwrap_or_default();
         let vote_counts = running_write.replay_vote_counts(&result.vote_counts);
+        let weighted_vote_counts = running_write.replay_vote_counts(&result.weighted_vote_counts);
         running_write.record_replay_event(
             "nomination_vote_resolved",
             None,
@@ -1876,6 +1877,7 @@ pub async fn run_vote(
                 "tied": result.tied,
                 "skipped": result.skipped,
                 "vote_counts": vote_counts,
+                "weighted_vote_counts": weighted_vote_counts,
                 "madam_seduced_user_ids": result.madam_seduced.iter().map(|player| player.user_id).collect::<Vec<_>>(),
                 "madam_newly_contacted_user_ids": result.madam_newly_contacted.iter().map(|player| player.user_id).collect::<Vec<_>>(),
                 "blocked_voter_user_ids": result.blocked_voters.iter().map(|player| player.user_id).collect::<Vec<_>>(),
@@ -2021,6 +2023,8 @@ pub async fn run_vote(
             .unwrap_or_default();
         target_ids.extend(result.extra_killed.iter().map(|player| player.user_id));
         let vote_counts = running_write.replay_confirm_vote_counts(&result.vote_counts);
+        let weighted_vote_counts =
+            running_write.replay_confirm_vote_counts(&result.weighted_vote_counts);
         running_write.record_replay_event(
             "confirmation_vote_resolved",
             None,
@@ -2033,6 +2037,7 @@ pub async fn run_vote(
                 "tied": result.tied,
                 "blocked_by_politician": result.blocked_by_politician,
                 "vote_counts": vote_counts,
+                "weighted_vote_counts": weighted_vote_counts,
                 "judge_user_id": result.judge.as_ref().map(|player| player.user_id),
                 "judge_choice": result.judge_choice,
                 "decided_by_judge": result.decided_by_judge,
@@ -2041,7 +2046,11 @@ pub async fn run_vote(
         result
     };
     set_channel_slowmode(ctx, running, config.chat_slowmode_seconds).await;
-    let summary = confirmation_vote_summary(&confirm_result, confirm_context);
+    let summary_section = confirmation_vote_summary_section(
+        &confirm_result,
+        confirm_context,
+        config.show_confirmation_vote_counts,
+    );
     let judge_notice = if confirm_result.decided_by_judge {
         if let Some(judge) = &confirm_result.judge {
             let judge_choice = match confirm_result.judge_choice {
@@ -2071,7 +2080,7 @@ pub async fn run_vote(
     let (message, color, include_dead) = if confirm_result.blocked_by_politician {
         (
             format!(
-                "찬반투표 결과, {} 님은 **정치인** 입니다.\n[정치인은 투표로 죽지 않습니다]\n\n{} 님은 처형되지 않고 밤으로 넘어갑니다.{judge_notice}\n\n찬반투표 집계\n{summary}",
+                "찬반투표 결과, {} 님은 **정치인** 입니다.\n[정치인은 투표로 죽지 않습니다]\n\n{} 님은 처형되지 않고 밤으로 넘어갑니다.{judge_notice}{summary_section}",
                 nominee.name, nominee.name
             ),
             serenity::Colour::ORANGE,
@@ -2105,24 +2114,20 @@ pub async fn run_vote(
             }
         }
         (
-            format!(
-                "{result_message}\n\n사망자\n{killed_lines}{judge_notice}\n\n찬반투표 집계\n{summary}"
-            ),
+            format!("{result_message}\n\n사망자\n{killed_lines}{judge_notice}{summary_section}"),
             serenity::Colour::GOLD,
             true,
         )
     } else if confirm_result.tied {
         (
-            format!(
-                "찬반투표가 동률이라 처형하지 않습니다.{judge_notice}\n\n찬반투표 집계\n{summary}"
-            ),
+            format!("찬반투표가 동률이라 처형하지 않습니다.{judge_notice}{summary_section}"),
             serenity::Colour::GOLD,
             false,
         )
     } else {
         let reject_message = confirmation_rejection_message(&confirm_result, confirm_context);
         (
-            format!("{reject_message}{judge_notice}\n\n찬반투표 집계\n{summary}"),
+            format!("{reject_message}{judge_notice}{summary_section}"),
             serenity::Colour::GOLD,
             false,
         )
@@ -2172,17 +2177,53 @@ fn confirmation_vote_summary(
     let no = confirm_result.vote_counts.get(&false).copied().unwrap_or(0);
     let submitted_vote_count = yes + no;
     let required_yes = confirmation_required_yes(confirm_result);
+    let weighted_vote_count = confirmation_weighted_vote_count(confirm_result);
     let abstained = context
         .eligible_voters
         .saturating_sub(context.submitted_voters);
-    format!(
-        "찬성 {yes}표 / 반대 {no}표 / 미투표 {abstained}명\n처형 기준: 찬성 {required_yes}표 이상 (투표수 {submitted_vote_count}표 기준)"
-    )
+    if weighted_vote_count == submitted_vote_count {
+        format!(
+            "찬성 {yes}표 / 반대 {no}표 / 미투표 {abstained}명\n처형 기준: 찬성 {required_yes}표 이상 (투표수 {submitted_vote_count}표 기준)"
+        )
+    } else {
+        format!(
+            "찬성 {yes}표 / 반대 {no}표 / 미투표 {abstained}명\n처형 기준: 찬성 처리값 {required_yes} 이상 (처리 투표수 {weighted_vote_count} 기준)"
+        )
+    }
+}
+
+fn confirmation_vote_summary_section(
+    confirm_result: &ConfirmVoteResult,
+    context: ConfirmationVoteContext,
+    show_counts: bool,
+) -> String {
+    if show_counts {
+        format!(
+            "\n\n찬반투표 집계\n{}",
+            confirmation_vote_summary(confirm_result, context)
+        )
+    } else {
+        String::new()
+    }
+}
+
+fn confirmation_weighted_counts(confirm_result: &ConfirmVoteResult) -> &HashMap<bool, i32> {
+    if confirm_result.weighted_vote_counts.is_empty() {
+        &confirm_result.vote_counts
+    } else {
+        &confirm_result.weighted_vote_counts
+    }
+}
+
+fn confirmation_weighted_vote_count(confirm_result: &ConfirmVoteResult) -> i32 {
+    let counts = confirmation_weighted_counts(confirm_result);
+    counts.values().copied().sum()
 }
 
 fn confirmation_required_yes(confirm_result: &ConfirmVoteResult) -> i32 {
-    let yes = confirm_result.vote_counts.get(&true).copied().unwrap_or(0);
-    let no = confirm_result.vote_counts.get(&false).copied().unwrap_or(0);
+    let counts = confirmation_weighted_counts(confirm_result);
+    let yes = counts.get(&true).copied().unwrap_or(0);
+    let no = counts.get(&false).copied().unwrap_or(0);
     let submitted_vote_count = yes + no;
     if submitted_vote_count <= 0 {
         1
@@ -2198,8 +2239,9 @@ fn confirmation_rejection_message(
     if confirm_result.decided_by_judge {
         return "판사의 선택으로 처형하지 않습니다.".to_string();
     }
-    let yes = confirm_result.vote_counts.get(&true).copied().unwrap_or(0);
-    let no = confirm_result.vote_counts.get(&false).copied().unwrap_or(0);
+    let counts = confirmation_weighted_counts(confirm_result);
+    let yes = counts.get(&true).copied().unwrap_or(0);
+    let no = counts.get(&false).copied().unwrap_or(0);
     if yes == no {
         "찬성과 반대가 같아 처형하지 않습니다.".to_string()
     } else if yes > no {
@@ -3014,6 +3056,41 @@ mod tests {
         assert_eq!(
             confirmation_rejection_message(&result, context),
             "찬성과 반대가 같아 처형하지 않습니다."
+        );
+    }
+
+    #[test]
+    fn confirmation_summary_can_hide_vote_counts() {
+        let result = ConfirmVoteResult {
+            vote_counts: HashMap::from([(true, 3), (false, 2)]),
+            ..Default::default()
+        };
+        let context = ConfirmationVoteContext {
+            eligible_voters: 7,
+            submitted_voters: 5,
+        };
+
+        assert_eq!(
+            confirmation_vote_summary_section(&result, context, false),
+            ""
+        );
+    }
+
+    #[test]
+    fn confirmation_summary_displays_raw_counts_with_weighted_threshold() {
+        let result = ConfirmVoteResult {
+            vote_counts: HashMap::from([(true, 1), (false, 1)]),
+            weighted_vote_counts: HashMap::from([(true, 2), (false, 1)]),
+            ..Default::default()
+        };
+        let context = ConfirmationVoteContext {
+            eligible_voters: 2,
+            submitted_voters: 2,
+        };
+
+        assert_eq!(
+            confirmation_vote_summary(&result, context),
+            "찬성 1표 / 반대 1표 / 미투표 0명\n처형 기준: 찬성 처리값 2 이상 (처리 투표수 3 기준)"
         );
     }
 
