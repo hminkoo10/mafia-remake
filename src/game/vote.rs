@@ -219,13 +219,14 @@ impl MafiaGame {
                     self.joker_won = true;
                     self.joker_winner_id = Some(target.user_id);
                 }
-                if let Some(retaliation_target) = self.terrorist_retaliation_target(target)
+                if let Some(retaliation_target) = self.terrorist_execution_target(target)
                     && let Some(killed) = self.mark_dead(retaliation_target.user_id)
                 {
                     extra_killed.push(killed);
                 }
             }
         }
+        self.terrorist_execution_targets.clear();
         self.ensure_fanatic_reincarnation();
         self.advance_to_next_night();
         Ok(ConfirmVoteResult {

@@ -1016,6 +1016,31 @@ pub fn night_action_components(
     vec![serenity::CreateActionRow::SelectMenu(select)]
 }
 
+pub fn terrorist_final_defense_components(
+    guild_id: serenity::GuildId,
+    actor_id: u64,
+    targets: &[Player],
+) -> Vec<serenity::CreateActionRow> {
+    let options = targets
+        .iter()
+        .take(25)
+        .map(|target| {
+            serenity::CreateSelectMenuOption::new(
+                target.name.chars().take(100).collect::<String>(),
+                target.user_id.to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let select = serenity::CreateSelectMenu::new(
+        format!("terrorist_defense:{}:{}", guild_id.get(), actor_id),
+        serenity::CreateSelectMenuKind::String { options },
+    )
+    .placeholder("습격할 대상을 선택하세요")
+    .min_values(1)
+    .max_values(1);
+    vec![serenity::CreateActionRow::SelectMenu(select)]
+}
+
 pub fn contractor_contract_components(
     guild_id: serenity::GuildId,
     actor_id: u64,
@@ -1914,17 +1939,35 @@ pub async fn run_vote(
         return Ok(());
     }
     let nominee = vote_result.executed.unwrap();
-    {
+    let terrorist_targets = {
         let mut running_write = running.write().await;
         running_write.final_defense_user_id = Some(nominee.user_id);
         running_write.phase_deadline = Some(Instant::now() + Duration::from_secs(20));
-    }
+        running_write
+            .game
+            .begin_terrorist_final_defense(nominee.user_id)
+    };
     sync_anonymous_general_chat_permissions(ctx, running).await;
     set_channel_slowmode(ctx, running, 0).await;
     if !running.read().await.game.is_frog(&nominee)
         && !running.read().await.game.is_madam_seduced(&nominee)
     {
         set_member_game_channel_chat(ctx, running, &nominee, true).await;
+    }
+    if !terrorist_targets.is_empty()
+        && !send_player_secret(
+            ctx,
+            running,
+            &nominee,
+            "최후의 반론 중 습격할 한 명을 선택하세요.\n투표로 처형되면, 선택한 대상이 마피아 또는 접선을 완료한 마피아 보조직업일 때 함께 사망합니다.",
+            terrorist_final_defense_components(guild_id, nominee.user_id, &terrorist_targets),
+        )
+        .await
+    {
+        eprintln!(
+            "failed to send terrorist final defense target selection: {}",
+            nominee.user_id
+        );
     }
     send_game_embed(
         ctx,
@@ -2104,9 +2147,10 @@ pub async fn run_vote(
         let mut result_message = format!("찬반투표 결과, {} 님이 처형되었습니다.", executed.name);
         if !confirm_result.extra_killed.is_empty() {
             if executed.role == Role::Terrorist {
-                result_message.push_str(
-                    "\n테러리스트의 [산화]가 발동해 지목 중이던 적 팀도 함께 사망했습니다.",
-                );
+                for target in &confirm_result.extra_killed {
+                    result_message.push('\n');
+                    result_message.push_str(&terrorist_execution_message(executed, target));
+                }
             } else {
                 result_message.push_str(
                     "\n처형 대상이 지목하고 있던 시민팀이 아닌 대상도 함께 사망했습니다.",
@@ -2144,6 +2188,13 @@ pub async fn run_vote(
     )
     .await?;
     Ok(())
+}
+
+fn terrorist_execution_message(terrorist: &Player, target: &Player) -> String {
+    format!(
+        "[테러리스트 {}님이 {}님을 습격하였습니다.]",
+        terrorist.name, target.name
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3036,6 +3087,17 @@ mod tests {
         assert_eq!(
             confirmation_vote_summary(&result, context),
             "찬성 3표 / 반대 2표 / 미투표 2명\n처형 기준: 찬성 3표 이상 (투표수 5표 기준)"
+        );
+    }
+
+    #[test]
+    fn terrorist_execution_message_matches_public_format() {
+        let terrorist = Player::new(1, "구현민", Role::Terrorist);
+        let target = Player::new(2, "설재경", Role::Mafia);
+
+        assert_eq!(
+            terrorist_execution_message(&terrorist, &target),
+            "[테러리스트 구현민님이 설재경님을 습격하였습니다.]"
         );
     }
 

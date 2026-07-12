@@ -371,6 +371,16 @@ pub async fn handle_component(
             handle_night_action(ctx, data, component, parse_guild(guild)?, actor_id.parse()?)
                 .await?
         }
+        ["terrorist_defense", guild, actor_id] => {
+            handle_terrorist_final_defense_target(
+                ctx,
+                data,
+                component,
+                parse_guild(guild)?,
+                actor_id.parse()?,
+            )
+            .await?
+        }
         ["contractor_target", guild, actor_id, slot] => {
             handle_contractor_target(
                 ctx,
@@ -1483,6 +1493,74 @@ pub async fn handle_night_action(
         .await?;
         sync_cult_team_channel_access(ctx, data, &running).await;
     }
+    Ok(())
+}
+
+pub async fn handle_terrorist_final_defense_target(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    guild_id: serenity::GuildId,
+    actor_id: u64,
+) -> Result<()> {
+    if component.user.id.get() != actor_id {
+        send_component_private(ctx, component, "본인에게 온 선택지만 사용할 수 있습니다.").await?;
+        return Ok(());
+    }
+    let Some(target_id) = selected_values(component)
+        .first()
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
+        send_component_private(ctx, component, "대상을 선택해야 합니다.").await?;
+        return Ok(());
+    };
+    let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
+        send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
+        return Ok(());
+    };
+    let selection_result = {
+        let mut running_write = running.write().await;
+        if running_write.final_defense_user_id != Some(actor_id) {
+            Err("현재 최후의 반론 대상이 아닙니다.".to_string())
+        } else {
+            running_write
+                .game
+                .submit_terrorist_final_defense_target(actor_id, target_id)
+                .map(|message| {
+                    running_write.record_replay_event(
+                        "terrorist_final_defense_target",
+                        Some(actor_id),
+                        &[target_id],
+                        serde_json::json!({
+                            "message": message.clone(),
+                        }),
+                    );
+                    message
+                })
+                .map_err(|error| error.to_string())
+        }
+    };
+    let message = match selection_result {
+        Ok(message) => message,
+        Err(error) => {
+            send_component_private(ctx, component, error).await?;
+            return Ok(());
+        }
+    };
+    component
+        .create_response(
+            ctx,
+            serenity::CreateInteractionResponse::UpdateMessage(
+                serenity::CreateInteractionResponseMessage::new()
+                    .embed(make_embed(
+                        message,
+                        "테러리스트 습격 대상 선택",
+                        serenity::Colour::DARK_GREEN,
+                    ))
+                    .components(vec![]),
+            ),
+        )
+        .await?;
     Ok(())
 }
 

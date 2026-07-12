@@ -76,6 +76,7 @@ pub struct MafiaGame {
     pub witch_curse_applied_actor_ids: HashSet<u64>,
     pub godfather_targets: HashMap<u64, u64>,
     pub terrorist_targets: HashMap<u64, u64>,
+    pub terrorist_execution_targets: HashMap<u64, u64>,
     pub terrorist_action_submitted: HashSet<u64>,
     pub frog_user_ids: HashSet<u64>,
     pub soldier_bulletproof_used: HashSet<u64>,
@@ -231,6 +232,7 @@ impl MafiaGame {
             witch_curse_applied_actor_ids: HashSet::new(),
             godfather_targets: HashMap::new(),
             terrorist_targets: HashMap::new(),
+            terrorist_execution_targets: HashMap::new(),
             terrorist_action_submitted: HashSet::new(),
             frog_user_ids: HashSet::new(),
             soldier_bulletproof_used: HashSet::new(),
@@ -348,10 +350,7 @@ impl MafiaGame {
     }
 
     pub(crate) fn terrorist_retaliation_target(&self, terrorist: &Player) -> Option<Player> {
-        let can_retaliate = terrorist.role == Role::Terrorist
-            || (terrorist.role == Role::Thief
-                && self.thief_stolen_roles.get(&terrorist.user_id) == Some(&Role::Terrorist));
-        if !can_retaliate {
+        if !self.has_terrorist_ability(terrorist) {
             return None;
         }
         let target_id = self.terrorist_targets.get(&terrorist.user_id).copied()?;
@@ -361,6 +360,73 @@ impl MafiaGame {
         }
         (self.retaliation_team_key(terrorist) != self.retaliation_team_key(&target))
             .then_some(target)
+    }
+
+    pub fn begin_terrorist_final_defense(&mut self, actor_id: u64) -> Vec<Player> {
+        if self.phase != Phase::FinalDefense {
+            return Vec::new();
+        }
+        let Some(actor) = self.get_player(actor_id) else {
+            return Vec::new();
+        };
+        if !actor.alive || !self.has_terrorist_ability(actor) {
+            return Vec::new();
+        }
+        self.terrorist_execution_targets.remove(&actor_id);
+        let mut targets = self
+            .alive_players()
+            .into_iter()
+            .filter(|player| player.user_id != actor_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        targets.sort_by_key(|player| player.name.to_lowercase());
+        targets
+    }
+
+    pub fn submit_terrorist_final_defense_target(
+        &mut self,
+        actor_id: u64,
+        target_id: u64,
+    ) -> Result<String> {
+        if self.phase != Phase::FinalDefense {
+            bail!("지금은 최후의 반론 시간이 아닙니다.");
+        }
+        let actor = self.require_alive(actor_id)?.clone();
+        if !self.has_terrorist_ability(&actor) {
+            bail!("테러리스트 능력이 없습니다.");
+        }
+        if actor_id == target_id {
+            bail!("테러리스트는 자기 자신을 지목할 수 없습니다.");
+        }
+        let target = self.require_alive(target_id)?.clone();
+        self.terrorist_execution_targets.insert(actor_id, target_id);
+        Ok(format!("습격 대상: {}", target.name))
+    }
+
+    pub(crate) fn terrorist_execution_target(&self, terrorist: &Player) -> Option<Player> {
+        if !self.has_terrorist_ability(terrorist) {
+            return None;
+        }
+        let target_id = self
+            .terrorist_execution_targets
+            .get(&terrorist.user_id)
+            .copied()?;
+        let target = self.get_player(target_id)?.clone();
+        if !target.alive {
+            return None;
+        }
+        if terrorist.role == Role::Terrorist {
+            self.is_known_mafia_team(&target).then_some(target)
+        } else {
+            (self.retaliation_team_key(terrorist) != self.retaliation_team_key(&target))
+                .then_some(target)
+        }
+    }
+
+    fn has_terrorist_ability(&self, player: &Player) -> bool {
+        player.role == Role::Terrorist
+            || (player.role == Role::Thief
+                && self.thief_stolen_roles.get(&player.user_id) == Some(&Role::Terrorist))
     }
 
     fn retaliation_team_key(&self, player: &Player) -> &'static str {
@@ -1383,9 +1449,11 @@ mod tests {
         ] {
             game.get_player_mut(id).unwrap().role = role;
         }
-        game.phase = Phase::ConfirmVote;
+        game.phase = Phase::FinalDefense;
         game.thief_stolen_roles.insert(2, Role::Terrorist);
-        game.terrorist_targets.insert(2, 3);
+        game.begin_terrorist_final_defense(2);
+        game.submit_terrorist_final_defense_target(2, 3).unwrap();
+        game.start_confirmation_vote().unwrap();
         game.confirm_votes.insert(1, true);
 
         let result = game.resolve_confirmation_vote(2).unwrap();
@@ -1397,6 +1465,110 @@ mod tests {
         assert!(result.extra_killed.iter().any(|player| player.user_id == 3));
         assert!(!game.get_player(2).unwrap().alive);
         assert!(!game.get_player(3).unwrap().alive);
+    }
+
+    #[test]
+    fn terrorist_night_target_is_not_reused_when_executed_by_vote() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Terrorist),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.phase = Phase::ConfirmVote;
+        game.terrorist_targets.insert(2, 1);
+        game.confirm_votes.insert(3, true);
+
+        let result = game.resolve_confirmation_vote(2).unwrap();
+
+        assert_eq!(
+            result.executed.as_ref().map(|player| player.user_id),
+            Some(2)
+        );
+        assert!(result.extra_killed.is_empty());
+        assert!(game.get_player(1).unwrap().alive);
+    }
+
+    #[test]
+    fn terrorist_attacks_mafia_selected_during_final_defense() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Terrorist),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.phase = Phase::FinalDefense;
+
+        let targets = game.begin_terrorist_final_defense(2);
+        assert!(targets.iter().any(|player| player.user_id == 1));
+        assert_eq!(
+            game.submit_terrorist_final_defense_target(2, 1).unwrap(),
+            "습격 대상: One"
+        );
+        game.start_confirmation_vote().unwrap();
+        game.confirm_votes.insert(3, true);
+
+        let result = game.resolve_confirmation_vote(2).unwrap();
+
+        assert!(result.extra_killed.iter().any(|player| player.user_id == 1));
+        assert!(!game.get_player(1).unwrap().alive);
+    }
+
+    #[test]
+    fn terrorist_attacks_only_contacted_mafia_support_during_execution() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Terrorist),
+            (3, Role::Spy),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.spy_contacted.insert(3);
+        game.phase = Phase::FinalDefense;
+        game.begin_terrorist_final_defense(2);
+        game.submit_terrorist_final_defense_target(2, 3).unwrap();
+        game.start_confirmation_vote().unwrap();
+        game.confirm_votes.insert(4, true);
+
+        let result = game.resolve_confirmation_vote(2).unwrap();
+
+        assert!(result.extra_killed.iter().any(|player| player.user_id == 3));
+        assert!(!game.get_player(3).unwrap().alive);
+    }
+
+    #[test]
+    fn terrorist_does_not_attack_uncontacted_mafia_support_during_execution() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Terrorist),
+            (3, Role::Spy),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.phase = Phase::FinalDefense;
+        game.begin_terrorist_final_defense(2);
+        game.submit_terrorist_final_defense_target(2, 3).unwrap();
+        game.start_confirmation_vote().unwrap();
+        game.confirm_votes.insert(4, true);
+
+        let result = game.resolve_confirmation_vote(2).unwrap();
+
+        assert!(result.extra_killed.is_empty());
+        assert!(game.get_player(3).unwrap().alive);
     }
 
     #[test]
