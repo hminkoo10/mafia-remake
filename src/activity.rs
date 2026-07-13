@@ -1532,7 +1532,6 @@ mod tests {
             Role::Contractor,
             Role::Thief,
             Role::Witch,
-            Role::Scientist,
             Role::Madam,
             Role::Godfather,
             Role::Villain,
@@ -1559,6 +1558,10 @@ mod tests {
             player_team(&game, &Player::new(99, "test", Role::Joker)),
             "Neutral"
         );
+        let scientist = Player::new(99, "test", Role::Scientist);
+        assert_eq!(player_team(&game, &scientist), "Citizen");
+        game.scientist_contacted.insert(99);
+        assert_eq!(player_team(&game, &scientist), "Mafia");
 
         game.culted_ids.insert(99);
         assert_eq!(

@@ -240,7 +240,7 @@ pub fn record_game_stats(
         entry.games += 1;
         entry.play_seconds += elapsed_seconds.max(0);
         *entry.roles.entry(role.value().to_string()).or_default() += 1;
-        if role.is_mafia_team() {
+        if role.is_mafia_team() && (role != Role::Scientist || game.is_mafia_team(player)) {
             entry.mafia_team_games += 1;
         }
         if won {
@@ -1297,6 +1297,27 @@ mod tests {
                 .iter()
                 .any(|reason| reason.contains("치료 성공"))
         );
+    }
+
+    #[test]
+    fn scientist_stats_switch_to_mafia_team_after_first_death() {
+        let mut game = rating_test_game();
+        let scientist_id = game.players[0].user_id;
+        game.get_player_mut(scientist_id).unwrap().role = Role::Scientist;
+        game.scientist_contacted.remove(&scientist_id);
+        let roles = initial_roles(&game);
+        let mut stats = StatsFile::default();
+
+        record_game_stats(&mut stats, &game, &roles, 120, Winner::Citizen);
+        let citizen_entry = stats.users.get(&scientist_id.to_string()).unwrap();
+        assert_eq!(citizen_entry.wins, 1);
+        assert_eq!(citizen_entry.mafia_team_games, 0);
+
+        game.scientist_contacted.insert(scientist_id);
+        record_game_stats(&mut stats, &game, &roles, 120, Winner::Mafia);
+        let mafia_entry = stats.users.get(&scientist_id.to_string()).unwrap();
+        assert_eq!(mafia_entry.wins, 2);
+        assert_eq!(mafia_entry.mafia_team_games, 1);
     }
 
     #[test]

@@ -189,6 +189,8 @@ impl RunningGame {
             "joker"
         } else if role == Role::CultLeader || role == Role::Fanatic {
             "cult"
+        } else if role == Role::Scientist {
+            "citizen"
         } else if role.is_mafia_team() {
             "mafia"
         } else {
@@ -534,6 +536,11 @@ fn explicit_url_port(url: &str) -> Option<u16> {
 #[cfg(test)]
 mod main_tests {
     use super::*;
+
+    #[test]
+    fn scientist_initial_replay_team_is_citizen() {
+        assert_eq!(RunningGame::role_team_key(Role::Scientist), "citizen");
+    }
 
     #[test]
     fn extracts_explicit_web_url_port() {

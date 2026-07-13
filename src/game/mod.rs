@@ -317,7 +317,11 @@ impl MafiaGame {
     }
 
     pub fn is_mafia_team(&self, player: &Player) -> bool {
-        player.role.is_mafia_team()
+        if player.role == Role::Scientist {
+            self.scientist_contacted.contains(&player.user_id)
+        } else {
+            player.role.is_mafia_team()
+        }
     }
 
     pub fn is_cult_team(&self, player: &Player) -> bool {
@@ -331,7 +335,7 @@ impl MafiaGame {
             Role::Contractor => self.contractor_contacted.contains(&player.user_id),
             Role::Thief => self.thief_contacted.contains(&player.user_id),
             Role::Witch => self.witch_contacted.contains(&player.user_id),
-            Role::Scientist => self.scientist_contacted.contains(&player.user_id),
+            Role::Scientist => self.is_mafia_team(player),
             Role::Madam => self.madam_contacted.contains(&player.user_id),
             Role::Godfather => self.godfather_contacted.contains(&player.user_id),
             _ => false,
@@ -1278,6 +1282,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn scientist_is_citizen_team_until_first_death() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        game.get_player_mut(2).unwrap().role = Role::Scientist;
+        let scientist = game.get_player(2).unwrap().clone();
+
+        assert!(!game.is_mafia_team(&scientist));
+        assert!(game.is_citizen_team(&scientist));
+
+        game.mark_dead(scientist.user_id).unwrap();
+        let dead_scientist = game.get_player(scientist.user_id).unwrap();
+
+        assert!(game.scientist_contacted.contains(&scientist.user_id));
+        assert!(game.is_mafia_team(dead_scientist));
+        assert!(!game.is_citizen_team(dead_scientist));
     }
 
     #[test]

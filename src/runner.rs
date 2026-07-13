@@ -239,7 +239,9 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Contractor => "두 명의 직업을 맞히면 암살합니다.",
         Role::Thief => "지목 투표한 대상의 능력을 훔칩니다.",
         Role::Witch => "밤에 대상을 개구리로 저주합니다.",
-        Role::Scientist => "사망 후 다음 밤 부활합니다.",
+        Role::Scientist => {
+            "첫 사망 전에는 시민팀이며, 사망 후 마피아팀으로 전환되어 다음 밤 부활합니다."
+        }
         Role::Madam => "지목 투표로 선택한 대상을 유혹합니다.",
         Role::Godfather => "세 번째 밤부터 확정 처치합니다.",
         Role::CultLeader => "홀수날 밤마다 포교합니다.",
