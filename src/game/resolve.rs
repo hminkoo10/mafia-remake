@@ -1201,16 +1201,10 @@ impl MafiaGame {
             }
             if self.mercenary_armed_ids.insert(mercenary_id) {
                 self.mercenary_contract_received_ids.insert(mercenary_id);
-                let client_name = self
-                    .get_player(client_id)
-                    .map(|player| player.name.clone())
-                    .unwrap_or_else(|| client_id.to_string());
                 results.insert(
                     mercenary_id,
-                    format!(
-                        "[의뢰] 의뢰인 {} 님이 사망했습니다. 이제 밤마다 플레이어 한 명을 처형할 수 있습니다.",
-                        client_name
-                    ),
+                    "[의뢰] 의뢰인이 사망했습니다. 이제 밤마다 플레이어 한 명을 처형할 수 있습니다."
+                        .to_string(),
                 );
             }
         }

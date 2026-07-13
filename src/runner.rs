@@ -205,18 +205,16 @@ pub fn role_message(game: &MafiaGame, player: &Player) -> String {
     } else {
         "시민팀"
     };
-    let mut guide = role_short_guide(player.role).to_string();
-    if player.role == Role::Mercenary
-        && let Some(client) = game.mercenary_client(player.user_id)
-    {
-        guide.push_str(&format!("\n의뢰인: **{}**", client.name));
-    }
     format!(
         "당신의 역할은 **{}** 입니다.\n진영: **{}**\n\n{}",
         player.role.value(),
         team,
-        guide
+        role_short_guide(player.role)
     )
+}
+
+fn mercenary_contract_received_message() -> &'static str {
+    "누군가로부터 의뢰를 받았습니다."
 }
 
 pub fn role_short_guide(role: Role) -> &'static str {
@@ -1406,7 +1404,7 @@ pub async fn run_day(
             ctx,
             running,
             mercenary,
-            format!("[의뢰] 의뢰인은 **{}** 님입니다.", client.name),
+            mercenary_contract_received_message(),
             vec![],
         )
         .await;
@@ -3099,6 +3097,39 @@ mod tests {
             terrorist_execution_message(&terrorist, &target),
             "[테러리스트 구현민님이 설재경님을 습격하였습니다.]"
         );
+    }
+
+    #[test]
+    fn mercenary_contract_message_hides_client_identity() {
+        assert_eq!(
+            mercenary_contract_received_message(),
+            "누군가로부터 의뢰를 받았습니다."
+        );
+    }
+
+    #[test]
+    fn mercenary_role_message_does_not_reveal_client_name() {
+        let mut game = MafiaGame::new(
+            vec![
+                (1, "마피아".to_string()),
+                (2, "용병".to_string()),
+                (3, "비밀의뢰인".to_string()),
+            ],
+            1,
+            0,
+            0,
+            Vec::new(),
+        )
+        .unwrap();
+        game.get_player_mut(2).unwrap().role = Role::Mercenary;
+        game.get_player_mut(3).unwrap().role = Role::Citizen;
+        game.mercenary_client_ids.clear();
+        game.mercenary_client_ids.insert(2, 3);
+
+        let message = role_message(&game, game.get_player(2).unwrap());
+
+        assert!(!message.contains("비밀의뢰인"));
+        assert!(!message.contains("의뢰인:"));
     }
 
     #[test]

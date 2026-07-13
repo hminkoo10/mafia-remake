@@ -1670,7 +1670,8 @@ mod tests {
     fn mercenary_arms_when_client_dies_first_night() {
         let mut game = mercenary_test_game();
         let mafia_id = 1;
-        let client_id = game.mercenary_client(2).unwrap().user_id;
+        let client = game.mercenary_client(2).unwrap().clone();
+        let client_id = client.user_id;
 
         game.submit_night_action(mafia_id, Some(client_id)).unwrap();
         let result = game.resolve_night().unwrap();
@@ -1678,19 +1679,19 @@ mod tests {
         assert!(result.killed_players.iter().any(|p| p.user_id == client_id));
         assert!(game.mercenary_armed_ids.contains(&2));
         assert!(game.mercenary_contract_received_ids.contains(&2));
-        assert!(
-            result
-                .mercenary_results
-                .get(&2)
-                .is_some_and(|text| text.contains("의뢰인"))
+        assert_eq!(
+            result.mercenary_results.get(&2).map(String::as_str),
+            Some("[의뢰] 의뢰인이 사망했습니다. 이제 밤마다 플레이어 한 명을 처형할 수 있습니다.")
         );
+        assert!(!result.mercenary_results[&2].contains(&client.name));
     }
 
     #[test]
     fn mercenary_arms_after_contracted_client_dies_at_night() {
         let mut game = mercenary_test_game();
         let mafia_id = 1;
-        let client_id = game.mercenary_client(2).unwrap().user_id;
+        let client = game.mercenary_client(2).unwrap().clone();
+        let client_id = client.user_id;
         assert_eq!(game.receive_mercenary_contracts().len(), 1);
         game.phase = Phase::Night;
         game.day_number = 2;
@@ -1700,12 +1701,11 @@ mod tests {
 
         assert!(result.killed_players.iter().any(|p| p.user_id == client_id));
         assert!(game.mercenary_armed_ids.contains(&2));
-        assert!(
-            result
-                .mercenary_results
-                .get(&2)
-                .is_some_and(|text| text.contains("의뢰인"))
+        assert_eq!(
+            result.mercenary_results.get(&2).map(String::as_str),
+            Some("[의뢰] 의뢰인이 사망했습니다. 이제 밤마다 플레이어 한 명을 처형할 수 있습니다.")
         );
+        assert!(!result.mercenary_results[&2].contains(&client.name));
     }
 
     #[test]
