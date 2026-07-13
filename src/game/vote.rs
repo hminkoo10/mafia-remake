@@ -168,14 +168,12 @@ impl MafiaGame {
             .filter(|(voter_id, _)| self.is_alive(**voter_id))
             .map(|(voter_id, approve)| (*voter_id, *approve))
             .collect::<HashMap<_, _>>();
-        let mut weighted_counts = HashMap::<bool, i32>::new();
-        let mut display_counts = HashMap::<bool, i32>::new();
-        for (voter_id, approve) in &live_votes {
-            *weighted_counts.entry(*approve).or_default() += self.vote_weight(*voter_id);
-            *display_counts.entry(*approve).or_default() += 1;
+        let mut vote_counts = HashMap::<bool, i32>::new();
+        for approve in live_votes.values() {
+            *vote_counts.entry(*approve).or_default() += 1;
         }
-        let yes = *weighted_counts.get(&true).unwrap_or(&0);
-        let no = *weighted_counts.get(&false).unwrap_or(&0);
+        let yes = *vote_counts.get(&true).unwrap_or(&0);
+        let no = *vote_counts.get(&false).unwrap_or(&0);
         let target = self.get_player(target_id).cloned();
         let submitted_vote_count = yes + no;
         let required_yes = submitted_vote_count / 2 + 1;
@@ -235,8 +233,8 @@ impl MafiaGame {
             tied,
             blocked_by_politician,
             extra_killed,
-            weighted_vote_counts: weighted_counts,
-            vote_counts: display_counts,
+            weighted_vote_counts: vote_counts.clone(),
+            vote_counts,
             judge: if decided_by_judge { judge } else { None },
             judge_choice: if decided_by_judge { judge_choice } else { None },
             decided_by_judge,

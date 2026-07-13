@@ -1621,6 +1621,34 @@ mod tests {
     }
 
     #[test]
+    fn gangster_vote_block_does_not_change_confirmation_majority() {
+        let players = (1..=7)
+            .map(|id| (id, format!("Player {id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, Vec::new()).unwrap();
+        game.get_player_mut(7).unwrap().role = Role::Citizen;
+        game.phase = Phase::ConfirmVote;
+        game.gangster_blocked_vote_days.insert(6, game.day_number);
+
+        for voter_id in [1, 2, 3] {
+            game.submit_confirmation_vote(voter_id, true).unwrap();
+        }
+        for voter_id in [4, 5, 6] {
+            game.submit_confirmation_vote(voter_id, false).unwrap();
+        }
+
+        let result = game.resolve_confirmation_vote(7).unwrap();
+
+        assert!(!result.approved);
+        assert!(result.tied);
+        assert!(result.executed.is_none());
+        assert_eq!(result.vote_counts.get(&true).copied(), Some(3));
+        assert_eq!(result.vote_counts.get(&false).copied(), Some(3));
+        assert_eq!(result.weighted_vote_counts.get(&true).copied(), Some(3));
+        assert_eq!(result.weighted_vote_counts.get(&false).copied(), Some(3));
+    }
+
+    #[test]
     fn politician_vote_displays_one_but_counts_as_two_for_nomination() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
         game.get_player_mut(1).unwrap().role = Role::Politician;
@@ -1640,7 +1668,7 @@ mod tests {
     }
 
     #[test]
-    fn politician_confirm_vote_displays_one_but_counts_as_two() {
+    fn politician_does_not_weight_confirmation_vote() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
         game.get_player_mut(1).unwrap().role = Role::Politician;
         game.get_player_mut(2).unwrap().role = Role::Citizen;
@@ -1651,14 +1679,12 @@ mod tests {
 
         let result = game.resolve_confirmation_vote(2).unwrap();
 
-        assert!(result.approved);
-        assert_eq!(
-            result.executed.as_ref().map(|player| player.user_id),
-            Some(2)
-        );
+        assert!(!result.approved);
+        assert!(result.tied);
+        assert!(result.executed.is_none());
         assert_eq!(result.vote_counts.get(&true).copied(), Some(1));
         assert_eq!(result.vote_counts.get(&false).copied(), Some(1));
-        assert_eq!(result.weighted_vote_counts.get(&true).copied(), Some(2));
+        assert_eq!(result.weighted_vote_counts.get(&true).copied(), Some(1));
         assert_eq!(result.weighted_vote_counts.get(&false).copied(), Some(1));
     }
 
