@@ -5150,6 +5150,45 @@ mod tests {
     }
 
     #[test]
+    fn recent_role_history_prevents_shaman_starvation() {
+        let mut config = selection_test_config();
+        config.default_police_count = 0;
+        config.enable_inspector = false;
+        config.enable_shaman = true;
+
+        let mut stats_file = stats::StatsFile::default();
+        stats_file.users.insert(
+            "1".to_string(),
+            stats::PlayerStats {
+                roles: HashMap::from([
+                    (Role::Shaman.value().to_string(), 100),
+                    (Role::Detective.value().to_string(), 1),
+                ]),
+                rating_history: vec![stats::RatingHistoryItem {
+                    ended_at: "2026-07-14T00:00:00+09:00".to_string(),
+                    before: 1000,
+                    after: 1000,
+                    delta: 0,
+                    team_delta: 0,
+                    role_delta: 0,
+                    streak_delta: 0,
+                    role: Role::Detective.value().to_string(),
+                    team: "citizen".to_string(),
+                    winner: "시민".to_string(),
+                    players: 5,
+                    rating_reasons: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        );
+
+        let history = stats::role_appearance_counts(&stats_file);
+        let selected = choose_special_roles_balanced(&config, &history).unwrap();
+
+        assert_eq!(selected, vec![Role::Shaman]);
+    }
+
+    #[test]
     fn private_role_chat_closed_during_day() {
         let mut game = role_chat_test_game();
         let doctor = game

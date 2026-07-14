@@ -3,7 +3,11 @@ use crate::model::{Player, Role, Winner};
 use anyhow::{Context, Result};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::Path,
+};
 
 pub const INITIAL_RATING: i64 = 1000;
 const RATING_HISTORY_LIMIT: usize = 20;
@@ -11,6 +15,7 @@ const RATING_DELTA_CAP: i64 = 80;
 const ROLE_DELTA_CAP: i64 = 14;
 const LOSING_RATING_GAIN_CAP: i64 = 5;
 const FIRST_DEATH_LOSS_RELIEF_DIVISOR: i64 = 4;
+const ROLE_BALANCE_RECENT_GAMES: usize = 12;
 const ROLE_STATS_ORDER: &[Role] = &[
     Role::Mafia,
     Role::Police,
@@ -371,6 +376,34 @@ pub fn game_rank_change_chunks(logs: &[GameRatingLogItem], max_chars: usize) -> 
 }
 
 pub fn role_appearance_counts(stats: &StatsFile) -> HashMap<Role, i64> {
+    let mut recent_games = HashMap::<&str, HashSet<&str>>::new();
+    for entry in stats.users.values() {
+        for history in &entry.rating_history {
+            recent_games
+                .entry(history.ended_at.as_str())
+                .or_default()
+                .insert(history.role.as_str());
+        }
+    }
+    if recent_games.is_empty() {
+        return lifetime_role_appearance_counts(stats);
+    }
+
+    // Lifetime totals can starve older roles after a new role is introduced.
+    let mut recent_games = recent_games.into_iter().collect::<Vec<_>>();
+    recent_games.sort_unstable_by(|(left, _), (right, _)| right.cmp(left));
+    let mut counts = HashMap::new();
+    for (_, appeared_roles) in recent_games.into_iter().take(ROLE_BALANCE_RECENT_GAMES) {
+        for role in ROLE_STATS_ORDER {
+            if appeared_roles.contains(role.value()) {
+                *counts.entry(*role).or_default() += 1;
+            }
+        }
+    }
+    counts
+}
+
+fn lifetime_role_appearance_counts(stats: &StatsFile) -> HashMap<Role, i64> {
     let mut counts = HashMap::new();
     for entry in stats.users.values() {
         for role in ROLE_STATS_ORDER {
@@ -1050,6 +1083,22 @@ mod tests {
     fn win_rate_handles_zero_games() {
         assert_eq!(win_rate_text(0, 0), "0.0%");
         assert_eq!(win_rate_text(3, 4), "75.0%");
+    }
+
+    #[test]
+    fn role_balance_falls_back_to_lifetime_counts_without_history() {
+        let mut stats = StatsFile::default();
+        stats.users.insert(
+            "1".to_string(),
+            PlayerStats {
+                roles: HashMap::from([(Role::Shaman.value().to_string(), 3)]),
+                ..Default::default()
+            },
+        );
+
+        let counts = role_appearance_counts(&stats);
+
+        assert_eq!(counts.get(&Role::Shaman).copied(), Some(3));
     }
 
     #[test]
