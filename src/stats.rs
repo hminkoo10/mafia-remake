@@ -118,6 +118,8 @@ pub struct GameRatingLogItem {
     pub team_delta: i64,
     pub role_delta: i64,
     pub streak_delta: i64,
+    pub win_streak: i64,
+    pub best_win_streak: i64,
     pub reasons: Vec<String>,
 }
 
@@ -269,6 +271,8 @@ pub fn record_game_stats(
             team_delta: rating_change.team_delta,
             role_delta: rating_change.role_delta,
             streak_delta: rating_change.streak_delta,
+            win_streak: entry.win_streak,
+            best_win_streak: entry.best_win_streak,
             reasons: rating_change.reasons.clone(),
         });
         entry.rating_history.push(RatingHistoryItem {
@@ -1124,6 +1128,8 @@ mod tests {
                 team_delta: 15,
                 role_delta: 5,
                 streak_delta: 0,
+                win_streak: 1,
+                best_win_streak: 3,
                 reasons: vec![],
             },
             GameRatingLogItem {
@@ -1136,6 +1142,8 @@ mod tests {
                 team_delta: 29,
                 role_delta: 1,
                 streak_delta: 0,
+                win_streak: 2,
+                best_win_streak: 2,
                 reasons: vec![],
             },
         ];
@@ -1297,6 +1305,8 @@ mod tests {
 
         assert!(streak_item.delta > baseline_item.delta);
         assert!(streak_item.streak_delta > baseline_item.streak_delta);
+        assert_eq!(streak_item.win_streak, 5);
+        assert_eq!(streak_item.best_win_streak, 5);
         assert!(
             streak_item
                 .reasons

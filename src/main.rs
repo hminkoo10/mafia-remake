@@ -348,6 +348,8 @@ impl RunningGame {
                     "team_delta": item.team_delta,
                     "role_delta": item.role_delta,
                     "streak_delta": item.streak_delta,
+                    "win_streak": item.win_streak,
+                    "best_win_streak": item.best_win_streak,
                     "reasons": item.reasons.clone(),
                 })
             })

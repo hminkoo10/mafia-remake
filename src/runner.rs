@@ -2321,6 +2321,8 @@ pub struct GameResultImageRow {
     team_delta: Option<i64>,
     role_delta: Option<i64>,
     streak_delta: Option<i64>,
+    win_streak: Option<i64>,
+    best_win_streak: Option<i64>,
     reasons: Vec<String>,
 }
 
@@ -2386,6 +2388,8 @@ pub fn game_result_rows(
                 team_delta: rating.map(|item| item.team_delta),
                 role_delta: rating.map(|item| item.role_delta),
                 streak_delta: rating.map(|item| item.streak_delta),
+                win_streak: rating.map(|item| item.win_streak),
+                best_win_streak: rating.map(|item| item.best_win_streak),
                 reasons: rating.map_or_else(Vec::new, |item| item.reasons.clone()),
             }
         })
@@ -2397,7 +2401,7 @@ pub fn render_game_result_image(
     elapsed_seconds: i64,
     rows: Vec<GameResultImageRow>,
 ) -> Option<Vec<u8>> {
-    const WIDTH: u32 = 1920;
+    const WIDTH: u32 = 2240;
     const TOP: i32 = 44;
     const SIDE: i32 = 56;
     const HEADER_HEIGHT: i32 = 172;
@@ -2406,7 +2410,7 @@ pub fn render_game_result_image(
     const COL_ROLE: i32 = SIDE + 420;
     const COL_RATING: i32 = SIDE + 720;
     const COL_DELTA: i32 = SIDE + 1010;
-    const COL_REASON: i32 = SIDE + 1230;
+    const COL_REASON: i32 = SIDE + 1400;
 
     let table_top = TOP + HEADER_HEIGHT + 26;
     let row_heights = rows.iter().map(game_result_row_height).collect::<Vec<_>>();
@@ -2467,36 +2471,10 @@ pub fn render_game_result_image(
         image_color("#1f2937"),
     );
     for (x, label) in [
-        (SIDE + 38, "플레이어"),
-        (SIDE + 372, "최종 역할"),
-        (SIDE + 640, "레이팅"),
-        (SIDE + 910, "변동"),
-        (SIDE + 1088, "랭크/사유"),
-    ] {
-        draw_lb_text(
-            &mut image,
-            &font,
-            23.0,
-            x,
-            table_top - 38,
-            label,
-            image_color("#f8fafc"),
-        );
-    }
-
-    fill_rect(
-        &mut image,
-        SIDE,
-        table_top - 52,
-        WIDTH - SIDE as u32 * 2,
-        52,
-        image_color("#1f2937"),
-    );
-    for (x, label) in [
         (COL_PLAYER, "플레이어"),
         (COL_ROLE, "최종 역할"),
         (COL_RATING, "레이팅"),
-        (COL_DELTA, "변동"),
+        (COL_DELTA, "변동 / 연승"),
         (COL_REASON, "랭크/사유"),
     ] {
         draw_lb_text(
@@ -2622,7 +2600,7 @@ fn game_result_row_height(row: &GameResultImageRow) -> i32 {
     let reason_lines = wrap_result_reason(&game_result_reason_text(row))
         .len()
         .max(1) as i32;
-    (86 + reason_lines * 24).max(118)
+    (86 + reason_lines * 24).max(126)
 }
 
 fn wrap_text_by_chars(text: &str, max_chars: usize) -> Vec<String> {
@@ -2743,21 +2721,24 @@ fn draw_delta_badge(
         format!("{delta:+}"),
         color,
     );
+    let (detail, streak) = game_result_delta_lines(row);
+    draw_lb_text(image, font, 18.0, x, y + 70, detail, image_color("#64748b"));
+    draw_lb_text(image, font, 18.0, x, y + 96, streak, image_color("#64748b"));
+}
+
+fn game_result_delta_lines(row: &GameResultImageRow) -> (String, String) {
     let detail = format!(
-        "팀 {:+} / 직업 {:+} / 연승 {:+}",
+        "팀 {:+} · 직업 {:+} · 연승 보너스 {:+}",
         row.team_delta.unwrap_or(0),
         row.role_delta.unwrap_or(0),
         row.streak_delta.unwrap_or(0)
     );
-    draw_lb_text(
-        image,
-        font,
-        18.0,
-        x,
-        y + 70,
-        truncate_for_board(&detail, 18),
-        image_color("#64748b"),
+    let streak = format!(
+        "현재 {}연승 · 최고 {}연승",
+        row.win_streak.unwrap_or(0),
+        row.best_win_streak.unwrap_or(0)
     );
+    (detail, streak)
 }
 
 fn draw_rank_and_reason(
@@ -3243,6 +3224,8 @@ mod tests {
                 team_delta: Some(29),
                 role_delta: Some(1),
                 streak_delta: Some(4),
+                win_streak: Some(3),
+                best_win_streak: Some(7),
                 reasons: vec![
                     "소속 진영 승리, 의사 보호 운영 기여 +1, 3연승 보너스 +4, 레이팅 구간 보정 x1.20"
                         .to_string(),
@@ -3259,6 +3242,8 @@ mod tests {
                 team_delta: Some(24),
                 role_delta: Some(4),
                 streak_delta: Some(4),
+                win_streak: Some(2),
+                best_win_streak: Some(2),
                 reasons: vec!["소속 진영 승리".to_string()],
             },
             GameResultImageRow {
@@ -3272,16 +3257,22 @@ mod tests {
                 team_delta: Some(-20),
                 role_delta: Some(2),
                 streak_delta: Some(0),
+                win_streak: Some(0),
+                best_win_streak: Some(4),
                 reasons: vec!["패배".to_string()],
             },
         ];
+
+        let (delta_line, streak_line) = game_result_delta_lines(&rows[0]);
+        assert_eq!(delta_line, "팀 +29 · 직업 +1 · 연승 보너스 +4");
+        assert_eq!(streak_line, "현재 3연승 · 최고 7연승");
 
         let image = render_game_result_image(Winner::Mafia, 310, rows).unwrap();
 
         assert!(image.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert!(image.len() > 1024);
         let decoded = image::load_from_memory(&image).unwrap();
-        assert_eq!(decoded.width(), 1920);
+        assert_eq!(decoded.width(), 2240);
         assert!(decoded.height() > 520);
     }
 }
