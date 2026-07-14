@@ -1347,6 +1347,31 @@ mod tests {
     }
 
     #[test]
+    fn agent_receives_directive_when_killed_the_same_night() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Agent),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.submit_night_action(1, Some(2)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(
+            result
+                .killed_players
+                .iter()
+                .any(|player| player.user_id == 2)
+        );
+        assert!(result.agent_results.contains_key(&2));
+    }
+
+    #[test]
     fn inspector_reveals_same_team_role_and_notifies_target() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
         for (id, role) in [

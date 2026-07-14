@@ -1472,20 +1472,25 @@ impl MafiaGame {
     }
 
     fn resolve_agent_results(&mut self, blocked_actor_ids: &HashSet<u64>) -> HashMap<u64, String> {
-        let alive = self
+        let surviving_players = self
             .players
             .iter()
             .filter(|player| player.alive && !blocked_actor_ids.contains(&player.user_id))
             .cloned()
             .collect::<Vec<_>>();
+        let agents = self
+            .players
+            .iter()
+            .filter(|player| player.alive || blocked_actor_ids.contains(&player.user_id))
+            .filter(|player| {
+                player.role == Role::Agent
+                    || self.thief_stolen_roles.get(&player.user_id) == Some(&Role::Agent)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let mut results = HashMap::new();
-        for agent in alive.iter() {
-            if agent.role != Role::Agent
-                && self.thief_stolen_roles.get(&agent.user_id) != Some(&Role::Agent)
-            {
-                continue;
-            }
-            let candidates = alive
+        for agent in agents {
+            let candidates = surviving_players
                 .iter()
                 .filter(|player| {
                     player.user_id != agent.user_id
