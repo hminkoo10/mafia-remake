@@ -16,7 +16,7 @@ pub mod vote;
 use crate::model::{Phase, Player, Role, Winner};
 use crate::system_random;
 use anyhow::{Result, bail};
-use rand::seq::SliceRandom;
+use rand::{RngCore, seq::SliceRandom};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -1075,6 +1075,8 @@ enum RoleActionMap {
     Mercenary,
 }
 
+const ROLE_ASSIGNMENT_RANDOM_JITTER: u64 = 50_000;
+
 fn assign_roles_balanced(
     mut players: Vec<(u64, String)>,
     mut roles: Vec<Role>,
@@ -1097,24 +1099,23 @@ fn assign_roles_balanced(
             counts
         });
     let empty_history = PlayerAssignmentHistory::default();
-    let costs = players
-        .iter()
-        .map(|(user_id, _)| {
-            let history = assignment_history.get(user_id).unwrap_or(&empty_history);
-            roles
-                .iter()
-                .map(|role| {
-                    role_assignment_cost(
-                        history,
-                        *role,
-                        total_players,
-                        mafia_slots,
-                        role_slots.get(role).copied().unwrap_or(1),
-                    )
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
+    let mut costs = Vec::with_capacity(total_players);
+    for (user_id, _) in &players {
+        let history = assignment_history.get(user_id).unwrap_or(&empty_history);
+        let mut row = Vec::with_capacity(total_players);
+        for role in &roles {
+            let base_cost = role_assignment_cost(
+                history,
+                *role,
+                total_players,
+                mafia_slots,
+                role_slots.get(role).copied().unwrap_or(1),
+            );
+            let random_jitter = (rng.next_u64() % (ROLE_ASSIGNMENT_RANDOM_JITTER + 1)) as i64;
+            row.push(base_cost.saturating_add(random_jitter));
+        }
+        costs.push(row);
+    }
     let role_by_player = minimum_cost_assignment(&costs);
 
     players
@@ -1442,6 +1443,25 @@ mod tests {
 
         assert!(!mafia_ids.contains(&1));
         assert!(!mafia_ids.contains(&2));
+    }
+
+    #[test]
+    fn assignment_log_adjusts_role_probability_cost() {
+        let rarely_doctor = PlayerAssignmentHistory {
+            games: 12,
+            role_counts: HashMap::from([(Role::Doctor, 0)]),
+            ..Default::default()
+        };
+        let often_doctor = PlayerAssignmentHistory {
+            games: 12,
+            role_counts: HashMap::from([(Role::Doctor, 5)]),
+            ..Default::default()
+        };
+
+        let rare_cost = role_assignment_cost(&rarely_doctor, Role::Doctor, 8, 2, 1);
+        let often_cost = role_assignment_cost(&often_doctor, Role::Doctor, 8, 2, 1);
+
+        assert!(often_cost - rare_cost > ROLE_ASSIGNMENT_RANDOM_JITTER as i64);
     }
 
     #[test]
@@ -2903,6 +2923,13 @@ mod tests {
         }
         game.resolve_nomination_vote().unwrap();
         assert!(!game.madam_seduced_ids.contains(&doctor_id));
+        assert!(!game.madam_seduction_release_days.contains_key(&doctor_id));
+        assert!(
+            game.night_action_actors()
+                .iter()
+                .any(|player| player.user_id == doctor_id)
+        );
+        assert!(game.submit_night_action(doctor_id, Some(madam_id)).is_ok());
     }
 
     #[test]
