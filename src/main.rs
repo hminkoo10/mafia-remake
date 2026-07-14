@@ -132,6 +132,7 @@ struct RunningGame {
     anonymous_dead_input_channel_owners: HashMap<serenity::ChannelId, u64>,
     dead_chat_unlocked_ids: HashSet<u64>,
     pending_dead_chat_user_ids: HashSet<u64>,
+    dead_role_chat_visible_from_days: HashMap<u64, u32>,
     anonymous_shaman_input_channel_ids: HashMap<u64, serenity::ChannelId>,
     anonymous_shaman_input_channel_owners: HashMap<serenity::ChannelId, u64>,
     anonymous_role_input_channel_ids: HashMap<(u64, Role), serenity::ChannelId>,

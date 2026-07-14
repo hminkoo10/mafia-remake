@@ -418,6 +418,7 @@ pub async fn run_night(
     };
     upsert_game_status(ctx, running).await;
     set_game_channel_chat(ctx, data, running, false).await;
+    unlock_pending_dead_chats(ctx, data, running).await;
     sync_private_role_chat_permissions(ctx, data, running).await;
     sync_lover_chat_access(ctx, data, running).await;
     sync_cult_team_channel_access(ctx, data, running).await;

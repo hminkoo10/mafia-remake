@@ -275,6 +275,7 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         anonymous_dead_input_channel_owners: HashMap::new(),
         dead_chat_unlocked_ids: HashSet::new(),
         pending_dead_chat_user_ids: HashSet::new(),
+        dead_role_chat_visible_from_days: HashMap::new(),
         anonymous_shaman_input_channel_ids: HashMap::new(),
         anonymous_shaman_input_channel_owners: HashMap::new(),
         anonymous_role_input_channel_ids: HashMap::new(),
@@ -5737,7 +5738,7 @@ pub async fn mirror_role_chat_to_dead(
                 .game
                 .players
                 .iter()
-                .filter(|player| can_use_anonymous_dead_chat(&running_read, player))
+                .filter(|player| can_receive_role_chat_as_dead(&running_read, player))
                 .cloned()
                 .collect::<Vec<_>>(),
         )
@@ -5748,13 +5749,21 @@ pub async fn mirror_role_chat_to_dead(
     let category = source_category(ctx, source_channel_id).await;
     let body = format!("[{}채팅] {body}", role.value());
     for viewer in viewers {
-        let can_chat = {
+        let (can_receive, can_chat) = {
             let running_read = running.read().await;
             running_read
                 .game
                 .get_player(viewer.user_id)
-                .is_some_and(|player| can_use_anonymous_dead_chat(&running_read, player))
+                .map_or((false, false), |player| {
+                    (
+                        can_receive_role_chat_as_dead(&running_read, player),
+                        can_use_anonymous_dead_chat(&running_read, player),
+                    )
+                })
         };
+        if !can_receive {
+            continue;
+        }
         if let Some(channel_id) =
             ensure_anonymous_dead_input_channel(ctx, running, &viewer, roles, category, can_chat)
                 .await
@@ -6087,12 +6096,12 @@ pub async fn handle_message_event(
                 .map(|player| {
                     (
                         player.clone(),
-                        is_player_chat_silenced(&running_read, player),
+                        private_role_member_can_chat(&running_read.game, role, player),
                     )
                 })
         };
-        if let Some((player, silenced)) = player {
-            if silenced {
+        if let Some((player, can_relay)) = player {
+            if !can_relay {
                 let _ = message.delete(&ctx.http).await;
                 set_private_role_member_access(ctx, &running, role, &player, false).await;
             } else {

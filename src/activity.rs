@@ -1320,6 +1320,7 @@ mod tests {
             anonymous_dead_input_channel_owners: Default::default(),
             dead_chat_unlocked_ids: Default::default(),
             pending_dead_chat_user_ids: Default::default(),
+            dead_role_chat_visible_from_days: Default::default(),
             anonymous_shaman_input_channel_ids: Default::default(),
             anonymous_shaman_input_channel_owners: Default::default(),
             anonymous_role_input_channel_ids: Default::default(),

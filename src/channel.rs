@@ -645,6 +645,15 @@ pub fn can_use_anonymous_dead_chat(running: &RunningGame, player: &Player) -> bo
         && !running.game.purified_dead_ids.contains(&player.user_id)
 }
 
+pub fn can_receive_role_chat_as_dead(running: &RunningGame, player: &Player) -> bool {
+    can_use_anonymous_dead_chat(running, player)
+        && running.game.phase == Phase::Night
+        && running
+            .dead_role_chat_visible_from_days
+            .get(&player.user_id)
+            .is_none_or(|visible_from_day| running.game.day_number >= *visible_from_day)
+}
+
 pub fn can_use_anonymous_shaman_chat(running: &RunningGame, player: &Player) -> bool {
     if !player.alive {
         return can_use_anonymous_dead_chat(running, player);
@@ -657,7 +666,12 @@ pub fn can_use_anonymous_shaman_chat(running: &RunningGame, player: &Player) -> 
 
 fn record_dead_chat_deaths(running: &mut RunningGame, dead_players: &[Player]) {
     let unlock_now = running.game.phase == Phase::Day;
+    let role_chat_visible_from_day = running.game.day_number.saturating_add(1);
     for player in dead_players {
+        running
+            .dead_role_chat_visible_from_days
+            .entry(player.user_id)
+            .or_insert(role_chat_visible_from_day);
         if unlock_now {
             running.pending_dead_chat_user_ids.remove(&player.user_id);
             running.dead_chat_unlocked_ids.insert(player.user_id);
@@ -668,7 +682,7 @@ fn record_dead_chat_deaths(running: &mut RunningGame, dead_players: &[Player]) {
 }
 
 fn dead_chat_unlock_candidates(running: &RunningGame) -> Vec<Player> {
-    if running.game.phase != Phase::Day {
+    if !matches!(running.game.phase, Phase::Day | Phase::Night) {
         return Vec::new();
     }
 
@@ -3896,6 +3910,9 @@ pub async fn restore_revived_player_roles(
         running_write
             .pending_dead_chat_user_ids
             .remove(&player.user_id);
+        running_write
+            .dead_role_chat_visible_from_days
+            .remove(&player.user_id);
     }
     if let Ok(member) = guild_id
         .member(ctx, serenity::UserId::new(player.user_id))
@@ -3994,6 +4011,9 @@ pub async fn apply_purification_side_effects(
         for user_id in purified_user_ids {
             running_write.dead_chat_unlocked_ids.remove(user_id);
             running_write.pending_dead_chat_user_ids.remove(user_id);
+            running_write
+                .dead_role_chat_visible_from_days
+                .remove(user_id);
         }
     }
     let config = data.config.read().await.clone();
@@ -4257,6 +4277,7 @@ pub async fn cleanup_game(
     running_write.anonymous_dead_input_channel_owners.clear();
     running_write.dead_chat_unlocked_ids.clear();
     running_write.pending_dead_chat_user_ids.clear();
+    running_write.dead_role_chat_visible_from_days.clear();
     running_write.anonymous_shaman_input_channel_ids.clear();
     running_write.anonymous_shaman_input_channel_owners.clear();
     running_write.anonymous_role_input_channel_ids.clear();
@@ -4726,7 +4747,7 @@ pub async fn unlock_pending_dead_chats(
     let category = source_category(ctx, channel_id).await;
     let players = {
         let mut running_write = running.write().await;
-        if running_write.game.phase != Phase::Day {
+        if !matches!(running_write.game.phase, Phase::Day | Phase::Night) {
             return;
         }
         let players = dead_chat_unlock_candidates(&running_write);
@@ -4971,6 +4992,7 @@ mod tests {
             anonymous_dead_input_channel_owners: Default::default(),
             dead_chat_unlocked_ids: Default::default(),
             pending_dead_chat_user_ids: Default::default(),
+            dead_role_chat_visible_from_days: Default::default(),
             anonymous_shaman_input_channel_ids: Default::default(),
             anonymous_shaman_input_channel_owners: Default::default(),
             anonymous_role_input_channel_ids: Default::default(),
@@ -5090,19 +5112,64 @@ mod tests {
     }
 
     #[test]
-    fn pending_dead_chat_unlocks_when_day_starts() {
+    fn pending_dead_chat_unlocks_when_night_starts() {
         let mut running = dead_chat_test_running();
         let user_id = running.game.players[0].user_id;
         running.game.players[0].alive = false;
         running.pending_dead_chat_user_ids.insert(user_id);
 
         running.game.phase = Phase::Night;
-        assert!(dead_chat_unlock_candidates(&running).is_empty());
+        let candidates = dead_chat_unlock_candidates(&running);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].user_id, user_id);
 
         running.game.phase = Phase::Day;
         let candidates = dead_chat_unlock_candidates(&running);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].user_id, user_id);
+    }
+
+    #[test]
+    fn night_victim_cannot_receive_role_chat_from_death_night() {
+        let mut running = dead_chat_test_running();
+        running.game.day_number = 1;
+        running.game.phase = Phase::Day;
+        running.game.players[0].alive = false;
+        let dead_player = running.game.players[0].clone();
+
+        record_dead_chat_deaths(&mut running, std::slice::from_ref(&dead_player));
+
+        assert!(can_use_anonymous_dead_chat(&running, &dead_player));
+        assert!(!can_receive_role_chat_as_dead(&running, &dead_player));
+
+        running.game.phase = Phase::Night;
+        assert!(!can_receive_role_chat_as_dead(&running, &dead_player));
+
+        running.game.day_number = 2;
+        assert!(can_receive_role_chat_as_dead(&running, &dead_player));
+    }
+
+    #[test]
+    fn vote_victim_skips_first_role_chat_night() {
+        let mut running = dead_chat_test_running();
+        running.game.day_number = 2;
+        running.game.phase = Phase::Night;
+        running.game.players[0].alive = false;
+        let dead_player = running.game.players[0].clone();
+
+        record_dead_chat_deaths(&mut running, std::slice::from_ref(&dead_player));
+        assert!(
+            running
+                .pending_dead_chat_user_ids
+                .remove(&dead_player.user_id)
+        );
+        running.dead_chat_unlocked_ids.insert(dead_player.user_id);
+
+        assert!(can_use_anonymous_dead_chat(&running, &dead_player));
+        assert!(!can_receive_role_chat_as_dead(&running, &dead_player));
+
+        running.game.day_number = 3;
+        assert!(can_receive_role_chat_as_dead(&running, &dead_player));
     }
 
     #[test]
