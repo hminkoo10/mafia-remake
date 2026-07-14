@@ -2410,6 +2410,7 @@ pub fn render_game_result_image(
     const COL_ROLE: i32 = SIDE + 420;
     const COL_RATING: i32 = SIDE + 720;
     const COL_DELTA: i32 = SIDE + 1010;
+    const COL_STREAK: i32 = SIDE + 1164;
     const COL_REASON: i32 = SIDE + 1400;
 
     let table_top = TOP + HEADER_HEIGHT + 26;
@@ -2474,7 +2475,8 @@ pub fn render_game_result_image(
         (COL_PLAYER, "플레이어"),
         (COL_ROLE, "최종 역할"),
         (COL_RATING, "레이팅"),
-        (COL_DELTA, "변동 / 연승"),
+        (COL_DELTA, "변동"),
+        (COL_STREAK, "연승"),
         (COL_REASON, "랭크/사유"),
     ] {
         draw_lb_text(
@@ -2564,6 +2566,7 @@ pub fn render_game_result_image(
         );
         draw_rating_block(&mut image, &font, row, COL_RATING, y, text, muted);
         draw_delta_badge(&mut image, &font, row, COL_DELTA, y);
+        draw_streak_badge(&mut image, &font, row, COL_STREAK, y);
         draw_rank_and_reason(&mut image, &font, row, COL_REASON, y, text, muted);
         y += row_height;
     }
@@ -2721,24 +2724,63 @@ fn draw_delta_badge(
         format!("{delta:+}"),
         color,
     );
-    let (detail, streak) = game_result_delta_lines(row);
+    let detail = game_result_delta_detail(row);
     draw_lb_text(image, font, 18.0, x, y + 70, detail, image_color("#64748b"));
-    draw_lb_text(image, font, 18.0, x, y + 96, streak, image_color("#64748b"));
 }
 
-fn game_result_delta_lines(row: &GameResultImageRow) -> (String, String) {
-    let detail = format!(
-        "팀 {:+} · 직업 {:+} · 연승 보너스 {:+}",
+fn game_result_delta_detail(row: &GameResultImageRow) -> String {
+    format!(
+        "팀 {:+} · 직업 {:+}",
         row.team_delta.unwrap_or(0),
-        row.role_delta.unwrap_or(0),
-        row.streak_delta.unwrap_or(0)
+        row.role_delta.unwrap_or(0)
+    )
+}
+
+fn draw_streak_badge(
+    image: &mut RgbImage,
+    font: &FontArc,
+    row: &GameResultImageRow,
+    x: i32,
+    y: i32,
+) {
+    let Some(current) = row.win_streak else {
+        draw_lb_text(image, font, 23.0, x, y + 34, "-", image_color("#94a3b8"));
+        return;
+    };
+    let best = row.best_win_streak.unwrap_or(current);
+    let (fill, color) = if current > 0 {
+        (image_color("#dcfce7"), image_color("#15803d"))
+    } else {
+        (image_color("#e2e8f0"), image_color("#475569"))
+    };
+    fill_rect(image, x, y + 22, 208, 42, fill);
+    draw_lb_text(
+        image,
+        font,
+        23.0,
+        x + 14,
+        y + 30,
+        format!("현재 {current}연승"),
+        color,
     );
-    let streak = format!(
-        "현재 {}연승 · 최고 {}연승",
-        row.win_streak.unwrap_or(0),
-        row.best_win_streak.unwrap_or(0)
+    draw_lb_text(
+        image,
+        font,
+        18.0,
+        x,
+        y + 72,
+        format!("최고 {best}연승"),
+        image_color("#64748b"),
     );
-    (detail, streak)
+    draw_lb_text(
+        image,
+        font,
+        18.0,
+        x,
+        y + 98,
+        format!("보너스 {:+}", row.streak_delta.unwrap_or(0)),
+        image_color("#64748b"),
+    );
 }
 
 fn draw_rank_and_reason(
@@ -3263,16 +3305,15 @@ mod tests {
             },
         ];
 
-        let (delta_line, streak_line) = game_result_delta_lines(&rows[0]);
-        assert_eq!(delta_line, "팀 +29 · 직업 +1 · 연승 보너스 +4");
-        assert_eq!(streak_line, "현재 3연승 · 최고 7연승");
+        assert_eq!(game_result_delta_detail(&rows[0]), "팀 +29 · 직업 +1");
 
         let image = render_game_result_image(Winner::Mafia, 310, rows).unwrap();
 
         assert!(image.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert!(image.len() > 1024);
-        let decoded = image::load_from_memory(&image).unwrap();
+        let decoded = image::load_from_memory(&image).unwrap().to_rgb8();
         assert_eq!(decoded.width(), 2240);
         assert!(decoded.height() > 520);
+        assert_eq!(*decoded.get_pixel(1222, 266), image_color("#dcfce7"));
     }
 }
