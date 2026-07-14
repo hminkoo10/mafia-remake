@@ -118,6 +118,14 @@ pub struct GameCounts {
     pub special_roles: Vec<Role>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PlayerAssignmentHistory {
+    pub games: i64,
+    pub mafia_role_games: i64,
+    pub role_counts: HashMap<Role, i64>,
+    pub recent_roles: Vec<Role>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RatingEvent {
     pub points: i64,
@@ -145,6 +153,14 @@ impl MafiaGame {
     }
 
     pub fn new_with_counts(players: Vec<(u64, String)>, counts: GameCounts) -> Result<Self> {
+        Self::new_with_counts_balanced(players, counts, &HashMap::new())
+    }
+
+    pub fn new_with_counts_balanced(
+        players: Vec<(u64, String)>,
+        counts: GameCounts,
+        assignment_history: &HashMap<u64, PlayerAssignmentHistory>,
+    ) -> Result<Self> {
         validate_counts(&players, &counts)?;
 
         let mut roles = Vec::with_capacity(players.len());
@@ -160,16 +176,7 @@ impl MafiaGame {
             players.len() - roles.len(),
         ));
 
-        let mut rng = system_random::rng();
-        roles.shuffle(&mut rng);
-        let mut shuffled_players = players;
-        shuffled_players.shuffle(&mut rng);
-
-        let players = shuffled_players
-            .into_iter()
-            .zip(roles)
-            .map(|((user_id, name), role)| Player::new(user_id, name, role))
-            .collect::<Vec<_>>();
+        let players = assign_roles_balanced(players, roles, assignment_history);
         let players_by_id = players
             .iter()
             .enumerate()
@@ -1068,6 +1075,163 @@ enum RoleActionMap {
     Mercenary,
 }
 
+fn assign_roles_balanced(
+    mut players: Vec<(u64, String)>,
+    mut roles: Vec<Role>,
+    assignment_history: &HashMap<u64, PlayerAssignmentHistory>,
+) -> Vec<Player> {
+    if players.is_empty() {
+        return Vec::new();
+    }
+    let mut rng = system_random::rng();
+    players.shuffle(&mut rng);
+    roles.shuffle(&mut rng);
+
+    let total_players = players.len();
+    let mafia_slots = roles.iter().filter(|role| role.is_mafia_team()).count();
+    let role_slots = roles
+        .iter()
+        .copied()
+        .fold(HashMap::new(), |mut counts, role| {
+            *counts.entry(role).or_default() += 1_usize;
+            counts
+        });
+    let empty_history = PlayerAssignmentHistory::default();
+    let costs = players
+        .iter()
+        .map(|(user_id, _)| {
+            let history = assignment_history.get(user_id).unwrap_or(&empty_history);
+            roles
+                .iter()
+                .map(|role| {
+                    role_assignment_cost(
+                        history,
+                        *role,
+                        total_players,
+                        mafia_slots,
+                        role_slots.get(role).copied().unwrap_or(1),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let role_by_player = minimum_cost_assignment(&costs);
+
+    players
+        .into_iter()
+        .enumerate()
+        .map(|(index, (user_id, name))| Player::new(user_id, name, roles[role_by_player[index]]))
+        .collect()
+}
+
+fn role_assignment_cost(
+    history: &PlayerAssignmentHistory,
+    role: Role,
+    total_players: usize,
+    mafia_slots: usize,
+    same_role_slots: usize,
+) -> i64 {
+    const MAFIA_RECENCY_COSTS: [i64; 3] = [80_000_000, 24_000_000, 6_000_000];
+    const ROLE_RECENCY_COSTS: [i64; 3] = [12_000_000, 4_000_000, 1_000_000];
+
+    let expected_role_rate = same_role_slots as i64 * 1_000 / total_players as i64;
+    let role_games = history.role_counts.get(&role).copied().unwrap_or(0);
+    let mut cost = smoothed_assignment_rate(role_games, history.games, expected_role_rate) * 2_000;
+
+    for (index, recent_role) in history.recent_roles.iter().take(3).enumerate() {
+        if *recent_role == role {
+            cost += ROLE_RECENCY_COSTS[index];
+        }
+    }
+
+    if role.is_mafia_team() {
+        let expected_mafia_rate = mafia_slots as i64 * 1_000 / total_players as i64;
+        cost +=
+            smoothed_assignment_rate(history.mafia_role_games, history.games, expected_mafia_rate)
+                * 10_000;
+        for (index, recent_role) in history.recent_roles.iter().take(3).enumerate() {
+            if recent_role.is_mafia_team() {
+                cost += MAFIA_RECENCY_COSTS[index];
+            }
+        }
+    }
+    cost
+}
+
+fn smoothed_assignment_rate(count: i64, games: i64, expected_rate: i64) -> i64 {
+    const PRIOR_GAMES: i64 = 4;
+    let games = games.max(0);
+    let count = count.max(0);
+    (count
+        .saturating_mul(1_000)
+        .saturating_add(expected_rate.saturating_mul(PRIOR_GAMES))
+        / games.saturating_add(PRIOR_GAMES))
+    .min(10_000)
+}
+
+fn minimum_cost_assignment(costs: &[Vec<i64>]) -> Vec<usize> {
+    let size = costs.len();
+    let mut row_potential = vec![0_i64; size + 1];
+    let mut column_potential = vec![0_i64; size + 1];
+    let mut matched_row = vec![0_usize; size + 1];
+    let mut previous_column = vec![0_usize; size + 1];
+
+    for row in 1..=size {
+        matched_row[0] = row;
+        let mut column = 0;
+        let mut minimum = vec![i64::MAX / 4; size + 1];
+        let mut used = vec![false; size + 1];
+        loop {
+            used[column] = true;
+            let current_row = matched_row[column];
+            let mut delta = i64::MAX / 4;
+            let mut next_column = 0;
+            for candidate_column in 1..=size {
+                if used[candidate_column] {
+                    continue;
+                }
+                let reduced_cost = costs[current_row - 1][candidate_column - 1]
+                    - row_potential[current_row]
+                    - column_potential[candidate_column];
+                if reduced_cost < minimum[candidate_column] {
+                    minimum[candidate_column] = reduced_cost;
+                    previous_column[candidate_column] = column;
+                }
+                if minimum[candidate_column] < delta {
+                    delta = minimum[candidate_column];
+                    next_column = candidate_column;
+                }
+            }
+            for candidate_column in 0..=size {
+                if used[candidate_column] {
+                    row_potential[matched_row[candidate_column]] += delta;
+                    column_potential[candidate_column] -= delta;
+                } else {
+                    minimum[candidate_column] -= delta;
+                }
+            }
+            column = next_column;
+            if matched_row[column] == 0 {
+                break;
+            }
+        }
+        loop {
+            let prior = previous_column[column];
+            matched_row[column] = matched_row[prior];
+            column = prior;
+            if column == 0 {
+                break;
+            }
+        }
+    }
+
+    let mut assignment = vec![0_usize; size];
+    for column in 1..=size {
+        assignment[matched_row[column] - 1] = column - 1;
+    }
+    assignment
+}
+
 fn validate_counts(players: &[(u64, String)], counts: &GameCounts) -> Result<()> {
     if players.len() < 3 {
         bail!("최소 3명이 필요합니다.");
@@ -1228,6 +1392,113 @@ mod tests {
         let game = MafiaGame::new(basic_players(), 1, 1, 0, Vec::new()).unwrap();
         assert_eq!(game.get_player(2).unwrap().name, "Two");
         assert!(game.get_player(999).is_none());
+    }
+
+    #[test]
+    fn balanced_assignment_avoids_consecutive_mafia_roles() {
+        let players = (1..=6)
+            .map(|user_id| (user_id, format!("P{user_id}")))
+            .collect::<Vec<_>>();
+        let mut history = HashMap::new();
+        for user_id in 1..=6 {
+            let was_mafia = user_id <= 2;
+            history.insert(
+                user_id,
+                PlayerAssignmentHistory {
+                    games: 4,
+                    mafia_role_games: if was_mafia { 4 } else { 0 },
+                    role_counts: HashMap::from([(
+                        if was_mafia {
+                            Role::Mafia
+                        } else {
+                            Role::Citizen
+                        },
+                        4,
+                    )]),
+                    recent_roles: vec![if was_mafia {
+                        Role::Mafia
+                    } else {
+                        Role::Citizen
+                    }],
+                },
+            );
+        }
+
+        let game = MafiaGame::new_with_counts_balanced(
+            players,
+            GameCounts {
+                mafia_count: 2,
+                ..Default::default()
+            },
+            &history,
+        )
+        .unwrap();
+        let mafia_ids = game
+            .players
+            .iter()
+            .filter(|player| player.role.is_mafia_team())
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+
+        assert!(!mafia_ids.contains(&1));
+        assert!(!mafia_ids.contains(&2));
+    }
+
+    #[test]
+    fn balanced_assignment_evenly_rotates_teams_and_roles() {
+        let players = (1..=8)
+            .map(|user_id| (user_id, format!("P{user_id}")))
+            .collect::<Vec<_>>();
+        let mut history = HashMap::<u64, PlayerAssignmentHistory>::new();
+        let mut previous_mafia_ids = HashSet::new();
+
+        for _ in 0..32 {
+            let game = MafiaGame::new_with_counts_balanced(
+                players.clone(),
+                GameCounts {
+                    mafia_count: 2,
+                    doctor_count: 1,
+                    police_count: 1,
+                    ..Default::default()
+                },
+                &history,
+            )
+            .unwrap();
+            let mafia_ids = game
+                .players
+                .iter()
+                .filter(|player| player.role.is_mafia_team())
+                .map(|player| player.user_id)
+                .collect::<HashSet<_>>();
+            if !previous_mafia_ids.is_empty() {
+                assert!(mafia_ids.is_disjoint(&previous_mafia_ids));
+            }
+
+            for player in &game.players {
+                let entry = history.entry(player.user_id).or_default();
+                entry.games += 1;
+                if player.role.is_mafia_team() {
+                    entry.mafia_role_games += 1;
+                }
+                *entry.role_counts.entry(player.role).or_default() += 1;
+                entry.recent_roles.insert(0, player.role);
+                entry.recent_roles.truncate(3);
+            }
+            previous_mafia_ids = mafia_ids;
+        }
+
+        for role in [Role::Mafia, Role::Doctor, Role::Police] {
+            let counts = (1..=8)
+                .map(|user_id| {
+                    history[&user_id]
+                        .role_counts
+                        .get(&role)
+                        .copied()
+                        .unwrap_or(0)
+                })
+                .collect::<Vec<_>>();
+            assert!(counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 1);
+        }
     }
 
     #[test]

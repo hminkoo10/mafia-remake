@@ -1,4 +1,4 @@
-use crate::game::MafiaGame;
+use crate::game::{MafiaGame, PlayerAssignmentHistory};
 use crate::model::{Player, Role, Winner};
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -15,7 +15,7 @@ const RATING_DELTA_CAP: i64 = 80;
 const ROLE_DELTA_CAP: i64 = 14;
 const LOSING_RATING_GAIN_CAP: i64 = 5;
 const FIRST_DEATH_LOSS_RELIEF_DIVISOR: i64 = 4;
-const ROLE_BALANCE_RECENT_GAMES: usize = 12;
+const ROLE_BALANCE_RECENT_GAMES: usize = 20;
 const ROLE_STATS_ORDER: &[Role] = &[
     Role::Mafia,
     Role::Police,
@@ -397,14 +397,76 @@ pub fn role_appearance_counts(stats: &StatsFile) -> HashMap<Role, i64> {
     let mut recent_games = recent_games.into_iter().collect::<Vec<_>>();
     recent_games.sort_unstable_by(|(left, _), (right, _)| right.cmp(left));
     let mut counts = HashMap::new();
-    for (_, appeared_roles) in recent_games.into_iter().take(ROLE_BALANCE_RECENT_GAMES) {
+    for (index, (_, appeared_roles)) in recent_games
+        .into_iter()
+        .take(ROLE_BALANCE_RECENT_GAMES)
+        .enumerate()
+    {
+        let recency_weight = match index {
+            0 => 64,
+            1 => 32,
+            2 => 16,
+            3 => 8,
+            4 => 4,
+            5 => 2,
+            _ => 1,
+        };
         for role in ROLE_STATS_ORDER {
             if appeared_roles.contains(role.value()) {
-                *counts.entry(*role).or_default() += 1;
+                *counts.entry(*role).or_default() += recency_weight;
             }
         }
     }
     counts
+}
+
+pub fn player_assignment_histories(
+    stats: &StatsFile,
+    user_ids: &[u64],
+) -> HashMap<u64, PlayerAssignmentHistory> {
+    let mut histories = HashMap::new();
+    for user_id in user_ids {
+        let Some(entry) = stats.users.get(&user_id.to_string()) else {
+            continue;
+        };
+        let role_counts = ROLE_STATS_ORDER
+            .iter()
+            .filter_map(|role| {
+                let count = entry.roles.get(role.value()).copied().unwrap_or(0);
+                (count > 0).then_some((*role, count))
+            })
+            .collect::<HashMap<_, _>>();
+        let recorded_games = role_counts.values().copied().sum::<i64>();
+        let mafia_role_games = role_counts
+            .iter()
+            .filter(|(role, _)| role.is_mafia_team())
+            .map(|(_, count)| *count)
+            .sum();
+        let mut recent_history = entry.rating_history.iter().collect::<Vec<_>>();
+        recent_history.sort_unstable_by(|left, right| right.ended_at.cmp(&left.ended_at));
+        let recent_roles = recent_history
+            .into_iter()
+            .filter_map(|history| role_from_value(&history.role))
+            .take(3)
+            .collect();
+        histories.insert(
+            *user_id,
+            PlayerAssignmentHistory {
+                games: entry.games.max(recorded_games),
+                mafia_role_games,
+                role_counts,
+                recent_roles,
+            },
+        );
+    }
+    histories
+}
+
+fn role_from_value(value: &str) -> Option<Role> {
+    ROLE_STATS_ORDER
+        .iter()
+        .copied()
+        .find(|role| role.value() == value)
 }
 
 fn lifetime_role_appearance_counts(stats: &StatsFile) -> HashMap<Role, i64> {
@@ -1103,6 +1165,81 @@ mod tests {
         let counts = role_appearance_counts(&stats);
 
         assert_eq!(counts.get(&Role::Shaman).copied(), Some(3));
+    }
+
+    #[test]
+    fn role_balance_penalizes_recent_appearances_more() {
+        let history = |role: Role, ended_at: &str| RatingHistoryItem {
+            ended_at: ended_at.to_string(),
+            before: 1000,
+            after: 1000,
+            delta: 0,
+            team_delta: 0,
+            role_delta: 0,
+            streak_delta: 0,
+            role: role.value().to_string(),
+            team: "citizen".to_string(),
+            winner: Winner::Citizen.value().to_string(),
+            players: 8,
+            rating_reasons: Vec::new(),
+        };
+        let mut stats = StatsFile::default();
+        stats.users.insert(
+            "1".to_string(),
+            PlayerStats {
+                rating_history: vec![history(Role::Detective, "2026-01-01T00:00:00+09:00")],
+                ..Default::default()
+            },
+        );
+        stats.users.insert(
+            "2".to_string(),
+            PlayerStats {
+                rating_history: vec![history(Role::Shaman, "2026-01-02T00:00:00+09:00")],
+                ..Default::default()
+            },
+        );
+
+        let scores = role_appearance_counts(&stats);
+
+        assert!(scores[&Role::Shaman] > scores[&Role::Detective]);
+    }
+
+    #[test]
+    fn assignment_history_counts_special_mafia_roles() {
+        let mut stats = StatsFile::default();
+        stats.users.insert(
+            "7".to_string(),
+            PlayerStats {
+                games: 6,
+                roles: HashMap::from([
+                    (Role::Mafia.value().to_string(), 1),
+                    (Role::Spy.value().to_string(), 2),
+                    (Role::Citizen.value().to_string(), 3),
+                ]),
+                rating_history: vec![RatingHistoryItem {
+                    ended_at: "2026-01-02T00:00:00+09:00".to_string(),
+                    before: 1000,
+                    after: 1000,
+                    delta: 0,
+                    team_delta: 0,
+                    role_delta: 0,
+                    streak_delta: 0,
+                    role: Role::Spy.value().to_string(),
+                    team: "citizen".to_string(),
+                    winner: Winner::Citizen.value().to_string(),
+                    players: 8,
+                    rating_reasons: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        );
+
+        let histories = player_assignment_histories(&stats, &[7]);
+        let history = &histories[&7];
+
+        assert_eq!(history.games, 6);
+        assert_eq!(history.mafia_role_games, 3);
+        assert_eq!(history.recent_roles, vec![Role::Spy]);
     }
 
     #[test]

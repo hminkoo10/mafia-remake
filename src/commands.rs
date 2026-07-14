@@ -237,7 +237,15 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
     drop(rec);
     ctx.data().recruitments.remove(&guild_id);
 
-    let game = MafiaGame::new_with_counts(
+    let assignment_user_ids = player_data
+        .iter()
+        .map(|(user_id, _)| *user_id)
+        .collect::<Vec<_>>();
+    let assignment_history = {
+        let stats_read = ctx.data().stats.read().await;
+        stats::player_assignment_histories(&stats_read, &assignment_user_ids)
+    };
+    let game = MafiaGame::new_with_counts_balanced(
         player_data,
         GameCounts {
             mafia_count: *role_counts.get(&Role::Mafia).unwrap_or(&0),
@@ -248,6 +256,7 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
             joker_count: 0,
             special_roles: game_special_roles,
         },
+        &assignment_history,
     )?;
     let initial_roles = game.players.iter().map(|p| (p.user_id, p.role)).collect();
     let mut running_game = RunningGame {

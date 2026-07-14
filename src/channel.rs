@@ -948,12 +948,7 @@ fn balanced_special_candidates(
 ) -> Vec<Role> {
     let mut candidates = assignable_special_roles(config, pool);
     candidates.shuffle(&mut system_random::rng());
-    candidates.sort_by_key(|role| {
-        (
-            role_history.get(role).copied().unwrap_or(0),
-            special_role_player_count(*role),
-        )
-    });
+    candidates.sort_by_key(|role| role_history.get(role).copied().unwrap_or(0));
     candidates
 }
 
@@ -1002,7 +997,7 @@ fn select_balanced_special_roles_for_slots(
                 remaining_slots - slots,
                 role_history,
                 selected,
-                score + role_history.get(&role).copied().unwrap_or(0) * slots as i64,
+                score + role_history.get(&role).copied().unwrap_or(0),
                 best,
             );
             selected.pop();
