@@ -1339,7 +1339,6 @@ mod tests {
             shaman_channel_id: None,
             shaman_status_message_id: None,
             shaman_status_text: None,
-            frog_channel_id: None,
             frog_game_channel_overwrites: Default::default(),
             madam_seduction_channel_overwrites: Default::default(),
             day_chat_open: true,

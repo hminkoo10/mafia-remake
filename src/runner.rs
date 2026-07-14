@@ -299,12 +299,13 @@ pub async fn trigger_timed_night_events(
     }
 
     for player in &cursed_players {
+        deny_frog_game_channel_chat(ctx, running, player).await;
         disable_private_role_channels_for_player(ctx, running, player).await;
         let _ = send_player_secret(
             ctx,
             running,
             player,
-            "마녀의 저주에 걸렸습니다. 다음 밤까지 개구리가 되어 발언은 개굴개굴로만 전달됩니다.",
+            "마녀의 저주에 걸렸습니다. 다음 밤까지 개구리가 되어 모든 게임 채팅에서 발언할 수 없습니다.",
             vec![],
         )
         .await;
@@ -362,6 +363,7 @@ pub async fn trigger_timed_night_events(
     }
     sync_cult_team_channel_access(ctx, data, running).await;
     sync_lover_chat_access(ctx, data, running).await;
+    sync_shaman_chat_access(ctx, data, running).await;
     sync_anonymous_general_chat_permissions(ctx, running).await;
     Ok(())
 }
@@ -423,6 +425,7 @@ pub async fn run_night(
     sync_madam_seduction_permissions(ctx, running).await;
     sync_shaman_chat_access(ctx, data, running).await;
     for player in &restored_frogs {
+        restore_frog_game_channel_permission(ctx, running, player).await;
         restore_private_role_channels_for_player(ctx, data, running, player).await;
     }
     for (user_id, message) in hacker_results.into_iter().chain(vigilante_results) {

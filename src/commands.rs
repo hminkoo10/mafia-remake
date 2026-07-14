@@ -294,7 +294,6 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         shaman_channel_id: None,
         shaman_status_message_id: None,
         shaman_status_text: None,
-        frog_channel_id: None,
         frog_game_channel_overwrites: HashMap::new(),
         madam_seduction_channel_overwrites: HashMap::new(),
         day_chat_open: false,
@@ -5975,50 +5974,41 @@ pub async fn handle_anonymous_message(
     }
 
     let body = anonymous_message_body(message);
-    let (can_relay, force_frog_croak) = {
+    let (can_relay, is_frog) = {
         let running_read = running.read().await;
         let Some(player) = running_read.game.get_player(owner_id) else {
             return Ok(());
         };
-        let force_frog_croak = matches!(kind, AnonymousMessageKind::General { .. })
-            && can_use_frog_general_chat(&running_read, player);
-        match kind {
-            AnonymousMessageKind::General { .. } => (
-                can_use_anonymous_general_chat(&running_read, player) || force_frog_croak,
-                force_frog_croak,
-            ),
-            AnonymousMessageKind::Dead { .. } => (
-                can_use_anonymous_dead_chat(&running_read, player),
-                force_frog_croak,
-            ),
-            AnonymousMessageKind::Shaman { .. } => (
-                can_use_anonymous_shaman_chat(&running_read, player),
-                force_frog_croak,
-            ),
+        let is_frog = running_read.game.is_frog(player);
+        let can_relay = match kind {
+            AnonymousMessageKind::General { .. } => {
+                can_use_anonymous_general_chat(&running_read, player)
+            }
+            AnonymousMessageKind::Dead { .. } => can_use_anonymous_dead_chat(&running_read, player),
+            AnonymousMessageKind::Shaman { .. } => {
+                can_use_anonymous_shaman_chat(&running_read, player)
+            }
             AnonymousMessageKind::Role { role, .. } => {
                 if running_read.game.is_madam_seduced(player) {
-                    (false, force_frog_croak)
+                    false
                 } else {
-                    (
-                        can_use_anonymous_role_chat(&running_read, player, role),
-                        force_frog_croak,
-                    )
+                    can_use_anonymous_role_chat(&running_read, player, role)
                 }
             }
-        }
+        };
+        (can_relay, is_frog)
     };
+    if is_frog {
+        let _ = message.delete(&ctx.http).await;
+        return Ok(());
+    }
     if !can_relay {
         return Ok(());
     }
 
     match kind {
         AnonymousMessageKind::General { .. } => {
-            let body = if force_frog_croak {
-                "개굴개굴"
-            } else {
-                &body
-            };
-            relay_anonymous_general_message(ctx, &running, owner_id, body).await;
+            relay_anonymous_general_message(ctx, &running, owner_id, &body).await;
         }
         AnonymousMessageKind::Dead { .. } => {
             relay_anonymous_dead_message(ctx, data, &running, owner_id, &body).await;
@@ -6094,10 +6084,15 @@ pub async fn handle_message_event(
             running_read
                 .game
                 .get_player(message.author.id.get())
-                .cloned()
+                .map(|player| {
+                    (
+                        player.clone(),
+                        is_player_chat_silenced(&running_read, player),
+                    )
+                })
         };
-        if let Some(player) = player {
-            if running.read().await.game.is_madam_seduced(&player) {
+        if let Some((player, silenced)) = player {
+            if silenced {
                 let _ = message.delete(&ctx.http).await;
                 set_private_role_member_access(ctx, &running, role, &player, false).await;
             } else {
@@ -6108,63 +6103,35 @@ pub async fn handle_message_event(
         return Ok(());
     }
 
-    let shaman_seduced = {
+    let shaman_silenced = {
         let running_read = running.read().await;
         if running_read.shaman_channel_id == Some(message.channel_id) {
             running_read
                 .game
                 .get_player(message.author.id.get())
-                .filter(|player| running_read.game.is_madam_seduced(player))
+                .filter(|player| is_player_chat_silenced(&running_read, player))
                 .cloned()
         } else {
             None
         }
     };
-    if let Some(player) = shaman_seduced {
+    if let Some(player) = shaman_silenced {
         let _ = message.delete(&ctx.http).await;
         set_shaman_channel_member_access(ctx, &running, &player, true, false).await;
         return Ok(());
     }
 
-    let frog_game_context = {
+    let frog_game_message = {
         let running_read = running.read().await;
-        if running_read.channel_id != message.channel_id {
-            None
-        } else {
-            running_read
+        running_read.channel_id == message.channel_id
+            && running_read
                 .game
                 .get_player(message.author.id.get())
-                .filter(|player| can_use_frog_general_chat(&running_read, player))
-                .map(|_| running_read.channel_id)
-        }
+                .is_some_and(|player| running_read.game.is_frog(player))
     };
-    if let Some(channel_id) = frog_game_context {
-        let relay = send_anonymous_text(ctx, &running, channel_id, "개구리", "개굴개굴");
-        let delete = message.delete(&ctx.http);
-        let _ = tokio::join!(relay, delete);
-        return Ok(());
-    }
-
-    let frog_context = {
-        let running_read = running.read().await;
-        if running_read.frog_channel_id != Some(message.channel_id) {
-            None
-        } else {
-            let player = running_read
-                .game
-                .get_player(message.author.id.get())
-                .cloned();
-            let can_croak = player.as_ref().is_some_and(|player| {
-                running_read.game.is_frog(player)
-                    && !running_read.game.is_madam_seduced(player)
-                    && running_read.game.phase == Phase::Day
-                    && running_read.day_chat_open
-            });
-            Some((running_read.channel_id, can_croak))
-        }
-    };
-    if frog_context.is_some() {
+    if frog_game_message {
         let _ = message.delete(&ctx.http).await;
+        return Ok(());
     }
     Ok(())
 }

@@ -22,7 +22,6 @@ const GAME_NOTIFICATION_ROLE: &str = "게임알림";
 const SPECTATOR_ROLE: &str = "관전자";
 const DEAD_PLAYER_ROLE: &str = "사망자";
 const SHAMAN_CHAT_CHANNEL_NAME: &str = "영매-채팅방";
-const FROG_CHAT_CHANNEL_NAME: &str = "개구리-채팅방";
 
 const PRIVATE_CHAT_ROLES: &[Role] = &[
     Role::Mafia,
@@ -153,7 +152,6 @@ struct RunningGame {
     shaman_channel_id: Option<serenity::ChannelId>,
     shaman_status_message_id: Option<serenity::MessageId>,
     shaman_status_text: Option<String>,
-    frog_channel_id: Option<serenity::ChannelId>,
     frog_game_channel_overwrites: HashMap<u64, Option<serenity::PermissionOverwrite>>,
     madam_seduction_channel_overwrites: HashMap<u64, Option<serenity::PermissionOverwrite>>,
     day_chat_open: bool,

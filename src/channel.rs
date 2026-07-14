@@ -4,9 +4,9 @@
 #![allow(unused_imports, clippy::too_many_arguments, clippy::collapsible_if)]
 
 use super::{
-    Context, ContractorContractDraft, DEAD_PLAYER_ROLE, Data, Error, FROG_CHAT_CHANNEL_NAME,
-    GAME_NOTIFICATION_ROLE, MAX_GAME_PLAYERS, PRIVATE_CHAT_ROLES, RECRUITMENT_SECONDS, Recruitment,
-    RunningGame, SHAMAN_CHAT_CHANNEL_NAME, SPECTATOR_ROLE,
+    Context, ContractorContractDraft, DEAD_PLAYER_ROLE, Data, Error, GAME_NOTIFICATION_ROLE,
+    MAX_GAME_PLAYERS, PRIVATE_CHAT_ROLES, RECRUITMENT_SECONDS, Recruitment, RunningGame,
+    SHAMAN_CHAT_CHANNEL_NAME, SPECTATOR_ROLE,
 };
 use crate::embed::*;
 use anyhow::{Context as AnyhowContext, Result, bail};
@@ -26,6 +26,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
+
+const LEGACY_FROG_CHAT_CHANNEL_NAME: &str = "개구리-채팅방";
 
 const ANIMAL_ALIASES: &[&str] = &[
     "사자",
@@ -583,7 +585,7 @@ pub fn lover_chat_is_open(game: &MafiaGame) -> bool {
 }
 
 pub fn can_use_anonymous_general_chat(running: &RunningGame, player: &Player) -> bool {
-    if !player.alive || running.game.is_frog(player) || running.game.is_madam_seduced(player) {
+    if !player.alive || is_player_chat_silenced(running, player) {
         return false;
     }
     if running.game.phase == Phase::Day && running.day_chat_open {
@@ -593,15 +595,8 @@ pub fn can_use_anonymous_general_chat(running: &RunningGame, player: &Player) ->
         && running.final_defense_user_id == Some(player.user_id)
 }
 
-pub fn can_use_frog_general_chat(running: &RunningGame, player: &Player) -> bool {
-    if !player.alive || !running.game.is_frog(player) || running.game.is_madam_seduced(player) {
-        return false;
-    }
-    if running.game.phase == Phase::Day && running.day_chat_open {
-        return true;
-    }
-    running.game.phase == Phase::FinalDefense
-        && running.final_defense_user_id == Some(player.user_id)
+pub fn is_player_chat_silenced(running: &RunningGame, player: &Player) -> bool {
+    running.game.is_frog(player) || running.game.is_madam_seduced(player)
 }
 
 pub fn can_use_anonymous_role_chat(running: &RunningGame, player: &Player, role: Role) -> bool {
@@ -3003,26 +2998,44 @@ pub async fn create_shaman_chat_channel(
     Ok(())
 }
 
-pub async fn set_frog_channel_member_access(
+pub async fn deny_frog_game_channel_chat(
     ctx: &serenity::Context,
     running: &Arc<RwLock<RunningGame>>,
     player: &Player,
-    can_view: bool,
-    can_chat: bool,
 ) {
-    let Some(channel_id) = running.read().await.frog_channel_id else {
+    if running.read().await.anonymous_enabled {
+        sync_anonymous_general_chat_permissions(ctx, running).await;
+        return;
+    }
+    let channel_id = running.read().await.channel_id;
+    let Some(channel) = channel_id
+        .to_channel(&ctx.http)
+        .await
+        .ok()
+        .and_then(|channel| channel.guild())
+    else {
         return;
     };
-    let _ = channel_id
-        .create_permission(
-            &ctx.http,
-            dead_channel_overwrite(
-                serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
-                can_view,
-                can_chat,
-            ),
-        )
-        .await;
+    let kind = serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id));
+    let current = channel
+        .permission_overwrites
+        .iter()
+        .find(|overwrite| overwrite.kind == kind)
+        .cloned();
+    {
+        let mut running_write = running.write().await;
+        running_write
+            .frog_game_channel_overwrites
+            .entry(player.user_id)
+            .or_insert_with(|| current.clone());
+    }
+    let mut overwrite = current.unwrap_or(serenity::PermissionOverwrite {
+        allow: serenity::Permissions::empty(),
+        deny: serenity::Permissions::empty(),
+        kind,
+    });
+    set_chat_permission_bits(&mut overwrite, false);
+    let _ = channel_id.create_permission(&ctx.http, overwrite).await;
 }
 
 pub async fn restore_frog_game_channel_permission(
@@ -3896,7 +3909,6 @@ pub async fn restore_revived_player_roles(
         }
     }
     set_shaman_channel_member_access(ctx, running, player, false, false).await;
-    set_frog_channel_member_access(ctx, running, player, false, false).await;
     let anonymous_channel_ids = {
         let running_read = running.read().await;
         [
@@ -4136,9 +4148,6 @@ pub async fn cleanup_game(
         if let Some(channel_id) = running_read.shaman_channel_id {
             channel_ids.push(channel_id);
         }
-        if let Some(channel_id) = running_read.frog_channel_id {
-            channel_ids.push(channel_id);
-        }
         channel_ids
     };
 
@@ -4267,7 +4276,6 @@ pub async fn cleanup_game(
     running_write.shaman_channel_id = None;
     running_write.shaman_status_message_id = None;
     running_write.shaman_status_text = None;
-    running_write.frog_channel_id = None;
     running_write.frog_game_channel_overwrites.clear();
     running_write.madam_seduction_channel_overwrites.clear();
 }
@@ -4395,7 +4403,7 @@ fn should_force_delete_game_channel(
     }
     let name = channel.name.as_str();
     if name == SHAMAN_CHAT_CHANNEL_NAME
-        || name == FROG_CHAT_CHANNEL_NAME
+        || name == LEGACY_FROG_CHAT_CHANNEL_NAME
         || PRIVATE_CHAT_ROLES
             .iter()
             .any(|role| name == private_channel_name(*role))
@@ -4441,8 +4449,7 @@ pub async fn sync_anonymous_general_chat_permissions(
                 Some((
                     channel_id,
                     player.user_id,
-                    can_use_anonymous_general_chat(&running_read, player)
-                        || can_use_frog_general_chat(&running_read, player),
+                    can_use_anonymous_general_chat(&running_read, player),
                 ))
             })
             .collect::<Vec<_>>()
@@ -4839,7 +4846,6 @@ pub async fn apply_death_side_effects(
                 .is_some_and(|player| can_use_anonymous_dead_chat(&running_read, player))
         };
         set_shaman_channel_member_access(ctx, running, player, true, can_dead_chat).await;
-        set_frog_channel_member_access(ctx, running, player, false, false).await;
         restore_frog_game_channel_permission(ctx, running, player).await;
         disable_private_role_channels_for_player(ctx, running, player).await;
     }
@@ -4984,7 +4990,6 @@ mod tests {
             shaman_channel_id: None,
             shaman_status_message_id: None,
             shaman_status_text: None,
-            frog_channel_id: None,
             frog_game_channel_overwrites: Default::default(),
             madam_seduction_channel_overwrites: Default::default(),
             day_chat_open: true,
@@ -5147,6 +5152,30 @@ mod tests {
         .unwrap();
 
         assert_eq!(selected, vec![Role::Detective, Role::Shaman]);
+    }
+
+    #[test]
+    fn frog_cannot_use_any_game_chat() {
+        let mut running = dead_chat_test_running();
+        let player = running.game.players[0].clone();
+        running.game.frog_user_ids.insert(player.user_id);
+
+        assert!(is_player_chat_silenced(&running, &player));
+
+        running.game.phase = Phase::Night;
+        assert!(!can_use_anonymous_role_chat(&running, &player, player.role));
+        assert!(!private_role_member_can_chat(
+            &running.game,
+            player.role,
+            &player
+        ));
+        let mut shaman = player.clone();
+        shaman.role = Role::Shaman;
+        assert!(!can_use_anonymous_shaman_chat(&running, &shaman));
+
+        running.game.phase = Phase::Day;
+        running.day_chat_open = true;
+        assert!(!can_use_anonymous_general_chat(&running, &player));
     }
 
     #[test]
