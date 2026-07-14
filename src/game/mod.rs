@@ -1326,6 +1326,27 @@ mod tests {
     }
 
     #[test]
+    fn agent_directive_reports_frog_instead_of_original_role() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Agent),
+            (3, Role::Doctor),
+            (4, Role::Mafia),
+            (5, Role::Joker),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.frog_user_ids.insert(3);
+
+        let result = game.resolve_night().unwrap();
+        let directive = result.agent_results.get(&2).unwrap();
+
+        assert!(directive.contains(Role::Frog.value()), "{directive}");
+        assert!(!directive.contains(Role::Doctor.value()), "{directive}");
+    }
+
+    #[test]
     fn inspector_reveals_same_team_role_and_notifies_target() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
         for (id, role) in [

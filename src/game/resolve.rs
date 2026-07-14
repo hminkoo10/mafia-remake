@@ -1507,7 +1507,7 @@ impl MafiaGame {
                 format!(
                     "[공작] 지령이 도착했습니다.\n{} 님의 직업은 **{}** 입니다.",
                     target.name,
-                    target.role.value()
+                    self.visible_role(&target).value()
                 ),
             );
         }
