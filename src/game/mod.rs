@@ -590,7 +590,6 @@ impl MafiaGame {
             .filter(|player| {
                 player.alive
                     && player.user_id != actor.user_id
-                    && !player.role.is_investigation_role()
                     && !self.is_publicly_revealed(player)
             })
             .cloned()
@@ -739,15 +738,18 @@ impl MafiaGame {
         None
     }
 
-    fn prophet_winner(&self) -> Option<Winner> {
+    pub fn winning_prophet(&self) -> Option<&Player> {
         if self.phase != Phase::Day || self.day_number < 4 {
             return None;
         }
-        let prophet = self
-            .players
+        self.players
             .iter()
             .filter(|player| player.alive && player.role == Role::Prophet)
-            .min_by_key(|player| player.name.to_lowercase())?;
+            .min_by_key(|player| player.name.to_lowercase())
+    }
+
+    fn prophet_winner(&self) -> Option<Winner> {
+        let prophet = self.winning_prophet()?;
         if self.is_cult_team(prophet) {
             Some(Winner::Cult)
         } else if self.is_mafia_team(prophet) {
@@ -1573,6 +1575,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn contractor_can_target_hidden_investigation_roles() {
+        let players = (1..=8)
+            .map(|user_id| (user_id, format!("P{user_id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, Vec::new()).unwrap();
+        for (user_id, role) in [
+            (1, Role::Contractor),
+            (2, Role::Police),
+            (3, Role::Agent),
+            (4, Role::Vigilante),
+            (5, Role::Inspector),
+            (6, Role::Judge),
+            (7, Role::Citizen),
+            (8, Role::Mafia),
+        ] {
+            game.get_player_mut(user_id).unwrap().role = role;
+        }
+        game.publicly_revealed_ids.insert(6);
+        game.phase = Phase::Night;
+        game.day_number = 2;
+        let contractor = game.get_player(1).unwrap().clone();
+
+        let target_ids = game
+            .contractor_contract_targets(&contractor)
+            .into_iter()
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
+
+        assert_eq!(target_ids, HashSet::from([2, 3, 4, 5, 7, 8]));
+        assert!(
+            game.submit_contractor_contract(1, 2, Role::Police, 3, Role::Agent)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn winning_prophet_is_exposed_for_victory_announcement() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        game.get_player_mut(2).unwrap().role = Role::Prophet;
+        game.phase = Phase::Day;
+        game.day_number = 4;
+
+        assert_eq!(game.winner(), Some(Winner::Citizen));
+        assert_eq!(game.winning_prophet().map(|player| player.user_id), Some(2));
     }
 
     #[test]

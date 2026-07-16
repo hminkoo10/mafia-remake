@@ -259,6 +259,9 @@ pub const PUBLIC_CULT_SPECIAL_ROLES: &[Role] = &[Role::CultLeader];
 
 pub const CONTRACTOR_GUESS_ROLES: &[Role] = &[
     Role::Mafia,
+    Role::Police,
+    Role::Agent,
+    Role::Vigilante,
     Role::Doctor,
     Role::Witch,
     Role::Scientist,

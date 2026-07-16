@@ -2335,6 +2335,17 @@ pub fn winner_result_text(winner: Winner) -> &'static str {
     }
 }
 
+pub fn prophet_victory_message(game: &MafiaGame, winner: Winner) -> Option<String> {
+    if winner != Winner::Citizen {
+        return None;
+    }
+    let prophet = game.winning_prophet()?;
+    Some(format!(
+        "예언자 {}님의 힘으로 시민팀이 승리하였습니다!",
+        prophet.name
+    ))
+}
+
 pub fn game_result_display_name(running: &RunningGame, player: &Player) -> String {
     if running.anonymous_enabled {
         let alias = running
@@ -2901,9 +2912,12 @@ pub async fn announce_winner(
     data: &Data,
     running: &Arc<RwLock<RunningGame>>,
 ) -> Result<bool> {
-    let winner = running.read().await.game.winner();
-    let Some(winner) = winner else {
-        return Ok(false);
+    let (winner, prophet_message) = {
+        let running_read = running.read().await;
+        let Some(winner) = running_read.game.winner() else {
+            return Ok(false);
+        };
+        (winner, prophet_victory_message(&running_read.game, winner))
     };
     let (roles_text, elapsed_seconds, record_payload) = {
         let mut running_write = running.write().await;
@@ -2940,6 +2954,21 @@ pub async fn announce_winner(
         )
     };
     upsert_game_status(ctx, running).await;
+    if let Some(message) = prophet_message
+        && let Err(error) = send_game_embed(
+            ctx,
+            running,
+            message,
+            "예언자 승리",
+            serenity::Colour::DARK_GREEN,
+            vec![],
+            true,
+            true,
+        )
+        .await
+    {
+        eprintln!("failed to announce prophet victory: {error:?}");
+    }
     let mut rating_log = Vec::new();
     let mut rating_log_chunks = Vec::new();
     let mut rank_change_chunks = Vec::new();
@@ -3231,6 +3260,25 @@ mod tests {
             confirmation_rejection_message(&result, context),
             "반대가 많아 처형하지 않습니다."
         );
+    }
+
+    #[test]
+    fn prophet_victory_message_names_the_prophet() {
+        let players = (1..=5)
+            .map(|user_id| (user_id, format!("P{user_id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, Vec::new()).unwrap();
+        let prophet = game.get_player_mut(2).unwrap();
+        prophet.role = Role::Prophet;
+        prophet.name = "설재경".to_string();
+        game.phase = Phase::Day;
+        game.day_number = 4;
+
+        assert_eq!(
+            prophet_victory_message(&game, Winner::Citizen).as_deref(),
+            Some("예언자 설재경님의 힘으로 시민팀이 승리하였습니다!")
+        );
+        assert_eq!(prophet_victory_message(&game, Winner::Mafia), None);
     }
 
     #[test]

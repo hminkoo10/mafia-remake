@@ -836,9 +836,6 @@ impl MafiaGame {
         }
         let first = self.require_alive(first_target_id)?.clone();
         let second = self.require_alive(second_target_id)?.clone();
-        if first.role.is_investigation_role() || second.role.is_investigation_role() {
-            bail!("경찰, 요원, 자경단원은 청부 대상으로 지목할 수 없습니다.");
-        }
         if self.is_publicly_revealed(&first) || self.is_publicly_revealed(&second) {
             bail!("게임 채널에 직업이 공개된 사람은 청부 대상으로 지목할 수 없습니다.");
         }
