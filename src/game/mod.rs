@@ -2458,6 +2458,61 @@ mod tests {
     }
 
     #[test]
+    fn thief_stealing_mafia_contacts_and_can_attack() {
+        let mut game = MafiaGame::new(
+            vec![
+                (1, "One".to_string()),
+                (2, "Two".to_string()),
+                (3, "Three".to_string()),
+                (4, "Four".to_string()),
+                (5, "Five".to_string()),
+            ],
+            1,
+            0,
+            0,
+            vec![Role::Thief],
+        )
+        .unwrap();
+        let mafia_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Mafia)
+            .unwrap()
+            .user_id;
+        let thief_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Thief)
+            .unwrap()
+            .user_id;
+        let target_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Citizen)
+            .unwrap()
+            .user_id;
+
+        game.phase = Phase::Day;
+        game.start_vote().unwrap();
+        let vote_message = game.submit_day_vote(thief_id, Some(mafia_id)).unwrap();
+        let thief = game.get_player(thief_id).unwrap().clone();
+
+        assert!(vote_message.contains("마피아팀과 접선했습니다"));
+        assert!(game.thief_contacted.contains(&thief_id));
+        assert!(game.is_known_mafia_team(&thief));
+        assert_eq!(game.thief_night_role(&thief), Some(Role::Mafia));
+
+        game.phase = Phase::Night;
+        assert!(
+            game.night_action_actors()
+                .iter()
+                .any(|player| player.user_id == thief_id)
+        );
+        assert!(game.submit_night_action(thief_id, Some(target_id)).is_ok());
+        assert_eq!(game.mafia_targets.get(&thief_id), Some(&target_id));
+    }
+
+    #[test]
     fn police_does_not_detect_uncontacted_spy_as_mafia_team() {
         let mut game = MafiaGame::new(
             vec![

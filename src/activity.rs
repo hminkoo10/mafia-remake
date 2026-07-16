@@ -60,6 +60,11 @@ pub enum ActivityDiscordUpdate {
         guild_id: serenity::GuildId,
         role: Role,
     },
+    GrantPrivateRoleAccess {
+        guild_id: serenity::GuildId,
+        user_id: u64,
+        role: Role,
+    },
 }
 
 #[derive(Clone)]
@@ -626,8 +631,23 @@ async fn action_handler(
                 .target_id
                 .as_deref()
                 .and_then(|s| s.parse::<u64>().ok());
+            let was_known_mafia_team = running
+                .game
+                .get_player(user_id)
+                .is_some_and(|voter| running.game.is_known_mafia_team(voter));
             match running.game.submit_day_vote(user_id, target) {
                 Ok(message) => {
+                    if running.game.get_player(user_id).is_some_and(|voter| {
+                        voter.alive
+                            && !was_known_mafia_team
+                            && running.game.is_known_mafia_team(voter)
+                    }) {
+                        discord_update = Some(ActivityDiscordUpdate::GrantPrivateRoleAccess {
+                            guild_id: guild_key,
+                            user_id,
+                            role: Role::Mafia,
+                        });
+                    }
                     let target_ids = target.into_iter().collect::<Vec<_>>();
                     running.record_replay_event(
                         "day_vote",

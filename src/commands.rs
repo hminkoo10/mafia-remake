@@ -1591,12 +1591,14 @@ pub async fn handle_day_vote(
             value.parse().ok()
         }
     });
-    let (message, done) = {
+    let voter_id = component.user.id.get();
+    let (message, done, newly_contacted_mafia) = {
         let mut running_write = running.write().await;
-        let message = match running_write
+        let was_known_mafia_team = running_write
             .game
-            .submit_day_vote(component.user.id.get(), target_id)
-        {
+            .get_player(voter_id)
+            .is_some_and(|voter| running_write.game.is_known_mafia_team(voter));
+        let message = match running_write.game.submit_day_vote(voter_id, target_id) {
             Ok(message) => message,
             Err(error) => {
                 send_component_private(ctx, component, error.to_string()).await?;
@@ -1606,15 +1608,31 @@ pub async fn handle_day_vote(
         let target_ids = target_id.into_iter().collect::<Vec<_>>();
         running_write.record_replay_event(
             "day_vote",
-            Some(component.user.id.get()),
+            Some(voter_id),
             &target_ids,
             serde_json::json!({
                 "choice": if target_ids.is_empty() { "skip" } else { "player" },
                 "message": message.clone(),
             }),
         );
-        (message, running_write.game.all_day_votes_submitted())
+        let newly_contacted_mafia = running_write
+            .game
+            .get_player(voter_id)
+            .filter(|voter| {
+                voter.alive
+                    && !was_known_mafia_team
+                    && running_write.game.is_known_mafia_team(voter)
+            })
+            .cloned();
+        (
+            message,
+            running_write.game.all_day_votes_submitted(),
+            newly_contacted_mafia,
+        )
     };
+    if let Some(player) = &newly_contacted_mafia {
+        grant_private_role_member_access(ctx, data, &running, Role::Mafia, player).await;
+    }
     if done {
         running.read().await.vote_notify.notify_waiters();
     }

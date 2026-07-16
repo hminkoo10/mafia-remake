@@ -711,9 +711,23 @@ async fn main() -> Result<()> {
                     Err(e) => eprintln!("Global command registration warning: {e}"),
                 }
                 println!("Rust Mafia bot ready: {}", ready.user.name);
+                let data = Data {
+                    config: config_setup.clone(),
+                    config_path: config_path_setup.clone(),
+                    stats: stats_setup.clone(),
+                    stats_path: stats_path_setup.clone(),
+                    games: games_setup.clone(),
+                    completed_replays: completed_replays_setup.clone(),
+                    completed_replays_path: completed_replays_path_setup.clone(),
+                    recruitments: recruitments_setup.clone(),
+                    web_sessions: web_sessions_setup.clone(),
+                    web_base_url: Arc::new(web_base_url.clone()),
+                    bot_user_id: ready.user.id,
+                };
                 let mut activity_update_rx = activity_discord_update_setup.subscribe();
                 let activity_update_ctx = ctx.clone();
                 let activity_update_games = games_setup.clone();
+                let activity_update_data = data.clone();
                 tokio::spawn(async move {
                     while let Ok(update) = activity_update_rx.recv().await {
                         match update {
@@ -734,22 +748,32 @@ async fn main() -> Result<()> {
                                 )
                                 .await;
                             }
+                            activity::ActivityDiscordUpdate::GrantPrivateRoleAccess {
+                                guild_id,
+                                user_id,
+                                role,
+                            } => {
+                                let Some(running) = activity_update_games
+                                    .get(&guild_id)
+                                    .map(|entry| entry.clone())
+                                else {
+                                    continue;
+                                };
+                                let player = running.read().await.game.get_player(user_id).cloned();
+                                if let Some(player) = player {
+                                    channel::grant_private_role_member_access(
+                                        &activity_update_ctx,
+                                        &activity_update_data,
+                                        &running,
+                                        role,
+                                        &player,
+                                    )
+                                    .await;
+                                }
+                            }
                         }
                     }
                 });
-                let data = Data {
-                    config: config_setup.clone(),
-                    config_path: config_path_setup.clone(),
-                    stats: stats_setup.clone(),
-                    stats_path: stats_path_setup,
-                    games: games_setup.clone(),
-                    completed_replays: completed_replays_setup.clone(),
-                    completed_replays_path: completed_replays_path_setup,
-                    recruitments: recruitments_setup.clone(),
-                    web_sessions: web_sessions_setup.clone(),
-                    web_base_url: Arc::new(web_base_url.clone()),
-                    bot_user_id: ready.user.id,
-                };
                 let web_state = web_settings::WebSettingsState {
                     config: config_setup,
                     config_path: config_path_setup,
