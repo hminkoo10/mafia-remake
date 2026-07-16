@@ -59,6 +59,14 @@ const ROLE_STATS_ORDER: &[Role] = &[
 pub struct StatsFile {
     #[serde(default)]
     pub users: HashMap<String, PlayerStats>,
+    #[serde(default)]
+    pub role_selection_history: Vec<RoleSelectionHistoryItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleSelectionHistoryItem {
+    pub started_at: String,
+    pub roles: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -379,7 +387,47 @@ pub fn game_rank_change_chunks(logs: &[GameRatingLogItem], max_chars: usize) -> 
     chunks
 }
 
+pub fn record_role_selection(stats: &mut StatsFile, roles: impl IntoIterator<Item = Role>) {
+    let mut roles = roles
+        .into_iter()
+        .map(|role| role.value().to_string())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    roles.sort_by_key(|role| role_order_index(role));
+    stats.role_selection_history.push(RoleSelectionHistoryItem {
+        started_at: Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+        roles,
+    });
+    let overflow = stats
+        .role_selection_history
+        .len()
+        .saturating_sub(ROLE_BALANCE_RECENT_GAMES);
+    if overflow > 0 {
+        stats.role_selection_history.drain(..overflow);
+    }
+}
+
 pub fn role_appearance_counts(stats: &StatsFile) -> HashMap<Role, i64> {
+    if !stats.role_selection_history.is_empty() {
+        let mut counts = HashMap::new();
+        for (index, history) in stats
+            .role_selection_history
+            .iter()
+            .rev()
+            .take(ROLE_BALANCE_RECENT_GAMES)
+            .enumerate()
+        {
+            let appeared_roles = history
+                .roles
+                .iter()
+                .map(String::as_str)
+                .collect::<HashSet<_>>();
+            add_recent_role_scores(&mut counts, &appeared_roles, index);
+        }
+        return counts;
+    }
+
     let mut recent_games = HashMap::<&str, HashSet<&str>>::new();
     for entry in stats.users.values() {
         for history in &entry.rating_history {
@@ -402,22 +450,30 @@ pub fn role_appearance_counts(stats: &StatsFile) -> HashMap<Role, i64> {
         .take(ROLE_BALANCE_RECENT_GAMES)
         .enumerate()
     {
-        let recency_weight = match index {
-            0 => 64,
-            1 => 32,
-            2 => 16,
-            3 => 8,
-            4 => 4,
-            5 => 2,
-            _ => 1,
-        };
-        for role in ROLE_STATS_ORDER {
-            if appeared_roles.contains(role.value()) {
-                *counts.entry(*role).or_default() += recency_weight;
-            }
-        }
+        add_recent_role_scores(&mut counts, &appeared_roles, index);
     }
     counts
+}
+
+fn add_recent_role_scores(
+    counts: &mut HashMap<Role, i64>,
+    appeared_roles: &HashSet<&str>,
+    index: usize,
+) {
+    let recency_weight = match index {
+        0 => 64,
+        1 => 32,
+        2 => 16,
+        3 => 8,
+        4 => 4,
+        5 => 2,
+        _ => 1,
+    };
+    for role in ROLE_STATS_ORDER {
+        if appeared_roles.contains(role.value()) {
+            *counts.entry(*role).or_default() += recency_weight;
+        }
+    }
 }
 
 pub fn player_assignment_histories(
@@ -1152,6 +1208,13 @@ mod tests {
     }
 
     #[test]
+    fn old_stats_without_role_selection_history_still_loads() {
+        let stats: StatsFile = serde_json::from_str(r#"{"users":{}}"#).unwrap();
+
+        assert!(stats.role_selection_history.is_empty());
+    }
+
+    #[test]
     fn role_balance_falls_back_to_lifetime_counts_without_history() {
         let mut stats = StatsFile::default();
         stats.users.insert(
@@ -1165,6 +1228,44 @@ mod tests {
         let counts = role_appearance_counts(&stats);
 
         assert_eq!(counts.get(&Role::Shaman).copied(), Some(3));
+    }
+
+    #[test]
+    fn started_role_history_overrides_old_lifetime_counts() {
+        let mut stats = StatsFile::default();
+        stats.users.insert(
+            "1".to_string(),
+            PlayerStats {
+                roles: HashMap::from([(Role::Shaman.value().to_string(), 100)]),
+                ..Default::default()
+            },
+        );
+
+        record_role_selection(&mut stats, [Role::Mafia, Role::Detective, Role::Detective]);
+        let counts = role_appearance_counts(&stats);
+
+        assert_eq!(
+            stats.role_selection_history[0].roles,
+            vec![
+                Role::Mafia.value().to_string(),
+                Role::Detective.value().to_string()
+            ]
+        );
+        assert_eq!(counts.get(&Role::Detective).copied(), Some(64));
+        assert!(!counts.contains_key(&Role::Shaman));
+    }
+
+    #[test]
+    fn role_selection_history_is_bounded() {
+        let mut stats = StatsFile::default();
+        for _ in 0..(ROLE_BALANCE_RECENT_GAMES + 5) {
+            record_role_selection(&mut stats, [Role::Detective]);
+        }
+
+        assert_eq!(
+            stats.role_selection_history.len(),
+            ROLE_BALANCE_RECENT_GAMES
+        );
     }
 
     #[test]

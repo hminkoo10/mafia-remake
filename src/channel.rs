@@ -5309,6 +5309,21 @@ mod tests {
     }
 
     #[test]
+    fn started_role_history_rotates_shaman_into_selection() {
+        let mut config = selection_test_config();
+        config.default_police_count = 0;
+        config.enable_inspector = false;
+        config.enable_shaman = true;
+
+        let mut stats_file = stats::StatsFile::default();
+        stats::record_role_selection(&mut stats_file, [Role::Detective]);
+        let history = stats::role_appearance_counts(&stats_file);
+        let selected = choose_special_roles_balanced(&config, &history).unwrap();
+
+        assert_eq!(selected, vec![Role::Shaman]);
+    }
+
+    #[test]
     fn private_role_chat_closed_during_day() {
         let mut game = role_chat_test_game();
         let doctor = game

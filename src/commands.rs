@@ -259,6 +259,22 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         &assignment_history,
     )?;
     let initial_roles = game.players.iter().map(|p| (p.user_id, p.role)).collect();
+    let stats_snapshot = {
+        let mut stats_file = ctx.data().stats.write().await;
+        stats::record_role_selection(
+            &mut stats_file,
+            game.players.iter().map(|player| player.role),
+        );
+        stats_file.clone()
+    };
+    let stats_path = ctx.data().stats_path.clone();
+    match tokio::task::spawn_blocking(move || stats::save_stats(&*stats_path, &stats_snapshot))
+        .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => eprintln!("failed to save role selection history: {error:?}"),
+        Err(error) => eprintln!("failed to join role selection history save task: {error:?}"),
+    }
     let mut running_game = RunningGame {
         guild_id,
         channel_id,

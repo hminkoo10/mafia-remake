@@ -1607,8 +1607,15 @@ mod tests {
             .collect::<HashSet<_>>();
 
         assert_eq!(target_ids, HashSet::from([2, 3, 4, 5, 7, 8]));
+        for role in [Role::Police, Role::Agent, Role::Vigilante, Role::Inspector] {
+            assert!(!crate::model::CONTRACTOR_GUESS_ROLES.contains(&role));
+        }
         assert!(
-            game.submit_contractor_contract(1, 2, Role::Police, 3, Role::Agent)
+            game.submit_contractor_contract(1, 2, Role::Police, 3, Role::Citizen)
+                .is_err()
+        );
+        assert!(
+            game.submit_contractor_contract(1, 2, Role::Citizen, 3, Role::Mafia)
                 .is_ok()
         );
     }
