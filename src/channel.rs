@@ -622,11 +622,33 @@ pub fn can_use_anonymous_role_chat(running: &RunningGame, player: &Player, role:
     player.alive && player.role == role
 }
 
+pub fn private_role_member_can_view(game: &MafiaGame, role: Role, player: &Player) -> bool {
+    let pending_scientist_revive = role == Role::Mafia
+        && player.role == Role::Scientist
+        && game.scientist_contacted.contains(&player.user_id)
+        && game.scientist_pending_revive_ids.contains(&player.user_id);
+    if (!player.alive && !pending_scientist_revive)
+        || game.is_frog(player)
+        || game.is_madam_seduced(player)
+    {
+        return false;
+    }
+    match role {
+        Role::Mafia => game.is_known_mafia_team(player),
+        Role::Doctor => {
+            player.role == Role::Doctor
+                || (player.role == Role::Nurse && game.nurse_contacted.contains(&player.user_id))
+        }
+        Role::CultLeader => game.is_cult_team(player),
+        Role::Lover => player.role == Role::Lover && lover_chat_is_open(game),
+        _ => player.role == role,
+    }
+}
+
 pub fn private_role_member_can_chat(game: &MafiaGame, role: Role, player: &Player) -> bool {
     if game.phase != Phase::Night
         || !player.alive
-        || game.is_frog(player)
-        || game.is_madam_seduced(player)
+        || !private_role_member_can_view(game, role, player)
     {
         return false;
     }
@@ -3656,32 +3678,39 @@ pub async fn sync_private_role_chat_permissions(
         else {
             continue;
         };
-        let member_overwrites = channel
+        let mut member_ids = channel
             .permission_overwrites
             .iter()
             .filter_map(|overwrite| match overwrite.kind {
-                serenity::PermissionOverwriteType::Member(user_id) => {
-                    let can_view = overwrite
-                        .allow
-                        .contains(serenity::Permissions::VIEW_CHANNEL)
-                        && !overwrite.deny.contains(serenity::Permissions::VIEW_CHANNEL);
-                    Some((user_id.get(), can_view))
-                }
+                serenity::PermissionOverwriteType::Member(user_id) => Some(user_id.get()),
                 serenity::PermissionOverwriteType::Role(_) => None,
                 _ => None,
             })
-            .collect::<Vec<_>>();
-        for (user_id, can_view) in member_overwrites {
+            .collect::<HashSet<_>>();
+        {
+            let running_read = running.read().await;
+            member_ids.extend(
+                running_read
+                    .game
+                    .players
+                    .iter()
+                    .filter(|player| private_role_member_can_view(&running_read.game, role, player))
+                    .map(|player| player.user_id),
+            );
+        }
+        let mut member_ids = member_ids.into_iter().collect::<Vec<_>>();
+        member_ids.sort_unstable();
+        for user_id in member_ids {
             let update = {
                 let running_read = running.read().await;
                 let player = running_read.game.get_player(user_id).cloned();
                 player.map(|player| {
-                    let can_chat =
-                        can_view && private_role_member_can_chat(&running_read.game, role, &player);
-                    (player, can_chat)
+                    let can_view = private_role_member_can_view(&running_read.game, role, &player);
+                    let can_chat = private_role_member_can_chat(&running_read.game, role, &player);
+                    (player, can_view, can_chat)
                 })
             };
-            if let Some((player, can_chat)) = update {
+            if let Some((player, can_view, can_chat)) = update {
                 set_private_role_member_view_access(
                     ctx, running, role, &player, can_view, can_chat,
                 )
@@ -5305,6 +5334,25 @@ mod tests {
             .unwrap();
 
         assert!(private_role_member_can_chat(&game, Role::Doctor, &doctor));
+    }
+
+    #[test]
+    fn mafia_room_visibility_does_not_follow_chat_phase() {
+        let mut game = role_chat_test_game();
+        let mafia = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Mafia)
+            .cloned()
+            .unwrap();
+
+        game.phase = Phase::Day;
+        assert!(private_role_member_can_view(&game, Role::Mafia, &mafia));
+        assert!(!private_role_member_can_chat(&game, Role::Mafia, &mafia));
+
+        game.phase = Phase::Night;
+        assert!(private_role_member_can_view(&game, Role::Mafia, &mafia));
+        assert!(private_role_member_can_chat(&game, Role::Mafia, &mafia));
     }
 
     #[test]

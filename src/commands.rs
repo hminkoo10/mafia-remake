@@ -6124,13 +6124,15 @@ pub async fn handle_message_event(
                     (
                         player.clone(),
                         private_role_member_can_chat(&running_read.game, role, player),
+                        private_role_member_can_view(&running_read.game, role, player),
                     )
                 })
         };
-        if let Some((player, can_relay)) = player {
+        if let Some((player, can_relay, can_view)) = player {
             if !can_relay {
                 let _ = message.delete(&ctx.http).await;
-                set_private_role_member_access(ctx, &running, role, &player, false).await;
+                set_private_role_member_view_access(ctx, &running, role, &player, can_view, false)
+                    .await;
             } else {
                 let body = anonymous_message_body(message);
                 mirror_role_chat_to_dead(ctx, data, &running, message, role, &body).await;
