@@ -267,6 +267,17 @@ pub fn death_role_text(running: &RunningGame, player: &Player) -> String {
     }
 }
 
+fn remaining_night_wait(deadline: Instant, now: Instant) -> Duration {
+    deadline.saturating_duration_since(now)
+}
+
+async fn wait_for_night_deadline_or_action(deadline: Instant, notify: &Notify) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(remaining_night_wait(deadline, Instant::now())) => true,
+        _ = notify.notified() => false,
+    }
+}
+
 pub async fn trigger_timed_night_events(
     ctx: &serenity::Context,
     data: &Data,
@@ -380,13 +391,14 @@ pub async fn run_night(
         vigilante_results,
         godfather_contacts,
         seconds,
+        deadline,
         notify,
     ) = {
         let config = data.config.read().await.clone();
         let mut running_write = running.write().await;
+        let deadline = Instant::now() + Duration::from_secs(config.night_seconds);
         running_write.game.phase = Phase::Night;
-        running_write.phase_deadline =
-            Some(Instant::now() + Duration::from_secs(config.night_seconds));
+        running_write.phase_deadline = Some(deadline);
         running_write.day_chat_open = false;
         running_write.final_defense_user_id = None;
         running_write.night_timed_events_due = config.night_seconds <= 10;
@@ -413,6 +425,7 @@ pub async fn run_night(
             vigilante_results,
             godfather_contacts,
             config.night_seconds,
+            deadline,
             running_write.night_notify.clone(),
         )
     };
@@ -495,15 +508,11 @@ pub async fn run_night(
             running_write.night_timed_events_due = true;
         }
         trigger_timed_night_events(ctx, data, running).await?;
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(seconds)) => {}
-            _ = notify.notified() => {}
-        }
+        wait_for_night_deadline_or_action(deadline, &notify).await;
     } else {
-        let reached_ten_seconds = tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(seconds - 10)) => true,
-            _ = notify.notified() => false,
-        };
+        let warning_deadline = deadline - Duration::from_secs(10);
+        let reached_ten_seconds =
+            wait_for_night_deadline_or_action(warning_deadline, &notify).await;
         if running.read().await.game.phase == Phase::Ended {
             return Ok(());
         }
@@ -512,22 +521,26 @@ pub async fn run_night(
             running_write.night_timed_events_due = true;
         }
         if reached_ten_seconds {
-            send_game_embed(
-                ctx,
-                running,
-                "밤 시간이 10초 남았습니다. 아직 행동하지 않았다면 지금 선택하세요.",
-                "밤 10초 전",
-                serenity::Colour::GOLD,
-                vec![],
-                false,
-                true,
-            )
-            .await?;
+            let warning_ctx = ctx.clone();
+            let warning_running = running.clone();
+            tokio::spawn(async move {
+                if let Err(error) = send_game_embed(
+                    &warning_ctx,
+                    &warning_running,
+                    "밤 시간이 10초 남았습니다. 아직 행동하지 않았다면 지금 선택하세요.",
+                    "밤 10초 전",
+                    serenity::Colour::GOLD,
+                    vec![],
+                    false,
+                    true,
+                )
+                .await
+                {
+                    eprintln!("failed to send ten-second night warning: {error:?}");
+                }
+            });
             trigger_timed_night_events(ctx, data, running).await?;
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(10)) => {}
-                _ = notify.notified() => {}
-            }
+            wait_for_night_deadline_or_action(deadline, &notify).await;
         } else {
             trigger_timed_night_events(ctx, data, running).await?;
         }
@@ -3128,6 +3141,21 @@ mod tests {
         assert!(Arc::ptr_eq(games.get(&1).unwrap().value(), &current));
         assert!(remove_current_entry(&games, 1, &current));
         assert!(games.is_empty());
+    }
+
+    #[test]
+    fn night_wait_does_not_restart_after_delayed_anonymous_broadcast() {
+        let started_at = Instant::now();
+        let deadline = started_at + Duration::from_secs(30);
+
+        assert_eq!(
+            remaining_night_wait(deadline, started_at + Duration::from_secs(20)),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            remaining_night_wait(deadline, started_at + Duration::from_secs(35)),
+            Duration::ZERO
+        );
     }
 
     #[test]

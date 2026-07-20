@@ -10,6 +10,7 @@ use poise::serenity_prelude as serenity;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::task::JoinSet;
 
 pub fn make_embed(
     message: impl Into<String>,
@@ -127,17 +128,25 @@ pub async fn send_game_embed(
     )
     .await?;
     if broadcast && anonymous_enabled {
+        let mut deliveries = JoinSet::new();
         for channel_id in targets {
-            let _ = send_channel_embed(
-                &ctx.http,
-                channel_id,
-                message.clone(),
-                title,
-                color,
-                components.clone(),
-            )
-            .await;
+            let http = ctx.http.clone();
+            let message = message.clone();
+            let title = title.to_string();
+            let components = components.clone();
+            deliveries.spawn(async move {
+                let _ = send_channel_embed(
+                    http.as_ref(),
+                    channel_id,
+                    message,
+                    &title,
+                    color,
+                    components,
+                )
+                .await;
+            });
         }
+        while deliveries.join_next().await.is_some() {}
     }
     Ok(sent)
 }
