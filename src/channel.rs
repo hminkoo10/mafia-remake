@@ -491,7 +491,9 @@ pub fn mafia_night_target_status_text(running: &RunningGame) -> String {
         .iter()
         .filter(|player| {
             player.alive
-                && player.role == Role::Mafia
+                && (player.role == Role::Mafia
+                    || (player.role == Role::Thief
+                        && running.game.thief_night_role(player) == Some(Role::Mafia)))
                 && running.game.can_mafia_attack(player, None)
         })
         .cloned()
@@ -2306,6 +2308,10 @@ pub async fn upsert_private_role_status_message(
     running: &Arc<RwLock<RunningGame>>,
     role: Role,
 ) {
+    if running.read().await.anonymous_enabled {
+        sync_anonymous_role_status(ctx, running, role, true).await;
+        return;
+    }
     let (channel_id, message_id, status_text, unchanged) = {
         let running_read = running.read().await;
         let Some(channel_id) = running_read.private_channel_ids.get(&role).copied() else {
@@ -2369,6 +2375,22 @@ pub async fn upsert_private_role_status_message(
             .private_role_status_texts
             .insert(role, status_text);
     }
+}
+
+fn anonymous_role_status_targets(
+    running: &RunningGame,
+    role: Role,
+) -> Option<Vec<((u64, Role), serenity::ChannelId)>> {
+    if !running.anonymous_enabled {
+        return None;
+    }
+    let mut targets = running
+        .anonymous_role_input_channel_ids
+        .iter()
+        .filter_map(|(&key, &channel_id)| (key.1 == role).then_some((key, channel_id)))
+        .collect::<Vec<_>>();
+    targets.sort_by_key(|((user_id, _), _)| *user_id);
+    Some(targets)
 }
 
 pub async fn upsert_anonymous_role_status_message(
@@ -2439,40 +2461,34 @@ pub async fn upsert_anonymous_role_status_message(
     }
 }
 
-pub async fn sync_anonymous_role_statuses(
+async fn sync_anonymous_role_status(
     ctx: &serenity::Context,
     running: &Arc<RwLock<RunningGame>>,
+    role: Role,
     update_messages: bool,
 ) {
     let updates = {
         let running_read = running.read().await;
-        if !running_read.anonymous_enabled {
+        if !running_read.anonymous_enabled
+            || !should_create_private_role_channel(&running_read.game, role)
+        {
             return;
         }
-        let mut updates = Vec::new();
-        for &role in PRIVATE_CHAT_ROLES {
-            if !should_create_private_role_channel(&running_read.game, role) {
-                continue;
-            }
-            let topic = format!(
-                "{} 익명 채팅 | {}",
-                role.value(),
-                role_channel_status_text(&running_read, role)
-            )
-            .chars()
-            .take(1024)
-            .collect::<String>();
-            for (&(user_id, input_role), &channel_id) in
-                &running_read.anonymous_role_input_channel_ids
-            {
-                if input_role == role {
-                    updates.push((user_id, role, channel_id, topic.clone()));
-                }
-            }
-        }
-        updates
+        let topic = format!(
+            "{} 익명 채팅 | {}",
+            role.value(),
+            role_channel_status_text(&running_read, role)
+        )
+        .chars()
+        .take(1024)
+        .collect::<String>();
+        anonymous_role_status_targets(&running_read, role)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|((user_id, _), channel_id)| (user_id, channel_id, topic.clone()))
+            .collect::<Vec<_>>()
     };
-    for (user_id, role, channel_id, topic) in updates {
+    for (user_id, channel_id, topic) in updates {
         let needs_topic_update = {
             let running_read = running.read().await;
             running_read.anonymous_channel_topics.get(&channel_id) != Some(&topic)
@@ -2493,6 +2509,16 @@ pub async fn sync_anonymous_role_statuses(
             upsert_anonymous_role_status_message(ctx, running, channel_id, role, (user_id, role))
                 .await;
         }
+    }
+}
+
+pub async fn sync_anonymous_role_statuses(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    update_messages: bool,
+) {
+    for &role in PRIVATE_CHAT_ROLES {
+        sync_anonymous_role_status(ctx, running, role, update_messages).await;
     }
 }
 
@@ -5368,6 +5394,40 @@ mod tests {
         game.phase = Phase::Night;
         assert!(private_role_member_can_view(&game, Role::Mafia, &mafia));
         assert!(private_role_member_can_chat(&game, Role::Mafia, &mafia));
+    }
+
+    #[test]
+    fn anonymous_mafia_status_targets_every_personal_room_and_shows_choices() {
+        let mut running = dead_chat_test_running();
+        running.anonymous_enabled = true;
+        running.game.get_player_mut(1).unwrap().role = Role::Mafia;
+        running.game.get_player_mut(2).unwrap().role = Role::Thief;
+        running.game.thief_stolen_roles.insert(2, Role::Mafia);
+        running.game.thief_contacted.insert(2);
+        running.anonymous_aliases = HashMap::from([
+            (1, "마피아A".to_string()),
+            (2, "도둑B".to_string()),
+            (3, "대상A".to_string()),
+            (4, "대상B".to_string()),
+        ]);
+        running.anonymous_role_input_channel_ids = HashMap::from([
+            ((1, Role::Mafia), serenity::ChannelId::new(101)),
+            ((2, Role::Mafia), serenity::ChannelId::new(102)),
+        ]);
+        running.game.mafia_display_targets = HashMap::from([(1, 3), (2, 4)]);
+
+        let targets = anonymous_role_status_targets(&running, Role::Mafia).unwrap();
+        let status = mafia_night_target_status_text(&running);
+
+        assert_eq!(
+            targets,
+            vec![
+                ((1, Role::Mafia), serenity::ChannelId::new(101)),
+                ((2, Role::Mafia), serenity::ChannelId::new(102)),
+            ]
+        );
+        assert!(status.contains("- 마피아A → 대상A"));
+        assert!(status.contains("- 도둑B → 대상B"));
     }
 
     #[test]
