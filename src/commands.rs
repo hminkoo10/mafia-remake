@@ -140,6 +140,9 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         .await?;
         return Ok(());
     };
+    let spectator_role_id = role_by_name(ctx.serenity_context(), guild_id, SPECTATOR_ROLE)
+        .await?
+        .map(|role| role.id);
 
     let role_history = {
         let stats_read = ctx.data().stats.read().await;
@@ -165,6 +168,7 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
     let recruitment = Arc::new(RwLock::new(Recruitment {
         host_user_id: ctx.author().id,
         participant_role_id: participant_role.id,
+        spectator_role_id,
         role_counts: role_counts.clone(),
         special_roles: special_roles.clone(),
         max_players,
@@ -1178,7 +1182,9 @@ pub async fn handle_join(
         return Ok(());
     }
     if let Some(member) = component.member.clone() {
-        let _ = member.add_role(ctx, rec.participant_role_id).await;
+        if !member.roles.contains(&rec.participant_role_id) {
+            let _ = member.add_role(ctx, rec.participant_role_id).await;
+        }
         rec.joined_names.insert(user_id, display_name(&member));
     } else {
         rec.joined_names
@@ -1228,8 +1234,10 @@ pub async fn handle_spectate(
     rec.spectator_ids.insert(user_id);
     if let Some(member) = component.member.clone() {
         rec.spectator_names.insert(user_id, display_name(&member));
-        if let Some(role) = role_by_name(ctx, guild_id, SPECTATOR_ROLE).await? {
-            let _ = member.add_role(ctx, role.id).await;
+        if let Some(role_id) = rec.spectator_role_id {
+            if !member.roles.contains(&role_id) {
+                let _ = member.add_role(ctx, role_id).await;
+            }
         }
     } else {
         rec.spectator_names

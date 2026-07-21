@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 pub(crate) mod web_settings;
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::AtomicU64;
 use std::{path::PathBuf, sync::Arc, time::Instant};
 use tokio::sync::{Notify, RwLock};
 
@@ -95,6 +96,7 @@ struct Data {
     completed_replays: Arc<RwLock<VecDeque<Value>>>,
     completed_replays_path: Arc<PathBuf>,
     recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>>,
+    recruitment_update_versions: Arc<DashMap<serenity::GuildId, Arc<AtomicU64>>>,
     web_sessions: Arc<DashMap<String, web_settings::WebSettingsSession>>,
     web_base_url: Arc<String>,
     bot_user_id: serenity::UserId,
@@ -431,6 +433,7 @@ impl RunningGame {
 struct Recruitment {
     host_user_id: serenity::UserId,
     participant_role_id: serenity::RoleId,
+    spectator_role_id: Option<serenity::RoleId>,
     role_counts: HashMap<Role, usize>,
     special_roles: Vec<Role>,
     max_players: usize,
@@ -629,6 +632,8 @@ async fn main() -> Result<()> {
     let completed_replays: Arc<RwLock<VecDeque<Value>>> = Arc::new(RwLock::new(loaded_replays));
     let recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>> =
         Arc::new(DashMap::new());
+    let recruitment_update_versions: Arc<DashMap<serenity::GuildId, Arc<AtomicU64>>> =
+        Arc::new(DashMap::new());
     let config_arc = Arc::new(RwLock::new(config));
     let api_keys_arc = Arc::new(RwLock::new(api_keys));
     let stats_arc = Arc::new(RwLock::new(stats));
@@ -678,6 +683,7 @@ async fn main() -> Result<()> {
     let games_setup = games.clone();
     let completed_replays_setup = completed_replays.clone();
     let recruitments_setup = recruitments.clone();
+    let recruitment_update_versions_setup = recruitment_update_versions.clone();
     let config_setup = config_arc.clone();
     let api_keys_setup = api_keys_arc.clone();
     let stats_setup = stats_arc.clone();
@@ -744,6 +750,7 @@ async fn main() -> Result<()> {
                     completed_replays: completed_replays_setup.clone(),
                     completed_replays_path: completed_replays_path_setup.clone(),
                     recruitments: recruitments_setup.clone(),
+                    recruitment_update_versions: recruitment_update_versions_setup.clone(),
                     web_sessions: web_sessions_setup.clone(),
                     web_base_url: Arc::new(web_base_url.clone()),
                     bot_user_id: ready.user.id,

@@ -4761,6 +4761,7 @@ mod tests {
         let recruitment = Arc::new(RwLock::new(Recruitment {
             host_user_id: serenity::UserId::new(2),
             participant_role_id: serenity::RoleId::new(3),
+            spectator_role_id: None,
             role_counts: HashMap::new(),
             special_roles: Vec::new(),
             max_players: 8,

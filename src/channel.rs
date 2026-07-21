@@ -24,12 +24,14 @@ use poise::serenity_prelude::Mentionable;
 use rand::seq::{IndexedRandom, SliceRandom};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
 use tokio::task::JoinSet;
 
 const LEGACY_FROG_CHAT_CHANNEL_NAME: &str = "개구리-채팅방";
 const DISCORD_WRITE_CONCURRENCY: usize = 4;
+const RECRUITMENT_UPDATE_DEBOUNCE: Duration = Duration::from_millis(300);
 
 const ANIMAL_ALIASES: &[&str] = &[
     "사자",
@@ -1753,20 +1755,53 @@ pub async fn update_recruitment_message(
     status: &str,
     disabled: bool,
 ) {
-    let config = data.config.read().await.clone();
-    if let Err(error) = component
-        .channel_id
-        .edit_message(
-            &ctx.http,
-            component.message.id,
-            serenity::EditMessage::new()
-                .embed(recruitment_embed(recruitment, &config, status))
-                .components(recruitment_components(guild_id, disabled)),
-        )
-        .await
-    {
-        eprintln!("failed to update recruitment message: {error:?}");
-    }
+    let counter = data
+        .recruitment_update_versions
+        .entry(guild_id)
+        .or_insert_with(|| Arc::new(std::sync::atomic::AtomicU64::new(0)))
+        .clone();
+    let version = counter.fetch_add(1, Ordering::AcqRel) + 1;
+    let data = data.clone();
+    let http = ctx.http.clone();
+    let channel_id = component.channel_id;
+    let message_id = component.message.id;
+    let recruitment = recruitment.clone();
+    let status = status.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(RECRUITMENT_UPDATE_DEBOUNCE).await;
+        let Some(current_counter) = data
+            .recruitment_update_versions
+            .get(&guild_id)
+            .map(|entry| entry.clone())
+        else {
+            return;
+        };
+        if current_counter.load(Ordering::Acquire) != version {
+            return;
+        }
+        let config = data.config.read().await.clone();
+        if let Err(error) = channel_id
+            .edit_message(
+                http.as_ref(),
+                message_id,
+                serenity::EditMessage::new()
+                    .embed(recruitment_embed(&recruitment, &config, &status))
+                    .components(recruitment_components(guild_id, disabled)),
+            )
+            .await
+        {
+            eprintln!(
+                "failed to update recruitment message: guild_id={} channel_id={} message_id={} error={error:?}",
+                guild_id.get(),
+                channel_id.get(),
+                message_id.get()
+            );
+        }
+        if disabled && current_counter.load(Ordering::Acquire) == version {
+            data.recruitment_update_versions
+                .remove_if(&guild_id, |_, stored| Arc::ptr_eq(stored, &current_counter));
+        }
+    });
 }
 pub async fn setup_game_channels(
     ctx: &serenity::Context,
@@ -4691,10 +4726,23 @@ async fn delete_game_channels(
 
 async fn restore_permission_with_retry(
     ctx: &serenity::Context,
+    running: Option<&Arc<RwLock<RunningGame>>>,
     channel_id: serenity::ChannelId,
     kind: serenity::PermissionOverwriteType,
     original: Option<serenity::PermissionOverwrite>,
 ) -> bool {
+    let key = permission_cache_key(channel_id, kind);
+    if let (Some(running), Some(key)) = (running, key) {
+        let current = running
+            .read()
+            .await
+            .permission_overwrite_cache
+            .get(&key)
+            .cloned();
+        if current == original {
+            return true;
+        }
+    }
     let mut last_error = None;
     for attempt in 1..=CLEANUP_RETRY_ATTEMPTS {
         let result = if let Some(overwrite) = original.clone() {
@@ -4706,7 +4754,19 @@ async fn restore_permission_with_retry(
                 .map(|_| ())
         };
         match result {
-            Ok(()) => return true,
+            Ok(()) => {
+                if let (Some(running), Some(key)) = (running, key) {
+                    let mut running_write = running.write().await;
+                    if let Some(overwrite) = original.clone() {
+                        running_write
+                            .permission_overwrite_cache
+                            .insert(key, overwrite);
+                    } else {
+                        running_write.permission_overwrite_cache.remove(&key);
+                    }
+                }
+                return true;
+            }
             Err(error) => {
                 last_error = Some(error);
                 if attempt < CLEANUP_RETRY_ATTEMPTS {
@@ -4838,6 +4898,7 @@ pub async fn cleanup_game(
     for (role_id, overwrite) in original_overwrites {
         restore_permission_with_retry(
             ctx,
+            Some(running),
             source_channel_id,
             serenity::PermissionOverwriteType::Role(role_id),
             overwrite,
@@ -4967,7 +5028,7 @@ async fn cleanup_orphaned_main_channel_permissions(
         }
         let kind = overwrite.kind;
         let cleaned = stripped_game_permission_overwrite(overwrite, clear_view);
-        if restore_permission_with_retry(ctx, channel_id, kind, cleaned).await {
+        if restore_permission_with_retry(ctx, None, channel_id, kind, cleaned).await {
             reset += 1;
         }
     }
@@ -5308,7 +5369,7 @@ pub async fn restore_member_game_channel_chat(
     };
     for (user_id, original) in originals {
         let kind = serenity::PermissionOverwriteType::Member(serenity::UserId::new(user_id));
-        restore_permission_with_retry(ctx, channel_id, kind, original).await;
+        restore_permission_with_retry(ctx, Some(running), channel_id, kind, original).await;
     }
 }
 
@@ -5325,7 +5386,7 @@ pub async fn restore_game_channel_chat(
     };
     for (role_id, original) in originals {
         let kind = serenity::PermissionOverwriteType::Role(role_id);
-        restore_permission_with_retry(ctx, channel_id, kind, original).await;
+        restore_permission_with_retry(ctx, Some(running), channel_id, kind, original).await;
     }
 }
 
