@@ -60,6 +60,8 @@ pub async fn init_from_env() {
         match http.get_current_user().await {
             Ok(user) => {
                 println!("HTTP 워커 토큰 확인: {} ({})", user.name, user.id.get());
+                // REST 분산과 별개로, 워커 봇을 게이트웨이에 연결해 온라인으로 표시한다.
+                spawn_worker_presence(token, user.name.clone());
                 workers.push(http);
             }
             Err(error) => {
@@ -82,6 +84,29 @@ pub async fn init_from_env() {
         "HTTP 워커 풀 준비 완료: 추가 토큰 {count}개 (레이트리밋 예산 약 x{})",
         count + 1
     );
+}
+
+/// 워커 봇을 게이트웨이에 연결해 온라인 상태 + 상태 메시지를 표시한다. 최소
+/// 인텐트만 사용하고 이벤트 핸들러/프레임워크가 없어 어떤 게임 이벤트도 처리하지
+/// 않는다. `start()`는 자동 재연결을 포함해 계속 실행되므로 별도 태스크로 띄운다.
+/// 연결 실패는 로그만 남기고 무시한다(REST 분산은 게이트웨이와 무관하게 동작).
+fn spawn_worker_presence(token: String, name: String) {
+    tokio::spawn(async move {
+        let builder = serenity::ClientBuilder::new(&token, serenity::GatewayIntents::empty())
+            .status(serenity::OnlineStatus::Online)
+            .activity(serenity::ActivityData::watching("마피아 게임"));
+        match builder.await {
+            Ok(mut client) => {
+                println!("워커 봇 온라인: {name}");
+                if let Err(error) = client.start().await {
+                    eprintln!("워커 봇 게이트웨이 종료({name}): {error}");
+                }
+            }
+            Err(error) => {
+                eprintln!("워커 봇 게이트웨이 연결 실패({name}): {error}");
+            }
+        }
+    });
 }
 
 /// 우회 가능한 길드 관리 호출을 워커 토큰으로 실행하고, 실패하면 메인 토큰으로
