@@ -2882,7 +2882,6 @@ pub async fn configure_game(
     #[description = "기자 활성화 여부"] reporter: Option<bool>,
     #[description = "해커 활성화 여부"] hacker: Option<bool>,
     #[description = "테러리스트 활성화 여부"] terrorist: Option<bool>,
-    #[description = "군인 활성화 여부"] soldier: Option<bool>,
 ) -> Result<(), Error> {
     if !require_manager(ctx).await? {
         return Ok(());
@@ -2974,9 +2973,6 @@ pub async fn configure_game(
     }
     if let Some(value) = terrorist {
         config_write.enable_terrorist = value;
-    }
-    if let Some(value) = soldier {
-        config_write.enable_soldier = value;
     }
     let validation = choose_special_roles(&config_write)
         .and_then(|special_roles| selected_role_counts(&config_write, &special_roles))
@@ -3168,6 +3164,7 @@ pub async fn configure_extra_roles(
     hypnotist: Option<bool>,
     mercenary: Option<bool>,
     thief: Option<bool>,
+    soldier: Option<bool>,
     cult_team: Option<bool>,
 ) -> Result<(), Error> {
     if !require_manager(ctx).await? {
@@ -3203,6 +3200,9 @@ pub async fn configure_extra_roles(
     }
     if let Some(v) = thief {
         config_write.enable_thief = v;
+    }
+    if let Some(v) = soldier {
+        config_write.enable_soldier = v;
     }
     if let Some(v) = cult_team {
         config_write.enable_cult_team = v;
