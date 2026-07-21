@@ -12,6 +12,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 
+const EMBED_BROADCAST_CONCURRENCY: usize = 4;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretDeliveryRoute {
     AnonymousChannel,
@@ -210,25 +212,27 @@ pub async fn send_game_embed(
     )
     .await?;
     if broadcast && anonymous_enabled {
-        let mut deliveries = JoinSet::new();
-        for channel_id in targets {
-            let http = ctx.http.clone();
-            let message = message.clone();
-            let title = title.to_string();
-            let components = components.clone();
-            deliveries.spawn(async move {
-                let _ = send_channel_embed(
-                    http.as_ref(),
-                    channel_id,
-                    message,
-                    &title,
-                    color,
-                    components,
-                )
-                .await;
-            });
+        for chunk in targets.chunks(EMBED_BROADCAST_CONCURRENCY) {
+            let mut deliveries = JoinSet::new();
+            for &channel_id in chunk {
+                let http = ctx.http.clone();
+                let message = message.clone();
+                let title = title.to_string();
+                let components = components.clone();
+                deliveries.spawn(async move {
+                    let _ = send_channel_embed(
+                        http.as_ref(),
+                        channel_id,
+                        message,
+                        &title,
+                        color,
+                        components,
+                    )
+                    .await;
+                });
+            }
+            while deliveries.join_next().await.is_some() {}
         }
-        while deliveries.join_next().await.is_some() {}
     }
     Ok(sent)
 }

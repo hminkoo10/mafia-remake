@@ -100,6 +100,24 @@ struct Data {
     bot_user_id: serenity::UserId,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ChannelRoleIds {
+    pub(crate) everyone: serenity::RoleId,
+    pub(crate) participant: Option<serenity::RoleId>,
+    pub(crate) spectator: Option<serenity::RoleId>,
+    pub(crate) manager: Option<serenity::RoleId>,
+    pub(crate) dead: Option<serenity::RoleId>,
+    pub(crate) bot: serenity::UserId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PersonalChannelKind {
+    Memo,
+    Dead,
+    Shaman,
+    Role(Role),
+}
+
 #[derive(Debug, Clone, Default)]
 struct ContractorContractDraft {
     target_ids: [Option<u64>; 2],
@@ -140,12 +158,20 @@ struct RunningGame {
     anonymous_role_input_status_message_ids: HashMap<(u64, Role), serenity::MessageId>,
     anonymous_role_status_texts: HashMap<(u64, Role), String>,
     anonymous_channel_topics: HashMap<serenity::ChannelId, String>,
-    anonymous_webhook_urls: HashMap<serenity::ChannelId, String>,
+    anonymous_webhooks: HashMap<serenity::ChannelId, serenity::Webhook>,
+    anonymous_webhook_creation_locks: HashMap<serenity::ChannelId, Arc<tokio::sync::Mutex<()>>>,
+    channel_role_ids: Option<ChannelRoleIds>,
+    source_category_id: Option<Option<serenity::ChannelId>>,
+    permission_overwrite_cache: HashMap<(u64, u64, bool), serenity::PermissionOverwrite>,
+    verified_member_ids: HashSet<u64>,
+    personal_channel_creation_locks:
+        HashMap<(u64, PersonalChannelKind), Arc<tokio::sync::Mutex<()>>>,
     original_game_channel_overwrites:
         HashMap<serenity::RoleId, Option<serenity::PermissionOverwrite>>,
     game_channel_overwrites: HashMap<serenity::RoleId, Option<serenity::PermissionOverwrite>>,
     member_channel_overwrites: HashMap<u64, Option<serenity::PermissionOverwrite>>,
     original_slowmode_delays: HashMap<serenity::ChannelId, u16>,
+    channel_slowmode_cache: HashMap<serenity::ChannelId, u16>,
     private_channel_ids: HashMap<Role, serenity::ChannelId>,
     private_role_status_message_ids: HashMap<Role, serenity::MessageId>,
     private_role_status_texts: HashMap<Role, String>,

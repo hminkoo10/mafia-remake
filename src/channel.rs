@@ -4,9 +4,9 @@
 #![allow(unused_imports, clippy::too_many_arguments, clippy::collapsible_if)]
 
 use super::{
-    Context, ContractorContractDraft, DEAD_PLAYER_ROLE, Data, Error, GAME_NOTIFICATION_ROLE,
-    MAX_GAME_PLAYERS, PRIVATE_CHAT_ROLES, RECRUITMENT_SECONDS, Recruitment, RunningGame,
-    SHAMAN_CHAT_CHANNEL_NAME, SPECTATOR_ROLE,
+    ChannelRoleIds, Context, ContractorContractDraft, DEAD_PLAYER_ROLE, Data, Error,
+    GAME_NOTIFICATION_ROLE, MAX_GAME_PLAYERS, PRIVATE_CHAT_ROLES, PersonalChannelKind,
+    RECRUITMENT_SECONDS, Recruitment, RunningGame, SHAMAN_CHAT_CHANNEL_NAME, SPECTATOR_ROLE,
 };
 use crate::embed::*;
 use anyhow::{Context as AnyhowContext, Result, bail};
@@ -29,6 +29,7 @@ use tokio::sync::{Notify, RwLock};
 use tokio::task::JoinSet;
 
 const LEGACY_FROG_CHAT_CHANNEL_NAME: &str = "개구리-채팅방";
+const DISCORD_WRITE_CONCURRENCY: usize = 4;
 
 const ANIMAL_ALIASES: &[&str] = &[
     "사자",
@@ -98,16 +99,6 @@ pub const NUMBER_AVATAR_COLORS: &[&str] = &[
     "4f46e5", "0f766e", "ea580c", "9333ea", "0284c7", "ca8a04", "be123c", "1d4ed8", "15803d",
     "b45309", "6d28d9", "0369a1", "a21caf", "047857", "c2410c",
 ];
-
-#[derive(Clone, Copy)]
-pub(crate) struct ChannelRoleIds {
-    everyone: serenity::RoleId,
-    participant: Option<serenity::RoleId>,
-    spectator: Option<serenity::RoleId>,
-    manager: Option<serenity::RoleId>,
-    dead: Option<serenity::RoleId>,
-    bot: serenity::UserId,
-}
 
 pub fn sanitize_channel_part(value: &str) -> String {
     value.replace([' ', '/'], "-").to_lowercase()
@@ -267,6 +258,128 @@ pub fn set_chat_permission_bits(overwrite: &mut serenity::PermissionOverwrite, c
     }
 }
 
+fn permission_cache_key(
+    channel_id: serenity::ChannelId,
+    kind: serenity::PermissionOverwriteType,
+) -> Option<(u64, u64, bool)> {
+    match kind {
+        serenity::PermissionOverwriteType::Member(user_id) => {
+            Some((channel_id.get(), user_id.get(), true))
+        }
+        serenity::PermissionOverwriteType::Role(role_id) => {
+            Some((channel_id.get(), role_id.get(), false))
+        }
+        _ => None,
+    }
+}
+
+fn remember_channel_permissions(
+    running: &mut RunningGame,
+    channel_id: serenity::ChannelId,
+    overwrites: &[serenity::PermissionOverwrite],
+) {
+    for overwrite in overwrites {
+        if let Some(key) = permission_cache_key(channel_id, overwrite.kind) {
+            running
+                .permission_overwrite_cache
+                .insert(key, overwrite.clone());
+        }
+    }
+}
+
+fn remembered_permission(
+    running: &RunningGame,
+    channel_id: serenity::ChannelId,
+    kind: serenity::PermissionOverwriteType,
+) -> Option<serenity::PermissionOverwrite> {
+    permission_cache_key(channel_id, kind)
+        .and_then(|key| running.permission_overwrite_cache.get(&key).cloned())
+}
+
+async fn apply_permission_if_changed(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    channel_id: serenity::ChannelId,
+    overwrite: serenity::PermissionOverwrite,
+) -> bool {
+    let key = permission_cache_key(channel_id, overwrite.kind);
+    if let Some(key) = key {
+        let running_read = running.read().await;
+        if running_read.permission_overwrite_cache.get(&key) == Some(&overwrite) {
+            return true;
+        }
+    }
+
+    match channel_id
+        .create_permission(&ctx.http, overwrite.clone())
+        .await
+    {
+        Ok(()) => {
+            if let Some(key) = key {
+                running
+                    .write()
+                    .await
+                    .permission_overwrite_cache
+                    .insert(key, overwrite);
+            }
+            true
+        }
+        Err(error) => {
+            eprintln!(
+                "failed to apply channel permission: channel_id={} kind={:?} error={error:?}",
+                channel_id.get(),
+                overwrite.kind
+            );
+            false
+        }
+    }
+}
+
+async fn apply_permission_updates(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    updates: Vec<(serenity::ChannelId, serenity::PermissionOverwrite)>,
+) {
+    for chunk in updates.chunks(DISCORD_WRITE_CONCURRENCY) {
+        let mut jobs = JoinSet::new();
+        for (channel_id, overwrite) in chunk.iter().cloned() {
+            let ctx = ctx.clone();
+            let running = Arc::clone(running);
+            jobs.spawn(async move {
+                apply_permission_if_changed(&ctx, &running, channel_id, overwrite).await;
+            });
+        }
+        while jobs.join_next().await.is_some() {}
+    }
+}
+
+async fn delete_permission_and_invalidate(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    channel_id: serenity::ChannelId,
+    kind: serenity::PermissionOverwriteType,
+) -> bool {
+    match channel_id.delete_permission(&ctx.http, kind).await {
+        Ok(()) => {
+            if let Some(key) = permission_cache_key(channel_id, kind) {
+                running
+                    .write()
+                    .await
+                    .permission_overwrite_cache
+                    .remove(&key);
+            }
+            true
+        }
+        Err(error) => {
+            eprintln!(
+                "failed to delete channel permission: channel_id={} kind={kind:?} error={error:?}",
+                channel_id.get()
+            );
+            false
+        }
+    }
+}
+
 pub fn private_channel_overwrite(
     kind: serenity::PermissionOverwriteType,
     can_chat: bool,
@@ -413,6 +526,50 @@ pub async fn source_category(
         }
         _ => channel.parent_id,
     }
+}
+
+pub async fn running_source_category(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+) -> Option<serenity::ChannelId> {
+    if let Some(category_id) = running.read().await.source_category_id {
+        return category_id;
+    }
+    let channel_id = running.read().await.channel_id;
+    let category_id = source_category(ctx, channel_id).await;
+    let mut running_write = running.write().await;
+    if running_write.source_category_id.is_none() {
+        running_write.source_category_id = Some(category_id);
+    }
+    running_write.source_category_id.flatten()
+}
+
+async fn verify_game_member(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    user_id: u64,
+) -> serenity::Result<()> {
+    if running.read().await.verified_member_ids.contains(&user_id) {
+        return Ok(());
+    }
+    let guild_id = running.read().await.guild_id;
+    guild_id.member(ctx, serenity::UserId::new(user_id)).await?;
+    running.write().await.verified_member_ids.insert(user_id);
+    Ok(())
+}
+
+async fn personal_channel_creation_lock(
+    running: &Arc<RwLock<RunningGame>>,
+    user_id: u64,
+    kind: PersonalChannelKind,
+) -> Arc<tokio::sync::Mutex<()>> {
+    running
+        .write()
+        .await
+        .personal_channel_creation_locks
+        .entry((user_id, kind))
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1623,6 +1780,11 @@ pub async fn setup_game_channels(
     };
     let roles = channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await?;
     let category = source_category(ctx, channel_id).await;
+    {
+        let mut running_write = running.write().await;
+        running_write.channel_role_ids = Some(roles);
+        running_write.source_category_id = Some(category);
+    }
 
     set_spectator_game_channel_access(ctx, running, roles).await;
     create_anonymous_chat_channels(ctx, running, &config, roles, category).await?;
@@ -1680,26 +1842,28 @@ pub async fn hide_original_game_channel_for_anonymous(
             .entry(roles.bot.get())
             .or_insert(bot_original);
     }
-    let _ = channel_id
-        .create_permission(
-            &ctx.http,
-            anonymous_input_overwrite(
-                serenity::PermissionOverwriteType::Role(participant_role_id),
-                false,
-                false,
-            ),
-        )
-        .await;
-    let _ = channel_id
-        .create_permission(
-            &ctx.http,
-            anonymous_input_overwrite(
-                serenity::PermissionOverwriteType::Member(roles.bot),
-                true,
-                true,
-            ),
-        )
-        .await;
+    apply_permission_if_changed(
+        ctx,
+        running,
+        channel_id,
+        anonymous_input_overwrite(
+            serenity::PermissionOverwriteType::Role(participant_role_id),
+            false,
+            false,
+        ),
+    )
+    .await;
+    apply_permission_if_changed(
+        ctx,
+        running,
+        channel_id,
+        anonymous_input_overwrite(
+            serenity::PermissionOverwriteType::Member(roles.bot),
+            true,
+            true,
+        ),
+    )
+    .await;
 }
 
 pub async fn set_spectator_game_channel_access(
@@ -1732,9 +1896,13 @@ pub async fn set_spectator_game_channel_access(
             .entry(spectator_role_id)
             .or_insert_with(|| original.clone());
     }
-    let _ = channel_id
-        .create_permission(&ctx.http, spectator_channel_overwrite(spectator_role_id))
-        .await;
+    apply_permission_if_changed(
+        ctx,
+        running,
+        channel_id,
+        spectator_channel_overwrite(spectator_role_id),
+    )
+    .await;
 }
 
 pub async fn create_anonymous_chat_channels(
@@ -1771,10 +1939,7 @@ pub async fn create_anonymous_chat_channels(
                 can_use_anonymous_general_chat(&running_read, player_state),
             )
         };
-        if let Err(error) = guild_id
-            .member(ctx, serenity::UserId::new(player.user_id))
-            .await
-        {
+        if let Err(error) = verify_game_member(ctx, running, player.user_id).await {
             eprintln!(
                 "failed to resolve anonymous chat member: guild_id={} user_id={} player={:?} error={error:?}",
                 guild_id.get(),
@@ -1791,6 +1956,7 @@ pub async fn create_anonymous_chat_channels(
             true,
             can_chat,
         ));
+        let initial_overwrites = overwrites.clone();
         let Some(input_channel) = create_text_channel_safe(
             ctx,
             guild_id,
@@ -1814,6 +1980,7 @@ pub async fn create_anonymous_chat_channels(
             running_write
                 .anonymous_input_channel_owners
                 .insert(input_channel.id, player.user_id);
+            remember_channel_permissions(&mut running_write, input_channel.id, &initial_overwrites);
         }
         let _ = send_channel_embed(
             &ctx.http,
@@ -2112,11 +2279,7 @@ pub async fn create_anonymous_role_channels(
                     can_use_anonymous_role_chat(&running_read, player, role),
                 )
             };
-            if guild_id
-                .member(ctx, serenity::UserId::new(user_id))
-                .await
-                .is_err()
-            {
+            if verify_game_member(ctx, running, user_id).await.is_err() {
                 continue;
             }
             let mut overwrites = anonymous_base_overwrites(roles, false, false, false, false);
@@ -2125,6 +2288,7 @@ pub async fn create_anonymous_role_channels(
                 true,
                 can_chat,
             ));
+            let initial_overwrites = overwrites.clone();
             let topic = format!("{} 익명 채팅 | {status_text}", role.value());
             let Some(channel) = create_text_channel_safe(
                 ctx,
@@ -2151,6 +2315,7 @@ pub async fn create_anonymous_role_channels(
                 running_write
                     .anonymous_channel_topics
                     .insert(channel.id, topic.chars().take(1024).collect::<String>());
+                remember_channel_permissions(&mut running_write, channel.id, &initial_overwrites);
             }
             let _ = send_channel_embed(
                 &ctx.http,
@@ -2247,8 +2412,7 @@ pub async fn create_private_role_channels(
         let mut overwrites = Vec::new();
         add_common_hidden_overwrites(&mut overwrites, roles, true);
         for player in players {
-            if guild_id
-                .member(ctx, serenity::UserId::new(player.user_id))
+            if verify_game_member(ctx, running, player.user_id)
                 .await
                 .is_err()
             {
@@ -2264,6 +2428,7 @@ pub async fn create_private_role_channels(
             ));
         }
 
+        let initial_overwrites = overwrites.clone();
         let Some(private_channel) = create_text_channel_safe(
             ctx,
             guild_id,
@@ -2279,11 +2444,17 @@ pub async fn create_private_role_channels(
             failed_roles.push(role);
             continue;
         };
-        running
-            .write()
-            .await
-            .private_channel_ids
-            .insert(role, private_channel.id);
+        {
+            let mut running_write = running.write().await;
+            running_write
+                .private_channel_ids
+                .insert(role, private_channel.id);
+            remember_channel_permissions(
+                &mut running_write,
+                private_channel.id,
+                &initial_overwrites,
+            );
+        }
         let _ = send_channel_embed(
             &ctx.http,
             private_channel.id,
@@ -2640,6 +2811,18 @@ pub async fn ensure_memo_channel(
     {
         return Some(channel_id);
     }
+    let creation_lock =
+        personal_channel_creation_lock(running, player.user_id, PersonalChannelKind::Memo).await;
+    let creation_guard = creation_lock.lock().await;
+    if let Some(channel_id) = running
+        .read()
+        .await
+        .memo_channel_ids
+        .get(&player.user_id)
+        .copied()
+    {
+        return Some(channel_id);
+    }
     let (guild_id, display_name) = {
         let running_read = running.read().await;
         (
@@ -2647,8 +2830,7 @@ pub async fn ensure_memo_channel(
             status_display_name(&running_read, player),
         )
     };
-    if guild_id
-        .member(ctx, serenity::UserId::new(player.user_id))
+    if verify_game_member(ctx, running, player.user_id)
         .await
         .is_err()
     {
@@ -2660,6 +2842,7 @@ pub async fn ensure_memo_channel(
         serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
         true,
     ));
+    let initial_overwrites = overwrites.clone();
     let channel = create_text_channel_safe(
         ctx,
         guild_id,
@@ -2671,11 +2854,14 @@ pub async fn ensure_memo_channel(
         None,
     )
     .await?;
-    running
-        .write()
-        .await
-        .memo_channel_ids
-        .insert(player.user_id, channel.id);
+    {
+        let mut running_write = running.write().await;
+        running_write
+            .memo_channel_ids
+            .insert(player.user_id, channel.id);
+        remember_channel_permissions(&mut running_write, channel.id, &initial_overwrites);
+    }
+    drop(creation_guard);
     let _ = send_channel_embed(
         &ctx.http,
         channel.id,
@@ -2696,7 +2882,7 @@ pub async fn ensure_anonymous_dead_input_channel(
     category: Option<serenity::ChannelId>,
     can_chat: bool,
 ) -> Option<serenity::ChannelId> {
-    let (guild_id, alias) = {
+    let (guild_id, alias, existing_channel_id) = {
         let running_read = running.read().await;
         if !is_game_channel_creation_allowed(running_read.game.phase) {
             return None;
@@ -2712,62 +2898,94 @@ pub async fn ensure_anonymous_dead_input_channel(
             } else {
                 player.name.clone()
             },
+            running_read
+                .anonymous_dead_input_channel_ids
+                .get(&player.user_id)
+                .copied(),
         )
     };
-    if guild_id
-        .member(ctx, serenity::UserId::new(player.user_id))
+    if let Some(channel_id) = existing_channel_id {
+        apply_permission_if_changed(
+            ctx,
+            running,
+            channel_id,
+            anonymous_input_overwrite(
+                serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
+                true,
+                can_chat,
+            ),
+        )
+        .await;
+        return Some(channel_id);
+    }
+    let creation_lock =
+        personal_channel_creation_lock(running, player.user_id, PersonalChannelKind::Dead).await;
+    let creation_guard = creation_lock.lock().await;
+    {
+        let running_read = running.read().await;
+        if !is_game_channel_creation_allowed(running_read.game.phase) {
+            return None;
+        }
+        if let Some(channel_id) = running_read
+            .anonymous_dead_input_channel_ids
+            .get(&player.user_id)
+            .copied()
+        {
+            drop(running_read);
+            apply_permission_if_changed(
+                ctx,
+                running,
+                channel_id,
+                anonymous_input_overwrite(
+                    serenity::PermissionOverwriteType::Member(serenity::UserId::new(
+                        player.user_id,
+                    )),
+                    true,
+                    can_chat,
+                ),
+            )
+            .await;
+            return Some(channel_id);
+        }
+    }
+    if verify_game_member(ctx, running, player.user_id)
         .await
         .is_err()
     {
         return None;
     }
     let channel_name = format!("{}-사망자-채팅", sanitize_channel_part(&alias));
-    let mut running_write = running.write().await;
-    if !is_game_channel_creation_allowed(running_write.game.phase) {
-        return None;
-    }
-    if let Some(channel_id) = running_write
-        .anonymous_dead_input_channel_ids
-        .get(&player.user_id)
-        .copied()
-    {
-        drop(running_write);
-        let _ = channel_id
-            .create_permission(
-                &ctx.http,
-                anonymous_input_overwrite(
-                    serenity::PermissionOverwriteType::Member(serenity::UserId::new(
-                        player.user_id,
-                    )),
-                    true,
-                    can_chat,
-                ),
-            )
-            .await;
-        return Some(channel_id);
-    }
-
     if let Some(channel) = find_text_channel_by_name(ctx, guild_id, &channel_name, category).await {
         let channel_id = channel.id;
-        running_write
-            .anonymous_dead_input_channel_ids
-            .insert(player.user_id, channel_id);
-        running_write
-            .anonymous_dead_input_channel_owners
-            .insert(channel_id, player.user_id);
-        drop(running_write);
-        let _ = channel_id
-            .create_permission(
-                &ctx.http,
-                anonymous_input_overwrite(
-                    serenity::PermissionOverwriteType::Member(serenity::UserId::new(
-                        player.user_id,
-                    )),
-                    true,
-                    can_chat,
-                ),
-            )
-            .await;
+        {
+            let mut running_write = running.write().await;
+            if !is_game_channel_creation_allowed(running_write.game.phase) {
+                return None;
+            }
+            running_write
+                .anonymous_dead_input_channel_ids
+                .insert(player.user_id, channel_id);
+            running_write
+                .anonymous_dead_input_channel_owners
+                .insert(channel_id, player.user_id);
+            remember_channel_permissions(
+                &mut running_write,
+                channel_id,
+                &channel.permission_overwrites,
+            );
+        }
+        drop(creation_guard);
+        apply_permission_if_changed(
+            ctx,
+            running,
+            channel_id,
+            anonymous_input_overwrite(
+                serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
+                true,
+                can_chat,
+            ),
+        )
+        .await;
         return Some(channel_id);
     }
 
@@ -2777,6 +2995,7 @@ pub async fn ensure_anonymous_dead_input_channel(
         true,
         can_chat,
     ));
+    let initial_overwrites = overwrites.clone();
     let channel = create_text_channel_safe(
         ctx,
         guild_id,
@@ -2788,13 +3007,26 @@ pub async fn ensure_anonymous_dead_input_channel(
         None,
     )
     .await?;
-    running_write
-        .anonymous_dead_input_channel_ids
-        .insert(player.user_id, channel.id);
-    running_write
-        .anonymous_dead_input_channel_owners
-        .insert(channel.id, player.user_id);
-    drop(running_write);
+    let keep_channel = {
+        let mut running_write = running.write().await;
+        if is_game_channel_creation_allowed(running_write.game.phase) {
+            running_write
+                .anonymous_dead_input_channel_ids
+                .insert(player.user_id, channel.id);
+            running_write
+                .anonymous_dead_input_channel_owners
+                .insert(channel.id, player.user_id);
+            remember_channel_permissions(&mut running_write, channel.id, &initial_overwrites);
+            true
+        } else {
+            false
+        }
+    };
+    drop(creation_guard);
+    if !keep_channel {
+        let _ = channel.delete(&ctx.http).await;
+        return None;
+    }
     let _ = send_channel_embed(
         &ctx.http,
         channel.id,
@@ -2819,7 +3051,7 @@ pub async fn ensure_anonymous_shaman_input_channel(
     category: Option<serenity::ChannelId>,
     can_chat: bool,
 ) -> Option<serenity::ChannelId> {
-    let (guild_id, alias) = {
+    let (guild_id, alias, existing_channel_id) = {
         let running_read = running.read().await;
         if !running_read.anonymous_enabled
             || !is_game_channel_creation_allowed(running_read.game.phase)
@@ -2833,62 +3065,98 @@ pub async fn ensure_anonymous_shaman_input_channel(
                 .get(&player.user_id)
                 .cloned()
                 .unwrap_or_else(|| player.user_id.to_string()),
+            running_read
+                .anonymous_shaman_input_channel_ids
+                .get(&player.user_id)
+                .copied(),
         )
     };
-    if guild_id
-        .member(ctx, serenity::UserId::new(player.user_id))
+    if let Some(channel_id) = existing_channel_id {
+        apply_permission_if_changed(
+            ctx,
+            running,
+            channel_id,
+            anonymous_input_overwrite(
+                serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
+                true,
+                can_chat,
+            ),
+        )
+        .await;
+        return Some(channel_id);
+    }
+    let creation_lock =
+        personal_channel_creation_lock(running, player.user_id, PersonalChannelKind::Shaman).await;
+    let creation_guard = creation_lock.lock().await;
+    {
+        let running_read = running.read().await;
+        if !running_read.anonymous_enabled
+            || !is_game_channel_creation_allowed(running_read.game.phase)
+        {
+            return None;
+        }
+        if let Some(channel_id) = running_read
+            .anonymous_shaman_input_channel_ids
+            .get(&player.user_id)
+            .copied()
+        {
+            drop(running_read);
+            apply_permission_if_changed(
+                ctx,
+                running,
+                channel_id,
+                anonymous_input_overwrite(
+                    serenity::PermissionOverwriteType::Member(serenity::UserId::new(
+                        player.user_id,
+                    )),
+                    true,
+                    can_chat,
+                ),
+            )
+            .await;
+            return Some(channel_id);
+        }
+    }
+    if verify_game_member(ctx, running, player.user_id)
         .await
         .is_err()
     {
         return None;
     }
     let channel_name = format!("{}-영매-채팅", sanitize_channel_part(&alias));
-    let mut running_write = running.write().await;
-    if !is_game_channel_creation_allowed(running_write.game.phase) {
-        return None;
-    }
-    if let Some(channel_id) = running_write
-        .anonymous_shaman_input_channel_ids
-        .get(&player.user_id)
-        .copied()
-    {
-        drop(running_write);
-        let _ = channel_id
-            .create_permission(
-                &ctx.http,
-                anonymous_input_overwrite(
-                    serenity::PermissionOverwriteType::Member(serenity::UserId::new(
-                        player.user_id,
-                    )),
-                    true,
-                    can_chat,
-                ),
-            )
-            .await;
-        return Some(channel_id);
-    }
-
     if let Some(channel) = find_text_channel_by_name(ctx, guild_id, &channel_name, category).await {
         let channel_id = channel.id;
-        running_write
-            .anonymous_shaman_input_channel_ids
-            .insert(player.user_id, channel_id);
-        running_write
-            .anonymous_shaman_input_channel_owners
-            .insert(channel_id, player.user_id);
-        drop(running_write);
-        let _ = channel_id
-            .create_permission(
-                &ctx.http,
-                anonymous_input_overwrite(
-                    serenity::PermissionOverwriteType::Member(serenity::UserId::new(
-                        player.user_id,
-                    )),
-                    true,
-                    can_chat,
-                ),
-            )
-            .await;
+        {
+            let mut running_write = running.write().await;
+            if !running_write.anonymous_enabled
+                || !is_game_channel_creation_allowed(running_write.game.phase)
+            {
+                return None;
+            }
+            running_write
+                .anonymous_shaman_input_channel_ids
+                .insert(player.user_id, channel_id);
+            running_write
+                .anonymous_shaman_input_channel_owners
+                .insert(channel_id, player.user_id);
+            remember_channel_permissions(
+                &mut running_write,
+                channel_id,
+                &channel.permission_overwrites,
+            );
+        }
+        drop(creation_guard);
+        apply_permission_if_changed(
+            ctx,
+            running,
+            channel_id,
+            anonymous_input_overwrite(
+                serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
+                true,
+                can_chat,
+            ),
+        )
+        .await;
         return Some(channel_id);
     }
 
@@ -2898,6 +3166,7 @@ pub async fn ensure_anonymous_shaman_input_channel(
         true,
         can_chat,
     ));
+    let initial_overwrites = overwrites.clone();
     let channel = create_text_channel_safe(
         ctx,
         guild_id,
@@ -2909,13 +3178,28 @@ pub async fn ensure_anonymous_shaman_input_channel(
         None,
     )
     .await?;
-    running_write
-        .anonymous_shaman_input_channel_ids
-        .insert(player.user_id, channel.id);
-    running_write
-        .anonymous_shaman_input_channel_owners
-        .insert(channel.id, player.user_id);
-    drop(running_write);
+    let keep_channel = {
+        let mut running_write = running.write().await;
+        if running_write.anonymous_enabled
+            && is_game_channel_creation_allowed(running_write.game.phase)
+        {
+            running_write
+                .anonymous_shaman_input_channel_ids
+                .insert(player.user_id, channel.id);
+            running_write
+                .anonymous_shaman_input_channel_owners
+                .insert(channel.id, player.user_id);
+            remember_channel_permissions(&mut running_write, channel.id, &initial_overwrites);
+            true
+        } else {
+            false
+        }
+    };
+    drop(creation_guard);
+    if !keep_channel {
+        let _ = channel.delete(&ctx.http).await;
+        return None;
+    }
     let _ = send_channel_embed(
         &ctx.http,
         channel.id,
@@ -3023,8 +3307,7 @@ pub async fn create_shaman_chat_channel(
         true,
     ));
     for player in shamans {
-        if guild_id
-            .member(ctx, serenity::UserId::new(player.user_id))
+        if verify_game_member(ctx, running, player.user_id)
             .await
             .is_ok()
         {
@@ -3035,6 +3318,7 @@ pub async fn create_shaman_chat_channel(
             ));
         }
     }
+    let initial_overwrites = overwrites.clone();
 
     let Some(channel) = create_text_channel_safe(
         ctx,
@@ -3060,7 +3344,11 @@ pub async fn create_shaman_chat_channel(
         .await;
         return Ok(());
     };
-    running.write().await.shaman_channel_id = Some(channel.id);
+    {
+        let mut running_write = running.write().await;
+        running_write.shaman_channel_id = Some(channel.id);
+        remember_channel_permissions(&mut running_write, channel.id, &initial_overwrites);
+    }
     let _ = send_channel_embed(
         &ctx.http,
         channel.id,
@@ -3102,20 +3390,28 @@ pub async fn deny_frog_game_channel_chat(
         return;
     }
     let channel_id = running.read().await.channel_id;
-    let Some(channel) = channel_id
-        .to_channel(&ctx.http)
-        .await
-        .ok()
-        .and_then(|channel| channel.guild())
-    else {
-        return;
-    };
     let kind = serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id));
-    let current = channel
-        .permission_overwrites
-        .iter()
-        .find(|overwrite| overwrite.kind == kind)
-        .cloned();
+    let remembered = {
+        let running_read = running.read().await;
+        remembered_permission(&running_read, channel_id, kind)
+    };
+    let current = if remembered.is_some() {
+        remembered
+    } else {
+        let Some(channel) = channel_id
+            .to_channel(&ctx.http)
+            .await
+            .ok()
+            .and_then(|channel| channel.guild())
+        else {
+            return;
+        };
+        channel
+            .permission_overwrites
+            .iter()
+            .find(|overwrite| overwrite.kind == kind)
+            .cloned()
+    };
     {
         let mut running_write = running.write().await;
         running_write
@@ -3129,7 +3425,7 @@ pub async fn deny_frog_game_channel_chat(
         kind,
     });
     set_chat_permission_bits(&mut overwrite, false);
-    let _ = channel_id.create_permission(&ctx.http, overwrite).await;
+    apply_permission_if_changed(ctx, running, channel_id, overwrite).await;
 }
 
 pub async fn restore_frog_game_channel_permission(
@@ -3149,10 +3445,10 @@ pub async fn restore_frog_game_channel_permission(
     let kind = serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id));
     match original {
         Some(Some(overwrite)) => {
-            let _ = channel_id.create_permission(&ctx.http, overwrite).await;
+            apply_permission_if_changed(ctx, running, channel_id, overwrite).await;
         }
         Some(None) => {
-            let _ = channel_id.delete_permission(&ctx.http, kind).await;
+            delete_permission_and_invalidate(ctx, running, channel_id, kind).await;
         }
         None => {}
     }
@@ -3198,26 +3494,44 @@ pub async fn sync_madam_seduction_permissions(
                 .collect::<HashSet<_>>(),
         )
     };
-    let Some(channel) = channel_id
-        .to_channel(&ctx.http)
-        .await
-        .ok()
-        .and_then(|channel| channel.guild())
-    else {
-        running
-            .write()
+    let remembered = {
+        let running_read = running.read().await;
+        seduced_ids
+            .iter()
+            .map(|user_id| {
+                let kind =
+                    serenity::PermissionOverwriteType::Member(serenity::UserId::new(*user_id));
+                (
+                    *user_id,
+                    remembered_permission(&running_read, channel_id, kind),
+                )
+            })
+            .collect::<HashMap<_, _>>()
+    };
+    let channel = if remembered.values().any(Option::is_none) {
+        let Some(channel) = channel_id
+            .to_channel(&ctx.http)
             .await
-            .madam_seduction_channel_overwrites
-            .clear();
-        return;
+            .ok()
+            .and_then(|channel| channel.guild())
+        else {
+            return;
+        };
+        Some(channel)
+    } else {
+        None
     };
     for user_id in &seduced_ids {
         let kind = serenity::PermissionOverwriteType::Member(serenity::UserId::new(*user_id));
-        let original = channel
-            .permission_overwrites
-            .iter()
-            .find(|overwrite| overwrite.kind == kind)
-            .cloned();
+        let original = remembered.get(user_id).cloned().flatten().or_else(|| {
+            channel.as_ref().and_then(|channel| {
+                channel
+                    .permission_overwrites
+                    .iter()
+                    .find(|overwrite| overwrite.kind == kind)
+                    .cloned()
+            })
+        });
         {
             let mut running_write = running.write().await;
             running_write
@@ -3231,7 +3545,7 @@ pub async fn sync_madam_seduction_permissions(
             kind,
         });
         set_chat_permission_bits(&mut overwrite, false);
-        let _ = channel_id.create_permission(&ctx.http, overwrite).await;
+        apply_permission_if_changed(ctx, running, channel_id, overwrite).await;
     }
 
     let restore_ids = {
@@ -3265,10 +3579,10 @@ pub async fn restore_madam_seduction_permission(
     let kind = serenity::PermissionOverwriteType::Member(serenity::UserId::new(user_id));
     match original {
         Some(Some(overwrite)) => {
-            let _ = channel_id.create_permission(&ctx.http, overwrite).await;
+            apply_permission_if_changed(ctx, running, channel_id, overwrite).await;
         }
         Some(None) => {
-            let _ = channel_id.delete_permission(&ctx.http, kind).await;
+            delete_permission_and_invalidate(ctx, running, channel_id, kind).await;
         }
         None => {}
     }
@@ -3306,16 +3620,17 @@ pub async fn set_shaman_channel_member_access(
         (channel_id, running_read.anonymous_enabled)
     };
     let (can_view, can_chat) = shared_shaman_member_access(anonymous_enabled, can_view, can_chat);
-    let _ = channel_id
-        .create_permission(
-            &ctx.http,
-            dead_channel_overwrite(
-                serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
-                can_view,
-                can_chat,
-            ),
-        )
-        .await;
+    apply_permission_if_changed(
+        ctx,
+        running,
+        channel_id,
+        dead_channel_overwrite(
+            serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
+            can_view,
+            can_chat,
+        ),
+    )
+    .await;
     upsert_shaman_chat_status(ctx, running).await;
 }
 
@@ -3336,12 +3651,11 @@ pub async fn sync_shaman_chat_access(
     data: &Data,
     running: &Arc<RwLock<RunningGame>>,
 ) {
-    let (has_shaman_channel, anonymous_enabled, source_channel_id, players) = {
+    let (has_shaman_channel, anonymous_enabled, players) = {
         let running_read = running.read().await;
         (
             running_read.shaman_channel_id.is_some(),
             running_read.anonymous_enabled,
-            running_read.channel_id,
             running_read
                 .game
                 .players
@@ -3361,7 +3675,7 @@ pub async fn sync_shaman_chat_access(
     }
     let anonymous_context = if anonymous_enabled {
         let roles = running_channel_roles(ctx, data, running).await;
-        let category = source_category(ctx, source_channel_id).await;
+        let category = running_source_category(ctx, running).await;
         roles.map(|roles| (roles, category))
     } else {
         None
@@ -3407,11 +3721,10 @@ pub async fn set_anonymous_role_channel_access(
     can_view: bool,
     can_chat: bool,
 ) {
-    let (guild_id, source_channel_id, existing_channel_id, alias, status_text) = {
+    let (guild_id, mut existing_channel_id, alias, status_text) = {
         let running_read = running.read().await;
         (
             running_read.guild_id,
-            running_read.channel_id,
             running_read
                 .anonymous_role_input_channel_ids
                 .get(&(player.user_id, role))
@@ -3424,23 +3737,51 @@ pub async fn set_anonymous_role_channel_access(
             role_channel_status_text(&running_read, role),
         )
     };
-    if guild_id
-        .member(ctx, serenity::UserId::new(player.user_id))
-        .await
-        .is_err()
-    {
-        return;
+    let creation_lock = if existing_channel_id.is_none() && can_view {
+        Some(
+            personal_channel_creation_lock(
+                running,
+                player.user_id,
+                PersonalChannelKind::Role(role),
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    let creation_guard = if let Some(lock) = creation_lock.as_ref() {
+        Some(lock.lock().await)
+    } else {
+        None
+    };
+    if existing_channel_id.is_none() {
+        existing_channel_id = running
+            .read()
+            .await
+            .anonymous_role_input_channel_ids
+            .get(&(player.user_id, role))
+            .copied();
+    }
+    if existing_channel_id.is_none() {
+        if !can_view
+            || verify_game_member(ctx, running, player.user_id)
+                .await
+                .is_err()
+        {
+            return;
+        }
     }
     let channel_id = if let Some(channel_id) = existing_channel_id {
         channel_id
     } else if can_view {
-        let category = source_category(ctx, source_channel_id).await;
+        let category = running_source_category(ctx, running).await;
         let mut overwrites = anonymous_base_overwrites(roles, false, false, false, false);
         overwrites.push(anonymous_input_overwrite(
             serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
             true,
             can_chat,
         ));
+        let initial_overwrites = overwrites.clone();
         let Some(channel) = create_text_channel_safe(
             ctx,
             guild_id,
@@ -3455,21 +3796,33 @@ pub async fn set_anonymous_role_channel_access(
         else {
             return;
         };
-        {
+        let keep_channel = {
             let mut running_write = running.write().await;
-            running_write
-                .anonymous_role_input_channel_ids
-                .insert((player.user_id, role), channel.id);
-            running_write
-                .anonymous_role_input_channels
-                .insert(channel.id, (player.user_id, role));
-            running_write.anonymous_channel_topics.insert(
-                channel.id,
-                format!("{} 익명 채팅 | {status_text}", role.value())
-                    .chars()
-                    .take(1024)
-                    .collect::<String>(),
-            );
+            if running_write.anonymous_enabled
+                && is_game_channel_creation_allowed(running_write.game.phase)
+            {
+                running_write
+                    .anonymous_role_input_channel_ids
+                    .insert((player.user_id, role), channel.id);
+                running_write
+                    .anonymous_role_input_channels
+                    .insert(channel.id, (player.user_id, role));
+                running_write.anonymous_channel_topics.insert(
+                    channel.id,
+                    format!("{} 익명 채팅 | {status_text}", role.value())
+                        .chars()
+                        .take(1024)
+                        .collect::<String>(),
+                );
+                remember_channel_permissions(&mut running_write, channel.id, &initial_overwrites);
+                true
+            } else {
+                false
+            }
+        };
+        if !keep_channel {
+            let _ = channel.delete(&ctx.http).await;
+            return;
         }
         let (message, title) = if can_chat {
             (
@@ -3519,16 +3872,18 @@ pub async fn set_anonymous_role_channel_access(
     } else {
         return;
     };
-    let _ = channel_id
-        .create_permission(
-            &ctx.http,
-            anonymous_input_overwrite(
-                serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
-                can_view,
-                can_chat,
-            ),
-        )
-        .await;
+    drop(creation_guard);
+    apply_permission_if_changed(
+        ctx,
+        running,
+        channel_id,
+        anonymous_input_overwrite(
+            serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
+            can_view,
+            can_chat,
+        ),
+    )
+    .await;
 }
 
 pub async fn set_private_role_member_view_access(
@@ -3546,16 +3901,17 @@ pub async fn set_private_role_member_view_access(
     let Some(channel_id) = running.read().await.private_channel_ids.get(&role).copied() else {
         return;
     };
-    let _ = channel_id
-        .create_permission(
-            &ctx.http,
-            dead_channel_overwrite(
-                serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
-                can_view,
-                can_chat,
-            ),
-        )
-        .await;
+    apply_permission_if_changed(
+        ctx,
+        running,
+        channel_id,
+        dead_channel_overwrite(
+            serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
+            can_view,
+            can_chat,
+        ),
+    )
+    .await;
     upsert_private_role_status_message(ctx, running, role).await;
 }
 
@@ -3573,15 +3929,16 @@ pub async fn set_private_role_member_access(
     let Some(channel_id) = running.read().await.private_channel_ids.get(&role).copied() else {
         return;
     };
-    let _ = channel_id
-        .create_permission(
-            &ctx.http,
-            private_channel_overwrite(
-                serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
-                can_chat,
-            ),
-        )
-        .await;
+    apply_permission_if_changed(
+        ctx,
+        running,
+        channel_id,
+        private_channel_overwrite(
+            serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
+            can_chat,
+        ),
+    )
+    .await;
     upsert_private_role_status_message(ctx, running, role).await;
 }
 
@@ -3608,18 +3965,19 @@ pub async fn disable_private_role_channels_for_player(
     };
     if let Some(updates) = anonymous_updates {
         for (role, channel_id) in updates {
-            let _ = channel_id
-                .create_permission(
-                    &ctx.http,
-                    anonymous_input_overwrite(
-                        serenity::PermissionOverwriteType::Member(serenity::UserId::new(
-                            player.user_id,
-                        )),
-                        false,
-                        false,
-                    ),
-                )
-                .await;
+            apply_permission_if_changed(
+                ctx,
+                running,
+                channel_id,
+                anonymous_input_overwrite(
+                    serenity::PermissionOverwriteType::Member(serenity::UserId::new(
+                        player.user_id,
+                    )),
+                    false,
+                    false,
+                ),
+            )
+            .await;
             upsert_anonymous_role_status_message(
                 ctx,
                 running,
@@ -3805,11 +4163,19 @@ pub async fn running_channel_roles(
     data: &Data,
     running: &Arc<RwLock<RunningGame>>,
 ) -> Option<ChannelRoleIds> {
+    if let Some(roles) = running.read().await.channel_role_ids {
+        return Some(roles);
+    }
     let config = data.config.read().await.clone();
     let guild_id = running.read().await.guild_id;
-    channel_role_ids(ctx, guild_id, &config, data.bot_user_id)
+    let roles = channel_role_ids(ctx, guild_id, &config, data.bot_user_id)
         .await
-        .ok()
+        .ok()?;
+    let mut running_write = running.write().await;
+    if running_write.channel_role_ids.is_none() {
+        running_write.channel_role_ids = Some(roles);
+    }
+    running_write.channel_role_ids
 }
 
 pub async fn sync_lover_chat_access(
@@ -4001,6 +4367,54 @@ pub async fn sync_scientist_mafia_permissions(
     }
 }
 
+fn swapped_member_roles(
+    member_roles: &[serenity::RoleId],
+    remove_role: Option<serenity::RoleId>,
+    add_role: Option<serenity::RoleId>,
+) -> Option<Vec<serenity::RoleId>> {
+    let mut roles = member_roles
+        .iter()
+        .copied()
+        .filter(|role_id| Some(*role_id) != remove_role)
+        .collect::<Vec<_>>();
+    if let Some(role_id) = add_role
+        && !roles.contains(&role_id)
+    {
+        roles.push(role_id);
+    }
+    (roles != member_roles).then_some(roles)
+}
+
+async fn swap_member_game_roles(
+    ctx: &serenity::Context,
+    guild_id: serenity::GuildId,
+    member: &serenity::Member,
+    remove_role: Option<serenity::RoleId>,
+    add_role: Option<serenity::RoleId>,
+) -> bool {
+    let Some(roles) = swapped_member_roles(&member.roles, remove_role, add_role) else {
+        return true;
+    };
+    match guild_id
+        .edit_member(
+            &ctx.http,
+            member.user.id,
+            serenity::EditMember::new().roles(roles),
+        )
+        .await
+    {
+        Ok(_) => true,
+        Err(error) => {
+            eprintln!(
+                "failed to swap game roles: guild_id={} user_id={} remove={remove_role:?} add={add_role:?} error={error:?}",
+                guild_id.get(),
+                member.user.id.get()
+            );
+            false
+        }
+    }
+}
+
 pub async fn restore_revived_player_roles(
     ctx: &serenity::Context,
     running: &Arc<RwLock<RunningGame>>,
@@ -4022,12 +4436,7 @@ pub async fn restore_revived_player_roles(
         .member(ctx, serenity::UserId::new(player.user_id))
         .await
     {
-        if let Some(participant_role_id) = roles.participant {
-            let _ = member.add_role(ctx, participant_role_id).await;
-        }
-        if let Some(dead_role_id) = roles.dead {
-            let _ = member.remove_role(ctx, dead_role_id).await;
-        }
+        swap_member_game_roles(ctx, guild_id, &member, roles.dead, roles.participant).await;
     }
     set_shaman_channel_member_access(ctx, running, player, false, false).await;
     let anonymous_channel_ids = {
@@ -4044,18 +4453,17 @@ pub async fn restore_revived_player_roles(
         ]
     };
     for channel_id in anonymous_channel_ids.into_iter().flatten() {
-        let _ = channel_id
-            .create_permission(
-                &ctx.http,
-                anonymous_input_overwrite(
-                    serenity::PermissionOverwriteType::Member(serenity::UserId::new(
-                        player.user_id,
-                    )),
-                    false,
-                    false,
-                ),
-            )
-            .await;
+        apply_permission_if_changed(
+            ctx,
+            running,
+            channel_id,
+            anonymous_input_overwrite(
+                serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
+                false,
+                false,
+            ),
+        )
+        .await;
     }
     restore_frog_game_channel_permission(ctx, running, player).await;
     let grant_roles = {
@@ -4120,20 +4528,12 @@ pub async fn apply_purification_side_effects(
                 .remove(user_id);
         }
     }
-    let config = data.config.read().await.clone();
-    let (guild_id, channel_id, anonymous_enabled) = {
-        let running_read = running.read().await;
-        (
-            running_read.guild_id,
-            running_read.channel_id,
-            running_read.anonymous_enabled,
-        )
+    let anonymous_enabled = running.read().await.anonymous_enabled;
+    let roles = match running_channel_roles(ctx, data, running).await {
+        Some(roles) => roles,
+        None => return,
     };
-    let roles = match channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await {
-        Ok(roles) => roles,
-        Err(_) => return,
-    };
-    let category = source_category(ctx, channel_id).await;
+    let category = running_source_category(ctx, running).await;
     for user_id in purified_user_ids {
         let player = running.read().await.game.get_player(*user_id).cloned();
         let Some(player) = player else {
@@ -4385,37 +4785,45 @@ pub async fn cleanup_game(
                 .collect::<Vec<_>>(),
         )
     };
-    let config = data.config.read().await.clone();
-    if let Ok(roles) = channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await {
+    if let Some(roles) = running_channel_roles(ctx, data, running).await {
         let participant_cleanup_role_ids = [roles.participant, roles.dead]
             .into_iter()
             .flatten()
             .collect::<HashSet<_>>();
-        for user_id in participant_user_ids {
-            if let Ok(member) = guild_id.member(ctx, serenity::UserId::new(user_id)).await {
+        let mut cleanup_targets = participant_user_ids
+            .into_iter()
+            .map(|user_id| (user_id, participant_cleanup_role_ids.clone()))
+            .collect::<HashMap<_, _>>();
+        if let Some(role_id) = roles.spectator {
+            for user_id in spectator_user_ids {
+                cleanup_targets.entry(user_id).or_default().insert(role_id);
+            }
+        }
+        let mut member_snapshots = guild_id
+            .members(&ctx.http, Some(1000), None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|member| (member.user.id.get(), member))
+            .collect::<HashMap<_, _>>();
+        for (user_id, role_ids) in cleanup_targets {
+            let member = if let Some(member) = member_snapshots.remove(&user_id) {
+                Some(member)
+            } else {
+                guild_id
+                    .member(ctx, serenity::UserId::new(user_id))
+                    .await
+                    .ok()
+            };
+            if let Some(member) = member {
                 let _ = remove_cleanup_roles_from_member_snapshot(
                     ctx,
                     guild_id,
                     member.user.id,
                     &member.roles,
-                    &participant_cleanup_role_ids,
+                    &role_ids,
                 )
                 .await;
-            }
-        }
-        if let Some(role_id) = roles.spectator {
-            for user_id in spectator_user_ids {
-                if let Ok(member) = guild_id.member(ctx, serenity::UserId::new(user_id)).await {
-                    let role_ids = HashSet::from([role_id]);
-                    let _ = remove_cleanup_roles_from_member_snapshot(
-                        ctx,
-                        guild_id,
-                        member.user.id,
-                        &member.roles,
-                        &role_ids,
-                    )
-                    .await;
-                }
             }
         }
     }
@@ -4470,11 +4878,18 @@ pub async fn cleanup_game(
     running_write.anonymous_channel_topics.clear();
     running_write.anonymous_aliases.clear();
     running_write.anonymous_original_names.clear();
-    running_write.anonymous_webhook_urls.clear();
+    running_write.anonymous_webhooks.clear();
+    running_write.anonymous_webhook_creation_locks.clear();
+    running_write.channel_role_ids = None;
+    running_write.source_category_id = None;
+    running_write.permission_overwrite_cache.clear();
+    running_write.verified_member_ids.clear();
+    running_write.personal_channel_creation_locks.clear();
     running_write.original_game_channel_overwrites.clear();
     running_write.game_channel_overwrites.clear();
     running_write.member_channel_overwrites.clear();
     running_write.original_slowmode_delays.clear();
+    running_write.channel_slowmode_cache.clear();
     running_write.shaman_channel_id = None;
     running_write.shaman_status_message_id = None;
     running_write.shaman_status_text = None;
@@ -4735,18 +5150,20 @@ pub async fn sync_anonymous_general_chat_permissions(
             })
             .collect::<Vec<_>>()
     };
-    for (channel_id, user_id, can_chat) in updates {
-        let _ = channel_id
-            .create_permission(
-                &ctx.http,
+    let updates = updates
+        .into_iter()
+        .map(|(channel_id, user_id, can_chat)| {
+            (
+                channel_id,
                 anonymous_input_overwrite(
                     serenity::PermissionOverwriteType::Member(serenity::UserId::new(user_id)),
                     true,
                     can_chat,
                 ),
             )
-            .await;
-    }
+        })
+        .collect();
+    apply_permission_updates(ctx, running, updates).await;
 }
 
 pub async fn set_game_channel_chat(
@@ -4764,25 +5181,48 @@ pub async fn set_game_channel_chat(
         return;
     };
     let channel_id = running.read().await.channel_id;
-    let Some(channel) = channel_id
-        .to_channel(&ctx.http)
-        .await
-        .ok()
-        .and_then(|channel| channel.guild())
-    else {
-        return;
-    };
     let mut targets = vec![(roles.everyone, false)];
     if let Some(participant_role_id) = roles.participant {
         targets.push((participant_role_id, participants_can_chat));
     }
-    for (role_id, can_chat) in targets {
+    let targets = {
+        let running_read = running.read().await;
+        targets
+            .into_iter()
+            .map(|(role_id, can_chat)| {
+                let kind = serenity::PermissionOverwriteType::Role(role_id);
+                (
+                    role_id,
+                    can_chat,
+                    remembered_permission(&running_read, channel_id, kind),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let channel = if targets.iter().any(|(_, _, current)| current.is_none()) {
+        let Some(channel) = channel_id
+            .to_channel(&ctx.http)
+            .await
+            .ok()
+            .and_then(|channel| channel.guild())
+        else {
+            return;
+        };
+        Some(channel)
+    } else {
+        None
+    };
+    for (role_id, can_chat, remembered) in targets {
         let kind = serenity::PermissionOverwriteType::Role(role_id);
-        let current = channel
-            .permission_overwrites
-            .iter()
-            .find(|overwrite| overwrite.kind == kind)
-            .cloned();
+        let current = remembered.or_else(|| {
+            channel.as_ref().and_then(|channel| {
+                channel
+                    .permission_overwrites
+                    .iter()
+                    .find(|overwrite| overwrite.kind == kind)
+                    .cloned()
+            })
+        });
         {
             let mut running_write = running.write().await;
             if !running_write.game_channel_overwrites.contains_key(&role_id) {
@@ -4802,7 +5242,7 @@ pub async fn set_game_channel_chat(
             kind,
         });
         set_chat_permission_bits(&mut overwrite, can_chat);
-        let _ = channel_id.create_permission(&ctx.http, overwrite).await;
+        apply_permission_if_changed(ctx, running, channel_id, overwrite).await;
     }
 }
 
@@ -4817,20 +5257,28 @@ pub async fn set_member_game_channel_chat(
         return;
     }
     let channel_id = running.read().await.channel_id;
-    let Some(channel) = channel_id
-        .to_channel(&ctx.http)
-        .await
-        .ok()
-        .and_then(|channel| channel.guild())
-    else {
-        return;
-    };
     let kind = serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id));
-    let current = channel
-        .permission_overwrites
-        .iter()
-        .find(|overwrite| overwrite.kind == kind)
-        .cloned();
+    let remembered = {
+        let running_read = running.read().await;
+        remembered_permission(&running_read, channel_id, kind)
+    };
+    let current = if remembered.is_some() {
+        remembered
+    } else {
+        let Some(channel) = channel_id
+            .to_channel(&ctx.http)
+            .await
+            .ok()
+            .and_then(|channel| channel.guild())
+        else {
+            return;
+        };
+        channel
+            .permission_overwrites
+            .iter()
+            .find(|overwrite| overwrite.kind == kind)
+            .cloned()
+    };
     {
         let mut running_write = running.write().await;
         running_write
@@ -4844,7 +5292,7 @@ pub async fn set_member_game_channel_chat(
         kind,
     });
     set_chat_permission_bits(&mut overwrite, can_chat);
-    let _ = channel_id.create_permission(&ctx.http, overwrite).await;
+    apply_permission_if_changed(ctx, running, channel_id, overwrite).await;
 }
 
 pub async fn restore_member_game_channel_chat(
@@ -4891,33 +5339,55 @@ pub async fn set_one_channel_slowmode(
     channel_id: serenity::ChannelId,
     seconds: u64,
 ) {
-    let Some(channel) = channel_id
-        .to_channel(&ctx.http)
-        .await
-        .ok()
-        .and_then(|channel| channel.guild())
-    else {
-        return;
-    };
     let slowmode = seconds.min(21600) as u16;
-    {
+    let cached = running
+        .read()
+        .await
+        .channel_slowmode_cache
+        .get(&channel_id)
+        .copied();
+    if cached == Some(slowmode) {
+        return;
+    }
+    if cached.is_none() {
+        let Some(channel) = channel_id
+            .to_channel(&ctx.http)
+            .await
+            .ok()
+            .and_then(|channel| channel.guild())
+        else {
+            return;
+        };
+        let current = channel.rate_limit_per_user.unwrap_or(0);
         let mut running_write = running.write().await;
         running_write
             .original_slowmode_delays
             .entry(channel_id)
-            .or_insert_with(|| channel.rate_limit_per_user.unwrap_or(0));
+            .or_insert(current);
+        running_write
+            .channel_slowmode_cache
+            .insert(channel_id, current);
+        if current == slowmode {
+            return;
+        }
     }
-    if channel.rate_limit_per_user.unwrap_or(0) == slowmode {
-        return;
-    }
-    if let Err(error) = channel_id
+    match channel_id
         .edit(
             &ctx.http,
             serenity::EditChannel::new().rate_limit_per_user(slowmode),
         )
         .await
     {
-        eprintln!("failed to set slowmode for {}: {error:?}", channel_id.get());
+        Ok(_) => {
+            running
+                .write()
+                .await
+                .channel_slowmode_cache
+                .insert(channel_id, slowmode);
+        }
+        Err(error) => {
+            eprintln!("failed to set slowmode for {}: {error:?}", channel_id.get());
+        }
     }
 }
 
@@ -4961,10 +5431,9 @@ pub async fn unlock_pending_dead_chats(
     data: &Data,
     running: &Arc<RwLock<RunningGame>>,
 ) {
-    let (guild_id, channel_id, anonymous_enabled, should_unlock) = {
+    let (channel_id, anonymous_enabled, should_unlock) = {
         let running_read = running.read().await;
         (
-            running_read.guild_id,
             running_read.channel_id,
             running_read.anonymous_enabled,
             !dead_chat_unlock_candidates(&running_read).is_empty(),
@@ -4973,11 +5442,10 @@ pub async fn unlock_pending_dead_chats(
     if !should_unlock {
         return;
     }
-    let config = data.config.read().await.clone();
-    let roles = match channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await {
-        Ok(roles) => roles,
-        Err(error) => {
-            eprintln!("failed to load roles for dead chat unlock: {error:?}");
+    let roles = match running_channel_roles(ctx, data, running).await {
+        Some(roles) => roles,
+        None => {
+            eprintln!("failed to load roles for dead chat unlock");
             let _ = send_channel_embed(
                 &ctx.http,
                 channel_id,
@@ -4990,7 +5458,7 @@ pub async fn unlock_pending_dead_chats(
             return;
         }
     };
-    let category = source_category(ctx, channel_id).await;
+    let category = running_source_category(ctx, running).await;
     let players = {
         let mut running_write = running.write().await;
         if !matches!(running_write.game.phase, Phase::Day | Phase::Night) {
@@ -5071,15 +5539,14 @@ pub async fn apply_death_side_effects(
         let mut running_write = running.write().await;
         record_dead_chat_deaths(&mut running_write, dead_players);
     }
-    let config = data.config.read().await.clone();
     let (guild_id, channel_id) = {
         let running_read = running.read().await;
         (running_read.guild_id, running_read.channel_id)
     };
-    let roles = match channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await {
-        Ok(roles) => roles,
-        Err(error) => {
-            eprintln!("failed to load roles for death side effects: {error:?}");
+    let roles = match running_channel_roles(ctx, data, running).await {
+        Some(roles) => roles,
+        None => {
+            eprintln!("failed to load roles for death side effects");
             let _ = send_channel_embed(
                 &ctx.http,
                 channel_id,
@@ -5098,12 +5565,7 @@ pub async fn apply_death_side_effects(
             .member(ctx, serenity::UserId::new(player.user_id))
             .await
         {
-            if let Some(participant_role_id) = roles.participant {
-                let _ = member.remove_role(ctx, participant_role_id).await;
-            }
-            if let Some(dead_role_id) = roles.dead {
-                let _ = member.add_role(ctx, dead_role_id).await;
-            }
+            swap_member_game_roles(ctx, guild_id, &member, roles.participant, roles.dead).await;
         }
         let can_dead_chat = {
             let running_read = running.read().await;
@@ -5116,7 +5578,7 @@ pub async fn apply_death_side_effects(
         restore_frog_game_channel_permission(ctx, running, player).await;
         disable_private_role_channels_for_player(ctx, running, player).await;
     }
-    let category = source_category(ctx, channel_id).await;
+    let category = running_source_category(ctx, running).await;
     let anonymous_enabled = running.read().await.anonymous_enabled;
     for player in dead_players {
         let can_chat = {
@@ -5246,11 +5708,18 @@ mod tests {
             anonymous_role_input_status_message_ids: Default::default(),
             anonymous_role_status_texts: Default::default(),
             anonymous_channel_topics: Default::default(),
-            anonymous_webhook_urls: Default::default(),
+            anonymous_webhooks: Default::default(),
+            anonymous_webhook_creation_locks: Default::default(),
+            channel_role_ids: None,
+            source_category_id: None,
+            permission_overwrite_cache: Default::default(),
+            verified_member_ids: Default::default(),
+            personal_channel_creation_locks: Default::default(),
             original_game_channel_overwrites: Default::default(),
             game_channel_overwrites: Default::default(),
             member_channel_overwrites: Default::default(),
             original_slowmode_delays: Default::default(),
+            channel_slowmode_cache: Default::default(),
             private_channel_ids: Default::default(),
             private_role_status_message_ids: Default::default(),
             private_role_status_texts: Default::default(),
@@ -5694,5 +6163,54 @@ mod tests {
     fn ended_game_blocks_late_temporary_chat_creation() {
         assert!(!is_game_channel_creation_allowed(Phase::Ended));
         assert!(is_game_channel_creation_allowed(Phase::Night));
+    }
+
+    #[test]
+    fn permission_cache_distinguishes_member_and_role_targets() {
+        let channel_id = serenity::ChannelId::new(10);
+        let member_key = permission_cache_key(
+            channel_id,
+            serenity::PermissionOverwriteType::Member(serenity::UserId::new(20)),
+        );
+        let role_key = permission_cache_key(
+            channel_id,
+            serenity::PermissionOverwriteType::Role(serenity::RoleId::new(20)),
+        );
+
+        assert_ne!(member_key, role_key);
+    }
+
+    #[test]
+    fn created_channel_permissions_are_remembered() {
+        let mut running = dead_chat_test_running();
+        let channel_id = serenity::ChannelId::new(30);
+        let overwrite = anonymous_input_overwrite(
+            serenity::PermissionOverwriteType::Member(serenity::UserId::new(1)),
+            true,
+            false,
+        );
+
+        remember_channel_permissions(&mut running, channel_id, std::slice::from_ref(&overwrite));
+
+        assert_eq!(
+            remembered_permission(&running, channel_id, overwrite.kind),
+            Some(overwrite)
+        );
+    }
+
+    #[test]
+    fn member_role_swap_preserves_unrelated_roles() {
+        let participant = serenity::RoleId::new(1);
+        let unrelated = serenity::RoleId::new(2);
+        let dead = serenity::RoleId::new(3);
+
+        assert_eq!(
+            swapped_member_roles(&[participant, unrelated], Some(participant), Some(dead)),
+            Some(vec![unrelated, dead])
+        );
+        assert_eq!(
+            swapped_member_roles(&[unrelated, dead], Some(participant), Some(dead)),
+            None
+        );
     }
 }

@@ -34,12 +34,14 @@ use mafia_remake::stats;
 use poise::serenity_prelude as serenity;
 use poise::serenity_prelude::Mentionable;
 use rand::seq::{IndexedRandom, SliceRandom};
-use secrecy::ExposeSecret;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
+use tokio::task::JoinSet;
+
+const ANONYMOUS_DELIVERY_CONCURRENCY: usize = 4;
 
 async fn defer_best_effort(ctx: Context<'_>, command_name: &str) -> bool {
     match ctx.defer().await {
@@ -308,11 +310,18 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         anonymous_role_input_status_message_ids: HashMap::new(),
         anonymous_role_status_texts: HashMap::new(),
         anonymous_channel_topics: HashMap::new(),
-        anonymous_webhook_urls: HashMap::new(),
+        anonymous_webhooks: HashMap::new(),
+        anonymous_webhook_creation_locks: HashMap::new(),
+        channel_role_ids: None,
+        source_category_id: None,
+        permission_overwrite_cache: HashMap::new(),
+        verified_member_ids: HashSet::new(),
+        personal_channel_creation_locks: HashMap::new(),
         original_game_channel_overwrites: HashMap::new(),
         game_channel_overwrites: HashMap::new(),
         member_channel_overwrites: HashMap::new(),
         original_slowmode_delays: HashMap::new(),
+        channel_slowmode_cache: HashMap::new(),
         private_channel_ids: HashMap::new(),
         private_role_status_message_ids: HashMap::new(),
         private_role_status_texts: HashMap::new(),
@@ -2217,7 +2226,7 @@ pub async fn memo(
         return Ok(());
     };
     let author_id = ctx.author().id.get();
-    let (author, target, channel_id) = {
+    let (author, target) = {
         let running_read = running.read().await;
         let Some(author) = running_read.game.get_player(author_id).cloned() else {
             reply_embed(
@@ -2241,18 +2250,14 @@ pub async fn memo(
             .await?;
             return Ok(());
         };
-        (author, target, running_read.channel_id)
+        (author, target)
     };
 
-    let config = ctx.data().config.read().await.clone();
-    let roles = channel_role_ids(
-        ctx.serenity_context(),
-        guild_id,
-        &config,
-        ctx.data().bot_user_id,
-    )
-    .await?;
-    let category = source_category(ctx.serenity_context(), channel_id).await;
+    let Some(roles) = running_channel_roles(ctx.serenity_context(), ctx.data(), &running).await
+    else {
+        return Err("failed to load game channel roles".into());
+    };
+    let category = running_source_category(ctx.serenity_context(), &running).await;
     let Some(memo_channel_id) =
         ensure_memo_channel(ctx.serenity_context(), &running, &author, roles, category).await
     else {
@@ -5597,34 +5602,80 @@ pub async fn anonymous_webhook(
     running: &Arc<RwLock<RunningGame>>,
     channel_id: serenity::ChannelId,
 ) -> Option<serenity::Webhook> {
-    let cached_url = running
+    if let Some(webhook) = running
         .read()
         .await
-        .anonymous_webhook_urls
+        .anonymous_webhooks
         .get(&channel_id)
-        .cloned();
-    if let Some(url) = cached_url
-        && let Ok(webhook) = serenity::Webhook::from_url(&ctx.http, &url).await
+        .cloned()
     {
         return Some(webhook);
     }
 
-    let webhook = channel_id
+    let creation_lock = {
+        let mut running_write = running.write().await;
+        running_write
+            .anonymous_webhook_creation_locks
+            .entry(channel_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    let _creation_guard = creation_lock.lock().await;
+    if let Some(webhook) = running
+        .read()
+        .await
+        .anonymous_webhooks
+        .get(&channel_id)
+        .cloned()
+    {
+        return Some(webhook);
+    }
+
+    let webhook = match channel_id
         .create_webhook(
             &ctx.http,
             serenity::CreateWebhook::new("Mafia Anonymous")
                 .audit_log_reason("마피아 게임 익명 채팅 웹훅 생성"),
         )
         .await
-        .ok()?;
-    if let Some(url) = webhook.url.as_ref() {
-        running
-            .write()
-            .await
-            .anonymous_webhook_urls
-            .insert(channel_id, url.expose_secret().to_string());
-    }
+    {
+        Ok(webhook) => webhook,
+        Err(error) => {
+            eprintln!(
+                "failed to create anonymous webhook for channel {}: {error:?}",
+                channel_id.get()
+            );
+            return None;
+        }
+    };
+    running
+        .write()
+        .await
+        .anonymous_webhooks
+        .insert(channel_id, webhook.clone());
     Some(webhook)
+}
+
+async fn send_anonymous_text_batch(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    channel_ids: Vec<serenity::ChannelId>,
+    author_label: &str,
+    body: &str,
+) {
+    for chunk in channel_ids.chunks(ANONYMOUS_DELIVERY_CONCURRENCY) {
+        let mut deliveries = JoinSet::new();
+        for &channel_id in chunk {
+            let ctx = ctx.clone();
+            let running = Arc::clone(running);
+            let author_label = author_label.to_string();
+            let body = body.to_string();
+            deliveries.spawn(async move {
+                send_anonymous_text(&ctx, &running, channel_id, &author_label, &body).await;
+            });
+        }
+        while deliveries.join_next().await.is_some() {}
+    }
 }
 
 pub async fn send_anonymous_text(
@@ -5643,18 +5694,29 @@ pub async fn send_anonymous_text(
         if let Some(avatar_url) = anonymous_avatar_url(author_label) {
             builder = builder.avatar_url(avatar_url);
         }
-        if webhook.execute(&ctx.http, false, builder).await.is_ok() {
-            return;
+        match webhook.execute(&ctx.http, false, builder).await {
+            Ok(_) => return,
+            Err(error) => eprintln!(
+                "failed to execute anonymous webhook {} in channel {}: {error:?}",
+                webhook.id.get(),
+                channel_id.get()
+            ),
         }
     }
-    let _ = channel_id
+    if let Err(error) = channel_id
         .send_message(
             &ctx.http,
             serenity::CreateMessage::new()
                 .content(format!("{author_label}: {body}"))
                 .allowed_mentions(no_mentions()),
         )
-        .await;
+        .await
+    {
+        eprintln!(
+            "failed to send anonymous fallback in channel {}: {error:?}",
+            channel_id.get()
+        );
+    }
 }
 
 pub async fn send_webhook_text(
@@ -5674,18 +5736,29 @@ pub async fn send_webhook_text(
         if let Some(avatar_url) = avatar_url {
             builder = builder.avatar_url(avatar_url);
         }
-        if webhook.execute(&ctx.http, false, builder).await.is_ok() {
-            return;
+        match webhook.execute(&ctx.http, false, builder).await {
+            Ok(_) => return,
+            Err(error) => eprintln!(
+                "failed to execute relayed webhook {} in channel {}: {error:?}",
+                webhook.id.get(),
+                channel_id.get()
+            ),
         }
     }
-    let _ = channel_id
+    if let Err(error) = channel_id
         .send_message(
             &ctx.http,
             serenity::CreateMessage::new()
                 .content(format!("{author_label}: {body}"))
                 .allowed_mentions(no_mentions()),
         )
-        .await;
+        .await
+    {
+        eprintln!(
+            "failed to send relayed fallback in channel {}: {error:?}",
+            channel_id.get()
+        );
+    }
 }
 
 pub fn message_author_display_name(message: &serenity::Message) -> String {
@@ -5797,23 +5870,20 @@ pub async fn mirror_role_chat_to_dead(
     let Some(roles) = running_channel_roles(ctx, data, running).await else {
         return;
     };
-    let (source_channel_id, viewers) = {
+    let viewers = {
         let running_read = running.read().await;
-        (
-            running_read.channel_id,
-            running_read
-                .game
-                .players
-                .iter()
-                .filter(|player| can_receive_role_chat_as_dead(&running_read, player))
-                .cloned()
-                .collect::<Vec<_>>(),
-        )
+        running_read
+            .game
+            .players
+            .iter()
+            .filter(|player| can_receive_role_chat_as_dead(&running_read, player))
+            .cloned()
+            .collect::<Vec<_>>()
     };
     if viewers.is_empty() {
         return;
     }
-    let category = source_category(ctx, source_channel_id).await;
+    let category = running_source_category(ctx, running).await;
     let body = format!("[{}채팅] {body}", role.value());
     for viewer in viewers {
         let (can_receive, can_chat) = {
@@ -5870,9 +5940,7 @@ pub async fn relay_anonymous_general_message(
             .collect::<Vec<_>>();
         (deliveries, running_read.channel_id, sender_alias)
     };
-    for channel_id in deliveries {
-        send_anonymous_text(ctx, running, channel_id, &sender_alias, body).await;
-    }
+    send_anonymous_text_batch(ctx, running, deliveries, &sender_alias, body).await;
     send_anonymous_text(
         ctx,
         running,
@@ -5916,9 +5984,7 @@ pub async fn relay_anonymous_role_message(
             .collect::<Vec<_>>();
         (deliveries, running_read.channel_id, sender_alias)
     };
-    for channel_id in deliveries {
-        send_anonymous_text(ctx, running, channel_id, &sender_alias, body).await;
-    }
+    send_anonymous_text_batch(ctx, running, deliveries, &sender_alias, body).await;
     send_anonymous_text(
         ctx,
         running,
@@ -5939,13 +6005,12 @@ pub async fn relay_anonymous_dead_message(
     let Some(roles) = running_channel_roles(ctx, data, running).await else {
         return;
     };
-    let (source_channel_id, sender, viewers) = {
+    let (sender, viewers) = {
         let running_read = running.read().await;
         let Some(sender) = running_read.game.get_player(sender_id) else {
             return;
         };
         (
-            running_read.channel_id,
             sender.clone(),
             running_read
                 .game
@@ -5959,7 +6024,7 @@ pub async fn relay_anonymous_dead_message(
                 .collect::<Vec<_>>(),
         )
     };
-    let category = source_category(ctx, source_channel_id).await;
+    let category = running_source_category(ctx, running).await;
     for viewer in viewers {
         let can_chat = {
             let running_read = running.read().await;
@@ -5999,9 +6064,7 @@ pub async fn relay_anonymous_shaman_message(
             .collect::<Vec<_>>();
         (deliveries, anonymous_shaman_sender_label(sender))
     };
-    for channel_id in deliveries {
-        send_anonymous_text(ctx, running, channel_id, sender_label, body).await;
-    }
+    send_anonymous_text_batch(ctx, running, deliveries, sender_label, body).await;
 }
 
 pub async fn handle_anonymous_message(
