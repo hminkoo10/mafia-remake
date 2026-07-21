@@ -841,7 +841,7 @@ fn rating_team_key(game: &MafiaGame, player: &Player) -> &'static str {
         "joker"
     } else if game.is_cult_team(player) {
         "cult"
-    } else if player.role == Role::Scientist || game.is_mafia_team(player) {
+    } else if game.is_mafia_team(player) {
         "mafia"
     } else {
         "citizen"

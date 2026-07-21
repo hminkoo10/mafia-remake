@@ -1579,7 +1579,7 @@ mod tests {
             "Neutral"
         );
         let scientist = Player::new(99, "test", Role::Scientist);
-        assert_eq!(player_team(&game, &scientist), "Citizen");
+        assert_eq!(player_team(&game, &scientist), "Mafia");
         game.scientist_contacted.insert(99);
         assert_eq!(player_team(&game, &scientist), "Mafia");
 

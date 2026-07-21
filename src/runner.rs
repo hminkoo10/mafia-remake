@@ -240,7 +240,7 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Thief => "지목 투표한 대상의 능력을 훔칩니다.",
         Role::Witch => "밤에 대상을 개구리로 저주합니다.",
         Role::Scientist => {
-            "첫 사망 전에는 시민팀이며, 사망 후 마피아팀으로 전환되어 다음 밤 부활합니다."
+            "처음부터 마피아팀입니다. 첫 사망 전에는 미접선 보조처럼 시민 판정을 받고, 첫 사망 후 접선되어 다음 밤 부활합니다."
         }
         Role::Madam => "지목 투표로 선택한 대상을 유혹합니다.",
         Role::Godfather => "세 번째 밤부터 확정 처치합니다.",
@@ -3216,6 +3216,28 @@ mod tests {
 
         assert!(!message.contains("비밀의뢰인"));
         assert!(!message.contains("의뢰인:"));
+    }
+
+    #[test]
+    fn scientist_role_message_names_mafia_team_before_first_death() {
+        let mut game = MafiaGame::new(
+            vec![
+                (1, "One".to_string()),
+                (2, "Scientist".to_string()),
+                (3, "Three".to_string()),
+            ],
+            1,
+            0,
+            0,
+            Vec::new(),
+        )
+        .unwrap();
+        game.get_player_mut(2).unwrap().role = Role::Scientist;
+
+        let message = role_message(&game, game.get_player(2).unwrap());
+
+        assert!(message.contains("진영: **마피아팀**"));
+        assert!(!message.contains("진영: **시민팀**"));
     }
 
     #[test]
