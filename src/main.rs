@@ -562,6 +562,37 @@ fn explicit_url_port(url: &str) -> Option<u16> {
     port.parse().ok()
 }
 
+fn bot_commands() -> Vec<poise::Command<Data, Error>> {
+    vec![
+        commands::start_game(),
+        commands::stop_game(),
+        commands::cleanup_stuck_game(),
+        commands::disable_mafia_game(),
+        commands::enable_mafia_game(),
+        commands::add_to_blacklist(),
+        commands::remove_from_blacklist(),
+        commands::show_blacklist(),
+        commands::configure_game(),
+        commands::web_configure_game(),
+        commands::configure_player_limit(),
+        commands::configure_anonymous_mode(),
+        commands::configure_extra_roles(),
+        commands::configure_investigation_role(),
+        commands::show_manager_status(),
+        commands::show_public_status(),
+        commands::memo(),
+        commands::show_my_info(),
+        commands::rating_log(),
+        commands::show_leaderboard(),
+        commands::reset_leaderboard(),
+        commands::show_term_info(),
+        commands::show_term_descriptions(),
+        commands::show_role_info(),
+        commands::show_abilities(),
+        commands::show_role_descriptions(),
+    ]
+}
+
 #[cfg(test)]
 mod main_tests {
     use super::*;
@@ -579,6 +610,27 @@ mod main_tests {
         );
         assert_eq!(explicit_url_port("https://example.com"), None);
         assert_eq!(explicit_url_port("http://localhost:8880"), Some(8880));
+    }
+
+    #[test]
+    fn slash_commands_fit_discord_option_limit() {
+        let commands = bot_commands();
+        let builders = poise::builtins::create_application_commands(&commands);
+        for builder in builders {
+            let value = serde_json::to_value(&builder).expect("command serializes");
+            let option_count = value
+                .get("options")
+                .and_then(|options| options.as_array())
+                .map_or(0, Vec::len);
+            assert!(
+                option_count <= 25,
+                "{} has {option_count} top-level options",
+                value
+                    .get("name")
+                    .and_then(|name| name.as_str())
+                    .unwrap_or("<unknown>")
+            );
+        }
     }
 }
 
@@ -699,34 +751,7 @@ async fn main() -> Result<()> {
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![
-                commands::start_game(),
-                commands::stop_game(),
-                commands::cleanup_stuck_game(),
-                commands::disable_mafia_game(),
-                commands::enable_mafia_game(),
-                commands::add_to_blacklist(),
-                commands::remove_from_blacklist(),
-                commands::show_blacklist(),
-                commands::configure_game(),
-                commands::web_configure_game(),
-                commands::configure_player_limit(),
-                commands::configure_anonymous_mode(),
-                commands::configure_extra_roles(),
-                commands::configure_investigation_role(),
-                commands::show_manager_status(),
-                commands::show_public_status(),
-                commands::memo(),
-                commands::show_my_info(),
-                commands::rating_log(),
-                commands::show_leaderboard(),
-                commands::reset_leaderboard(),
-                commands::show_term_info(),
-                commands::show_term_descriptions(),
-                commands::show_role_info(),
-                commands::show_abilities(),
-                commands::show_role_descriptions(),
-            ],
+            commands: bot_commands(),
             event_handler: |ctx, event, framework, data| {
                 Box::pin(event_handler(ctx, event, framework, data))
             },
