@@ -659,6 +659,10 @@ impl MafiaGame {
         self.players[index].alive = false;
         self.death_order.push(user_id);
         self.frog_user_ids.remove(&user_id);
+        self.day_votes.remove(&user_id);
+        self.confirm_votes.remove(&user_id);
+        self.day_votes
+            .retain(|_, target_id| target_id.is_none_or(|id| id != user_id));
         if self.players[index].role == Role::Scientist
             && self.scientist_revive_used_ids.insert(user_id)
         {
@@ -845,18 +849,40 @@ impl MafiaGame {
     /// Activity UI용: 현재 낮 투표 득표 집계 (targetId → 득표수)
     pub fn current_vote_counts(&self) -> HashMap<u64, usize> {
         let mut counts: HashMap<u64, usize> = HashMap::new();
-        for target_opt in self.day_votes.values() {
-            if let Some(&target) = target_opt.as_ref() {
-                *counts.entry(target).or_insert(0) += 1;
+        for (voter_id, target_opt) in &self.day_votes {
+            if !self.is_alive(*voter_id) || self.vote_blocked(*voter_id) {
+                continue;
+            }
+            if let Some(target) = target_opt {
+                if self.is_alive(*target) {
+                    *counts.entry(*target).or_insert(0) += 1;
+                }
             }
         }
         counts
     }
 
+    pub fn current_skip_vote_count(&self) -> usize {
+        self.day_votes
+            .iter()
+            .filter(|(voter_id, target_id)| {
+                self.is_alive(**voter_id) && !self.vote_blocked(**voter_id) && target_id.is_none()
+            })
+            .count()
+    }
+
     /// Activity UI용: 찬반 투표 현황 (찬성수, 반대수)
     pub fn current_confirm_counts(&self) -> (usize, usize) {
-        let yes = self.confirm_votes.values().filter(|&&v| v).count();
-        let no = self.confirm_votes.values().filter(|&&v| !v).count();
+        let yes = self
+            .confirm_votes
+            .iter()
+            .filter(|(voter_id, approve)| self.is_alive(**voter_id) && **approve)
+            .count();
+        let no = self
+            .confirm_votes
+            .iter()
+            .filter(|(voter_id, approve)| self.is_alive(**voter_id) && !**approve)
+            .count();
         (yes, no)
     }
 
@@ -1993,6 +2019,27 @@ mod tests {
     }
 
     #[test]
+    fn mark_dead_removes_stale_vote_state() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        game.phase = Phase::Day;
+        game.start_vote().unwrap();
+        game.day_votes.insert(1, Some(2));
+        game.day_votes.insert(3, Some(2));
+        game.day_votes.insert(4, None);
+        game.confirm_votes.insert(1, true);
+        game.confirm_votes.insert(4, false);
+
+        game.mark_dead(1).unwrap();
+        game.mark_dead(2).unwrap();
+
+        assert!(!game.day_votes.contains_key(&1));
+        assert!(!game.day_votes.values().any(|target| *target == Some(2)));
+        assert_eq!(game.current_vote_counts().get(&2), None);
+        assert_eq!(game.current_skip_vote_count(), 1);
+        assert_eq!(game.current_confirm_counts(), (0, 1));
+    }
+
+    #[test]
     fn confirmation_vote_executes_at_half_or_more_yes() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
         game.phase = Phase::FinalDefense;
@@ -3039,6 +3086,41 @@ mod tests {
                 .any(|player| player.user_id == doctor_id)
         );
         assert!(game.submit_night_action(doctor_id, Some(madam_id)).is_ok());
+    }
+
+    #[test]
+    fn dead_madam_vote_does_not_seduce() {
+        let mut game = MafiaGame::new(basic_players(), 1, 1, 0, vec![Role::Madam]).unwrap();
+        let madam_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Madam)
+            .unwrap()
+            .user_id;
+        let doctor_id = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Doctor)
+            .unwrap()
+            .user_id;
+
+        game.phase = Phase::Day;
+        game.start_vote().unwrap();
+        game.submit_day_vote(madam_id, Some(doctor_id)).unwrap();
+        game.mark_dead(madam_id).unwrap();
+        for voter_id in game
+            .alive_players()
+            .into_iter()
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>()
+        {
+            game.submit_day_vote(voter_id, None).unwrap();
+        }
+
+        let result = game.resolve_nomination_vote().unwrap();
+
+        assert!(result.madam_seduced.is_empty());
+        assert!(!game.madam_seduced_ids.contains(&doctor_id));
     }
 
     #[test]
