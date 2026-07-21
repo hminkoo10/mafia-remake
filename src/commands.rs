@@ -1183,7 +1183,12 @@ pub async fn handle_join(
     }
     if let Some(member) = component.member.clone() {
         if !member.roles.contains(&rec.participant_role_id) {
-            let _ = member.add_role(ctx, rec.participant_role_id).await;
+            let role_id = rec.participant_role_id;
+            let _ = crate::http_pool::with_fallback(ctx, |http| {
+                let member = member.clone();
+                async move { member.add_role(&http, role_id).await }
+            })
+            .await;
         }
         rec.joined_names.insert(user_id, display_name(&member));
     } else {
@@ -1236,7 +1241,11 @@ pub async fn handle_spectate(
         rec.spectator_names.insert(user_id, display_name(&member));
         if let Some(role_id) = rec.spectator_role_id {
             if !member.roles.contains(&role_id) {
-                let _ = member.add_role(ctx, role_id).await;
+                let _ = crate::http_pool::with_fallback(ctx, |http| {
+                    let member = member.clone();
+                    async move { member.add_role(&http, role_id).await }
+                })
+                .await;
             }
         }
     } else {
@@ -5639,13 +5648,16 @@ pub async fn anonymous_webhook(
         return Some(webhook);
     }
 
-    let webhook = match channel_id
-        .create_webhook(
-            &ctx.http,
-            serenity::CreateWebhook::new("Mafia Anonymous")
-                .audit_log_reason("마피아 게임 익명 채팅 웹훅 생성"),
-        )
-        .await
+    let webhook = match crate::http_pool::with_fallback(ctx, |http| async move {
+        channel_id
+            .create_webhook(
+                &http,
+                serenity::CreateWebhook::new("Mafia Anonymous")
+                    .audit_log_reason("마피아 게임 익명 채팅 웹훅 생성"),
+            )
+            .await
+    })
+    .await
     {
         Ok(webhook) => webhook,
         Err(error) => {

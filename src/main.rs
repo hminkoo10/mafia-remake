@@ -451,6 +451,7 @@ mod activity;
 mod channel;
 mod commands;
 mod embed;
+mod http_pool;
 mod runner;
 
 async fn event_handler(
@@ -587,6 +588,8 @@ async fn main() -> Result<()> {
     let workspace_root = embed::load_workspace_env()?;
     let token =
         std::env::var("DISCORD_TOKEN").context(".env 파일에 DISCORD_TOKEN을 설정하세요.")?;
+    // 워커 봇 토큰이 있으면 길드 관리용 REST 호출을 여러 토큰으로 분산해 레이트리밋을 우회한다.
+    http_pool::init_from_env().await;
     let config_path = workspace_root.join("config.json");
     let api_keys_path = workspace_root.join("api_keys.json");
     let stats_path = workspace_root.join("stats.json");

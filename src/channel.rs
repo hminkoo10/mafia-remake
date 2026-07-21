@@ -312,9 +312,11 @@ async fn apply_permission_if_changed(
         }
     }
 
-    match channel_id
-        .create_permission(&ctx.http, overwrite.clone())
-        .await
+    match crate::http_pool::with_fallback(ctx, |http| {
+        let overwrite = overwrite.clone();
+        async move { channel_id.create_permission(&http, overwrite).await }
+    })
+    .await
     {
         Ok(()) => {
             if let Some(key) = key {
@@ -361,7 +363,11 @@ async fn delete_permission_and_invalidate(
     channel_id: serenity::ChannelId,
     kind: serenity::PermissionOverwriteType,
 ) -> bool {
-    match channel_id.delete_permission(&ctx.http, kind).await {
+    match crate::http_pool::with_fallback(ctx, |http| async move {
+        channel_id.delete_permission(&http, kind).await
+    })
+    .await
+    {
         Ok(()) => {
             if let Some(key) = permission_cache_key(channel_id, kind) {
                 running
@@ -586,30 +592,36 @@ pub async fn create_text_channel_safe(
     topic: Option<String>,
 ) -> Option<serenity::GuildChannel> {
     let slowmode = slowmode_delay.min(21600) as u16;
-    let mut builder = serenity::CreateChannel::new(name)
-        .kind(serenity::ChannelType::Text)
-        .permissions(overwrites.clone())
-        .rate_limit_per_user(slowmode)
-        .audit_log_reason(reason);
-    if let Some(category_id) = category {
-        builder = builder.category(category_id);
-    }
-    if let Some(topic) = topic.clone() {
-        builder = builder.topic(topic.chars().take(1024).collect::<String>());
-    }
 
-    match guild_id.create_channel(&ctx.http, builder).await {
+    // 채널 생성은 워커 토큰으로 우회하되, 실패 시 메인 토큰으로 폴백한다.
+    // 빌더는 호출마다 소비되므로 with_fallback 클로저 안에서 매번 새로 만든다.
+    let create_with = |with_category: bool| {
+        let overwrites = overwrites.clone();
+        let topic = topic.clone();
+        crate::http_pool::with_fallback(ctx, move |http| {
+            let overwrites = overwrites.clone();
+            let topic = topic.clone();
+            async move {
+                let mut builder = serenity::CreateChannel::new(name)
+                    .kind(serenity::ChannelType::Text)
+                    .permissions(overwrites)
+                    .rate_limit_per_user(slowmode)
+                    .audit_log_reason(reason);
+                if with_category && let Some(category_id) = category {
+                    builder = builder.category(category_id);
+                }
+                if let Some(topic) = topic {
+                    builder = builder.topic(topic.chars().take(1024).collect::<String>());
+                }
+                guild_id.create_channel(&http, builder).await
+            }
+        })
+    };
+
+    match create_with(true).await {
         Ok(channel) => Some(channel),
         Err(primary_error) if category.is_some() => {
-            let mut fallback = serenity::CreateChannel::new(name)
-                .kind(serenity::ChannelType::Text)
-                .permissions(overwrites)
-                .rate_limit_per_user(slowmode)
-                .audit_log_reason(reason);
-            if let Some(topic) = topic {
-                fallback = fallback.topic(topic.chars().take(1024).collect::<String>());
-            }
-            match guild_id.create_channel(&ctx.http, fallback).await {
+            match create_with(false).await {
                 Ok(channel) => Some(channel),
                 Err(fallback_error) => {
                     eprintln!(
@@ -2736,17 +2748,23 @@ async fn sync_anonymous_role_status(
             let running_read = running.read().await;
             running_read.anonymous_channel_topics.get(&channel_id) != Some(&topic)
         };
-        if needs_topic_update
-            && channel_id
-                .edit(&ctx.http, serenity::EditChannel::new().topic(topic.clone()))
-                .await
-                .is_ok()
-        {
-            running
-                .write()
-                .await
-                .anonymous_channel_topics
-                .insert(channel_id, topic);
+        if needs_topic_update {
+            let edited = crate::http_pool::with_fallback(ctx, |http| {
+                let topic = topic.clone();
+                async move {
+                    channel_id
+                        .edit(&http, serenity::EditChannel::new().topic(topic))
+                        .await
+                }
+            })
+            .await;
+            if edited.is_ok() {
+                running
+                    .write()
+                    .await
+                    .anonymous_channel_topics
+                    .insert(channel_id, topic);
+            }
         }
         if update_messages {
             upsert_anonymous_role_status_message(ctx, running, channel_id, role, (user_id, role))
@@ -3059,7 +3077,11 @@ pub async fn ensure_anonymous_dead_input_channel(
     };
     drop(creation_guard);
     if !keep_channel {
-        let _ = channel.delete(&ctx.http).await;
+        let deleted_channel_id = channel.id;
+        let _ = crate::http_pool::with_fallback(ctx, |http| async move {
+            deleted_channel_id.delete(&http).await
+        })
+        .await;
         return None;
     }
     let _ = send_channel_embed(
@@ -3232,7 +3254,11 @@ pub async fn ensure_anonymous_shaman_input_channel(
     };
     drop(creation_guard);
     if !keep_channel {
-        let _ = channel.delete(&ctx.http).await;
+        let deleted_channel_id = channel.id;
+        let _ = crate::http_pool::with_fallback(ctx, |http| async move {
+            deleted_channel_id.delete(&http).await
+        })
+        .await;
         return None;
     }
     let _ = send_channel_embed(
@@ -3856,7 +3882,11 @@ pub async fn set_anonymous_role_channel_access(
             }
         };
         if !keep_channel {
-            let _ = channel.delete(&ctx.http).await;
+            let deleted_channel_id = channel.id;
+            let _ = crate::http_pool::with_fallback(ctx, |http| async move {
+                deleted_channel_id.delete(&http).await
+            })
+            .await;
             return;
         }
         let (message, title) = if can_chat {
@@ -4430,13 +4460,16 @@ async fn swap_member_game_roles(
     let Some(roles) = swapped_member_roles(&member.roles, remove_role, add_role) else {
         return true;
     };
-    match guild_id
-        .edit_member(
-            &ctx.http,
-            member.user.id,
-            serenity::EditMember::new().roles(roles),
-        )
-        .await
+    let user_id = member.user.id;
+    match crate::http_pool::with_fallback(ctx, |http| {
+        let roles = roles.clone();
+        async move {
+            guild_id
+                .edit_member(&http, user_id, serenity::EditMember::new().roles(roles))
+                .await
+        }
+    })
+    .await
     {
         Ok(_) => true,
         Err(error) => {
@@ -4746,12 +4779,17 @@ async fn restore_permission_with_retry(
     let mut last_error = None;
     for attempt in 1..=CLEANUP_RETRY_ATTEMPTS {
         let result = if let Some(overwrite) = original.clone() {
-            channel_id.create_permission(&ctx.http, overwrite).await
+            crate::http_pool::with_fallback(ctx, |http| {
+                let overwrite = overwrite.clone();
+                async move { channel_id.create_permission(&http, overwrite).await }
+            })
+            .await
         } else {
-            channel_id
-                .delete_permission(&ctx.http, kind)
-                .await
-                .map(|_| ())
+            crate::http_pool::with_fallback(ctx, |http| async move {
+                channel_id.delete_permission(&http, kind).await
+            })
+            .await
+            .map(|_| ())
         };
         match result {
             Ok(()) => {
@@ -5136,15 +5174,20 @@ async fn remove_cleanup_roles_from_member_snapshot(
     if removed == 0 {
         return 0;
     }
-    if guild_id
-        .edit_member(
-            &ctx.http,
-            user_id,
-            serenity::EditMember::new().roles(remaining_roles),
-        )
-        .await
-        .is_ok()
-    {
+    let edited = crate::http_pool::with_fallback(ctx, |http| {
+        let remaining_roles = remaining_roles.clone();
+        async move {
+            guild_id
+                .edit_member(
+                    &http,
+                    user_id,
+                    serenity::EditMember::new().roles(remaining_roles),
+                )
+                .await
+        }
+    })
+    .await;
+    if edited.is_ok() {
         removed
     } else {
         0
@@ -5432,12 +5475,12 @@ pub async fn set_one_channel_slowmode(
             return;
         }
     }
-    match channel_id
-        .edit(
-            &ctx.http,
-            serenity::EditChannel::new().rate_limit_per_user(slowmode),
-        )
-        .await
+    match crate::http_pool::with_fallback(ctx, |http| async move {
+        channel_id
+            .edit(&http, serenity::EditChannel::new().rate_limit_per_user(slowmode))
+            .await
+    })
+    .await
     {
         Ok(_) => {
             running
@@ -5472,12 +5515,12 @@ pub async fn restore_channel_slowmode(ctx: &serenity::Context, running: &Arc<RwL
         std::mem::take(&mut running_write.original_slowmode_delays)
     };
     for (channel_id, delay) in originals {
-        if let Err(error) = channel_id
-            .edit(
-                &ctx.http,
-                serenity::EditChannel::new().rate_limit_per_user(delay),
-            )
-            .await
+        if let Err(error) = crate::http_pool::with_fallback(ctx, |http| async move {
+            channel_id
+                .edit(&http, serenity::EditChannel::new().rate_limit_per_user(delay))
+                .await
+        })
+        .await
         {
             eprintln!(
                 "failed to restore slowmode for {}: {error:?}",
