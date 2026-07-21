@@ -1196,10 +1196,7 @@ fn build_game_state(
         HashMap::new()
     };
     let vote_skip_count = if matches!(game.phase, Phase::Vote) {
-        game.day_votes
-            .values()
-            .filter(|target| target.is_none())
-            .count() as u32
+        game.current_skip_vote_count() as u32
     } else {
         0
     };
