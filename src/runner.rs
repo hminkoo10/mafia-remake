@@ -123,7 +123,7 @@ pub async fn send_roles(
     running: &Arc<RwLock<RunningGame>>,
     config: &config::BotConfig,
 ) {
-    let (channel_id, payloads) = {
+    let (guild_id, channel_id, payloads) = {
         let running_read = running.read().await;
         let payloads = running_read
             .game
@@ -162,21 +162,31 @@ pub async fn send_roles(
                 )
             })
             .collect::<Vec<_>>();
-        (running_read.channel_id, payloads)
+        (running_read.guild_id, running_read.channel_id, payloads)
     };
-    let mut failed_names = Vec::new();
+    let mut failures = Vec::new();
     for (player, message) in payloads {
-        if !send_player_secret(ctx, running, &player, message, vec![]).await {
-            failed_names.push(player.name);
+        if let Err(error) =
+            send_player_secret_detailed(ctx, running, &player, message, vec![]).await
+        {
+            eprintln!(
+                "secret delivery failed: stage=role_assignment guild_id={} channel_id={} user_id={} player={:?} {}",
+                guild_id.get(),
+                channel_id.get(),
+                player.user_id,
+                player.name,
+                error.log_detail(),
+            );
+            failures.push(format!("{} ({})", player.name, error.public_reason()));
         }
     }
-    if !failed_names.is_empty() {
+    if !failures.is_empty() {
         let _ = send_channel_embed(
             &ctx.http,
             channel_id,
             format!(
-                "비밀 메시지를 보낼 수 없는 참가자: {}",
-                failed_names.join(", ")
+                "비밀 메시지를 보낼 수 없는 참가자와 원인:\n{}\n\n서버 콘솔에는 Discord 원문 오류와 채널/사용자 ID를 기록했습니다.",
+                failures.join("\n")
             ),
             "마피아 게임",
             serenity::Colour::RED,
@@ -278,36 +288,52 @@ async fn wait_for_night_deadline_or_action(deadline: Instant, notify: &Notify) -
     }
 }
 
-pub async fn trigger_timed_night_events(
+struct TimedNightEvents {
+    guild_id: serenity::GuildId,
+    cursed_players: Vec<Player>,
+    witch_contacts: Vec<u64>,
+    cult_bells: u32,
+    revived_players: Vec<Player>,
+}
+
+impl TimedNightEvents {
+    fn is_empty(&self) -> bool {
+        self.cursed_players.is_empty()
+            && self.witch_contacts.is_empty()
+            && self.cult_bells == 0
+            && self.revived_players.is_empty()
+    }
+}
+
+async fn take_timed_night_events(running: &Arc<RwLock<RunningGame>>) -> Option<TimedNightEvents> {
+    let mut running_write = running.write().await;
+    if running_write.game.phase != Phase::Night {
+        return None;
+    }
+    let (cursed_players, witch_contacts) = running_write.game.apply_witch_curses(&HashSet::new());
+    let events = TimedNightEvents {
+        guild_id: running_write.guild_id,
+        cursed_players,
+        witch_contacts,
+        cult_bells: running_write.game.consume_cult_bells(),
+        revived_players: running_write.game.revive_pending_scientists(),
+    };
+    (!events.is_empty()).then_some(events)
+}
+
+async fn apply_timed_night_event_side_effects(
     ctx: &serenity::Context,
     data: &Data,
     running: &Arc<RwLock<RunningGame>>,
+    events: TimedNightEvents,
 ) -> Result<()> {
-    let (guild_id, cursed_players, witch_contacts, cult_bells, revived_players) = {
-        let mut running_write = running.write().await;
-        if running_write.game.phase != Phase::Night {
-            return Ok(());
-        }
-        let (cursed_players, witch_contacts) =
-            running_write.game.apply_witch_curses(&HashSet::new());
-        let cult_bells = running_write.game.consume_cult_bells();
-        let revived_players = running_write.game.revive_pending_scientists();
-        (
-            running_write.guild_id,
-            cursed_players,
-            witch_contacts,
-            cult_bells,
-            revived_players,
-        )
-    };
-
-    if cursed_players.is_empty()
-        && witch_contacts.is_empty()
-        && cult_bells == 0
-        && revived_players.is_empty()
-    {
-        return Ok(());
-    }
+    let TimedNightEvents {
+        guild_id,
+        cursed_players,
+        witch_contacts,
+        cult_bells,
+        revived_players,
+    } = events;
 
     for player in &cursed_players {
         deny_frog_game_channel_chat(ctx, running, player).await;
@@ -379,11 +405,61 @@ pub async fn trigger_timed_night_events(
     Ok(())
 }
 
+pub async fn trigger_timed_night_events(
+    ctx: &serenity::Context,
+    data: &Data,
+    running: &Arc<RwLock<RunningGame>>,
+) -> Result<()> {
+    let Some(events) = take_timed_night_events(running).await else {
+        return Ok(());
+    };
+    let counts = (
+        events.cursed_players.len(),
+        events.witch_contacts.len(),
+        events.cult_bells,
+        events.revived_players.len(),
+    );
+    let guild_id = events.guild_id;
+    let ctx = ctx.clone();
+    let data = data.clone();
+    let running = running.clone();
+    tokio::spawn(async move {
+        let started_at = Instant::now();
+        if let Err(error) =
+            apply_timed_night_event_side_effects(&ctx, &data, &running, events).await
+        {
+            eprintln!(
+                "timed night event side effects failed: guild_id={} cursed={} witch_contacts={} cult_bells={} revived={} error={error:?}",
+                guild_id.get(),
+                counts.0,
+                counts.1,
+                counts.2,
+                counts.3,
+            );
+            return;
+        }
+        let elapsed = started_at.elapsed();
+        if elapsed >= Duration::from_secs(2) {
+            eprintln!(
+                "slow timed night event side effects: guild_id={} elapsed_ms={} cursed={} witch_contacts={} cult_bells={} revived={}",
+                guild_id.get(),
+                elapsed.as_millis(),
+                counts.0,
+                counts.1,
+                counts.2,
+                counts.3,
+            );
+        }
+    });
+    Ok(())
+}
+
 pub async fn run_night(
     ctx: &serenity::Context,
     data: &Data,
     running: &Arc<RwLock<RunningGame>>,
 ) -> Result<()> {
+    let phase_started_at = Instant::now();
     let (
         actors,
         restored_frogs,
@@ -396,7 +472,7 @@ pub async fn run_night(
     ) = {
         let config = data.config.read().await.clone();
         let mut running_write = running.write().await;
-        let deadline = Instant::now() + Duration::from_secs(config.night_seconds);
+        let deadline = phase_started_at + Duration::from_secs(config.night_seconds);
         running_write.game.phase = Phase::Night;
         running_write.phase_deadline = Some(deadline);
         running_write.day_chat_open = false;
@@ -429,6 +505,17 @@ pub async fn run_night(
             running_write.night_notify.clone(),
         )
     };
+    let (guild_id, day_number) = {
+        let running_read = running.read().await;
+        (running_read.guild_id, running_read.game.day_number)
+    };
+    eprintln!(
+        "night phase started: guild_id={} day={} duration_seconds={} actors={}",
+        guild_id.get(),
+        day_number,
+        seconds,
+        actors.len(),
+    );
     upsert_game_status(ctx, running).await;
     set_game_channel_chat(ctx, data, running, false).await;
     unlock_pending_dead_chats(ctx, data, running).await;
@@ -476,19 +563,27 @@ pub async fn run_night(
     )
     .await?;
     let police_can_act = actors.iter().any(|actor| actor.role == Role::Police);
-    let mut failed_names = Vec::new();
+    let mut failed_actions = Vec::new();
     for actor in actors {
-        if !send_night_action_dm(ctx, running, &actor).await {
-            failed_names.push(actor.name);
+        if let Err(error) = send_night_action_dm(ctx, running, &actor).await {
+            eprintln!(
+                "secret delivery failed: stage=night_action guild_id={} user_id={} player={:?} role={} {}",
+                running.read().await.guild_id.get(),
+                actor.user_id,
+                actor.name,
+                actor.role.value(),
+                error.log_detail(),
+            );
+            failed_actions.push(format!("{} ({})", actor.name, error.public_reason()));
         }
     }
-    if !failed_names.is_empty() {
+    if !failed_actions.is_empty() {
         send_game_embed(
             ctx,
             running,
             format!(
-                "밤 행동 선택지를 보낼 수 없는 참가자: {}",
-                failed_names.join(", ")
+                "밤 행동 선택지를 보낼 수 없는 참가자와 원인:\n{}\n\n서버 콘솔에는 Discord 원문 오류와 채널/사용자 ID를 기록했습니다.",
+                failed_actions.join("\n")
             ),
             "마피아 게임",
             serenity::Colour::RED,
@@ -553,10 +648,23 @@ pub async fn run_night(
         running_write.night_timed_events_due = true;
     }
     trigger_timed_night_events(ctx, data, running).await?;
+    eprintln!(
+        "night resolution starting: guild_id={} day={} elapsed_ms={}",
+        guild_id.get(),
+        day_number,
+        phase_started_at.elapsed().as_millis(),
+    );
     let result = {
         let mut running_write = running.write().await;
         running_write.game.resolve_night()?
     };
+    eprintln!(
+        "night resolved: guild_id={} day={} elapsed_ms={} killed={}",
+        guild_id.get(),
+        day_number,
+        phase_started_at.elapsed().as_millis(),
+        result.killed_players.len(),
+    );
     {
         let mut running_write = running.write().await;
         let killed_ids = result
@@ -957,7 +1065,7 @@ pub async fn send_night_action_dm(
     ctx: &serenity::Context,
     running: &Arc<RwLock<RunningGame>>,
     actor: &Player,
-) -> bool {
+) -> std::result::Result<SecretDeliveryRoute, SecretDeliveryFailure> {
     let (guild_id, role, can_change, targets) = {
         let running_read = running.read().await;
         let role = effective_night_role(&running_read.game, actor);
@@ -974,10 +1082,10 @@ pub async fn send_night_action_dm(
         )
     };
     if targets.is_empty() && role != Role::Reporter {
-        return true;
+        return Ok(SecretDeliveryRoute::NotRequired);
     };
     if role == Role::Contractor {
-        return send_player_secret(
+        return send_player_secret_detailed(
             ctx,
             running,
             actor,
@@ -994,7 +1102,7 @@ pub async fn send_night_action_dm(
     } else {
         format!("{} 밤 행동을 선택하세요", role.value())
     };
-    send_player_secret(
+    send_player_secret_detailed(
         ctx,
         running,
         actor,

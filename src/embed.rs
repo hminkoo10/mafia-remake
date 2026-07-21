@@ -12,6 +12,88 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretDeliveryRoute {
+    AnonymousChannel,
+    MemoChannel,
+    DirectMessage,
+    NotRequired,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SecretDeliveryFailure {
+    pub anonymous_enabled: bool,
+    pub anonymous_channel_id: Option<serenity::ChannelId>,
+    pub anonymous_channel_error: Option<String>,
+    pub memo_channel_id: Option<serenity::ChannelId>,
+    pub memo_channel_error: Option<String>,
+    pub dm_user_error: Option<String>,
+    pub dm_send_error: Option<String>,
+}
+
+impl SecretDeliveryFailure {
+    pub fn public_reason(&self) -> String {
+        let mut reasons = Vec::new();
+        if self.anonymous_enabled {
+            reasons.push(if self.anonymous_channel_id.is_some() {
+                "익명 개인 채널 전송 실패"
+            } else {
+                "익명 개인 채널 없음"
+            });
+        }
+        reasons.push(if self.memo_channel_id.is_some() {
+            "개인 메모 채널 전송 실패"
+        } else {
+            "개인 메모 채널 없음"
+        });
+        reasons.push(if self.dm_user_error.is_some() {
+            "Discord 사용자 조회 실패"
+        } else {
+            "DM 전송 실패"
+        });
+        reasons.join(" / ")
+    }
+
+    pub fn log_detail(&self) -> String {
+        format!(
+            "anonymous_enabled={} anonymous_channel_id={:?} anonymous_error={:?} memo_channel_id={:?} memo_error={:?} dm_user_error={:?} dm_send_error={:?}",
+            self.anonymous_enabled,
+            self.anonymous_channel_id.map(|id| id.get()),
+            self.anonymous_channel_error,
+            self.memo_channel_id.map(|id| id.get()),
+            self.memo_channel_error,
+            self.dm_user_error,
+            self.dm_send_error,
+        )
+    }
+}
+
+enum DirectSecretError {
+    User(String),
+    Send(String),
+}
+
+async fn send_direct_secret_message(
+    ctx: &serenity::Context,
+    player: &Player,
+    message: String,
+    components: Vec<serenity::CreateActionRow>,
+) -> std::result::Result<(), DirectSecretError> {
+    let user = serenity::UserId::new(player.user_id)
+        .to_user(ctx)
+        .await
+        .map_err(|error| DirectSecretError::User(format!("{error:?}")))?;
+    user.direct_message(
+        ctx,
+        serenity::CreateMessage::new()
+            .embed(make_embed(message, "비밀 메시지", serenity::Colour::GOLD))
+            .components(components),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| DirectSecretError::Send(format!("{error:?}")))
+}
+
 pub fn make_embed(
     message: impl Into<String>,
     title: &str,
@@ -158,21 +240,44 @@ pub async fn send_player_secret(
     message: impl Into<String>,
     components: Vec<serenity::CreateActionRow>,
 ) -> bool {
+    send_player_secret_detailed(ctx, running, player, message, components)
+        .await
+        .is_ok()
+}
+
+pub async fn send_player_secret_detailed(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+    player: &Player,
+    message: impl Into<String>,
+    components: Vec<serenity::CreateActionRow>,
+) -> std::result::Result<SecretDeliveryRoute, SecretDeliveryFailure> {
     let message = message.into();
-    let anonymous_channel_id = {
+    let (anonymous_enabled, anonymous_channel_id, memo_channel_id) = {
         let running_read = running.read().await;
-        running_read
-            .anonymous_enabled
-            .then(|| {
-                running_read
-                    .anonymous_input_channel_ids
-                    .get(&player.user_id)
-                    .copied()
-            })
-            .flatten()
+        (
+            running_read.anonymous_enabled,
+            running_read
+                .anonymous_enabled
+                .then(|| {
+                    running_read
+                        .anonymous_input_channel_ids
+                        .get(&player.user_id)
+                        .copied()
+                })
+                .flatten(),
+            running_read.memo_channel_ids.get(&player.user_id).copied(),
+        )
     };
-    if let Some(channel_id) = anonymous_channel_id
-        && send_channel_embed(
+
+    let mut failure = SecretDeliveryFailure {
+        anonymous_enabled,
+        anonymous_channel_id,
+        memo_channel_id,
+        ..Default::default()
+    };
+    if let Some(channel_id) = anonymous_channel_id {
+        match send_channel_embed(
             &ctx.http,
             channel_id,
             message.clone(),
@@ -181,21 +286,44 @@ pub async fn send_player_secret(
             components.clone(),
         )
         .await
-        .is_ok()
-    {
-        return true;
+        {
+            Ok(_) => return Ok(SecretDeliveryRoute::AnonymousChannel),
+            Err(error) => failure.anonymous_channel_error = Some(format!("{error:?}")),
+        }
     }
-    let Ok(user) = serenity::UserId::new(player.user_id).to_user(ctx).await else {
-        return false;
-    };
-    user.direct_message(
-        ctx,
-        serenity::CreateMessage::new()
-            .embed(make_embed(message, "비밀 메시지", serenity::Colour::GOLD))
-            .components(components),
-    )
-    .await
-    .is_ok()
+
+    if !anonymous_enabled {
+        match send_direct_secret_message(ctx, player, message.clone(), components.clone()).await {
+            Ok(()) => return Ok(SecretDeliveryRoute::DirectMessage),
+            Err(DirectSecretError::User(error)) => failure.dm_user_error = Some(error),
+            Err(DirectSecretError::Send(error)) => failure.dm_send_error = Some(error),
+        }
+    }
+
+    if let Some(channel_id) = memo_channel_id.filter(|id| Some(*id) != anonymous_channel_id) {
+        match send_channel_embed(
+            &ctx.http,
+            channel_id,
+            message.clone(),
+            "비밀 메시지",
+            serenity::Colour::GOLD,
+            components.clone(),
+        )
+        .await
+        {
+            Ok(_) => return Ok(SecretDeliveryRoute::MemoChannel),
+            Err(error) => failure.memo_channel_error = Some(format!("{error:?}")),
+        }
+    }
+
+    if anonymous_enabled {
+        match send_direct_secret_message(ctx, player, message, components).await {
+            Ok(()) => return Ok(SecretDeliveryRoute::DirectMessage),
+            Err(DirectSecretError::User(error)) => failure.dm_user_error = Some(error),
+            Err(DirectSecretError::Send(error)) => failure.dm_send_error = Some(error),
+        }
+    }
+    Err(failure)
 }
 
 pub fn duration_text(seconds: u64) -> String {
@@ -331,4 +459,28 @@ pub async fn role_by_name(
 ) -> Result<Option<serenity::Role>> {
     let roles = guild_id.roles(&ctx.http).await?;
     Ok(roles.into_values().find(|role| role.name == name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_delivery_failure_explains_every_attempt() {
+        let failure = SecretDeliveryFailure {
+            anonymous_enabled: true,
+            anonymous_channel_id: None,
+            memo_channel_id: Some(serenity::ChannelId::new(20)),
+            memo_channel_error: Some("forbidden".to_string()),
+            dm_send_error: Some("cannot message user".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            failure.public_reason(),
+            "익명 개인 채널 없음 / 개인 메모 채널 전송 실패 / DM 전송 실패"
+        );
+        assert!(failure.log_detail().contains("memo_channel_id=Some(20)"));
+        assert!(failure.log_detail().contains("cannot message user"));
+    }
 }

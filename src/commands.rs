@@ -2080,14 +2080,18 @@ pub async fn cleanup_stuck_game(ctx: Context<'_>) -> Result<(), Error> {
         ctx.serenity_context(),
         ctx.data(),
         guild_id,
+        ctx.channel_id(),
         !cleaned_running_game,
     )
     .await;
     reply_embed_with_channel_fallback(
         ctx,
         format!(
-            "남아 있던 게임 채널, 역할, 권한, 슬로우모드를 정리했습니다.\n추가 삭제 채널: {}개\n역할 제거: {}개",
-            summary.channels_deleted, summary.role_removals
+            "남아 있던 게임 채널, 역할, 권한, 슬로우모드를 정리했습니다.\n추가 삭제 채널: {}개\n삭제 실패 채널: {}개\n역할 제거: {}개\n메인 채널 권한 정리: {}개",
+            summary.channels_deleted,
+            summary.channel_delete_failures,
+            summary.role_removals,
+            summary.permissions_reset,
         ),
         "마피아 정리 완료",
         serenity::Colour::DARK_GREEN,
@@ -5725,6 +5729,26 @@ pub fn anonymous_dead_sender_label(running: &RunningGame, sender: &Player) -> St
     }
 }
 
+pub fn anonymous_shaman_sender_label(sender: &Player) -> &'static str {
+    if sender.alive && sender.role == Role::Shaman {
+        "익명의 목소리"
+    } else {
+        "익명의 사망자"
+    }
+}
+
+fn anonymous_shaman_recipient_ids(running: &RunningGame, sender_id: u64) -> Vec<u64> {
+    running
+        .game
+        .players
+        .iter()
+        .filter(|viewer| {
+            viewer.user_id != sender_id && can_use_anonymous_shaman_chat(running, viewer)
+        })
+        .map(|viewer| viewer.user_id)
+        .collect()
+}
+
 pub async fn send_dead_chat_text(
     ctx: &serenity::Context,
     running: &Arc<RwLock<RunningGame>>,
@@ -5959,51 +5983,24 @@ pub async fn relay_anonymous_shaman_message(
     sender_id: u64,
     body: &str,
 ) {
-    let (deliveries, log_channel, sender_label) = {
+    let (deliveries, sender_label) = {
         let running_read = running.read().await;
         let Some(sender) = running_read.game.get_player(sender_id) else {
             return;
         };
-        let deliveries = running_read
-            .game
-            .players
-            .iter()
-            .filter(|viewer| {
-                viewer.user_id != sender.user_id
-                    && ((!viewer.alive
-                        && !running_read
-                            .game
-                            .purified_dead_ids
-                            .contains(&viewer.user_id))
-                        || (viewer.alive
-                            && viewer.role == Role::Shaman
-                            && !running_read.game.is_frog(viewer)))
-            })
-            .filter_map(|viewer| {
+        let deliveries = anonymous_shaman_recipient_ids(&running_read, sender.user_id)
+            .into_iter()
+            .filter_map(|viewer_id| {
                 running_read
                     .anonymous_shaman_input_channel_ids
-                    .get(&viewer.user_id)
+                    .get(&viewer_id)
                     .copied()
             })
             .collect::<Vec<_>>();
-        (
-            deliveries,
-            running_read.shaman_channel_id,
-            anonymous_dead_sender_label(&running_read, sender),
-        )
+        (deliveries, anonymous_shaman_sender_label(sender))
     };
     for channel_id in deliveries {
-        send_anonymous_text(ctx, running, channel_id, &sender_label, body).await;
-    }
-    if let Some(channel_id) = log_channel {
-        send_anonymous_text(
-            ctx,
-            running,
-            channel_id,
-            "[익명 로그/영매]",
-            &format!("{sender_label} - {body}"),
-        )
-        .await;
+        send_anonymous_text(ctx, running, channel_id, sender_label, body).await;
     }
 }
 
@@ -6188,4 +6185,19 @@ pub async fn handle_message_event(
         return Ok(());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anonymous_shaman_labels_do_not_reveal_game_identity() {
+        let shaman = Player::new(1, "영매 실제 이름".to_string(), Role::Shaman);
+        let mut dead = Player::new(2, "사망자 실제 이름".to_string(), Role::Citizen);
+        dead.alive = false;
+
+        assert_eq!(anonymous_shaman_sender_label(&shaman), "익명의 목소리");
+        assert_eq!(anonymous_shaman_sender_label(&dead), "익명의 사망자");
+    }
 }

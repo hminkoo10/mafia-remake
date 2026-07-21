@@ -26,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
+use tokio::task::JoinSet;
 
 const LEGACY_FROG_CHAT_CHANNEL_NAME: &str = "개구리-채팅방";
 
@@ -440,7 +441,7 @@ pub async fn create_text_channel_safe(
 
     match guild_id.create_channel(&ctx.http, builder).await {
         Ok(channel) => Some(channel),
-        Err(_) if category.is_some() => {
+        Err(primary_error) if category.is_some() => {
             let mut fallback = serenity::CreateChannel::new(name)
                 .kind(serenity::ChannelType::Text)
                 .permissions(overwrites)
@@ -449,9 +450,25 @@ pub async fn create_text_channel_safe(
             if let Some(topic) = topic {
                 fallback = fallback.topic(topic.chars().take(1024).collect::<String>());
             }
-            guild_id.create_channel(&ctx.http, fallback).await.ok()
+            match guild_id.create_channel(&ctx.http, fallback).await {
+                Ok(channel) => Some(channel),
+                Err(fallback_error) => {
+                    eprintln!(
+                        "failed to create game channel: guild_id={} name={name:?} category_id={:?} reason={reason:?} primary_error={primary_error:?} fallback_error={fallback_error:?}",
+                        guild_id.get(),
+                        category.map(|id| id.get()),
+                    );
+                    None
+                }
+            }
         }
-        Err(_) => None,
+        Err(error) => {
+            eprintln!(
+                "failed to create game channel: guild_id={} name={name:?} category_id=None reason={reason:?} error={error:?}",
+                guild_id.get(),
+            );
+            None
+        }
     }
 }
 
@@ -1647,12 +1664,21 @@ pub async fn hide_original_game_channel_for_anonymous(
             overwrite.kind == serenity::PermissionOverwriteType::Role(participant_role_id)
         })
         .cloned();
+    let bot_original = channel
+        .permission_overwrites
+        .iter()
+        .find(|overwrite| overwrite.kind == serenity::PermissionOverwriteType::Member(roles.bot))
+        .cloned();
     {
         let mut running_write = running.write().await;
         running_write
             .original_game_channel_overwrites
             .entry(participant_role_id)
             .or_insert(original);
+        running_write
+            .member_channel_overwrites
+            .entry(roles.bot.get())
+            .or_insert(bot_original);
     }
     let _ = channel_id
         .create_permission(
@@ -1728,6 +1754,7 @@ pub async fn create_anonymous_chat_channels(
     }
 
     let players = { running.read().await.game.players.clone() };
+    let mut failed_players = Vec::new();
     for player in players {
         let (guild_id, alias, can_chat) = {
             let running_read = running.read().await;
@@ -1744,11 +1771,17 @@ pub async fn create_anonymous_chat_channels(
                 can_use_anonymous_general_chat(&running_read, player_state),
             )
         };
-        if guild_id
+        if let Err(error) = guild_id
             .member(ctx, serenity::UserId::new(player.user_id))
             .await
-            .is_err()
         {
+            eprintln!(
+                "failed to resolve anonymous chat member: guild_id={} user_id={} player={:?} error={error:?}",
+                guild_id.get(),
+                player.user_id,
+                player.name,
+            );
+            failed_players.push(player.name.clone());
             continue;
         }
 
@@ -1770,6 +1803,7 @@ pub async fn create_anonymous_chat_channels(
         )
         .await
         else {
+            failed_players.push(player.name.clone());
             continue;
         };
         {
@@ -1792,6 +1826,9 @@ pub async fn create_anonymous_chat_channels(
             vec![],
         )
         .await;
+    }
+    if !failed_players.is_empty() {
+        bail!("익명 개인 채널 생성 실패: {}", failed_players.join(", "));
     }
     Ok(())
 }
@@ -2524,7 +2561,7 @@ pub async fn sync_anonymous_role_statuses(
 
 pub fn shaman_chat_status_text(running: &RunningGame) -> &'static str {
     if running.anonymous_enabled {
-        "사망자와 영매가 접신하는 채팅입니다.\n영매는 이 채널만 볼 수 있으며, 밤에만 말할 수 있습니다.\n익명 모드에서는 각자의 영매 개인 채널을 사용하세요."
+        "사망자와 영매의 익명 릴레이용 내부 채널입니다.\n익명 모드에서는 각자의 영매 개인 채널만 사용합니다."
     } else {
         "사망자와 영매가 접신하는 채팅입니다.\n영매는 이 채널만 볼 수 있으며, 밤에만 말할 수 있습니다."
     }
@@ -2966,7 +3003,7 @@ pub async fn create_shaman_chat_channel(
     if let Some(role_id) = roles.dead {
         overwrites.push(dead_channel_overwrite(
             serenity::PermissionOverwriteType::Role(role_id),
-            true,
+            !anonymous_enabled,
             !anonymous_enabled,
         ));
     }
@@ -2993,7 +3030,7 @@ pub async fn create_shaman_chat_channel(
         {
             overwrites.push(dead_channel_overwrite(
                 serenity::PermissionOverwriteType::Member(serenity::UserId::new(player.user_id)),
-                true,
+                !anonymous_enabled,
                 false,
             ));
         }
@@ -3261,9 +3298,14 @@ pub async fn set_shaman_channel_member_access(
     can_view: bool,
     can_chat: bool,
 ) {
-    let Some(channel_id) = running.read().await.shaman_channel_id else {
-        return;
+    let (channel_id, anonymous_enabled) = {
+        let running_read = running.read().await;
+        let Some(channel_id) = running_read.shaman_channel_id else {
+            return;
+        };
+        (channel_id, running_read.anonymous_enabled)
     };
+    let (can_view, can_chat) = shared_shaman_member_access(anonymous_enabled, can_view, can_chat);
     let _ = channel_id
         .create_permission(
             &ctx.http,
@@ -3275,6 +3317,18 @@ pub async fn set_shaman_channel_member_access(
         )
         .await;
     upsert_shaman_chat_status(ctx, running).await;
+}
+
+fn shared_shaman_member_access(
+    anonymous_enabled: bool,
+    can_view: bool,
+    can_chat: bool,
+) -> (bool, bool) {
+    if anonymous_enabled {
+        (false, false)
+    } else {
+        (can_view, can_chat)
+    }
 }
 
 pub async fn sync_shaman_chat_access(
@@ -4179,6 +4233,95 @@ pub async fn handle_madam_seduction_result(
     sync_madam_seduction_permissions(ctx, running).await;
 }
 
+const CLEANUP_RETRY_ATTEMPTS: usize = 3;
+const CLEANUP_DELETE_CONCURRENCY: usize = 4;
+
+async fn delete_game_channel_with_retry(
+    http: &serenity::Http,
+    channel_id: serenity::ChannelId,
+) -> std::result::Result<(), String> {
+    let mut last_error = None;
+    for attempt in 1..=CLEANUP_RETRY_ATTEMPTS {
+        match channel_id.delete(http).await {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                last_error = Some(format!("{error:?}"));
+                if attempt < CLEANUP_RETRY_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_millis(250 * attempt as u64)).await;
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "unknown Discord error".to_string()))
+}
+
+async fn delete_game_channels(
+    ctx: &serenity::Context,
+    channel_ids: impl IntoIterator<Item = serenity::ChannelId>,
+) -> (usize, Vec<String>) {
+    let mut channel_ids = channel_ids.into_iter().collect::<Vec<_>>();
+    channel_ids.sort_by_key(|id| id.get());
+    channel_ids.dedup();
+    let mut deleted = 0;
+    let mut failures = Vec::new();
+
+    for batch in channel_ids.chunks(CLEANUP_DELETE_CONCURRENCY) {
+        let mut jobs = JoinSet::new();
+        for &channel_id in batch {
+            let http = ctx.http.clone();
+            jobs.spawn(async move {
+                (
+                    channel_id,
+                    delete_game_channel_with_retry(http.as_ref(), channel_id).await,
+                )
+            });
+        }
+        while let Some(result) = jobs.join_next().await {
+            match result {
+                Ok((_, Ok(()))) => deleted += 1,
+                Ok((channel_id, Err(error))) => {
+                    failures.push(format!("channel_id={} error={error}", channel_id.get()))
+                }
+                Err(error) => failures.push(format!("cleanup task failed: {error:?}")),
+            }
+        }
+    }
+    (deleted, failures)
+}
+
+async fn restore_permission_with_retry(
+    ctx: &serenity::Context,
+    channel_id: serenity::ChannelId,
+    kind: serenity::PermissionOverwriteType,
+    original: Option<serenity::PermissionOverwrite>,
+) -> bool {
+    let mut last_error = None;
+    for attempt in 1..=CLEANUP_RETRY_ATTEMPTS {
+        let result = if let Some(overwrite) = original.clone() {
+            channel_id.create_permission(&ctx.http, overwrite).await
+        } else {
+            channel_id
+                .delete_permission(&ctx.http, kind)
+                .await
+                .map(|_| ())
+        };
+        match result {
+            Ok(()) => return true,
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < CLEANUP_RETRY_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_millis(250 * attempt as u64)).await;
+                }
+            }
+        }
+    }
+    eprintln!(
+        "failed to restore game channel permission: channel_id={} kind={kind:?} error={last_error:?}",
+        channel_id.get(),
+    );
+    false
+}
+
 pub async fn cleanup_game(
     ctx: &serenity::Context,
     data: &Data,
@@ -4221,16 +4364,9 @@ pub async fn cleanup_game(
         channel_ids
     };
 
-    let mut seen = HashSet::new();
-    for channel_id in channel_ids {
-        if seen.insert(channel_id) {
-            if let Err(error) = channel_id.delete(&ctx.http).await {
-                eprintln!(
-                    "failed to delete game channel {}: {error:?}",
-                    channel_id.get()
-                );
-            }
-        }
+    let (_, delete_failures) = delete_game_channels(ctx, channel_ids).await;
+    for failure in delete_failures {
+        eprintln!("failed to delete game channel after retries: {failure}");
     }
 
     let (guild_id, participant_user_ids, spectator_user_ids) = {
@@ -4292,18 +4428,13 @@ pub async fn cleanup_game(
         )
     };
     for (role_id, overwrite) in original_overwrites {
-        match overwrite {
-            Some(overwrite) => {
-                let _ = source_channel_id
-                    .create_permission(&ctx.http, overwrite)
-                    .await;
-            }
-            None => {
-                let _ = source_channel_id
-                    .delete_permission(&ctx.http, serenity::PermissionOverwriteType::Role(role_id))
-                    .await;
-            }
-        }
+        restore_permission_with_retry(
+            ctx,
+            source_channel_id,
+            serenity::PermissionOverwriteType::Role(role_id),
+            overwrite,
+        )
+        .await;
     }
 
     let mut running_write = running.write().await;
@@ -4354,13 +4485,85 @@ pub async fn cleanup_game(
 #[derive(Default)]
 pub(crate) struct ForcedCleanupSummary {
     pub channels_deleted: usize,
+    pub channel_delete_failures: usize,
     pub role_removals: usize,
+    pub permissions_reset: usize,
+}
+
+fn stripped_game_permission_overwrite(
+    mut overwrite: serenity::PermissionOverwrite,
+    clear_view: bool,
+) -> Option<serenity::PermissionOverwrite> {
+    let mut bits = serenity::Permissions::SEND_MESSAGES
+        | serenity::Permissions::SEND_MESSAGES_IN_THREADS
+        | serenity::Permissions::ADD_REACTIONS
+        | serenity::Permissions::CREATE_PUBLIC_THREADS
+        | serenity::Permissions::CREATE_PRIVATE_THREADS;
+    if clear_view {
+        bits |= serenity::Permissions::VIEW_CHANNEL | serenity::Permissions::READ_MESSAGE_HISTORY;
+    }
+    overwrite.allow.remove(bits);
+    overwrite.deny.remove(bits);
+    (!overwrite.allow.is_empty() || !overwrite.deny.is_empty()).then_some(overwrite)
+}
+
+async fn cleanup_orphaned_main_channel_permissions(
+    ctx: &serenity::Context,
+    channel_id: serenity::ChannelId,
+    roles: ChannelRoleIds,
+    game_member_ids: &HashSet<u64>,
+) -> usize {
+    let Some(channel) = channel_id
+        .to_channel(&ctx.http)
+        .await
+        .ok()
+        .and_then(|channel| channel.guild())
+    else {
+        eprintln!(
+            "failed to load main channel for forced permission cleanup: channel_id={}",
+            channel_id.get()
+        );
+        return 0;
+    };
+    let game_role_ids = [roles.participant, roles.dead, roles.spectator]
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<_>>();
+    let mut reset = 0;
+    for overwrite in channel.permission_overwrites {
+        let (managed, clear_view) = match overwrite.kind {
+            serenity::PermissionOverwriteType::Role(role_id) if role_id == roles.everyone => {
+                (true, false)
+            }
+            serenity::PermissionOverwriteType::Role(role_id)
+                if game_role_ids.contains(&role_id) =>
+            {
+                (true, true)
+            }
+            serenity::PermissionOverwriteType::Member(user_id)
+                if user_id == roles.bot || game_member_ids.contains(&user_id.get()) =>
+            {
+                (true, true)
+            }
+            _ => (false, false),
+        };
+        if !managed {
+            continue;
+        }
+        let kind = overwrite.kind;
+        let cleaned = stripped_game_permission_overwrite(overwrite, clear_view);
+        if restore_permission_with_retry(ctx, channel_id, kind, cleaned).await {
+            reset += 1;
+        }
+    }
+    reset
 }
 
 pub async fn cleanup_orphaned_game_artifacts(
     ctx: &serenity::Context,
     data: &Data,
     guild_id: serenity::GuildId,
+    source_channel_id: serenity::ChannelId,
     full_role_sweep: bool,
 ) -> ForcedCleanupSummary {
     let config = data.config.read().await.clone();
@@ -4370,17 +4573,16 @@ pub async fn cleanup_orphaned_game_artifacts(
     let mut summary = ForcedCleanupSummary::default();
 
     if let Ok(channels) = guild_id.channels(&ctx.http).await {
-        let mut channel_ids = channels
+        let channel_ids = channels
             .into_values()
             .filter(|channel| should_force_delete_game_channel(channel, roles))
             .map(|channel| channel.id)
             .collect::<Vec<_>>();
-        channel_ids.sort_by_key(|id| id.get());
-        channel_ids.dedup();
-        for channel_id in channel_ids {
-            if channel_id.delete(&ctx.http).await.is_ok() {
-                summary.channels_deleted += 1;
-            }
+        let (deleted, failures) = delete_game_channels(ctx, channel_ids).await;
+        summary.channels_deleted += deleted;
+        summary.channel_delete_failures += failures.len();
+        for failure in failures {
+            eprintln!("failed to force-delete game channel after retries: {failure}");
         }
     }
 
@@ -4391,14 +4593,11 @@ pub async fn cleanup_orphaned_game_artifacts(
         .into_iter()
         .flatten()
         .collect::<HashSet<_>>();
-    if role_ids.is_empty() {
-        return summary;
-    }
-
     if !full_role_sweep {
         return summary;
     }
 
+    let mut game_member_ids = HashSet::new();
     let mut after = None;
     loop {
         let Ok(members) = guild_id.members(&ctx.http, Some(1000), after).await else {
@@ -4408,6 +4607,13 @@ pub async fn cleanup_orphaned_game_artifacts(
             break;
         }
         for member in &members {
+            if member
+                .roles
+                .iter()
+                .any(|role_id| role_ids.contains(role_id))
+            {
+                game_member_ids.insert(member.user.id.get());
+            }
             summary.role_removals += remove_cleanup_roles_from_member_snapshot(
                 ctx,
                 guild_id,
@@ -4423,6 +4629,10 @@ pub async fn cleanup_orphaned_game_artifacts(
             break;
         }
     }
+
+    summary.permissions_reset +=
+        cleanup_orphaned_main_channel_permissions(ctx, source_channel_id, roles, &game_member_ids)
+            .await;
 
     summary
 }
@@ -4650,14 +4860,7 @@ pub async fn restore_member_game_channel_chat(
     };
     for (user_id, original) in originals {
         let kind = serenity::PermissionOverwriteType::Member(serenity::UserId::new(user_id));
-        match original {
-            Some(overwrite) => {
-                let _ = channel_id.create_permission(&ctx.http, overwrite).await;
-            }
-            None => {
-                let _ = channel_id.delete_permission(&ctx.http, kind).await;
-            }
-        }
+        restore_permission_with_retry(ctx, channel_id, kind, original).await;
     }
 }
 
@@ -4674,14 +4877,7 @@ pub async fn restore_game_channel_chat(
     };
     for (role_id, original) in originals {
         let kind = serenity::PermissionOverwriteType::Role(role_id);
-        match original {
-            Some(overwrite) => {
-                let _ = channel_id.create_permission(&ctx.http, overwrite).await;
-            }
-            None => {
-                let _ = channel_id.delete_permission(&ctx.http, kind).await;
-            }
-        }
+        restore_permission_with_retry(ctx, channel_id, kind, original).await;
     }
 }
 
@@ -5293,6 +5489,46 @@ mod tests {
         running.game.phase = Phase::Day;
         running.day_chat_open = true;
         assert!(!can_use_anonymous_general_chat(&running, &player));
+    }
+
+    #[test]
+    fn anonymous_shared_shaman_channel_is_hidden_from_members() {
+        assert_eq!(
+            shared_shaman_member_access(true, true, true),
+            (false, false)
+        );
+        assert_eq!(
+            shared_shaman_member_access(true, true, false),
+            (false, false)
+        );
+        assert_eq!(shared_shaman_member_access(false, true, true), (true, true));
+    }
+
+    #[test]
+    fn forced_cleanup_removes_only_game_managed_permission_bits() {
+        let kind = serenity::PermissionOverwriteType::Role(serenity::RoleId::new(7));
+        let overwrite = serenity::PermissionOverwrite {
+            allow: serenity::Permissions::MANAGE_MESSAGES | serenity::Permissions::SEND_MESSAGES,
+            deny: serenity::Permissions::VIEW_CHANNEL
+                | serenity::Permissions::CREATE_PUBLIC_THREADS,
+            kind,
+        };
+
+        let cleaned = stripped_game_permission_overwrite(overwrite, true).unwrap();
+        assert_eq!(cleaned.allow, serenity::Permissions::MANAGE_MESSAGES);
+        assert!(cleaned.deny.is_empty());
+    }
+
+    #[test]
+    fn living_shaman_cannot_receive_other_role_night_chat() {
+        let mut running = dead_chat_test_running();
+        running.anonymous_enabled = true;
+        running.game.phase = Phase::Night;
+        running.game.players[0].role = Role::Shaman;
+        let shaman = running.game.players[0].clone();
+
+        assert!(can_use_anonymous_shaman_chat(&running, &shaman));
+        assert!(!can_receive_role_chat_as_dead(&running, &shaman));
     }
 
     #[test]
