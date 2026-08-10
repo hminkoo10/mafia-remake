@@ -2468,21 +2468,56 @@ pub fn prophet_victory_message(game: &MafiaGame, winner: Winner) -> Option<Strin
 }
 
 pub fn game_result_display_name(running: &RunningGame, player: &Player) -> String {
+    game_result_label(running, player.user_id, &player.name)
+}
+
+/// 게임 결과 표기용 이름. 익명 게임이면 "별명 = 실명"으로 번호의 정체를 함께 공개한다.
+pub fn game_result_label(running: &RunningGame, user_id: u64, fallback: &str) -> String {
     if running.anonymous_enabled {
         let alias = running
             .anonymous_aliases
-            .get(&player.user_id)
+            .get(&user_id)
             .map(String::as_str)
             .unwrap_or("익명");
         let real_name = running
             .anonymous_original_names
-            .get(&player.user_id)
+            .get(&user_id)
             .map(String::as_str)
-            .unwrap_or(&player.name);
+            .unwrap_or(fallback);
         format!("{alias} = {real_name}")
     } else {
-        player.name.clone()
+        fallback.to_string()
     }
+}
+
+/// 익명 게임의 `game.players`는 이름이 별명으로 덮여 있다. 통계/레이팅에는 실명이
+/// 남아야 하므로 기록 직전에 원래 이름으로 되돌린 스냅샷을 만든다.
+fn stats_game_snapshot(running: &RunningGame) -> MafiaGame {
+    let mut snapshot = running.game.clone();
+    if running.anonymous_enabled {
+        for player in &mut snapshot.players {
+            if let Some(original) = running.anonymous_original_names.get(&player.user_id) {
+                player.name.clone_from(original);
+            }
+        }
+    }
+    snapshot
+}
+
+/// 레이팅/랭크 변동 안내는 실명으로 기록되지만, 익명 게임 결과에서는 어떤 번호가
+/// 누구였는지도 함께 보여준다.
+fn rating_log_with_result_labels(
+    running: &RunningGame,
+    rating_log: &[stats::GameRatingLogItem],
+) -> Vec<stats::GameRatingLogItem> {
+    rating_log
+        .iter()
+        .map(|item| {
+            let mut item = item.clone();
+            item.name = game_result_label(running, item.user_id, &item.name);
+            item
+        })
+        .collect()
 }
 
 pub fn game_result_rows(
@@ -3063,7 +3098,7 @@ pub async fn announce_winner(
                 }),
             );
             Some((
-                running_write.game.clone(),
+                stats_game_snapshot(&running_write),
                 running_write.initial_roles.clone(),
                 elapsed_seconds,
             ))
@@ -3105,8 +3140,12 @@ pub async fn announce_winner(
             );
             (rating_log, stats_file.clone())
         };
-        rating_log_chunks = stats::game_rating_log_chunks(&recorded_rating_log, 3500);
-        rank_change_chunks = stats::game_rank_change_chunks(&recorded_rating_log, 3500);
+        let labeled_rating_log = {
+            let running_read = running.read().await;
+            rating_log_with_result_labels(&running_read, &recorded_rating_log)
+        };
+        rating_log_chunks = stats::game_rating_log_chunks(&labeled_rating_log, 3500);
+        rank_change_chunks = stats::game_rank_change_chunks(&labeled_rating_log, 3500);
         rating_log = recorded_rating_log;
         let stats_path = data.stats_path.clone();
         match tokio::task::spawn_blocking(move || stats::save_stats(&*stats_path, &stats_snapshot))
@@ -3237,6 +3276,99 @@ pub async fn announce_winner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel::tests::dead_chat_test_running;
+
+    /// 익명 게임 진행 중과 같은 상태: `game.players`의 이름이 별명으로 덮여 있고
+    /// 실명은 `anonymous_original_names`에만 남아 있다. 참가자 순서는 무작위이므로
+    /// 별명은 user_id 순으로 매긴다.
+    fn anonymous_result_test_running() -> RunningGame {
+        let mut running = dead_chat_test_running();
+        running.anonymous_enabled = true;
+        let mut user_ids = running
+            .game
+            .players
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        user_ids.sort_unstable();
+        for (index, user_id) in user_ids.into_iter().enumerate() {
+            running
+                .anonymous_aliases
+                .insert(user_id, format!("{}번", index + 1));
+        }
+        for player in &mut running.game.players {
+            running
+                .anonymous_original_names
+                .insert(player.user_id, player.name.clone());
+            player
+                .name
+                .clone_from(&running.anonymous_aliases[&player.user_id]);
+        }
+        running
+    }
+
+    #[test]
+    fn anonymous_game_result_names_reveal_the_player_behind_each_alias() {
+        let running = anonymous_result_test_running();
+        let player = running
+            .game
+            .players
+            .iter()
+            .find(|player| player.user_id == 3)
+            .unwrap();
+
+        assert_eq!(player.name, "3번");
+        assert_eq!(game_result_display_name(&running, player), "3번 = p3");
+    }
+
+    #[test]
+    fn stats_snapshot_records_real_names_for_anonymous_games() {
+        let running = anonymous_result_test_running();
+
+        let snapshot = stats_game_snapshot(&running);
+
+        let mut names = snapshot
+            .players
+            .iter()
+            .map(|player| player.name.clone())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, ["p1", "p2", "p3", "p4"]);
+    }
+
+    #[test]
+    fn anonymous_rank_change_lines_show_alias_and_real_name() {
+        let running = anonymous_result_test_running();
+        let log = vec![stats::GameRatingLogItem {
+            user_id: 2,
+            name: "p2".to_string(),
+            role: Role::Citizen.value().to_string(),
+            before: 1000,
+            after: 1030,
+            delta: 30,
+            team_delta: 30,
+            role_delta: 0,
+            streak_delta: 0,
+            win_streak: 1,
+            best_win_streak: 1,
+            reasons: Vec::new(),
+        }];
+
+        let labeled = rating_log_with_result_labels(&running, &log);
+
+        assert_eq!(labeled[0].name, "2번 = p2");
+    }
+
+    #[test]
+    fn non_anonymous_game_result_names_are_left_alone() {
+        let mut running = anonymous_result_test_running();
+        running.anonymous_enabled = false;
+        let player = running.game.players[0].clone();
+        let alias = player.name.clone();
+
+        assert_eq!(game_result_display_name(&running, &player), alias);
+        assert_eq!(stats_game_snapshot(&running).players[0].name, alias);
+    }
 
     #[test]
     fn stale_game_loop_cannot_remove_new_game_entry() {
