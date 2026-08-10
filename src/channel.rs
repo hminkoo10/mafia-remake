@@ -2336,7 +2336,6 @@ pub async fn create_anonymous_role_channels(
                 can_chat,
             ));
             let initial_overwrites = overwrites.clone();
-            let topic = format!("{} 익명 채팅 | {status_text}", role.value());
             let Some(channel) = create_text_channel_safe(
                 ctx,
                 guild_id,
@@ -2345,7 +2344,7 @@ pub async fn create_anonymous_role_channels(
                 category,
                 "마피아 게임 역할별 익명 입력 채널 생성",
                 0,
-                Some(topic.clone()),
+                Some(anonymous_role_channel_topic(role)),
             )
             .await
             else {
@@ -2359,9 +2358,6 @@ pub async fn create_anonymous_role_channels(
                 running_write
                     .anonymous_role_input_channels
                     .insert(channel.id, (user_id, role));
-                running_write
-                    .anonymous_channel_topics
-                    .insert(channel.id, topic.chars().take(1024).collect::<String>());
                 remember_channel_permissions(&mut running_write, channel.id, &initial_overwrites);
             }
             let _ = send_channel_embed(
@@ -2564,7 +2560,7 @@ pub async fn upsert_private_role_status_message(
     role: Role,
 ) {
     if running.read().await.anonymous_enabled {
-        sync_anonymous_role_status(ctx, running, role, true).await;
+        sync_anonymous_role_status(ctx, running, role).await;
         return;
     }
     let (channel_id, message_id, status_text, unchanged) = {
@@ -2630,6 +2626,12 @@ pub async fn upsert_private_role_status_message(
             .private_role_status_texts
             .insert(role, status_text);
     }
+}
+
+/// 역할 익명 채널 토픽. 채널 토픽은 생성 시 한 번만 정하므로 시간이 지나면 낡을 수
+/// 있는 현황은 넣지 않는다(현황은 채널 내 상태 메시지가 담당).
+fn anonymous_role_channel_topic(role: Role) -> String {
+    format!("{} 익명 채팅", role.value())
 }
 
 fn anonymous_role_status_targets(
@@ -2716,70 +2718,36 @@ pub async fn upsert_anonymous_role_status_message(
     }
 }
 
+// 역할 현황은 채널 내 상태 메시지로만 갱신한다. 채널 토픽 수정(PATCH /channels)은
+// Discord가 채널당 10분에 2회로 제한하므로, 상태가 바뀔 때마다 토픽을 고치면 세 번째
+// 요청부터 최대 10분씩 429 대기에 걸린다. 이 대기는 워커 토큰으로도 피할 수 없고(채널
+// 단위 제한) 게임 루프에서 그대로 await되어 게임 전체가 멈춘다. 토픽은 채널을 만들 때
+// 한 번만 정하고 이후에는 절대 수정하지 않는다.
 async fn sync_anonymous_role_status(
     ctx: &serenity::Context,
     running: &Arc<RwLock<RunningGame>>,
     role: Role,
-    update_messages: bool,
 ) {
-    let updates = {
+    let targets = {
         let running_read = running.read().await;
         if !running_read.anonymous_enabled
             || !should_create_private_role_channel(&running_read.game, role)
         {
             return;
         }
-        let topic = format!(
-            "{} 익명 채팅 | {}",
-            role.value(),
-            role_channel_status_text(&running_read, role)
-        )
-        .chars()
-        .take(1024)
-        .collect::<String>();
-        anonymous_role_status_targets(&running_read, role)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|((user_id, _), channel_id)| (user_id, channel_id, topic.clone()))
-            .collect::<Vec<_>>()
+        anonymous_role_status_targets(&running_read, role).unwrap_or_default()
     };
-    for (user_id, channel_id, topic) in updates {
-        let needs_topic_update = {
-            let running_read = running.read().await;
-            running_read.anonymous_channel_topics.get(&channel_id) != Some(&topic)
-        };
-        if needs_topic_update {
-            let edited = crate::http_pool::with_fallback(ctx, |http| {
-                let topic = topic.clone();
-                async move {
-                    channel_id
-                        .edit(&http, serenity::EditChannel::new().topic(topic))
-                        .await
-                }
-            })
-            .await;
-            if edited.is_ok() {
-                running
-                    .write()
-                    .await
-                    .anonymous_channel_topics
-                    .insert(channel_id, topic);
-            }
-        }
-        if update_messages {
-            upsert_anonymous_role_status_message(ctx, running, channel_id, role, (user_id, role))
-                .await;
-        }
+    for ((user_id, _), channel_id) in targets {
+        upsert_anonymous_role_status_message(ctx, running, channel_id, role, (user_id, role)).await;
     }
 }
 
 pub async fn sync_anonymous_role_statuses(
     ctx: &serenity::Context,
     running: &Arc<RwLock<RunningGame>>,
-    update_messages: bool,
 ) {
     for &role in PRIVATE_CHAT_ROLES {
-        sync_anonymous_role_status(ctx, running, role, update_messages).await;
+        sync_anonymous_role_status(ctx, running, role).await;
     }
 }
 
@@ -3539,7 +3507,7 @@ pub async fn sync_madam_seduction_permissions(
 ) {
     if running.read().await.anonymous_enabled {
         sync_anonymous_general_chat_permissions(ctx, running).await;
-        sync_anonymous_role_statuses(ctx, running, true).await;
+        sync_anonymous_role_statuses(ctx, running).await;
         return;
     }
     let (channel_id, seduced_ids) = {
@@ -3851,7 +3819,7 @@ pub async fn set_anonymous_role_channel_access(
             category,
             "마피아 게임 익명 역할 채팅 권한 동기화",
             0,
-            Some(format!("{} 익명 채팅 | {status_text}", role.value())),
+            Some(anonymous_role_channel_topic(role)),
         )
         .await
         else {
@@ -3868,13 +3836,6 @@ pub async fn set_anonymous_role_channel_access(
                 running_write
                     .anonymous_role_input_channels
                     .insert(channel.id, (player.user_id, role));
-                running_write.anonymous_channel_topics.insert(
-                    channel.id,
-                    format!("{} 익명 채팅 | {status_text}", role.value())
-                        .chars()
-                        .take(1024)
-                        .collect::<String>(),
-                );
                 remember_channel_permissions(&mut running_write, channel.id, &initial_overwrites);
                 true
             } else {
@@ -4052,7 +4013,7 @@ pub async fn disable_private_role_channels_for_player(
             )
             .await;
         }
-        sync_anonymous_role_statuses(ctx, running, true).await;
+        sync_anonymous_role_statuses(ctx, running).await;
         return;
     }
     let roles = {
@@ -4092,7 +4053,7 @@ pub async fn grant_private_role_member_access(
         };
         set_anonymous_role_channel_access(ctx, running, roles, role, player, can_access, can_chat)
             .await;
-        sync_anonymous_role_statuses(ctx, running, true).await;
+        sync_anonymous_role_statuses(ctx, running).await;
         return;
     }
     let can_chat = {
@@ -4167,7 +4128,7 @@ pub async fn sync_private_role_chat_permissions(
             )
             .await;
         }
-        sync_anonymous_role_statuses(ctx, running, true).await;
+        sync_anonymous_role_statuses(ctx, running).await;
         return;
     }
 
@@ -4287,7 +4248,7 @@ pub async fn sync_lover_chat_access(
             )
             .await;
         }
-        sync_anonymous_role_statuses(ctx, running, true).await;
+        sync_anonymous_role_statuses(ctx, running).await;
         return;
     }
     for player in players.iter().filter(|player| player.role == Role::Lover) {
@@ -4344,7 +4305,7 @@ pub async fn sync_cult_team_channel_access(
             )
             .await;
         }
-        sync_anonymous_role_statuses(ctx, running, true).await;
+        sync_anonymous_role_statuses(ctx, running).await;
         return;
     }
     for player in &players {
@@ -4419,7 +4380,7 @@ pub async fn sync_scientist_mafia_permissions(
             )
             .await;
         }
-        sync_anonymous_role_statuses(ctx, running, true).await;
+        sync_anonymous_role_statuses(ctx, running).await;
         return;
     }
     for player in &scientist_players {
@@ -4574,7 +4535,7 @@ pub async fn restore_revived_player_roles(
         }
     }
     sync_anonymous_general_chat_permissions(ctx, running).await;
-    sync_anonymous_role_statuses(ctx, running, true).await;
+    sync_anonymous_role_statuses(ctx, running).await;
 }
 
 pub async fn apply_purification_side_effects(
@@ -4974,7 +4935,6 @@ pub async fn cleanup_game(
         .anonymous_role_input_status_message_ids
         .clear();
     running_write.anonymous_role_status_texts.clear();
-    running_write.anonymous_channel_topics.clear();
     running_write.anonymous_aliases.clear();
     running_write.anonymous_original_names.clear();
     running_write.anonymous_webhooks.clear();
@@ -5811,7 +5771,6 @@ mod tests {
             anonymous_role_input_channels: Default::default(),
             anonymous_role_input_status_message_ids: Default::default(),
             anonymous_role_status_texts: Default::default(),
-            anonymous_channel_topics: Default::default(),
             anonymous_webhooks: Default::default(),
             anonymous_webhook_creation_locks: Default::default(),
             channel_role_ids: None,

@@ -159,7 +159,6 @@ struct RunningGame {
     anonymous_role_input_channels: HashMap<serenity::ChannelId, (u64, Role)>,
     anonymous_role_input_status_message_ids: HashMap<(u64, Role), serenity::MessageId>,
     anonymous_role_status_texts: HashMap<(u64, Role), String>,
-    anonymous_channel_topics: HashMap<serenity::ChannelId, String>,
     anonymous_webhooks: HashMap<serenity::ChannelId, serenity::Webhook>,
     anonymous_webhook_creation_locks: HashMap<serenity::ChannelId, Arc<tokio::sync::Mutex<()>>>,
     channel_role_ids: Option<ChannelRoleIds>,

@@ -313,7 +313,6 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         anonymous_role_input_channels: HashMap::new(),
         anonymous_role_input_status_message_ids: HashMap::new(),
         anonymous_role_status_texts: HashMap::new(),
-        anonymous_channel_topics: HashMap::new(),
         anonymous_webhooks: HashMap::new(),
         anonymous_webhook_creation_locks: HashMap::new(),
         channel_role_ids: None,

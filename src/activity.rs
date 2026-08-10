@@ -1344,7 +1344,6 @@ mod tests {
             anonymous_role_input_channels: Default::default(),
             anonymous_role_input_status_message_ids: Default::default(),
             anonymous_role_status_texts: Default::default(),
-            anonymous_channel_topics: Default::default(),
             anonymous_webhooks: Default::default(),
             anonymous_webhook_creation_locks: Default::default(),
             channel_role_ids: None,
