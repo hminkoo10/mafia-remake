@@ -1769,6 +1769,36 @@ mod tests {
     }
 
     #[test]
+    fn inspector_receives_result_when_target_dies_the_same_night() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Inspector),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.submit_night_action(2, Some(3)).unwrap();
+        game.submit_night_action(1, Some(3)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(
+            result
+                .killed_players
+                .iter()
+                .any(|player| player.user_id == 3)
+        );
+        assert_eq!(
+            result.inspector_results.get(&2).map(String::as_str),
+            Some("[Three님의 직업은 의사입니다.]")
+        );
+        assert!(!result.inspector_target_notices.contains_key(&3));
+    }
+
+    #[test]
     fn inspector_does_not_reveal_or_notify_other_team() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
         for (id, role) in [

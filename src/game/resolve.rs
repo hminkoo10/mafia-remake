@@ -752,14 +752,18 @@ impl MafiaGame {
             let Some(target) = self.get_player(*target_id) else {
                 continue;
             };
-            if !actor.alive || !target.alive {
+            if !actor.alive {
                 continue;
             }
+            // 수사 대상이 이 밤에 죽어도 수사 자체는 이미 끝났으므로 결과는 전달한다.
+            // 다만 이미 죽은 대상에게는 형사의 정체를 알리지 않는다.
             if self.team_key(actor) == self.team_key(target) {
-                target_notices.insert(
-                    target.user_id,
-                    format!("[형사 {}님이 당신을 수사했습니다.]", actor.name),
-                );
+                if target.alive {
+                    target_notices.insert(
+                        target.user_id,
+                        format!("[형사 {}님이 당신을 수사했습니다.]", actor.name),
+                    );
+                }
                 results.insert(
                     *actor_id,
                     format!(
