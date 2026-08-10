@@ -5789,28 +5789,10 @@ pub fn message_author_display_name(message: &serenity::Message) -> String {
         .unwrap_or_else(|| message.author.name.clone())
 }
 
-pub async fn send_message_author_webhook_text(
-    ctx: &serenity::Context,
-    running: &Arc<RwLock<RunningGame>>,
-    channel_id: serenity::ChannelId,
-    message: &serenity::Message,
-    body: &str,
-) {
-    send_webhook_text(
-        ctx,
-        running,
-        channel_id,
-        &message_author_display_name(message),
-        Some(message.author.face()),
-        body,
-    )
-    .await;
-}
-
-pub fn anonymous_dead_sender_label(running: &RunningGame, sender: &Player) -> String {
-    if sender.alive && sender.role == Role::Shaman {
-        "익명의 목소리".to_string()
-    } else if running.anonymous_enabled {
+/// 익명 게임의 모든 발신자 표기. 역할이나 생사에 따라 다른 라벨을 붙이지 않고
+/// 설정된 익명 이름(번호 또는 동물)만 쓴다.
+pub fn anonymous_sender_label(running: &RunningGame, sender: &Player) -> String {
+    if running.anonymous_enabled {
         running
             .anonymous_aliases
             .get(&sender.user_id)
@@ -5818,14 +5800,6 @@ pub fn anonymous_dead_sender_label(running: &RunningGame, sender: &Player) -> St
             .unwrap_or_else(|| "익명".to_string())
     } else {
         sender.name.clone()
-    }
-}
-
-pub fn anonymous_shaman_sender_label(sender: &Player) -> &'static str {
-    if sender.alive && sender.role == Role::Shaman {
-        "익명의 목소리"
-    } else {
-        "익명의 사망자"
     }
 }
 
@@ -5853,7 +5827,7 @@ pub async fn send_dead_chat_text(
         (
             running_read.anonymous_enabled,
             running_read.guild_id,
-            anonymous_dead_sender_label(&running_read, sender),
+            anonymous_sender_label(&running_read, sender),
         )
     };
     if anonymous_enabled {
@@ -5889,15 +5863,29 @@ pub async fn mirror_role_chat_to_dead(
     let Some(roles) = running_channel_roles(ctx, data, running).await else {
         return;
     };
-    let viewers = {
+    // 발신자 표기는 루프 밖에서 한 번만 정한다. 익명 게임이면 실명이 사망자 채팅으로
+    // 새지 않도록 별명을 쓴다.
+    let (sender_label, sender_avatar, viewers) = {
         let running_read = running.read().await;
-        running_read
+        let Some(sender) = running_read.game.get_player(message.author.id.get()) else {
+            return;
+        };
+        let (sender_label, sender_avatar) = if running_read.anonymous_enabled {
+            (anonymous_sender_label(&running_read, sender), None)
+        } else {
+            (
+                message_author_display_name(message),
+                Some(message.author.face()),
+            )
+        };
+        let viewers = running_read
             .game
             .players
             .iter()
             .filter(|player| can_receive_role_chat_as_dead(&running_read, player))
             .cloned()
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        (sender_label, sender_avatar, viewers)
     };
     if viewers.is_empty() {
         return;
@@ -5924,7 +5912,15 @@ pub async fn mirror_role_chat_to_dead(
             ensure_anonymous_dead_input_channel(ctx, running, &viewer, roles, category, can_chat)
                 .await
         {
-            send_message_author_webhook_text(ctx, running, channel_id, message, &body).await;
+            send_webhook_text(
+                ctx,
+                running,
+                channel_id,
+                &sender_label,
+                sender_avatar.clone(),
+                &body,
+            )
+            .await;
         }
     }
 }
@@ -6081,9 +6077,9 @@ pub async fn relay_anonymous_shaman_message(
                     .copied()
             })
             .collect::<Vec<_>>();
-        (deliveries, anonymous_shaman_sender_label(sender))
+        (deliveries, anonymous_sender_label(&running_read, sender))
     };
-    send_anonymous_text_batch(ctx, running, deliveries, sender_label, body).await;
+    send_anonymous_text_batch(ctx, running, deliveries, &sender_label, body).await;
 }
 
 pub async fn handle_anonymous_message(
@@ -6273,13 +6269,38 @@ pub async fn handle_message_event(
 mod tests {
     use super::*;
 
+    /// 사망자/영매 채팅과 역할 채팅 미러링이 모두 이 라벨을 쓴다. 실명은 절대 나오지
+    /// 않아야 하고, 역할이나 생사에 따라 다른 라벨이 붙지도 않아야 한다.
     #[test]
-    fn anonymous_shaman_labels_do_not_reveal_game_identity() {
-        let shaman = Player::new(1, "영매 실제 이름".to_string(), Role::Shaman);
-        let mut dead = Player::new(2, "사망자 실제 이름".to_string(), Role::Citizen);
+    fn anonymous_sender_labels_only_use_the_configured_alias() {
+        let mut running = crate::channel::tests::dead_chat_test_running();
+        running.anonymous_enabled = true;
+        let shaman = Player::new(7, "영매 실제 이름".to_string(), Role::Shaman);
+        let mut dead = Player::new(8, "사망자 실제 이름".to_string(), Role::Citizen);
         dead.alive = false;
+        running
+            .anonymous_aliases
+            .insert(shaman.user_id, "3번".to_string());
+        running
+            .anonymous_aliases
+            .insert(dead.user_id, "너구리".to_string());
 
-        assert_eq!(anonymous_shaman_sender_label(&shaman), "익명의 목소리");
-        assert_eq!(anonymous_shaman_sender_label(&dead), "익명의 사망자");
+        assert_eq!(anonymous_sender_label(&running, &shaman), "3번");
+        assert_eq!(anonymous_sender_label(&running, &dead), "너구리");
+    }
+
+    #[test]
+    fn non_anonymous_sender_labels_keep_the_real_name() {
+        let mut running = crate::channel::tests::dead_chat_test_running();
+        running.anonymous_enabled = false;
+        let sender = Player::new(7, "마피아 실제 이름".to_string(), Role::Mafia);
+        running
+            .anonymous_aliases
+            .insert(sender.user_id, "3번".to_string());
+
+        assert_eq!(
+            anonymous_sender_label(&running, &sender),
+            "마피아 실제 이름"
+        );
     }
 }

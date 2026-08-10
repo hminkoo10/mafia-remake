@@ -5712,7 +5712,7 @@ pub async fn apply_death_side_effects(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn role_chat_test_game() -> MafiaGame {
@@ -5731,7 +5731,7 @@ mod tests {
         .unwrap()
     }
 
-    fn dead_chat_test_running() -> RunningGame {
+    pub(crate) fn dead_chat_test_running() -> RunningGame {
         let game = role_chat_test_game();
         let initial_roles = game
             .players
