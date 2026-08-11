@@ -591,6 +591,11 @@ async fn action_handler(
                 .and_then(|s| s.parse::<u64>().ok());
             match running.game.submit_night_action(user_id, target) {
                 Ok(selection_message) => {
+                    // 경찰은 대상을 고른 즉시 조사 결과를 본다 (Discord 쪽과 동일).
+                    let selection_message = match running.game.police_result_for_actor(user_id) {
+                        Some(result) => format!("{selection_message}\n{result}"),
+                        None => selection_message,
+                    };
                     let actor = running.game.get_player(user_id).cloned();
                     let effective_role = actor
                         .as_ref()

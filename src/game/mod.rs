@@ -1822,6 +1822,37 @@ mod tests {
         );
     }
 
+    /// 경찰은 대상을 고른 즉시(밤이 끝나기 전) 자기 선택에 대한 결과를 볼 수 있어야
+    /// 하고, 대상을 바꾸면 바꾼 대상의 결과가 나와야 한다.
+    #[test]
+    fn police_result_is_available_as_soon_as_a_target_is_chosen() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 1, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Police),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        assert_eq!(game.police_result_for_actor(2), None);
+
+        game.submit_night_action(2, Some(1)).unwrap();
+        let mafia_result = game.police_result_for_actor(2).unwrap();
+        assert!(mafia_result.contains("One"), "{mafia_result}");
+        assert!(mafia_result.contains("마피아팀입니다"), "{mafia_result}");
+
+        game.submit_night_action(2, Some(3)).unwrap();
+        let citizen_result = game.police_result_for_actor(2).unwrap();
+        assert!(citizen_result.contains("Three"), "{citizen_result}");
+        assert!(
+            citizen_result.contains("마피아팀이 아닙니다"),
+            "{citizen_result}"
+        );
+    }
+
     #[test]
     fn inspector_receives_result_when_target_dies_the_same_night() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();

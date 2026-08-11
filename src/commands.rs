@@ -1539,6 +1539,13 @@ pub async fn handle_night_action(
                 return Ok(());
             }
         };
+        // 경찰은 대상을 고른 즉시 조사 결과를 본다. 대상을 바꾸면 바꾼 대상의 결과가
+        // 다시 붙는다. 밤이 끝날 때 나오는 결과는 경찰이 여러 명일 때의 과반 결과이므로
+        // 그대로 남겨둔다.
+        let message = match running_write.game.police_result_for_actor(actor_id) {
+            Some(result) => format!("{message}\n{result}"),
+            None => message,
+        };
         let cult_bells = running_write.game.consume_cult_bells();
         let actor = running_write.game.get_player(actor_id).cloned();
         let effective_role = actor
