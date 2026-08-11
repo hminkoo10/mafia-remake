@@ -1800,6 +1800,8 @@ pub fn auto_start_modal(
     )])
 }
 
+/// 모집 취소 시 되돌려야 하는 (유저, 역할) 목록. 관전자 역할이 서버에 없으면
+/// 관전자에게는 아무 역할도 부여되지 않았으므로 정리 대상도 아니다.
 pub fn recruitment_role_removals(
     recruitment: &Recruitment,
 ) -> Vec<(u64, serenity::RoleId)> {
@@ -1820,12 +1822,15 @@ pub fn recruitment_role_removals(
     removals
 }
 
+/// 자동시작 인원에 도달했는지. 참가 처리와 모달 제출이 같은 판단을 공유한다.
 pub fn auto_start_reached(recruitment: &Recruitment) -> bool {
     recruitment
         .auto_start_players
         .is_some_and(|count| recruitment.joined_ids.len() >= count)
 }
 
+/// 모집이 취소되면 모집 중에 부여한 참가자/관전자 역할을 되돌린다. 게임이 시작되지
+/// 않았으므로 `cleanup_game`이 돌지 않아, 여기서 정리하지 않으면 역할이 남는다.
 pub async fn cleanup_recruitment_roles(
     ctx: &serenity::Context,
     guild_id: serenity::GuildId,

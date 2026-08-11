@@ -1306,6 +1306,7 @@ pub async fn handle_spectate(
     Ok(())
 }
 
+/// `자동시작` 버튼: 주최자에게 인원 입력 모달을 띄운다.
 pub async fn handle_auto_start_open(
     ctx: &serenity::Context,
     data: &Data,
@@ -1339,6 +1340,7 @@ pub async fn handle_auto_start_open(
     Ok(())
 }
 
+/// 자동시작 인원 모달 제출. 이미 그 인원이 모여 있으면 즉시 모집을 끝낸다.
 pub async fn handle_auto_start_submit(
     ctx: &serenity::Context,
     data: &Data,
