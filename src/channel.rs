@@ -6,7 +6,7 @@
 use super::{
     ChannelRoleIds, Context, ContractorContractDraft, DEAD_PLAYER_ROLE, Data, Error,
     GAME_NOTIFICATION_ROLE, MAX_GAME_PLAYERS, PRIVATE_CHAT_ROLES, PersonalChannelKind,
-    RECRUITMENT_SECONDS, Recruitment, RunningGame, SHAMAN_CHAT_CHANNEL_NAME, SPECTATOR_ROLE,
+    Recruitment, RunningGame, SHAMAN_CHAT_CHANNEL_NAME, SPECTATOR_ROLE,
 };
 use crate::embed::*;
 use anyhow::{Context as AnyhowContext, Result, bail};
@@ -1598,7 +1598,7 @@ pub fn investigation_candidates_text(config: &config::BotConfig) -> String {
 
 pub fn current_settings_text(config: &config::BotConfig, prefix: &str) -> String {
     format!(
-        "{prefix}\n게임 상태: {}\n기본 직업: 마피아 {}명, 의사 {}명, 수사직 {}명\n최대 참가 인원: {}\n특수룰 수: 시민 {}개, 마피아 {}개, 중립 {}개\n활성 특수룰: {}\n수사직 후보: {}\n교주팀: {}\n채팅 슬로우모드: {}초\n사망 시 직업 공개: {}\n경찰 조사 성공 여부 공개: {}\n아침 생존 마피아 수 공개: {}\n익명 채팅: {}\n익명 이름 방식: {}",
+        "{prefix}\n게임 상태: {}\n기본 직업: 마피아 {}명, 의사 {}명, 수사직 {}명\n최대 참가 인원: {}\n참가자 모집 시간: {}초\n특수룰 수: 시민 {}개, 마피아 {}개, 중립 {}개\n활성 특수룰: {}\n수사직 후보: {}\n교주팀: {}\n채팅 슬로우모드: {}초\n사망 시 직업 공개: {}\n경찰 조사 성공 여부 공개: {}\n아침 생존 마피아 수 공개: {}\n익명 채팅: {}\n익명 이름 방식: {}",
         if config.game_enabled {
             "활성화"
         } else {
@@ -1608,6 +1608,7 @@ pub fn current_settings_text(config: &config::BotConfig, prefix: &str) -> String
         config.default_doctor_count,
         config.default_police_count,
         max_player_setting_text(config),
+        config.effective_recruitment_seconds(),
         config.citizen_special_count,
         config.mafia_special_count,
         config.neutral_special_count,
@@ -1700,7 +1701,8 @@ pub fn recruitment_embed(
         .saturating_sub(recruitment.joined_ids.len());
     make_embed(
         format!(
-            "최대 {RECRUITMENT_SECONDS}초 동안 참가자를 모집합니다.\n참가 버튼을 누르면 게임 참가자로 등록되고, '{}' 역할이 부여됩니다.\n관전 버튼을 누르면 '{SPECTATOR_ROLE}' 역할이 부여되고 게임 채널을 읽을 수 있습니다.\n주최자는 `시작` 버튼으로 즉시 시작하거나 `취소` 버튼으로 모집을 취소할 수 있습니다.\n\n역할 구성: {}\n사망 시 직업 공개: {}\n경찰 조사 성공 여부 공개: {}\n아침 생존 마피아 수 공개: {}\n{}\n\n최대 참가 인원 **{}명**까지 **{}명** 더 참가 가능\n\n현재 참가자 **{}/{}명**\n{}\n\n현재 관전자 **{}명**\n{}\n\n{}",
+            "최대 {}초 동안 참가자를 모집합니다.\n참가 버튼을 누르면 게임 참가자로 등록되고, '{}' 역할이 부여됩니다.\n관전 버튼을 누르면 '{SPECTATOR_ROLE}' 역할이 부여되고 게임 채널을 읽을 수 있습니다.\n주최자는 `시작` 버튼으로 즉시 시작하거나 `취소` 버튼으로 모집을 취소할 수 있습니다.\n\n역할 구성: {}\n사망 시 직업 공개: {}\n경찰 조사 성공 여부 공개: {}\n아침 생존 마피아 수 공개: {}\n{}\n\n최대 참가 인원 **{}명**까지 **{}명** 더 참가 가능\n\n현재 참가자 **{}/{}명**\n{}\n\n현재 관전자 **{}명**\n{}\n\n{}",
+            recruitment.recruitment_seconds,
             config.participant_role,
             public_role_count_text_from_counts(&recruitment.role_counts, None),
             if config.reveal_death_roles {
@@ -5822,6 +5824,7 @@ pub(crate) mod tests {
             default_police_count: 1,
             default_joker_count: 0,
             max_player_count: 0,
+            recruitment_seconds: 60,
             night_seconds: 30,
             discussion_seconds: 30,
             vote_seconds: 30,

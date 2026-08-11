@@ -6,7 +6,7 @@
 use super::web_settings;
 use super::{
     AnonymousNameMode, Context, ContractorContractDraft, Data, Error, GAME_NOTIFICATION_ROLE,
-    LeaderboardMetric, MAX_GAME_PLAYERS, RECRUITMENT_SECONDS, Recruitment, RunningGame,
+    LeaderboardMetric, MAX_GAME_PLAYERS, Recruitment, RunningGame,
     SPECTATOR_ROLE,
 };
 use crate::channel::*;
@@ -179,6 +179,7 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         spectator_names: HashMap::new(),
         accepting: true,
         cancelled: false,
+        recruitment_seconds: config_snapshot.effective_recruitment_seconds(),
         done: done.clone(),
     }));
     ctx.data()
@@ -199,7 +200,9 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
     ctx.send(reply).await?;
 
     tokio::select! {
-        _ = tokio::time::sleep(Duration::from_secs(RECRUITMENT_SECONDS)) => {}
+        _ = tokio::time::sleep(Duration::from_secs(
+            config_snapshot.effective_recruitment_seconds(),
+        )) => {}
         _ = done.notified() => {}
     }
 
@@ -3024,16 +3027,28 @@ pub async fn configure_game(
 #[poise::command(
     slash_command,
     rename = "마피아인원설정",
-    description_localized("ko", "마피아 게임 모집 최대 인원을 설정합니다.")
+    description_localized("ko", "마피아 게임 모집 최대 인원과 모집 시간을 설정합니다.")
 )]
 pub async fn configure_player_limit(
     ctx: Context<'_>,
-    #[description = "최대 참가 인원. 0은 제한 없음(봇 최대 24명)"] max_players: u32,
+    #[description = "최대 참가 인원. 0은 제한 없음(봇 최대 24명)"] max_players: Option<u32>,
+    #[description = "참가자 모집 시간(초). 기본 60초"] 모집시간: Option<u64>,
 ) -> Result<(), Error> {
     if !require_manager(ctx).await? {
         return Ok(());
     }
-    if max_players as usize > MAX_GAME_PLAYERS {
+    if max_players.is_none() && 모집시간.is_none() {
+        reply_embed(
+            ctx,
+            "변경할 값을 하나 이상 입력하세요.",
+            "설정 오류",
+            serenity::Colour::RED,
+            true,
+        )
+        .await?;
+        return Ok(());
+    }
+    if max_players.is_some_and(|value| value as usize > MAX_GAME_PLAYERS) {
         reply_embed(
             ctx,
             format!("최대 인원은 {MAX_GAME_PLAYERS}명 이하로 설정해야 합니다."),
@@ -3044,8 +3059,30 @@ pub async fn configure_player_limit(
         .await?;
         return Ok(());
     }
+    if 모집시간.is_some_and(|value| {
+        !(config::MIN_RECRUITMENT_SECONDS..=config::MAX_RECRUITMENT_SECONDS).contains(&value)
+    }) {
+        reply_embed(
+            ctx,
+            format!(
+                "모집 시간은 {}~{}초 사이여야 합니다.",
+                config::MIN_RECRUITMENT_SECONDS,
+                config::MAX_RECRUITMENT_SECONDS
+            ),
+            "설정 오류",
+            serenity::Colour::RED,
+            true,
+        )
+        .await?;
+        return Ok(());
+    }
     let mut config_write = ctx.data().config.write().await;
-    config_write.max_player_count = max_players;
+    if let Some(value) = max_players {
+        config_write.max_player_count = value;
+    }
+    if let Some(value) = 모집시간 {
+        config_write.recruitment_seconds = value;
+    }
     config::save_config(&*ctx.data().config_path, &config_write)?;
     let text = current_settings_text(&config_write, "마피아 인원 설정을 저장했습니다.");
     drop(config_write);

@@ -15,6 +15,8 @@ pub struct BotConfig {
     pub default_joker_count: u32,
     #[serde(default)]
     pub max_player_count: u32,
+    #[serde(default = "default_recruitment_seconds")]
+    pub recruitment_seconds: u64,
     pub night_seconds: u64,
     #[serde(default = "default_discussion_seconds")]
     pub discussion_seconds: u64,
@@ -153,6 +155,21 @@ const fn default_joker_count() -> u32 {
 
 const fn default_discussion_seconds() -> u64 {
     60
+}
+
+const fn default_recruitment_seconds() -> u64 {
+    60
+}
+
+/// 모집 시간은 Discord 인터랙션/대기 루프에 직접 쓰이므로 극단값을 막는다.
+pub const MIN_RECRUITMENT_SECONDS: u64 = 10;
+pub const MAX_RECRUITMENT_SECONDS: u64 = 1800;
+
+impl BotConfig {
+    pub fn effective_recruitment_seconds(&self) -> u64 {
+        self.recruitment_seconds
+            .clamp(MIN_RECRUITMENT_SECONDS, MAX_RECRUITMENT_SECONDS)
+    }
 }
 
 const fn default_chat_slowmode_seconds() -> u64 {

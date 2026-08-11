@@ -686,6 +686,12 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
         Some(0),
     ),
     field(
+        "recruitment_seconds",
+        "참가자 모집 시간(초)",
+        WebFieldKind::Int,
+        Some(config::MIN_RECRUITMENT_SECONDS),
+    ),
+    field(
         "night_seconds",
         "밤 진행 시간(초)",
         WebFieldKind::Int,
@@ -3661,6 +3667,7 @@ fn config_value(config: &BotConfig, name: &str) -> String {
         "manager_role" => config.manager_role.clone(),
         "game_enabled" => config.game_enabled.to_string(),
         "max_player_count" => config.max_player_count.to_string(),
+        "recruitment_seconds" => config.recruitment_seconds.to_string(),
         "night_seconds" => config.night_seconds.to_string(),
         "discussion_seconds" => config.discussion_seconds.to_string(),
         "vote_seconds" => config.vote_seconds.to_string(),
@@ -3835,6 +3842,12 @@ fn set_text(config: &mut BotConfig, name: &str, value: String) -> std::result::R
 fn set_int(config: &mut BotConfig, name: &str, value: u64) -> std::result::Result<(), String> {
     match name {
         "max_player_count" => config.max_player_count = value as u32,
+        "recruitment_seconds" => {
+            config.recruitment_seconds = value.clamp(
+                config::MIN_RECRUITMENT_SECONDS,
+                config::MAX_RECRUITMENT_SECONDS,
+            )
+        }
         "night_seconds" => config.night_seconds = value,
         "discussion_seconds" => config.discussion_seconds = value,
         "vote_seconds" => config.vote_seconds = value,
@@ -4186,6 +4199,7 @@ mod tests {
             default_police_count: 1,
             default_joker_count: 0,
             max_player_count: 0,
+            recruitment_seconds: 60,
             night_seconds: 60,
             discussion_seconds: 60,
             vote_seconds: 30,
@@ -4305,6 +4319,28 @@ mod tests {
         config.max_player_count = 4;
 
         assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn recruitment_seconds_is_settable_and_clamped() {
+        let mut config = test_config();
+
+        set_int(&mut config, "recruitment_seconds", 300).unwrap();
+        assert_eq!(config.recruitment_seconds, 300);
+        assert_eq!(config.effective_recruitment_seconds(), 300);
+        assert_eq!(config_value(&config, "recruitment_seconds"), "300");
+
+        // 극단값은 모집 루프가 버틸 범위로 잘라 저장한다.
+        set_int(&mut config, "recruitment_seconds", 0).unwrap();
+        assert_eq!(
+            config.recruitment_seconds,
+            config::MIN_RECRUITMENT_SECONDS
+        );
+        set_int(&mut config, "recruitment_seconds", 99_999).unwrap();
+        assert_eq!(
+            config.recruitment_seconds,
+            config::MAX_RECRUITMENT_SECONDS
+        );
     }
 
     #[test]
@@ -4773,6 +4809,7 @@ mod tests {
             spectator_names: HashMap::new(),
             accepting: true,
             cancelled: false,
+            recruitment_seconds: 60,
             done: Arc::new(tokio::sync::Notify::new()),
         }));
         state

@@ -7,6 +7,7 @@
   "default_police_count": 1,
   "default_joker_count": 1,
   "max_player_count": 0,
+  "recruitment_seconds": 60,
   "night_seconds": 40,
   "discussion_seconds": 60,
   "vote_seconds": 20,

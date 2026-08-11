@@ -13,7 +13,6 @@ use std::sync::atomic::AtomicU64;
 use std::{path::PathBuf, sync::Arc, time::Instant};
 use tokio::sync::{Notify, RwLock};
 
-const RECRUITMENT_SECONDS: u64 = 60;
 const MAX_GAME_PLAYERS: usize = 24;
 const DAY_EXTENSION_VOTE_SECONDS: u64 = 10;
 const DISCUSSION_EXTENSION_SECONDS: u64 = 60;
@@ -443,6 +442,7 @@ struct Recruitment {
     spectator_names: HashMap<u64, String>,
     accepting: bool,
     cancelled: bool,
+    recruitment_seconds: u64,
     done: Arc<Notify>,
 }
 
