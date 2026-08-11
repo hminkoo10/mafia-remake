@@ -1800,10 +1800,62 @@ pub fn auto_start_modal(
     )])
 }
 
+pub fn recruitment_role_removals(
+    recruitment: &Recruitment,
+) -> Vec<(u64, serenity::RoleId)> {
+    let mut removals = recruitment
+        .joined_ids
+        .iter()
+        .map(|user_id| (*user_id, recruitment.participant_role_id))
+        .collect::<Vec<_>>();
+    if let Some(spectator_role_id) = recruitment.spectator_role_id {
+        removals.extend(
+            recruitment
+                .spectator_ids
+                .iter()
+                .map(|user_id| (*user_id, spectator_role_id)),
+        );
+    }
+    removals.sort_unstable();
+    removals
+}
+
 pub fn auto_start_reached(recruitment: &Recruitment) -> bool {
     recruitment
         .auto_start_players
         .is_some_and(|count| recruitment.joined_ids.len() >= count)
+}
+
+pub async fn cleanup_recruitment_roles(
+    ctx: &serenity::Context,
+    guild_id: serenity::GuildId,
+    recruitment: &Recruitment,
+) {
+    let removals = recruitment_role_removals(recruitment);
+    for chunk in removals.chunks(DISCORD_WRITE_CONCURRENCY) {
+        let mut jobs = JoinSet::new();
+        for (user_id, role_id) in chunk.iter().copied() {
+            let ctx = ctx.clone();
+            jobs.spawn(async move {
+                if let Err(error) = crate::http_pool::with_fallback(&ctx, |http| async move {
+                    guild_id
+                        .member(&http, serenity::UserId::new(user_id))
+                        .await?
+                        .remove_role(&http, role_id)
+                        .await
+                })
+                .await
+                {
+                    eprintln!(
+                        "failed to remove recruitment role: guild_id={} user_id={user_id} role_id={} error={error:?}",
+                        guild_id.get(),
+                        role_id.get()
+                    );
+                }
+            });
+        }
+        while jobs.join_next().await.is_some() {}
+    }
 }
 
 pub async fn update_recruitment_message(
@@ -6382,5 +6434,31 @@ pub(crate) mod tests {
         // 인원을 넘겨 들어와도 여전히 시작 조건이다.
         recruitment.joined_ids.insert(5);
         assert!(auto_start_reached(&recruitment));
+    }
+
+    #[test]
+    fn cancelled_recruitment_gives_back_participant_and_spectator_roles() {
+        let recruitment = recruitment_fixture();
+
+        assert_eq!(
+            recruitment_role_removals(&recruitment),
+            vec![
+                (1, serenity::RoleId::new(10)),
+                (2, serenity::RoleId::new(10)),
+                (3, serenity::RoleId::new(10)),
+                (7, serenity::RoleId::new(11)),
+            ]
+        );
+    }
+
+    #[test]
+    fn recruitment_cleanup_skips_spectators_when_the_role_is_missing() {
+        let mut recruitment = recruitment_fixture();
+        recruitment.spectator_role_id = None;
+
+        let removals = recruitment_role_removals(&recruitment);
+
+        assert_eq!(removals.len(), 3);
+        assert!(removals.iter().all(|(user_id, _)| *user_id != 7));
     }
 }

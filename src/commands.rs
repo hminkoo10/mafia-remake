@@ -225,10 +225,28 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         })
         .collect::<Vec<_>>();
     if cancelled {
+        // 모집 중 부여한 참가자/관전자 역할을 되돌린다. 게임이 시작되지 않아
+        // cleanup_game이 돌지 않으므로 여기서 정리해야 역할이 남지 않는다.
+        let cancelled_recruitment = rec.clone();
+        drop(rec);
         ctx.data().recruitments.remove(&guild_id);
+        cleanup_recruitment_roles(ctx.serenity_context(), guild_id, &cancelled_recruitment).await;
+        let cleaned = cancelled_recruitment.joined_ids.len()
+            + if cancelled_recruitment.spectator_role_id.is_some() {
+                cancelled_recruitment.spectator_ids.len()
+            } else {
+                0
+            };
+        let notice = if cleaned == 0 {
+            "참가자 모집이 취소되었습니다.".to_string()
+        } else {
+            format!(
+                "참가자 모집이 취소되었습니다.\n모집 중 부여한 참가자/관전자 역할 {cleaned}건을 정리했습니다."
+            )
+        };
         reply_embed(
             ctx,
-            "참가자 모집이 취소되었습니다.",
+            notice,
             "참가자 모집 취소",
             serenity::Colour::RED,
             false,
