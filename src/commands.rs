@@ -179,6 +179,7 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         spectator_names: HashMap::new(),
         accepting: true,
         cancelled: false,
+        auto_start_players: None,
         recruitment_seconds: config_snapshot.effective_recruitment_seconds(),
         done: done.clone(),
     }));
@@ -407,6 +408,9 @@ pub async fn handle_component(
         ["cancelrec", guild] => {
             handle_recruitment_finish(ctx, data, component, parse_guild(guild)?, true).await?
         }
+        ["autostart", guild] => {
+            handle_auto_start_open(ctx, data, component, parse_guild(guild)?).await?
+        }
         ["night", guild, actor_id, _role] => {
             handle_night_action(ctx, data, component, parse_guild(guild)?, actor_id.parse()?)
                 .await?
@@ -494,6 +498,9 @@ pub async fn handle_modal(
     let custom_id = modal.data.custom_id.as_str();
     let parts = custom_id.split(':').collect::<Vec<_>>();
     match parts.as_slice() {
+        ["autostart", guild] => {
+            handle_auto_start_submit(ctx, data, modal, parse_guild(guild)?).await?
+        }
         ["contractor_roles", guild, actor_id] => {
             handle_contractor_role_modal_submit(
                 ctx,
@@ -1198,9 +1205,20 @@ pub async fn handle_join(
             .insert(user_id, component.user.name.clone());
     }
     rec.joined_ids.insert(user_id);
+    // 자동시작 인원에 도달하면 남은 모집 시간을 기다리지 않고 바로 시작한다.
+    let auto_started = auto_start_reached(&rec);
+    if auto_started {
+        rec.accepting = false;
+        rec.done.notify_waiters();
+    }
     let updated = rec.clone();
     drop(rec);
-    send_component_private(ctx, component, "참가 완료!").await?;
+    let reply = if auto_started {
+        "참가 완료! 자동시작 인원이 모여 바로 시작합니다."
+    } else {
+        "참가 완료!"
+    };
+    send_component_private(ctx, component, reply).await?;
     update_recruitment_message(
         ctx,
         data,
@@ -1208,7 +1226,7 @@ pub async fn handle_join(
         guild_id,
         &updated,
         RECRUITMENT_STATUS_OPEN,
-        false,
+        auto_started,
     )
     .await;
     Ok(())
@@ -1267,6 +1285,138 @@ pub async fn handle_spectate(
         false,
     )
     .await;
+    Ok(())
+}
+
+pub async fn handle_auto_start_open(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    guild_id: serenity::GuildId,
+) -> Result<()> {
+    let Some(recruitment) = data.recruitments.get(&guild_id).map(|entry| entry.clone()) else {
+        send_component_private(ctx, component, "참가자 모집이 종료되었습니다.").await?;
+        return Ok(());
+    };
+    let (is_host, accepting, modal) = {
+        let rec = recruitment.read().await;
+        (
+            component.user.id == rec.host_user_id,
+            rec.accepting,
+            auto_start_modal(guild_id, &rec),
+        )
+    };
+    if !is_host {
+        send_component_private(ctx, component, "게임을 모집한 주최자만 사용할 수 있습니다.")
+            .await?;
+        return Ok(());
+    }
+    if !accepting {
+        send_component_private(ctx, component, "참가자 모집이 종료되었습니다.").await?;
+        return Ok(());
+    }
+    component
+        .create_response(ctx, serenity::CreateInteractionResponse::Modal(modal))
+        .await?;
+    Ok(())
+}
+
+pub async fn handle_auto_start_submit(
+    ctx: &serenity::Context,
+    data: &Data,
+    modal: &serenity::ModalInteraction,
+    guild_id: serenity::GuildId,
+) -> Result<()> {
+    let Some(recruitment) = data.recruitments.get(&guild_id).map(|entry| entry.clone()) else {
+        send_modal_private(
+            ctx,
+            modal,
+            "참가자 모집이 종료되었습니다.",
+            serenity::Colour::RED,
+        )
+        .await?;
+        return Ok(());
+    };
+    let raw = modal_value(modal, "auto_start_players").unwrap_or_default();
+    let mut rec = recruitment.write().await;
+    if modal.user.id != rec.host_user_id {
+        drop(rec);
+        send_modal_private(
+            ctx,
+            modal,
+            "게임을 모집한 주최자만 사용할 수 있습니다.",
+            serenity::Colour::RED,
+        )
+        .await?;
+        return Ok(());
+    }
+    if !rec.accepting {
+        drop(rec);
+        send_modal_private(
+            ctx,
+            modal,
+            "참가자 모집이 종료되었습니다.",
+            serenity::Colour::RED,
+        )
+        .await?;
+        return Ok(());
+    }
+    let Ok(count) = raw.trim().parse::<usize>() else {
+        let (minimum, maximum) = (rec.minimum_players, rec.max_players);
+        drop(rec);
+        send_modal_private(
+            ctx,
+            modal,
+            format!("인원은 {minimum}~{maximum} 사이의 숫자로 입력하세요."),
+            serenity::Colour::RED,
+        )
+        .await?;
+        return Ok(());
+    };
+    if count < rec.minimum_players || count > rec.max_players {
+        let (minimum, maximum) = (rec.minimum_players, rec.max_players);
+        drop(rec);
+        send_modal_private(
+            ctx,
+            modal,
+            format!(
+                "자동시작 인원은 최소 시작 인원 {minimum}명 이상, 최대 참가 인원 {maximum}명 이하여야 합니다."
+            ),
+            serenity::Colour::RED,
+        )
+        .await?;
+        return Ok(());
+    }
+    rec.auto_start_players = Some(count);
+    let reached = auto_start_reached(&rec);
+    if reached {
+        rec.accepting = false;
+        rec.done.notify_waiters();
+    }
+    let updated = rec.clone();
+    drop(rec);
+    let message = if reached {
+        format!(
+            "이미 {}명이 모여 있어 바로 시작합니다.",
+            updated.joined_ids.len()
+        )
+    } else {
+        format!("참가자가 {count}명이 되면 즉시 시작합니다.")
+    };
+    send_modal_private(ctx, modal, message, serenity::Colour::DARK_GREEN).await?;
+    if let Some(recruitment_message) = modal.message.as_ref() {
+        update_recruitment_message_at(
+            ctx,
+            data,
+            recruitment_message.channel_id,
+            recruitment_message.id,
+            guild_id,
+            &updated,
+            RECRUITMENT_STATUS_OPEN,
+            reached,
+        )
+        .await;
+    }
     Ok(())
 }
 

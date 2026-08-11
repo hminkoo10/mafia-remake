@@ -4809,6 +4809,7 @@ mod tests {
             spectator_names: HashMap::new(),
             accepting: true,
             cancelled: false,
+            auto_start_players: None,
             recruitment_seconds: 60,
             done: Arc::new(tokio::sync::Notify::new()),
         }));

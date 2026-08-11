@@ -1699,9 +1699,13 @@ pub fn recruitment_embed(
     let remaining = recruitment
         .max_players
         .saturating_sub(recruitment.joined_ids.len());
+    let auto_start_text = match recruitment.auto_start_players {
+        Some(count) => format!("자동시작: **{count}명**이 모이면 즉시 시작합니다."),
+        None => "자동시작: 설정되지 않았습니다. 주최자는 `자동시작` 버튼으로 인원을 정할 수 있습니다.".to_string(),
+    };
     make_embed(
         format!(
-            "최대 {}초 동안 참가자를 모집합니다.\n참가 버튼을 누르면 게임 참가자로 등록되고, '{}' 역할이 부여됩니다.\n관전 버튼을 누르면 '{SPECTATOR_ROLE}' 역할이 부여되고 게임 채널을 읽을 수 있습니다.\n주최자는 `시작` 버튼으로 즉시 시작하거나 `취소` 버튼으로 모집을 취소할 수 있습니다.\n\n역할 구성: {}\n사망 시 직업 공개: {}\n경찰 조사 성공 여부 공개: {}\n아침 생존 마피아 수 공개: {}\n{}\n\n최대 참가 인원 **{}명**까지 **{}명** 더 참가 가능\n\n현재 참가자 **{}/{}명**\n{}\n\n현재 관전자 **{}명**\n{}\n\n{}",
+            "최대 {}초 동안 참가자를 모집합니다.\n참가 버튼을 누르면 게임 참가자로 등록되고, '{}' 역할이 부여됩니다.\n관전 버튼을 누르면 '{SPECTATOR_ROLE}' 역할이 부여되고 게임 채널을 읽을 수 있습니다.\n주최자는 `시작` 버튼으로 즉시 시작하거나 `취소` 버튼으로 모집을 취소할 수 있습니다.\n{auto_start_text}\n\n역할 구성: {}\n사망 시 직업 공개: {}\n경찰 조사 성공 여부 공개: {}\n아침 생존 마피아 수 공개: {}\n{}\n\n최대 참가 인원 **{}명**까지 **{}명** 더 참가 가능\n\n현재 참가자 **{}/{}명**\n{}\n\n현재 관전자 **{}명**\n{}\n\n{}",
             recruitment.recruitment_seconds,
             config.participant_role,
             public_role_count_text_from_counts(&recruitment.role_counts, None),
@@ -1753,6 +1757,10 @@ pub fn recruitment_components(
             .label("시작")
             .style(serenity::ButtonStyle::Primary)
             .disabled(disabled),
+        serenity::CreateButton::new(format!("autostart:{guild_key}"))
+            .label("자동시작")
+            .style(serenity::ButtonStyle::Primary)
+            .disabled(disabled),
         serenity::CreateButton::new(format!("cancelrec:{guild_key}"))
             .label("취소")
             .style(serenity::ButtonStyle::Danger)
@@ -1760,10 +1768,71 @@ pub fn recruitment_components(
     ])]
 }
 
+pub fn auto_start_modal(
+    guild_id: serenity::GuildId,
+    recruitment: &Recruitment,
+) -> serenity::CreateModal {
+    let current = recruitment
+        .auto_start_players
+        .map(|count| count.to_string())
+        .unwrap_or_default();
+    serenity::CreateModal::new(
+        format!("autostart:{}", guild_id.get()),
+        "자동시작 인원 설정",
+    )
+    .components(vec![serenity::CreateActionRow::InputText(
+        serenity::CreateInputText::new(
+            serenity::InputTextStyle::Short,
+            format!(
+                "인원 ({}~{}명)",
+                recruitment.minimum_players, recruitment.max_players
+            ),
+            "auto_start_players",
+        )
+        .placeholder(format!(
+            "예: {} (이 인원이 모이면 즉시 시작)",
+            recruitment.minimum_players
+        ))
+        .value(current)
+        .min_length(1)
+        .max_length(3)
+        .required(true),
+    )])
+}
+
+pub fn auto_start_reached(recruitment: &Recruitment) -> bool {
+    recruitment
+        .auto_start_players
+        .is_some_and(|count| recruitment.joined_ids.len() >= count)
+}
+
 pub async fn update_recruitment_message(
     ctx: &serenity::Context,
     data: &Data,
     component: &serenity::ComponentInteraction,
+    guild_id: serenity::GuildId,
+    recruitment: &Recruitment,
+    status: &str,
+    disabled: bool,
+) {
+    update_recruitment_message_at(
+        ctx,
+        data,
+        component.channel_id,
+        component.message.id,
+        guild_id,
+        recruitment,
+        status,
+        disabled,
+    )
+    .await;
+}
+
+pub async fn update_recruitment_message_at(
+    ctx: &serenity::Context,
+    data: &Data,
+    channel_id: serenity::ChannelId,
+    message_id: serenity::MessageId,
     guild_id: serenity::GuildId,
     recruitment: &Recruitment,
     status: &str,
@@ -1777,8 +1846,6 @@ pub async fn update_recruitment_message(
     let version = counter.fetch_add(1, Ordering::AcqRel) + 1;
     let data = data.clone();
     let http = ctx.http.clone();
-    let channel_id = component.channel_id;
-    let message_id = component.message.id;
     let recruitment = recruitment.clone();
     let status = status.to_string();
     tokio::spawn(async move {
@@ -6278,5 +6345,42 @@ pub(crate) mod tests {
             swapped_member_roles(&[unrelated, dead], Some(participant), Some(dead)),
             None
         );
+    }
+
+    fn recruitment_fixture() -> Recruitment {
+        Recruitment {
+            host_user_id: serenity::UserId::new(1),
+            participant_role_id: serenity::RoleId::new(10),
+            spectator_role_id: Some(serenity::RoleId::new(11)),
+            role_counts: HashMap::new(),
+            special_roles: Vec::new(),
+            max_players: 8,
+            minimum_players: 4,
+            joined_ids: HashSet::from([1, 2, 3]),
+            joined_names: HashMap::new(),
+            spectator_ids: HashSet::from([7]),
+            spectator_names: HashMap::new(),
+            accepting: true,
+            cancelled: false,
+            auto_start_players: None,
+            recruitment_seconds: 60,
+            done: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    #[test]
+    fn auto_start_triggers_only_once_the_target_headcount_is_reached() {
+        let mut recruitment = recruitment_fixture();
+        assert!(!auto_start_reached(&recruitment));
+
+        recruitment.auto_start_players = Some(4);
+        assert!(!auto_start_reached(&recruitment));
+
+        recruitment.joined_ids.insert(4);
+        assert!(auto_start_reached(&recruitment));
+
+        // 인원을 넘겨 들어와도 여전히 시작 조건이다.
+        recruitment.joined_ids.insert(5);
+        assert!(auto_start_reached(&recruitment));
     }
 }

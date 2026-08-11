@@ -442,6 +442,8 @@ struct Recruitment {
     spectator_names: HashMap<u64, String>,
     accepting: bool,
     cancelled: bool,
+    /// 주재자가 자동시작 버튼으로 정한 인원. 참가자가 이 수에 도달하변 즐시 시작한다.
+    auto_start_players: Option<usize>,
     recruitment_seconds: u64,
     done: Arc<Notify>,
 }
