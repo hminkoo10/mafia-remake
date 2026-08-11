@@ -115,6 +115,7 @@ pub struct GameCounts {
     pub police_count: usize,
     pub agent_count: usize,
     pub vigilante_count: usize,
+    pub inspector_count: usize,
     pub joker_count: usize,
     pub special_roles: Vec<Role>,
 }
@@ -170,6 +171,7 @@ impl MafiaGame {
         roles.extend(std::iter::repeat_n(Role::Police, counts.police_count));
         roles.extend(std::iter::repeat_n(Role::Agent, counts.agent_count));
         roles.extend(std::iter::repeat_n(Role::Vigilante, counts.vigilante_count));
+        roles.extend(std::iter::repeat_n(Role::Inspector, counts.inspector_count));
         roles.extend(std::iter::repeat_n(Role::Joker, counts.joker_count));
         roles.extend(counts.special_roles);
         roles.extend(std::iter::repeat_n(
@@ -575,6 +577,7 @@ impl MafiaGame {
         };
         self.phase == Phase::Night
             && actor.alive
+            && !self.is_frog(actor)
             && (actor.role == Role::Contractor
                 || (actor.role == Role::Thief
                     && self.thief_stolen_roles.get(&actor_id) == Some(&Role::Contractor)))
@@ -1291,10 +1294,13 @@ fn validate_counts(players: &[(u64, String)], counts: &GameCounts) -> Result<()>
                 .filter(|role| **role == Role::Vigilante)
                 .count()
             > 0,
-        counts
-            .special_roles
-            .iter()
-            .any(|role| *role == Role::Inspector),
+        counts.inspector_count
+            + counts
+                .special_roles
+                .iter()
+                .filter(|role| **role == Role::Inspector)
+                .count()
+            > 0,
     ]
     .into_iter()
     .filter(|value| *value)
@@ -1307,6 +1313,9 @@ fn validate_counts(players: &[(u64, String)], counts: &GameCounts) -> Result<()>
     }
     if counts.vigilante_count > 0 && counts.special_roles.contains(&Role::Vigilante) {
         bail!("자경단원 수가 중복 배정되었습니다.");
+    }
+    if counts.inspector_count > 0 && counts.special_roles.contains(&Role::Inspector) {
+        bail!("형사 수가 중복 배정되었습니다.");
     }
     let mut role_counts = HashMap::<Role, usize>::new();
     for role in &counts.special_roles {
@@ -1325,6 +1334,7 @@ fn validate_counts(players: &[(u64, String)], counts: &GameCounts) -> Result<()>
         + counts.police_count
         + counts.agent_count
         + counts.vigilante_count
+        + counts.inspector_count
         + counts.joker_count
         + counts.special_roles.len();
     let mercenary_count = counts
@@ -1338,6 +1348,7 @@ fn validate_counts(players: &[(u64, String)], counts: &GameCounts) -> Result<()>
             + counts.police_count
             + counts.agent_count
             + counts.vigilante_count
+            + counts.inspector_count
             + citizen_fill_count
             + counts
                 .special_roles
@@ -1491,6 +1502,46 @@ mod tests {
     }
 
     #[test]
+    fn assignment_history_reduces_inspector_probability() {
+        let rarely_inspector = PlayerAssignmentHistory {
+            games: 12,
+            role_counts: HashMap::from([(Role::Inspector, 0)]),
+            ..Default::default()
+        };
+        let often_inspector = PlayerAssignmentHistory {
+            games: 12,
+            role_counts: HashMap::from([(Role::Inspector, 5)]),
+            ..Default::default()
+        };
+
+        let rare_cost = role_assignment_cost(&rarely_inspector, Role::Inspector, 8, 2, 1);
+        let often_cost = role_assignment_cost(&often_inspector, Role::Inspector, 8, 2, 1);
+
+        assert!(often_cost - rare_cost > ROLE_ASSIGNMENT_RANDOM_JITTER as i64);
+    }
+
+    #[test]
+    fn base_inspector_count_is_assigned() {
+        let game = MafiaGame::new_with_counts(
+            basic_players(),
+            GameCounts {
+                mafia_count: 1,
+                inspector_count: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            game.players
+                .iter()
+                .filter(|player| player.role == Role::Inspector)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn balanced_assignment_evenly_rotates_teams_and_roles() {
         let players = (1..=8)
             .map(|user_id| (user_id, format!("P{user_id}")))
@@ -1632,8 +1683,9 @@ mod tests {
 
         assert_eq!(target_ids, HashSet::from([2, 3, 4, 5, 7, 8]));
         for role in [Role::Police, Role::Agent, Role::Vigilante, Role::Inspector] {
-            assert!(!crate::model::CONTRACTOR_GUESS_ROLES.contains(&role));
+            assert!(!crate::model::is_contractor_guess_role(role));
         }
+        assert!(crate::model::is_contractor_guess_role(Role::Detective));
         assert!(
             game.submit_contractor_contract(1, 2, Role::Police, 3, Role::Citizen)
                 .is_err()

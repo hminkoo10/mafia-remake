@@ -1248,8 +1248,7 @@ fn build_game_state(
         vec![]
     };
     let contractor_guess_roles = if contractor_can_act {
-        mafia_remake::model::CONTRACTOR_GUESS_ROLES
-            .iter()
+        mafia_remake::model::contractor_guessable_roles()
             .map(|r| r.value().to_string())
             .collect()
     } else {

@@ -2,7 +2,7 @@ use anyhow::{Context as AnyhowContext, Result};
 use chrono::{SecondsFormat, Utc};
 use dashmap::DashMap;
 use mafia_remake::game::MafiaGame;
-use mafia_remake::model::{Player, Role, Winner};
+use mafia_remake::model::{ContractorGuessRoleGroup, Player, Role, Winner};
 use mafia_remake::{config, stats};
 use poise::serenity_prelude as serenity;
 use serde_json::{Value, json};
@@ -120,9 +120,11 @@ pub(crate) enum PersonalChannelKind {
 }
 
 #[derive(Debug, Clone, Default)]
-struct ContractorContractDraft {
-    target_ids: [Option<u64>; 2],
-    guessed_roles: [Option<Role>; 2],
+pub(crate) struct ContractorContractDraft {
+    pub(crate) target_ids: [Option<u64>; 2],
+    pub(crate) guessed_roles: [Option<Role>; 2],
+    pub(crate) active_role_slot: usize,
+    pub(crate) role_group: ContractorGuessRoleGroup,
 }
 
 #[derive(Debug)]

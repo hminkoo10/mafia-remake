@@ -620,19 +620,17 @@ pub async fn create_text_channel_safe(
 
     match create_with(true).await {
         Ok(channel) => Some(channel),
-        Err(primary_error) if category.is_some() => {
-            match create_with(false).await {
-                Ok(channel) => Some(channel),
-                Err(fallback_error) => {
-                    eprintln!(
-                        "failed to create game channel: guild_id={} name={name:?} category_id={:?} reason={reason:?} primary_error={primary_error:?} fallback_error={fallback_error:?}",
-                        guild_id.get(),
-                        category.map(|id| id.get()),
-                    );
-                    None
-                }
+        Err(primary_error) if category.is_some() => match create_with(false).await {
+            Ok(channel) => Some(channel),
+            Err(fallback_error) => {
+                eprintln!(
+                    "failed to create game channel: guild_id={} name={name:?} category_id={:?} reason={reason:?} primary_error={primary_error:?} fallback_error={fallback_error:?}",
+                    guild_id.get(),
+                    category.map(|id| id.get()),
+                );
+                None
             }
-        }
+        },
         Err(error) => {
             eprintln!(
                 "failed to create game channel: guild_id={} name={name:?} category_id=None reason={reason:?} error={error:?}",
@@ -1323,6 +1321,9 @@ fn selected_role_counts_with_history(
         config.default_mafia_count as usize - mafia_special_count,
     );
     counts.insert(Role::Doctor, config.default_doctor_count as usize);
+    if config.enable_joker && config.default_joker_count > 0 {
+        counts.insert(Role::Joker, config.default_joker_count as usize);
+    }
     if config.default_police_count > 0 {
         let investigation = role_history
             .map(|history| balanced_investigation_role(config, history))
@@ -1363,6 +1364,9 @@ fn investigation_role_candidates(config: &config::BotConfig) -> Vec<Role> {
     if config.use_vigilante {
         candidates.push(Role::Vigilante);
     }
+    if config.enable_inspector {
+        candidates.push(Role::Inspector);
+    }
     candidates
 }
 
@@ -1401,6 +1405,7 @@ pub fn public_role_count_text_from_counts(
     let police_total = role_counts.get(&Role::Police).copied().unwrap_or(0);
     let agent_total = role_counts.get(&Role::Agent).copied().unwrap_or(0);
     let vigilante_total = role_counts.get(&Role::Vigilante).copied().unwrap_or(0);
+    let inspector_total = role_counts.get(&Role::Inspector).copied().unwrap_or(0);
     let citizen_special = count_group(role_counts, PUBLIC_CITIZEN_SPECIAL_ROLES);
     let neutral_special = count_group(role_counts, PUBLIC_NEUTRAL_SPECIAL_ROLES);
     let cult_total = count_group(role_counts, PUBLIC_CULT_SPECIAL_ROLES);
@@ -1411,6 +1416,7 @@ pub fn public_role_count_text_from_counts(
                 + police_total
                 + agent_total
                 + vigilante_total
+                + inspector_total
                 + neutral_special
                 + cult_total,
         );
@@ -1421,7 +1427,10 @@ pub fn public_role_count_text_from_counts(
     let mut parts = vec![
         format!("마피아 {mafia_total}명(중 특수 {mafia_special}명)"),
         format!("의사 {doctor_total}명"),
-        format!("수사직 {}명", police_total + agent_total + vigilante_total),
+        format!(
+            "수사직 {}명",
+            police_total + agent_total + vigilante_total + inspector_total
+        ),
         citizen_text,
     ];
     if neutral_special > 0 {
@@ -1592,6 +1601,9 @@ pub fn investigation_candidates_text(config: &config::BotConfig) -> String {
     }
     if config.use_vigilante {
         candidates.push("자경단원");
+    }
+    if config.enable_inspector {
+        candidates.push("형사");
     }
     candidates.join(", ")
 }
@@ -5273,11 +5285,7 @@ async fn remove_cleanup_roles_from_member_snapshot(
         }
     })
     .await;
-    if edited.is_ok() {
-        removed
-    } else {
-        0
-    }
+    if edited.is_ok() { removed } else { 0 }
 }
 
 fn should_force_delete_game_channel(
@@ -5563,7 +5571,10 @@ pub async fn set_one_channel_slowmode(
     }
     match crate::http_pool::with_fallback(ctx, |http| async move {
         channel_id
-            .edit(&http, serenity::EditChannel::new().rate_limit_per_user(slowmode))
+            .edit(
+                &http,
+                serenity::EditChannel::new().rate_limit_per_user(slowmode),
+            )
             .await
     })
     .await
@@ -5603,7 +5614,10 @@ pub async fn restore_channel_slowmode(ctx: &serenity::Context, running: &Arc<RwL
     for (channel_id, delay) in originals {
         if let Err(error) = crate::http_pool::with_fallback(ctx, |http| async move {
             channel_id
-                .edit(&http, serenity::EditChannel::new().rate_limit_per_user(delay))
+                .edit(
+                    &http,
+                    serenity::EditChannel::new().rate_limit_per_user(delay),
+                )
                 .await
         })
         .await
@@ -6012,8 +6026,57 @@ pub(crate) mod tests {
             .sum::<usize>();
 
         assert_eq!(special_roles, vec![Role::Detective]);
-        assert!(!role_counts.contains_key(&Role::Inspector));
         assert_eq!(investigation_count, config.default_police_count as usize);
+        assert_eq!(
+            role_counts
+                .keys()
+                .filter(|role| role.is_investigation_role())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn enabled_inspector_can_be_selected_as_base_investigation_role() {
+        let mut config = selection_test_config();
+        config.citizen_special_count = 0;
+        config.use_agent = false;
+        config.use_vigilante = false;
+        let role_history = HashMap::from([(Role::Police, 10), (Role::Inspector, 0)]);
+
+        let role_counts = selected_role_counts_balanced(&config, &[], &role_history).unwrap();
+
+        assert_eq!(
+            role_counts.get(&Role::Inspector),
+            Some(&(config.default_police_count as usize))
+        );
+        assert!(!role_counts.contains_key(&Role::Police));
+    }
+
+    #[test]
+    fn enabled_base_jokers_are_included_in_role_counts() {
+        let mut config = selection_test_config();
+        config.default_joker_count = 2;
+        config.enable_joker = true;
+
+        let role_counts = selected_role_counts(&config, &[]).unwrap();
+
+        assert_eq!(role_counts.get(&Role::Joker), Some(&2));
+
+        config.enable_joker = false;
+        let role_counts = selected_role_counts(&config, &[]).unwrap();
+        assert!(!role_counts.contains_key(&Role::Joker));
+    }
+
+    #[test]
+    fn public_role_count_does_not_count_inspector_as_two_people() {
+        let role_counts =
+            HashMap::from([(Role::Mafia, 1), (Role::Inspector, 1), (Role::Citizen, 3)]);
+
+        let text = public_role_count_text_from_counts(&role_counts, Some(5));
+
+        assert!(text.contains("수사직 1명"));
+        assert!(text.contains("시민 3명"));
     }
 
     #[test]

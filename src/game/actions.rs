@@ -7,7 +7,7 @@
     clippy::type_complexity
 )]
 
-use crate::model::{CONTRACTOR_GUESS_ROLES, Phase, Player, Role};
+use crate::model::{Phase, Player, Role, is_contractor_guess_role};
 use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 
@@ -845,9 +845,7 @@ impl MafiaGame {
         if first_target_id == second_target_id {
             bail!("청부 대상 두 명은 서로 달라야 합니다.");
         }
-        if !CONTRACTOR_GUESS_ROLES.contains(&first_role)
-            || !CONTRACTOR_GUESS_ROLES.contains(&second_role)
-        {
+        if !is_contractor_guess_role(first_role) || !is_contractor_guess_role(second_role) {
             bail!("청부로 추측할 수 없는 직업입니다.");
         }
         if actor_id == first_target_id || actor_id == second_target_id {

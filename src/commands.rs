@@ -12,7 +12,7 @@ use super::{
 use crate::channel::*;
 use crate::embed::*;
 use crate::runner::{
-    contractor_contract_components, contractor_role_modal, effective_night_role, game_loop,
+    contractor_contract_components, contractor_contract_prompt, effective_night_role, game_loop,
     night_action_components, night_targets, role_message, role_short_guide,
     trigger_timed_night_events,
 };
@@ -25,10 +25,10 @@ use image::{ImageFormat, Rgb, RgbImage};
 use mafia_remake::config;
 use mafia_remake::game::{GameCounts, MafiaGame, majority_required};
 use mafia_remake::model::{
-    CITIZEN_SPECIAL_ROLES, CONTRACTOR_GUESS_ROLES, MAFIA_SPECIAL_ROLES, NEUTRAL_SPECIAL_ROLES,
+    CITIZEN_SPECIAL_ROLES, ContractorGuessRoleGroup, MAFIA_SPECIAL_ROLES, NEUTRAL_SPECIAL_ROLES,
     NightResult, PUBLIC_CITIZEN_SPECIAL_ROLES, PUBLIC_CULT_SPECIAL_ROLES,
     PUBLIC_MAFIA_SPECIAL_ROLES, PUBLIC_NEUTRAL_SPECIAL_ROLES, Phase, Player, Role, VoteResult,
-    Winner,
+    Winner, contractor_guess_role_group, is_contractor_guess_role,
 };
 use mafia_remake::stats;
 use poise::serenity_prelude as serenity;
@@ -281,7 +281,16 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
             police_count: *role_counts.get(&Role::Police).unwrap_or(&0),
             agent_count: *role_counts.get(&Role::Agent).unwrap_or(&0),
             vigilante_count: *role_counts.get(&Role::Vigilante).unwrap_or(&0),
-            joker_count: 0,
+            inspector_count: if config_snapshot.default_police_count > 0 {
+                *role_counts.get(&Role::Inspector).unwrap_or(&0)
+            } else {
+                0
+            },
+            joker_count: if config_snapshot.enable_joker {
+                config_snapshot.default_joker_count as usize
+            } else {
+                0
+            },
             special_roles: game_special_roles,
         },
         &assignment_history,
@@ -454,8 +463,12 @@ pub async fn handle_component(
             )
             .await?
         }
-        ["contractor_role", guild, actor_id, slot] => {
-            handle_contractor_role(
+        ["contractor_role", guild, actor_id] => {
+            handle_contractor_role(ctx, data, component, parse_guild(guild)?, actor_id.parse()?)
+                .await?
+        }
+        ["contractor_slot", guild, actor_id, slot] => {
+            handle_contractor_slot(
                 ctx,
                 data,
                 component,
@@ -465,13 +478,14 @@ pub async fn handle_component(
             )
             .await?
         }
-        ["contractor_roles", guild, actor_id] => {
-            handle_contractor_role_modal_open(
+        ["contractor_group", guild, actor_id, group] => {
+            handle_contractor_group(
                 ctx,
                 data,
                 component,
                 parse_guild(guild)?,
                 actor_id.parse()?,
+                group,
             )
             .await?
         }
@@ -515,34 +529,10 @@ pub async fn handle_modal(
 ) -> Result<()> {
     let custom_id = modal.data.custom_id.as_str();
     let parts = custom_id.split(':').collect::<Vec<_>>();
-    match parts.as_slice() {
-        ["autostart", guild] => {
-            handle_auto_start_submit(ctx, data, modal, parse_guild(guild)?).await?
-        }
-        ["contractor_roles", guild, actor_id] => {
-            handle_contractor_role_modal_submit(
-                ctx,
-                data,
-                modal,
-                parse_guild(guild)?,
-                actor_id.parse()?,
-            )
-            .await?
-        }
-        _ => {}
+    if let ["autostart", guild] = parts.as_slice() {
+        handle_auto_start_submit(ctx, data, modal, parse_guild(guild)?).await?;
     }
     Ok(())
-}
-
-pub fn parse_guild(value: &str) -> Result<serenity::GuildId> {
-    Ok(serenity::GuildId::new(value.parse()?))
-}
-
-pub fn selected_values(component: &serenity::ComponentInteraction) -> Vec<String> {
-    match &component.data.kind {
-        serenity::ComponentInteractionDataKind::StringSelect { values } => values.clone(),
-        _ => Vec::new(),
-    }
 }
 
 pub fn modal_value(modal: &serenity::ModalInteraction, custom_id: &str) -> Option<String> {
@@ -577,8 +567,107 @@ pub async fn send_modal_private(
         .await
 }
 
-pub fn parse_contractor_role_input(input: &str) -> Option<Role> {
-    find_role_by_name(input).filter(|role| CONTRACTOR_GUESS_ROLES.contains(role))
+pub fn parse_guild(value: &str) -> Result<serenity::GuildId> {
+    Ok(serenity::GuildId::new(value.parse()?))
+}
+
+pub fn selected_values(component: &serenity::ComponentInteraction) -> Vec<String> {
+    match &component.data.kind {
+        serenity::ComponentInteractionDataKind::StringSelect { values } => values.clone(),
+        _ => Vec::new(),
+    }
+}
+
+fn contractor_live_view(
+    running: &mut RunningGame,
+    actor_id: u64,
+) -> Result<(Vec<Player>, ContractorContractDraft)> {
+    let Some(actor) = running.game.get_player(actor_id).cloned() else {
+        bail!("청부업자 정보를 찾을 수 없습니다.");
+    };
+    if !running.game.contractor_can_use_contract(actor_id) {
+        bail!("청부를 사용할 수 있는 상태가 아닙니다.");
+    }
+
+    let targets = running.game.contractor_contract_targets(&actor);
+    let draft = running
+        .contractor_contract_drafts
+        .entry(actor_id)
+        .or_default();
+    if draft.active_role_slot >= 2 {
+        draft.active_role_slot = 0;
+    }
+    for slot in 0..2 {
+        if draft.guessed_roles[slot].is_some_and(|role| !is_contractor_guess_role(role)) {
+            draft.guessed_roles[slot] = None;
+        }
+        if draft.target_ids[slot]
+            .is_some_and(|target_id| !targets.iter().any(|target| target.user_id == target_id))
+        {
+            draft.target_ids[slot] = None;
+            draft.guessed_roles[slot] = None;
+        }
+    }
+    if draft.target_ids[0].is_some() && draft.target_ids[0] == draft.target_ids[1] {
+        draft.target_ids[1] = None;
+        draft.guessed_roles[1] = None;
+    }
+    Ok((targets, draft.clone()))
+}
+
+fn set_contractor_draft_target(
+    draft: &mut ContractorContractDraft,
+    slot: usize,
+    target_id: u64,
+) -> Result<()> {
+    if slot >= 2 {
+        bail!("잘못된 청부 선택입니다.");
+    }
+    if draft.target_ids[1 - slot] == Some(target_id) {
+        bail!("청부 대상 두 명은 서로 달라야 합니다.");
+    }
+    if draft.target_ids[slot] != Some(target_id) {
+        draft.guessed_roles[slot] = None;
+    }
+    draft.target_ids[slot] = Some(target_id);
+    draft.active_role_slot = slot;
+    Ok(())
+}
+
+fn contractor_draft_submission(draft: &ContractorContractDraft) -> Option<(u64, u64, Role, Role)> {
+    Some((
+        draft.target_ids[0]?,
+        draft.target_ids[1]?,
+        draft.guessed_roles[0]?,
+        draft.guessed_roles[1]?,
+    ))
+}
+
+async fn update_contractor_message(
+    ctx: &serenity::Context,
+    component: &serenity::ComponentInteraction,
+    guild_id: serenity::GuildId,
+    actor_id: u64,
+    targets: &[Player],
+    draft: &ContractorContractDraft,
+) -> Result<()> {
+    component
+        .create_response(
+            ctx,
+            serenity::CreateInteractionResponse::UpdateMessage(
+                serenity::CreateInteractionResponseMessage::new()
+                    .embed(make_embed(
+                        contractor_contract_prompt(targets, draft),
+                        "청부업자 밤 행동",
+                        serenity::Colour::DARK_GREEN,
+                    ))
+                    .components(contractor_contract_components(
+                        guild_id, actor_id, targets, draft,
+                    )),
+            ),
+        )
+        .await?;
+    Ok(())
 }
 
 pub async fn handle_contractor_target(
@@ -608,18 +697,100 @@ pub async fn handle_contractor_target(
         send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
         return Ok(());
     };
-    running
-        .write()
-        .await
-        .contractor_contract_drafts
-        .entry(actor_id)
-        .or_default()
-        .target_ids[slot] = Some(target_id);
-    ack_component(ctx, component).await;
+
+    let view = {
+        let mut running_write = running.write().await;
+        match contractor_live_view(&mut running_write, actor_id) {
+            Ok((targets, _)) => {
+                if !targets.iter().any(|target| target.user_id == target_id) {
+                    Err(anyhow::anyhow!("현재 선택할 수 없는 청부 대상입니다."))
+                } else {
+                    let draft = running_write
+                        .contractor_contract_drafts
+                        .get_mut(&actor_id)
+                        .expect("청부 초안이 생성되어야 합니다.");
+                    set_contractor_draft_target(draft, slot, target_id)?;
+                    Ok((targets, draft.clone()))
+                }
+            }
+            Err(error) => Err(error),
+        }
+    };
+    let (targets, draft) = match view {
+        Ok(view) => view,
+        Err(error) => {
+            send_component_private(ctx, component, error.to_string()).await?;
+            return Ok(());
+        }
+    };
+    update_contractor_message(ctx, component, guild_id, actor_id, &targets, &draft).await?;
     Ok(())
 }
 
 pub async fn handle_contractor_role(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    guild_id: serenity::GuildId,
+    actor_id: u64,
+) -> Result<()> {
+    if component.user.id.get() != actor_id {
+        send_component_private(ctx, component, "본인에게 온 선택지만 사용할 수 있습니다.").await?;
+        return Ok(());
+    }
+    let Some(role) = selected_values(component)
+        .first()
+        .and_then(|value| find_role_by_name(value))
+    else {
+        send_component_private(ctx, component, "청부 대상 직업을 선택해야 합니다.").await?;
+        return Ok(());
+    };
+    if !is_contractor_guess_role(role) {
+        send_component_private(ctx, component, "청부로 추측할 수 없는 직업입니다.").await?;
+        return Ok(());
+    }
+    let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
+        send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
+        return Ok(());
+    };
+    let view = {
+        let mut running_write = running.write().await;
+        match contractor_live_view(&mut running_write, actor_id) {
+            Ok((targets, _)) => {
+                let draft = running_write
+                    .contractor_contract_drafts
+                    .get_mut(&actor_id)
+                    .expect("청부 초안이 생성되어야 합니다.");
+                let slot = draft.active_role_slot;
+                if draft.role_group != contractor_guess_role_group(role) {
+                    Err(anyhow::anyhow!(
+                        "현재 직업 목록에서 선택할 수 없는 직업입니다."
+                    ))
+                } else if draft.target_ids[slot].is_none() {
+                    Err(anyhow::anyhow!(
+                        "먼저 {}번 청부 대상을 선택하세요.",
+                        slot + 1
+                    ))
+                } else {
+                    draft.guessed_roles[slot] = Some(role);
+                    Ok((targets, draft.clone()))
+                }
+            }
+            Err(error) => Err(error),
+        }
+    };
+    let (targets, draft) = match view {
+        Ok(view) => view,
+        Err(error) => {
+            send_component_private(ctx, component, error.to_string()).await?;
+            return Ok(());
+        }
+    };
+    update_contractor_message(ctx, component, guild_id, actor_id, &targets, &draft).await?;
+    Ok(())
+}
+
+pub async fn handle_contractor_slot(
     ctx: &serenity::Context,
     data: &Data,
     component: &serenity::ComponentInteraction,
@@ -635,199 +806,77 @@ pub async fn handle_contractor_role(
         send_component_private(ctx, component, "잘못된 청부 선택입니다.").await?;
         return Ok(());
     }
-    let Some(role) = selected_values(component)
-        .first()
-        .and_then(|value| find_role_by_name(value))
-    else {
-        send_component_private(ctx, component, "청부 대상 직업을 선택해야 합니다.").await?;
-        return Ok(());
-    };
-    if !CONTRACTOR_GUESS_ROLES.contains(&role) {
-        send_component_private(ctx, component, "청부로 추측할 수 없는 직업입니다.").await?;
-        return Ok(());
-    }
     let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
         send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
         return Ok(());
     };
-    running
-        .write()
-        .await
-        .contractor_contract_drafts
-        .entry(actor_id)
-        .or_default()
-        .guessed_roles[slot] = Some(role);
-    ack_component(ctx, component).await;
+    let view = {
+        let mut running_write = running.write().await;
+        match contractor_live_view(&mut running_write, actor_id) {
+            Ok((targets, _)) => {
+                let draft = running_write
+                    .contractor_contract_drafts
+                    .get_mut(&actor_id)
+                    .expect("청부 초안이 생성되어야 합니다.");
+                draft.active_role_slot = slot;
+                Ok((targets, draft.clone()))
+            }
+            Err(error) => Err(error),
+        }
+    };
+    let (targets, draft) = match view {
+        Ok(view) => view,
+        Err(error) => {
+            send_component_private(ctx, component, error.to_string()).await?;
+            return Ok(());
+        }
+    };
+    update_contractor_message(ctx, component, guild_id, actor_id, &targets, &draft).await?;
     Ok(())
 }
 
-pub async fn handle_contractor_role_modal_open(
+pub async fn handle_contractor_group(
     ctx: &serenity::Context,
     data: &Data,
     component: &serenity::ComponentInteraction,
     guild_id: serenity::GuildId,
     actor_id: u64,
+    group_value: &str,
 ) -> Result<()> {
     if component.user.id.get() != actor_id {
         send_component_private(ctx, component, "본인에게 온 선택지만 사용할 수 있습니다.").await?;
         return Ok(());
     }
+    let Some(role_group) = ContractorGuessRoleGroup::from_component_value(group_value) else {
+        send_component_private(ctx, component, "잘못된 청부 직업 목록입니다.").await?;
+        return Ok(());
+    };
     let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
         send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
         return Ok(());
     };
-    let has_targets = {
-        let running_read = running.read().await;
-        running_read
-            .contractor_contract_drafts
-            .get(&actor_id)
-            .is_some_and(|draft| draft.target_ids.iter().all(Option::is_some))
-    };
-    if !has_targets {
-        send_component_private(ctx, component, "청부 대상 2명을 먼저 선택하세요.").await?;
-        return Ok(());
-    }
-    component
-        .create_response(
-            ctx,
-            serenity::CreateInteractionResponse::Modal(contractor_role_modal(guild_id, actor_id)),
-        )
-        .await?;
-    Ok(())
-}
-
-pub async fn handle_contractor_role_modal_submit(
-    ctx: &serenity::Context,
-    data: &Data,
-    modal: &serenity::ModalInteraction,
-    guild_id: serenity::GuildId,
-    actor_id: u64,
-) -> Result<()> {
-    if modal.user.id.get() != actor_id {
-        send_modal_private(
-            ctx,
-            modal,
-            "본인에게 온 선택지만 사용할 수 있습니다.",
-            serenity::Colour::RED,
-        )
-        .await?;
-        return Ok(());
-    }
-    let role_hint = "직업 이름을 정확히 입력하세요. 예: 마피아, 의사, 시민";
-    let Some(first_role) = modal_value(modal, "first_role")
-        .as_deref()
-        .and_then(parse_contractor_role_input)
-    else {
-        send_modal_private(ctx, modal, role_hint, serenity::Colour::RED).await?;
-        return Ok(());
-    };
-    let Some(second_role) = modal_value(modal, "second_role")
-        .as_deref()
-        .and_then(parse_contractor_role_input)
-    else {
-        send_modal_private(ctx, modal, role_hint, serenity::Colour::RED).await?;
-        return Ok(());
-    };
-    let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
-        send_modal_private(
-            ctx,
-            modal,
-            "진행 중인 게임이 없습니다.",
-            serenity::Colour::RED,
-        )
-        .await?;
-        return Ok(());
-    };
-    let draft = {
-        let running_read = running.read().await;
-        running_read
-            .contractor_contract_drafts
-            .get(&actor_id)
-            .cloned()
-    };
-    let Some(draft) = draft else {
-        send_modal_private(
-            ctx,
-            modal,
-            "청부 대상 2명을 먼저 선택하세요.",
-            serenity::Colour::RED,
-        )
-        .await?;
-        return Ok(());
-    };
-    let (Some(first_target_id), Some(second_target_id)) =
-        (draft.target_ids[0], draft.target_ids[1])
-    else {
-        send_modal_private(
-            ctx,
-            modal,
-            "청부 대상 2명을 먼저 선택하세요.",
-            serenity::Colour::RED,
-        )
-        .await?;
-        return Ok(());
-    };
-    let (message, done, newly_contacted_mafia) = {
+    let view = {
         let mut running_write = running.write().await;
-        let was_known_mafia_team = running_write
-            .game
-            .get_player(actor_id)
-            .is_some_and(|actor| running_write.game.is_known_mafia_team(actor));
-        let message = match running_write.game.submit_contractor_contract(
-            actor_id,
-            first_target_id,
-            first_role,
-            second_target_id,
-            second_role,
-        ) {
-            Ok(message) => message,
-            Err(error) => {
-                drop(running_write);
-                send_modal_private(ctx, modal, error.to_string(), serenity::Colour::RED).await?;
-                return Ok(());
+        match contractor_live_view(&mut running_write, actor_id) {
+            Ok((targets, _)) => {
+                let draft = running_write
+                    .contractor_contract_drafts
+                    .get_mut(&actor_id)
+                    .expect("청부 초안이 생성되어야 합니다.");
+                draft.role_group = role_group;
+                Ok((targets, draft.clone()))
             }
-        };
-        running_write.record_replay_event(
-            "contractor_contract",
-            Some(actor_id),
-            &[first_target_id, second_target_id],
-            serde_json::json!({
-                "guesses": [
-                    {"target_user_id": first_target_id, "role": first_role.value(), "role_key": format!("{:?}", first_role)},
-                    {"target_user_id": second_target_id, "role": second_role.value(), "role_key": format!("{:?}", second_role)}
-                ],
-                "message": message.clone(),
-            }),
-        );
-        running_write.contractor_contract_drafts.remove(&actor_id);
-        let newly_contacted_mafia = running_write
-            .game
-            .get_player(actor_id)
-            .filter(|actor| {
-                actor.alive
-                    && !was_known_mafia_team
-                    && running_write.game.is_known_mafia_team(actor)
-            })
-            .cloned();
-        let done = running_write.game.should_finish_night_early();
-        (message, done, newly_contacted_mafia)
+            Err(error) => Err(error),
+        }
     };
-    send_modal_private(
-        ctx,
-        modal,
-        format!("{message}\n\n밤이 끝나기 전 다시 선택하면 청부 대상을 변경할 수 있습니다."),
-        serenity::Colour::DARK_GREEN,
-    )
-    .await?;
-    if let Some(player) = &newly_contacted_mafia {
-        grant_private_role_member_access(ctx, data, &running, Role::Mafia, player).await;
-    }
-    if done {
-        running.read().await.night_notify.notify_waiters();
-    }
-    if running.read().await.night_timed_events_due {
-        trigger_timed_night_events(ctx, data, &running).await?;
-    }
+    let (targets, draft) = match view {
+        Ok(view) => view,
+        Err(error) => {
+            send_component_private(ctx, component, error.to_string()).await?;
+            return Ok(());
+        }
+    };
+    update_contractor_message(ctx, component, guild_id, actor_id, &targets, &draft).await?;
     Ok(())
 }
 
@@ -865,12 +914,9 @@ pub async fn handle_contractor_submit(
             .await?;
             return Ok(());
         };
-        let (Some(first_target_id), Some(second_target_id), Some(first_role), Some(second_role)) = (
-            draft.target_ids[0],
-            draft.target_ids[1],
-            draft.guessed_roles[0],
-            draft.guessed_roles[1],
-        ) else {
+        let Some((first_target_id, second_target_id, first_role, second_role)) =
+            contractor_draft_submission(&draft)
+        else {
             send_component_private(
                 ctx,
                 component,
@@ -928,6 +974,7 @@ pub async fn handle_contractor_submit(
     if done {
         running.read().await.night_notify.notify_waiters();
     }
+    let reset_draft = ContractorContractDraft::default();
     component
         .create_response(
             ctx,
@@ -935,13 +982,17 @@ pub async fn handle_contractor_submit(
                 serenity::CreateInteractionResponseMessage::new()
                     .embed(make_embed(
                         format!(
-                            "{message}\n\n밤이 끝나기 전 다시 선택하면 청부 대상을 변경할 수 있습니다."
+                            "{message}\n\n{}",
+                            contractor_contract_prompt(&targets, &reset_draft)
                         ),
                         "밤 행동 완료",
                         serenity::Colour::DARK_GREEN,
                     ))
                     .components(contractor_contract_components(
-                        guild_id, actor_id, &targets,
+                        guild_id,
+                        actor_id,
+                        &targets,
+                        &reset_draft,
                     )),
             ),
         )
@@ -6475,6 +6526,37 @@ pub async fn handle_message_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contractor_draft_replaces_role_when_target_changes_and_rejects_duplicates() {
+        let mut draft = ContractorContractDraft {
+            target_ids: [Some(10), Some(20)],
+            guessed_roles: [Some(Role::Citizen), Some(Role::Mafia)],
+            active_role_slot: 0,
+            ..Default::default()
+        };
+
+        set_contractor_draft_target(&mut draft, 0, 30).unwrap();
+
+        assert_eq!(draft.target_ids, [Some(30), Some(20)]);
+        assert_eq!(draft.guessed_roles, [None, Some(Role::Mafia)]);
+        assert_eq!(draft.active_role_slot, 0);
+        assert!(set_contractor_draft_target(&mut draft, 1, 30).is_err());
+    }
+
+    #[test]
+    fn contractor_draft_submission_requires_both_targets_and_roles() {
+        let mut draft = ContractorContractDraft::default();
+        assert_eq!(contractor_draft_submission(&draft), None);
+
+        draft.target_ids = [Some(10), Some(20)];
+        draft.guessed_roles = [Some(Role::Citizen), Some(Role::Mafia)];
+
+        assert_eq!(
+            contractor_draft_submission(&draft),
+            Some((10, 20, Role::Citizen, Role::Mafia))
+        );
+    }
 
     /// 사망자/영매 채팅과 역할 채팅 미러링이 모두 이 라벨을 쓴다. 실명은 절대 나오지
     /// 않아야 하고, 역할이나 생사에 따라 다른 라벨이 붙지도 않아야 한다.

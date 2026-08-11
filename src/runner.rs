@@ -4,8 +4,9 @@
 #![allow(unused_imports, clippy::too_many_arguments, clippy::collapsible_if)]
 
 use super::{
-    COMPLETED_REPLAY_LIMIT, CONFIRM_VOTE_SECONDS, Context, DAY_EXTENSION_VOTE_SECONDS,
-    DISCUSSION_EXTENSION_SECONDS, Data, Error, PRIVATE_CHAT_ROLES, RunningGame,
+    COMPLETED_REPLAY_LIMIT, CONFIRM_VOTE_SECONDS, Context, ContractorContractDraft,
+    DAY_EXTENSION_VOTE_SECONDS, DISCUSSION_EXTENSION_SECONDS, Data, Error, PRIVATE_CHAT_ROLES,
+    RunningGame,
 };
 use crate::channel::*;
 use crate::commands::{draw_lb_text, fill_circle, fill_rect, image_color, truncate_for_board};
@@ -17,7 +18,8 @@ use image::{ImageFormat, Rgb, RgbImage};
 use mafia_remake::config;
 use mafia_remake::game::{MafiaGame, majority_required};
 use mafia_remake::model::{
-    CONTRACTOR_GUESS_ROLES, ConfirmVoteResult, NightResult, Phase, Player, Role, VoteResult, Winner,
+    ConfirmVoteResult, ContractorGuessRoleGroup, NightResult, Phase, Player, Role, VoteResult,
+    Winner, contractor_guessable_roles_for_group,
 };
 use mafia_remake::stats;
 use poise::serenity_prelude as serenity;
@@ -1066,7 +1068,7 @@ pub async fn send_night_action_dm(
     running: &Arc<RwLock<RunningGame>>,
     actor: &Player,
 ) -> std::result::Result<SecretDeliveryRoute, SecretDeliveryFailure> {
-    let (guild_id, role, can_change, targets) = {
+    let (guild_id, role, can_change, targets, contractor_draft) = {
         let running_read = running.read().await;
         let role = effective_night_role(&running_read.game, actor);
         let targets = if role == Role::Contractor {
@@ -1074,11 +1076,21 @@ pub async fn send_night_action_dm(
         } else {
             night_targets(&running_read.game, actor)
         };
+        let contractor_draft = if role == Role::Contractor {
+            running_read
+                .contractor_contract_drafts
+                .get(&actor.user_id)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            ContractorContractDraft::default()
+        };
         (
             running_read.guild_id,
             role,
             running_read.game.night_action_can_be_changed(actor),
             targets,
+            contractor_draft,
         )
     };
     if targets.is_empty() && role != Role::Reporter {
@@ -1089,8 +1101,8 @@ pub async fn send_night_action_dm(
             ctx,
             running,
             actor,
-            "청부업자 밤 행동을 선택하세요.\n두 명과 각 직업을 추측합니다. 둘 중 한 명이라도 마피아를 정확히 맞히면 접선합니다.\n밤이 끝나기 전 다시 제출하면 청부 대상을 변경할 수 있습니다.\n첫날 밤에는 사용할 수 없고, 직업이 공개된 사람은 대상에서 제외됩니다. 경찰 계열도 대상으로 고를 수 있지만 경찰 계열 직업은 추측할 수 없습니다.",
-            contractor_contract_components(guild_id, actor.user_id, &targets),
+            contractor_contract_prompt(&targets, &contractor_draft),
+            contractor_contract_components(guild_id, actor.user_id, &targets, &contractor_draft),
         )
         .await;
     }
@@ -1185,70 +1197,139 @@ pub fn contractor_contract_components(
     guild_id: serenity::GuildId,
     actor_id: u64,
     targets: &[Player],
+    draft: &ContractorContractDraft,
 ) -> Vec<serenity::CreateActionRow> {
-    (0..2)
-        .map(|slot| {
-            let target_options = targets
-                .iter()
-                .take(25)
-                .map(|target| {
-                    serenity::CreateSelectMenuOption::new(
-                        target.name.chars().take(100).collect::<String>(),
-                        target.user_id.to_string(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            serenity::CreateActionRow::SelectMenu(
-                serenity::CreateSelectMenu::new(
-                    format!("contractor_target:{}:{}:{}", guild_id.get(), actor_id, slot),
-                    serenity::CreateSelectMenuKind::String {
-                        options: target_options,
-                    },
+    let active_slot = draft.active_role_slot.min(1);
+    let target_rows = (0..2).map(|slot| {
+        let other_target_id = draft.target_ids[1 - slot];
+        let target_options = targets
+            .iter()
+            .filter(|target| Some(target.user_id) != other_target_id)
+            .take(25)
+            .map(|target| {
+                serenity::CreateSelectMenuOption::new(
+                    target.name.chars().take(100).collect::<String>(),
+                    target.user_id.to_string(),
                 )
-                .placeholder(format!("{}번째 청부 대상", slot + 1))
-                .min_values(1)
-                .max_values(1),
+            })
+            .collect::<Vec<_>>();
+        let placeholder = draft.target_ids[slot]
+            .and_then(|target_id| {
+                targets
+                    .iter()
+                    .find(|target| target.user_id == target_id)
+                    .map(|target| format!("{}번 대상: {}", slot + 1, target.name))
+            })
+            .unwrap_or_else(|| format!("{}번 청부 대상 선택", slot + 1));
+        serenity::CreateActionRow::SelectMenu(
+            serenity::CreateSelectMenu::new(
+                format!("contractor_target:{}:{}:{}", guild_id.get(), actor_id, slot),
+                serenity::CreateSelectMenuKind::String {
+                    options: target_options,
+                },
             )
-        })
-        .chain([serenity::CreateActionRow::Buttons(vec![
-            serenity::CreateButton::new(format!(
-                "contractor_roles:{}:{}",
-                guild_id.get(),
-                actor_id
-            ))
-            .label("직업 입력/청부 확정")
-            .style(serenity::ButtonStyle::Danger),
-        ])])
+            .placeholder(placeholder)
+            .min_values(1)
+            .max_values(1),
+        )
+    });
+    let role_options = contractor_guessable_roles_for_group(draft.role_group)
+        .take(25)
+        .map(|role| serenity::CreateSelectMenuOption::new(role.value(), role.value()))
+        .collect::<Vec<_>>();
+    let role_select = serenity::CreateActionRow::SelectMenu(
+        serenity::CreateSelectMenu::new(
+            format!("contractor_role:{}:{}", guild_id.get(), actor_id),
+            serenity::CreateSelectMenuKind::String {
+                options: role_options,
+            },
+        )
+        .placeholder(format!(
+            "{}번 대상의 {} 직업 선택",
+            active_slot + 1,
+            draft.role_group.label()
+        ))
+        .min_values(1)
+        .max_values(1),
+    );
+    let role_slot_buttons = serenity::CreateActionRow::Buttons(
+        (0..2)
+            .map(|slot| {
+                serenity::CreateButton::new(format!(
+                    "contractor_slot:{}:{}:{}",
+                    guild_id.get(),
+                    actor_id,
+                    slot
+                ))
+                .label(format!("{}번 대상 역할", slot + 1))
+                .style(if active_slot == slot {
+                    serenity::ButtonStyle::Primary
+                } else {
+                    serenity::ButtonStyle::Secondary
+                })
+            })
+            .collect(),
+    );
+    let category_and_submit_buttons = serenity::CreateActionRow::Buttons(vec![
+        serenity::CreateButton::new(format!(
+            "contractor_group:{}:{}:{}",
+            guild_id.get(),
+            actor_id,
+            ContractorGuessRoleGroup::Citizen.component_value()
+        ))
+        .label(ContractorGuessRoleGroup::Citizen.label())
+        .style(if draft.role_group == ContractorGuessRoleGroup::Citizen {
+            serenity::ButtonStyle::Primary
+        } else {
+            serenity::ButtonStyle::Secondary
+        }),
+        serenity::CreateButton::new(format!(
+            "contractor_group:{}:{}:{}",
+            guild_id.get(),
+            actor_id,
+            ContractorGuessRoleGroup::MafiaCultNeutral.component_value()
+        ))
+        .label(ContractorGuessRoleGroup::MafiaCultNeutral.label())
+        .style(
+            if draft.role_group == ContractorGuessRoleGroup::MafiaCultNeutral {
+                serenity::ButtonStyle::Primary
+            } else {
+                serenity::ButtonStyle::Secondary
+            },
+        ),
+        serenity::CreateButton::new(format!("contractor_submit:{}:{}", guild_id.get(), actor_id))
+            .label("청부 확정")
+            .style(serenity::ButtonStyle::Success),
+    ]);
+
+    target_rows
+        .chain([role_select, role_slot_buttons, category_and_submit_buttons])
         .collect()
 }
 
-pub fn contractor_role_modal(guild_id: serenity::GuildId, actor_id: u64) -> serenity::CreateModal {
-    serenity::CreateModal::new(
-        format!("contractor_roles:{}:{}", guild_id.get(), actor_id),
-        "청부 직업 입력",
+pub fn contractor_contract_prompt(targets: &[Player], draft: &ContractorContractDraft) -> String {
+    let target_line = |slot: usize| {
+        let target_name = draft.target_ids[slot]
+            .and_then(|target_id| {
+                targets
+                    .iter()
+                    .find(|target| target.user_id == target_id)
+                    .map(|target| target.name.as_str())
+            })
+            .unwrap_or("미선택");
+        let role_name = draft.guessed_roles[slot]
+            .map(Role::value)
+            .unwrap_or("직업 미선택");
+        format!("{}번 대상: {} -> {}", slot + 1, target_name, role_name)
+    };
+    let active_slot = draft.active_role_slot.min(1);
+    format!(
+        "두 명과 각 직업을 추측합니다. 둘 중 한 명이라도 마피아를 정확히 맞히면 접선합니다.\n첫날 밤에는 사용할 수 없고, 직업이 공개된 사람은 대상에서 제외됩니다. 경찰 계열도 대상으로 고를 수 있지만 경찰 계열 직업은 추측할 수 없습니다.\n\n{}\n{}\n\n현재 역할 지정: {}번 대상\n현재 직업 목록: {}\n밤이 끝나기 전 다시 확정하면 청부 대상을 변경할 수 있습니다.",
+        target_line(0),
+        target_line(1),
+        active_slot + 1,
+        draft.role_group.label(),
     )
-    .components(vec![
-        serenity::CreateActionRow::InputText(
-            serenity::CreateInputText::new(
-                serenity::InputTextStyle::Short,
-                "첫 번째 대상 직업",
-                "first_role",
-            )
-            .placeholder("예: 마피아")
-            .min_length(1)
-            .max_length(30),
-        ),
-        serenity::CreateActionRow::InputText(
-            serenity::CreateInputText::new(
-                serenity::InputTextStyle::Short,
-                "두 번째 대상 직업",
-                "second_role",
-            )
-            .placeholder("예: 시민")
-            .min_length(1)
-            .max_length(30),
-        ),
-    ])
 }
 
 pub fn night_placeholder(role: Role) -> &'static str {
@@ -3591,11 +3672,16 @@ mod tests {
         let targets = (0..30)
             .map(|index| Player::new(1000 + index, format!("대상{index}"), Role::Citizen))
             .collect::<Vec<_>>();
-        let components = contractor_contract_components(serenity::GuildId::new(1), 42, &targets);
+        let components = contractor_contract_components(
+            serenity::GuildId::new(1),
+            42,
+            &targets,
+            &ContractorContractDraft::default(),
+        );
         let json = serde_json::to_value(&components).unwrap();
         let rows = json.as_array().unwrap();
 
-        assert!(rows.len() <= 5);
+        assert_eq!(rows.len(), 5);
         for row in rows {
             for component in row["components"].as_array().unwrap() {
                 if let Some(options) = component.get("options").and_then(|value| value.as_array()) {

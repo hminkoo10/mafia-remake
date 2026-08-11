@@ -4014,6 +4014,11 @@ fn minimum_player_count(config: &BotConfig) -> usize {
         .saturating_sub(config.mafia_special_count) as usize
         + config.default_doctor_count as usize
         + config.default_police_count as usize
+        + if config.enable_joker {
+            config.default_joker_count as usize
+        } else {
+            0
+        }
         + config.citizen_special_count as usize
         + selected_special_player_count(config, MAFIA_SPECIAL_ROLES, config.mafia_special_count)
         + selected_special_player_count(
@@ -4319,6 +4324,20 @@ mod tests {
         config.max_player_count = 4;
 
         assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn base_joker_count_is_included_in_web_minimum() {
+        let mut config = test_config();
+        config.default_mafia_count = 1;
+        config.default_doctor_count = 0;
+        config.default_police_count = 0;
+        config.default_joker_count = 3;
+
+        assert_eq!(minimum_player_count(&config), 4);
+
+        config.enable_joker = false;
+        assert_eq!(minimum_player_count(&config), 3);
     }
 
     #[test]

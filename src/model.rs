@@ -287,6 +287,73 @@ pub const CONTRACTOR_GUESS_ROLES: &[Role] = &[
     Role::Citizen,
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractorGuessRoleGroup {
+    Citizen,
+    MafiaCultNeutral,
+}
+
+impl Default for ContractorGuessRoleGroup {
+    fn default() -> Self {
+        Self::Citizen
+    }
+}
+
+impl ContractorGuessRoleGroup {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Citizen => "시민팀",
+            Self::MafiaCultNeutral => "마피아·교주·중립",
+        }
+    }
+
+    pub const fn component_value(self) -> &'static str {
+        match self {
+            Self::Citizen => "citizen",
+            Self::MafiaCultNeutral => "other",
+        }
+    }
+
+    pub fn from_component_value(value: &str) -> Option<Self> {
+        match value {
+            "citizen" => Some(Self::Citizen),
+            "other" => Some(Self::MafiaCultNeutral),
+            _ => None,
+        }
+    }
+}
+
+pub fn is_contractor_guess_role(role: Role) -> bool {
+    CONTRACTOR_GUESS_ROLES.contains(&role) && !role.is_investigation_role()
+}
+
+pub const fn contractor_guess_role_group(role: Role) -> ContractorGuessRoleGroup {
+    match role {
+        Role::Mafia
+        | Role::Witch
+        | Role::Scientist
+        | Role::Madam
+        | Role::Thief
+        | Role::CultLeader
+        | Role::Fanatic
+        | Role::Joker => ContractorGuessRoleGroup::MafiaCultNeutral,
+        _ => ContractorGuessRoleGroup::Citizen,
+    }
+}
+
+pub fn contractor_guessable_roles() -> impl Iterator<Item = Role> {
+    CONTRACTOR_GUESS_ROLES
+        .iter()
+        .copied()
+        .filter(|role| is_contractor_guess_role(*role))
+}
+
+pub fn contractor_guessable_roles_for_group(
+    group: ContractorGuessRoleGroup,
+) -> impl Iterator<Item = Role> {
+    contractor_guessable_roles().filter(move |role| contractor_guess_role_group(*role) == group)
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NightResult {
     pub killed: Option<Player>,
@@ -358,4 +425,30 @@ pub struct ConfirmVoteResult {
     pub judge: Option<Player>,
     pub judge_choice: Option<bool>,
     pub decided_by_judge: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn contractor_guess_roles_are_partitioned_and_exclude_investigation_roles() {
+        let all = contractor_guessable_roles().collect::<HashSet<_>>();
+        let citizen = contractor_guessable_roles_for_group(ContractorGuessRoleGroup::Citizen)
+            .collect::<HashSet<_>>();
+        let other =
+            contractor_guessable_roles_for_group(ContractorGuessRoleGroup::MafiaCultNeutral)
+                .collect::<HashSet<_>>();
+        let grouped = citizen.union(&other).copied().collect::<HashSet<_>>();
+
+        assert!(citizen.is_disjoint(&other));
+        assert_eq!(grouped, all);
+        assert!(citizen.len() <= 25);
+        assert!(other.len() <= 25);
+        for role in [Role::Police, Role::Agent, Role::Vigilante, Role::Inspector] {
+            assert!(!is_contractor_guess_role(role));
+        }
+        assert!(is_contractor_guess_role(Role::Detective));
+    }
 }
