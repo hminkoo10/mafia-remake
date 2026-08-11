@@ -257,13 +257,10 @@ impl MafiaGame {
                 Some("경찰은 자기 자신을 조사할 수 없습니다."),
                 "조사 투표 대상",
             ),
-            Role::Inspector => self.once_target_action(
+            Role::Inspector => self.submit_inspector_action(
                 actor_id,
                 target_id,
-                "수사 대상을 선택해야 합니다.",
-                "",
-                RoleActionMap::Inspector,
-                Some("형사는 자기 자신을 수사할 수 없습니다."),
+                "형사는 자기 자신을 수사할 수 없습니다.",
                 "수사 대상",
             ),
             Role::Vigilante => self.submit_vigilante_night_action(actor_id, target_id),
@@ -368,6 +365,31 @@ impl MafiaGame {
             self.terrorist_action_submitted.insert(actor_id);
         }
         Ok(format!("{}: {}", label, selected.name))
+    }
+
+    /// 형사 수사는 게임당 1회다. 밤 중에는 대상을 바꿀 수 있어야 하므로 소모는
+    /// 밤이 끝날 때(`record_night_action_usage`) 처리하고, 여기서는 이미 쓴
+    /// 형사만 막는다.
+    fn submit_inspector_action(
+        &mut self,
+        actor_id: u64,
+        target_id: Option<u64>,
+        self_error: &str,
+        label: &str,
+    ) -> Result<String> {
+        if self.inspector_used_ids.contains(&actor_id) {
+            bail!("형사 수사는 게임 중 한 번만 사용할 수 있습니다. 이미 사용했습니다.");
+        }
+        let result = self.once_target_action(
+            actor_id,
+            target_id,
+            "수사 대상을 선택해야 합니다.",
+            "",
+            RoleActionMap::Inspector,
+            Some(self_error),
+            label,
+        )?;
+        Ok(format!("{result}\n[형사 수사는 1회용입니다.]"))
     }
 
     fn submit_nurse_action(&mut self, actor_id: u64, target_id: Option<u64>) -> Result<String> {
@@ -727,13 +749,10 @@ impl MafiaGame {
                 Some("자기 자신은 조사할 수 없습니다."),
                 &format!("{prefix}조사 대상"),
             ),
-            Role::Inspector => self.once_target_action(
+            Role::Inspector => self.submit_inspector_action(
                 actor_id,
                 target_id,
-                "수사 대상을 선택해야 합니다.",
-                "",
-                RoleActionMap::Inspector,
-                Some("자기 자신은 수사할 수 없습니다."),
+                "자기 자신은 수사할 수 없습니다.",
                 &format!("{prefix}수사 대상"),
             ),
             Role::Vigilante => self

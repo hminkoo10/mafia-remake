@@ -38,6 +38,7 @@ pub struct MafiaGame {
     pub police_targets: HashMap<u64, u64>,
     pub thief_police_targets: HashMap<u64, u64>,
     pub inspector_targets: HashMap<u64, u64>,
+    pub inspector_used_ids: HashSet<u64>,
     pub vigilante_targets: HashMap<u64, u64>,
     pub vigilante_pending_results: HashMap<u64, u64>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
@@ -201,6 +202,7 @@ impl MafiaGame {
             police_targets: HashMap::new(),
             thief_police_targets: HashMap::new(),
             inspector_targets: HashMap::new(),
+            inspector_used_ids: HashSet::new(),
             vigilante_targets: HashMap::new(),
             vigilante_pending_results: HashMap::new(),
             vigilante_known_enemy_ids: HashMap::new(),
@@ -1796,6 +1798,61 @@ mod tests {
             Some("[Three님의 직업은 의사입니다.]")
         );
         assert!(!result.inspector_target_notices.contains_key(&3));
+    }
+
+    #[test]
+    fn inspector_investigation_is_single_use_per_game() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Inspector),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        // 밤 중에는 대상을 바꿀 수 있다.
+        game.submit_night_action(2, Some(3)).unwrap();
+        game.submit_night_action(2, Some(4)).unwrap();
+        assert!(
+            game.resolve_night()
+                .unwrap()
+                .inspector_results
+                .contains_key(&2)
+        );
+        assert!(game.inspector_used_ids.contains(&2));
+
+        game.phase = Phase::Night;
+        assert!(
+            !game
+                .night_action_actors()
+                .iter()
+                .any(|actor| actor.user_id == 2)
+        );
+        assert!(game.submit_night_action(2, Some(3)).is_err());
+    }
+
+    /// 다른 팀을 수사하면 결과가 없지만 1회용은 그대로 소모된다.
+    #[test]
+    fn inspector_single_use_is_consumed_even_without_a_result() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Inspector),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.submit_night_action(2, Some(1)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(!result.inspector_results.contains_key(&2));
+        assert!(game.inspector_used_ids.contains(&2));
     }
 
     #[test]

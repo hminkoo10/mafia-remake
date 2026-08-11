@@ -235,7 +235,7 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Agent => "밤마다 시민팀 지령 정보를 받습니다.",
         Role::Vigilante => "낮에 조사하고 밤에 숙청할 수 있습니다.",
         Role::Inspector => {
-            "밤에 한 명을 수사해 같은 팀이면 직업을 확인하고 대상에게 자신의 정체를 알립니다."
+            "게임 중 한 번만 수사할 수 있고, 같은 팀이면 직업을 확인하며 대상에게 자신의 정체를 알립니다."
         }
         Role::Detective => "밤 행동의 이동 경로를 추적합니다.",
         Role::Shaman => "사망자를 성불하고 직업을 확인합니다.",
@@ -1094,7 +1094,7 @@ pub async fn send_night_action_dm(
         )
         .await;
     }
-    let prompt = if can_change {
+    let mut prompt = if can_change {
         format!(
             "{} 밤 행동을 선택하세요\n밤이 끝나기 전 다시 선택하면 대상을 변경할 수 있습니다.",
             role.value()
@@ -1102,6 +1102,10 @@ pub async fn send_night_action_dm(
     } else {
         format!("{} 밤 행동을 선택하세요", role.value())
     };
+    if let Some(notice) = once_per_game_night_notice(role) {
+        prompt.push_str("\n\n");
+        prompt.push_str(notice);
+    }
     send_player_secret_detailed(
         ctx,
         running,
@@ -1110,6 +1114,17 @@ pub async fn send_night_action_dm(
         night_action_components(guild_id, actor.user_id, role, &targets),
     )
     .await
+}
+
+/// 게임당 1회만 쓸 수 있는 밤 능력은 선택 화면에서 그 사실을 알린다.
+pub fn once_per_game_night_notice(role: Role) -> Option<&'static str> {
+    match role {
+        Role::Inspector => Some(
+            "**이 수사는 1회용입니다.** 게임 중 한 번만 사용할 수 있으니 대상을 신중히 고르세요.",
+        ),
+        Role::Priest => Some("**이 소생은 1회용입니다.** 게임 중 한 번만 사용할 수 있습니다."),
+        _ => None,
+    }
 }
 
 pub fn night_action_components(
@@ -1242,7 +1257,7 @@ pub fn night_placeholder(role: Role) -> &'static str {
         Role::Doctor => "보호할 대상을 선택하세요",
         Role::Nurse => "처방/치료 대상을 선택하세요",
         Role::Police => "조사할 대상을 선택하세요",
-        Role::Inspector => "수사할 대상을 선택하세요",
+        Role::Inspector => "수사할 대상을 선택하세요 (1회용)",
         Role::Vigilante => "숙청할 대상을 선택하세요",
         Role::Hypnotist => "최면을 걸 대상을 선택하세요",
         Role::Mercenary => "처형할 대상을 선택하세요",

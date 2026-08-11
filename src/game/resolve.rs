@@ -737,11 +737,13 @@ impl MafiaGame {
     }
 
     fn resolve_inspector_results(
-        &self,
+        &mut self,
         blocked_actor_ids: &HashSet<u64>,
     ) -> (HashMap<u64, String>, HashMap<u64, String>) {
         let mut results = HashMap::new();
         let mut target_notices = HashMap::new();
+        // 수사를 실제로 수행한 형사. 대상이 다른 팀이라 결과가 없어도 1회용을 소모한다.
+        let mut used_actor_ids = Vec::new();
         for (actor_id, target_id) in &self.inspector_targets {
             if blocked_actor_ids.contains(actor_id) {
                 continue;
@@ -755,6 +757,7 @@ impl MafiaGame {
             if !actor.alive {
                 continue;
             }
+            used_actor_ids.push(*actor_id);
             // 수사 대상이 이 밤에 죽어도 수사 자체는 이미 끝났으므로 결과는 전달한다.
             // 다만 이미 죽은 대상에게는 형사의 정체를 알리지 않는다.
             if self.team_key(actor) == self.team_key(target) {
@@ -774,6 +777,7 @@ impl MafiaGame {
                 );
             }
         }
+        self.inspector_used_ids.extend(used_actor_ids);
         (results, target_notices)
     }
 

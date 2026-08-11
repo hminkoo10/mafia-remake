@@ -44,8 +44,9 @@ impl MafiaGame {
                 Role::Nurse => self.nurse_can_act(player, &alive),
                 Role::Gangster => has_other_alive,
                 Role::Thief => self.thief_can_act_at_night(player, &alive, &unpurified_dead),
-                Role::Police | Role::Inspector | Role::Detective | Role::Spy | Role::Terrorist => {
-                    has_other_alive
+                Role::Police | Role::Detective | Role::Spy | Role::Terrorist => has_other_alive,
+                Role::Inspector => {
+                    has_other_alive && !self.inspector_used_ids.contains(&player.user_id)
                 }
                 Role::Vigilante => !self.vigilante_execution_targets(player).is_empty(),
                 Role::Hypnotist => self.hypnotist_can_act_at_night(player),
@@ -220,6 +221,9 @@ impl MafiaGame {
             }
             Some(Role::Reporter) => self.reporter_can_act(player, alive),
             Some(Role::CultLeader) => self.cult_leader_can_act(player, alive),
+            Some(Role::Inspector) => {
+                alive.len() > 1 && !self.inspector_used_ids.contains(&player.user_id)
+            }
             Some(_) => alive.len() > 1,
             None => false,
         }
@@ -234,7 +238,10 @@ impl MafiaGame {
                     || self.nurse_prescription_targets.contains_key(&actor.user_id)
             }
             Some(Role::Police) => self.thief_police_targets.contains_key(&actor.user_id),
-            Some(Role::Inspector) => self.inspector_targets.contains_key(&actor.user_id),
+            Some(Role::Inspector) => {
+                self.inspector_targets.contains_key(&actor.user_id)
+                    || self.inspector_used_ids.contains(&actor.user_id)
+            }
             Some(Role::Vigilante) => self.vigilante_targets.contains_key(&actor.user_id),
             Some(Role::Reporter) => {
                 self.reporter_targets.contains_key(&actor.user_id)
