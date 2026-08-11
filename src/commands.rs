@@ -463,12 +463,8 @@ pub async fn handle_component(
             )
             .await?
         }
-        ["contractor_role", guild, actor_id] => {
-            handle_contractor_role(ctx, data, component, parse_guild(guild)?, actor_id.parse()?)
-                .await?
-        }
-        ["contractor_slot", guild, actor_id, slot] => {
-            handle_contractor_slot(
+        ["contractor_role", guild, actor_id, slot] => {
+            handle_contractor_role(
                 ctx,
                 data,
                 component,
@@ -594,9 +590,6 @@ fn contractor_live_view(
         .contractor_contract_drafts
         .entry(actor_id)
         .or_default();
-    if draft.active_role_slot >= 2 {
-        draft.active_role_slot = 0;
-    }
     for slot in 0..2 {
         if draft.guessed_roles[slot].is_some_and(|role| !is_contractor_guess_role(role)) {
             draft.guessed_roles[slot] = None;
@@ -630,7 +623,6 @@ fn set_contractor_draft_target(
         draft.guessed_roles[slot] = None;
     }
     draft.target_ids[slot] = Some(target_id);
-    draft.active_role_slot = slot;
     Ok(())
 }
 
@@ -733,9 +725,14 @@ pub async fn handle_contractor_role(
     component: &serenity::ComponentInteraction,
     guild_id: serenity::GuildId,
     actor_id: u64,
+    slot: usize,
 ) -> Result<()> {
     if component.user.id.get() != actor_id {
         send_component_private(ctx, component, "본인에게 온 선택지만 사용할 수 있습니다.").await?;
+        return Ok(());
+    }
+    if slot >= 2 {
+        send_component_private(ctx, component, "잘못된 청부 선택입니다.").await?;
         return Ok(());
     }
     let Some(role) = selected_values(component)
@@ -761,7 +758,6 @@ pub async fn handle_contractor_role(
                     .contractor_contract_drafts
                     .get_mut(&actor_id)
                     .expect("청부 초안이 생성되어야 합니다.");
-                let slot = draft.active_role_slot;
                 if draft.role_group != contractor_guess_role_group(role) {
                     Err(anyhow::anyhow!(
                         "현재 직업 목록에서 선택할 수 없는 직업입니다."
@@ -775,51 +771,6 @@ pub async fn handle_contractor_role(
                     draft.guessed_roles[slot] = Some(role);
                     Ok((targets, draft.clone()))
                 }
-            }
-            Err(error) => Err(error),
-        }
-    };
-    let (targets, draft) = match view {
-        Ok(view) => view,
-        Err(error) => {
-            send_component_private(ctx, component, error.to_string()).await?;
-            return Ok(());
-        }
-    };
-    update_contractor_message(ctx, component, guild_id, actor_id, &targets, &draft).await?;
-    Ok(())
-}
-
-pub async fn handle_contractor_slot(
-    ctx: &serenity::Context,
-    data: &Data,
-    component: &serenity::ComponentInteraction,
-    guild_id: serenity::GuildId,
-    actor_id: u64,
-    slot: usize,
-) -> Result<()> {
-    if component.user.id.get() != actor_id {
-        send_component_private(ctx, component, "본인에게 온 선택지만 사용할 수 있습니다.").await?;
-        return Ok(());
-    }
-    if slot >= 2 {
-        send_component_private(ctx, component, "잘못된 청부 선택입니다.").await?;
-        return Ok(());
-    }
-    let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
-        send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
-        return Ok(());
-    };
-    let view = {
-        let mut running_write = running.write().await;
-        match contractor_live_view(&mut running_write, actor_id) {
-            Ok((targets, _)) => {
-                let draft = running_write
-                    .contractor_contract_drafts
-                    .get_mut(&actor_id)
-                    .expect("청부 초안이 생성되어야 합니다.");
-                draft.active_role_slot = slot;
-                Ok((targets, draft.clone()))
             }
             Err(error) => Err(error),
         }
@@ -6532,15 +6483,14 @@ mod tests {
         let mut draft = ContractorContractDraft {
             target_ids: [Some(10), Some(20)],
             guessed_roles: [Some(Role::Citizen), Some(Role::Mafia)],
-            active_role_slot: 0,
             ..Default::default()
         };
 
         set_contractor_draft_target(&mut draft, 0, 30).unwrap();
 
+        // 1번 대상만 바뀌었으므로 2번 대상의 직업은 유지된다.
         assert_eq!(draft.target_ids, [Some(30), Some(20)]);
         assert_eq!(draft.guessed_roles, [None, Some(Role::Mafia)]);
-        assert_eq!(draft.active_role_slot, 0);
         assert!(set_contractor_draft_target(&mut draft, 1, 30).is_err());
     }
 

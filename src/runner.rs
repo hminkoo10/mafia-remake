@@ -1199,7 +1199,6 @@ pub fn contractor_contract_components(
     targets: &[Player],
     draft: &ContractorContractDraft,
 ) -> Vec<serenity::CreateActionRow> {
-    let active_slot = draft.active_role_slot.min(1);
     let target_rows = (0..2).map(|slot| {
         let other_target_id = draft.target_ids[1 - slot];
         let target_options = targets
@@ -1233,43 +1232,33 @@ pub fn contractor_contract_components(
             .max_values(1),
         )
     });
-    let role_options = contractor_guessable_roles_for_group(draft.role_group)
-        .take(25)
-        .map(|role| serenity::CreateSelectMenuOption::new(role.value(), role.value()))
-        .collect::<Vec<_>>();
-    let role_select = serenity::CreateActionRow::SelectMenu(
-        serenity::CreateSelectMenu::new(
-            format!("contractor_role:{}:{}", guild_id.get(), actor_id),
-            serenity::CreateSelectMenuKind::String {
-                options: role_options,
-            },
+    // 대상마다 전용 직업 셀렉트를 준다. 하나의 셀렉트를 두 대상이 공유하면 어느
+    // 대상에 적용되는지가 숨은 상태가 되어, 1번 대상 직업을 못 고르는 것처럼 보인다.
+    let role_rows = (0..2).map(|slot| {
+        let role_options = contractor_guessable_roles_for_group(draft.role_group)
+            .take(25)
+            .map(|role| serenity::CreateSelectMenuOption::new(role.value(), role.value()))
+            .collect::<Vec<_>>();
+        let placeholder = match draft.guessed_roles[slot] {
+            Some(role) => format!("{}번 대상 직업: {}", slot + 1, role.value()),
+            None => format!(
+                "{}번 대상 직업 선택 ({})",
+                slot + 1,
+                draft.role_group.label()
+            ),
+        };
+        serenity::CreateActionRow::SelectMenu(
+            serenity::CreateSelectMenu::new(
+                format!("contractor_role:{}:{}:{}", guild_id.get(), actor_id, slot),
+                serenity::CreateSelectMenuKind::String {
+                    options: role_options,
+                },
+            )
+            .placeholder(placeholder)
+            .min_values(1)
+            .max_values(1),
         )
-        .placeholder(format!(
-            "{}번 대상의 {} 직업 선택",
-            active_slot + 1,
-            draft.role_group.label()
-        ))
-        .min_values(1)
-        .max_values(1),
-    );
-    let role_slot_buttons = serenity::CreateActionRow::Buttons(
-        (0..2)
-            .map(|slot| {
-                serenity::CreateButton::new(format!(
-                    "contractor_slot:{}:{}:{}",
-                    guild_id.get(),
-                    actor_id,
-                    slot
-                ))
-                .label(format!("{}번 대상 역할", slot + 1))
-                .style(if active_slot == slot {
-                    serenity::ButtonStyle::Primary
-                } else {
-                    serenity::ButtonStyle::Secondary
-                })
-            })
-            .collect(),
-    );
+    });
     let category_and_submit_buttons = serenity::CreateActionRow::Buttons(vec![
         serenity::CreateButton::new(format!(
             "contractor_group:{}:{}:{}",
@@ -1303,7 +1292,8 @@ pub fn contractor_contract_components(
     ]);
 
     target_rows
-        .chain([role_select, role_slot_buttons, category_and_submit_buttons])
+        .chain(role_rows)
+        .chain([category_and_submit_buttons])
         .collect()
 }
 
@@ -1322,12 +1312,10 @@ pub fn contractor_contract_prompt(targets: &[Player], draft: &ContractorContract
             .unwrap_or("직업 미선택");
         format!("{}번 대상: {} -> {}", slot + 1, target_name, role_name)
     };
-    let active_slot = draft.active_role_slot.min(1);
     format!(
-        "두 명과 각 직업을 추측합니다. 둘 중 한 명이라도 마피아를 정확히 맞히면 접선합니다.\n첫날 밤에는 사용할 수 없고, 직업이 공개된 사람은 대상에서 제외됩니다. 경찰 계열도 대상으로 고를 수 있지만 경찰 계열 직업은 추측할 수 없습니다.\n\n{}\n{}\n\n현재 역할 지정: {}번 대상\n현재 직업 목록: {}\n밤이 끝나기 전 다시 확정하면 청부 대상을 변경할 수 있습니다.",
+        "두 명과 각 직업을 추측합니다. 둘 중 한 명이라도 마피아를 정확히 맞히면 접선합니다.\n첫날 밤에는 사용할 수 없고, 직업이 공개된 사람은 대상에서 제외됩니다. 경찰 계열도 대상으로 고를 수 있지만 경찰 계열 직업은 추측할 수 없습니다.\n\n{}\n{}\n\n직업 목록: **{}** (추측 가능한 직업이 25개를 넘어 팀별로 나눠 보여줍니다. 아래 버튼으로 목록을 바꾸면 이미 고른 직업은 그대로 유지됩니다.)\n밤이 끝나기 전 다시 확정하면 청부 대상을 변경할 수 있습니다.",
         target_line(0),
         target_line(1),
-        active_slot + 1,
         draft.role_group.label(),
     )
 }
@@ -3681,13 +3669,39 @@ mod tests {
         let json = serde_json::to_value(&components).unwrap();
         let rows = json.as_array().unwrap();
 
+        // 대상 셀렉트 2개 + 대상별 직업 셀렉트 2개 + 버튼 1줄 = Discord 상한인 5줄.
         assert_eq!(rows.len(), 5);
+        let mut select_ids = Vec::new();
         for row in rows {
             for component in row["components"].as_array().unwrap() {
                 if let Some(options) = component.get("options").and_then(|value| value.as_array()) {
+                    assert!(!options.is_empty());
                     assert!(options.len() <= 25);
+                    select_ids.push(component["custom_id"].as_str().unwrap().to_string());
                 }
             }
+        }
+        assert_eq!(
+            select_ids,
+            [
+                "contractor_target:1:42:0",
+                "contractor_target:1:42:1",
+                "contractor_role:1:42:0",
+                "contractor_role:1:42:1",
+            ]
+        );
+    }
+
+    /// 두 직업 목록 모두 셀렉트 상한 안에 들어와야 한다. 하나라도 넘으면 Discord가
+    /// 메시지를 거부해 청부 화면 자체가 뜨지 않는다.
+    #[test]
+    fn every_contractor_role_group_fits_one_select() {
+        for group in [
+            ContractorGuessRoleGroup::Citizen,
+            ContractorGuessRoleGroup::MafiaCultNeutral,
+        ] {
+            let count = contractor_guessable_roles_for_group(group).count();
+            assert!(count > 0 && count <= 25, "{group:?} has {count} roles");
         }
     }
 
