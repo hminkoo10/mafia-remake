@@ -4351,15 +4351,9 @@ mod tests {
 
         // 극단값은 모집 루프가 버틸 범위로 잘라 저장한다.
         set_int(&mut config, "recruitment_seconds", 0).unwrap();
-        assert_eq!(
-            config.recruitment_seconds,
-            config::MIN_RECRUITMENT_SECONDS
-        );
+        assert_eq!(config.recruitment_seconds, config::MIN_RECRUITMENT_SECONDS);
         set_int(&mut config, "recruitment_seconds", 99_999).unwrap();
-        assert_eq!(
-            config.recruitment_seconds,
-            config::MAX_RECRUITMENT_SECONDS
-        );
+        assert_eq!(config.recruitment_seconds, config::MAX_RECRUITMENT_SECONDS);
     }
 
     #[test]

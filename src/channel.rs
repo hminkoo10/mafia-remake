@@ -5,8 +5,8 @@
 
 use super::{
     ChannelRoleIds, Context, ContractorContractDraft, DEAD_PLAYER_ROLE, Data, Error,
-    GAME_NOTIFICATION_ROLE, MAX_GAME_PLAYERS, PRIVATE_CHAT_ROLES, PersonalChannelKind,
-    Recruitment, RunningGame, SHAMAN_CHAT_CHANNEL_NAME, SPECTATOR_ROLE,
+    GAME_NOTIFICATION_ROLE, MAX_GAME_PLAYERS, PRIVATE_CHAT_ROLES, PersonalChannelKind, Recruitment,
+    RunningGame, SHAMAN_CHAT_CHANNEL_NAME, SPECTATOR_ROLE,
 };
 use crate::embed::*;
 use anyhow::{Context as AnyhowContext, Result, bail};
@@ -1713,7 +1713,10 @@ pub fn recruitment_embed(
         .saturating_sub(recruitment.joined_ids.len());
     let auto_start_text = match recruitment.auto_start_players {
         Some(count) => format!("자동시작: **{count}명**이 모이면 즉시 시작합니다."),
-        None => "자동시작: 설정되지 않았습니다. 주최자는 `자동시작` 버튼으로 인원을 정할 수 있습니다.".to_string(),
+        None => {
+            "자동시작: 설정되지 않았습니다. 주최자는 `자동시작` 버튼으로 인원을 정할 수 있습니다."
+                .to_string()
+        }
     };
     make_embed(
         format!(
@@ -1784,39 +1787,37 @@ pub fn auto_start_modal(
     guild_id: serenity::GuildId,
     recruitment: &Recruitment,
 ) -> serenity::CreateModal {
-    let current = recruitment
-        .auto_start_players
-        .map(|count| count.to_string())
-        .unwrap_or_default();
+    let mut input = serenity::CreateInputText::new(
+        serenity::InputTextStyle::Short,
+        format!(
+            "인원 ({}~{}명)",
+            recruitment.minimum_players, recruitment.max_players
+        ),
+        "auto_start_players",
+    )
+    .placeholder(format!(
+        "예: {} (이 인원이 모이면 즉시 시작)",
+        recruitment.minimum_players
+    ))
+    .min_length(1)
+    .max_length(3)
+    .required(true);
+    // Discord는 value가 실려 있으면 1자 이상을 요구한다. 아직 정해진 인원이 없을 때
+    // 빈 문자열을 보내면 모달 응답이 400으로 실패하고, 인터랙션이 확인되지 않아
+    // 사용자에게는 "봇이 적시에 응답하지 않았어요"로 보인다.
+    if let Some(count) = recruitment.auto_start_players {
+        input = input.value(count.to_string());
+    }
     serenity::CreateModal::new(
         format!("autostart:{}", guild_id.get()),
         "자동시작 인원 설정",
     )
-    .components(vec![serenity::CreateActionRow::InputText(
-        serenity::CreateInputText::new(
-            serenity::InputTextStyle::Short,
-            format!(
-                "인원 ({}~{}명)",
-                recruitment.minimum_players, recruitment.max_players
-            ),
-            "auto_start_players",
-        )
-        .placeholder(format!(
-            "예: {} (이 인원이 모이면 즉시 시작)",
-            recruitment.minimum_players
-        ))
-        .value(current)
-        .min_length(1)
-        .max_length(3)
-        .required(true),
-    )])
+    .components(vec![serenity::CreateActionRow::InputText(input)])
 }
 
 /// 모집 취소 시 되돌려야 하는 (유저, 역할) 목록. 관전자 역할이 서버에 없으면
 /// 관전자에게는 아무 역할도 부여되지 않았으므로 정리 대상도 아니다.
-pub fn recruitment_role_removals(
-    recruitment: &Recruitment,
-) -> Vec<(u64, serenity::RoleId)> {
+pub fn recruitment_role_removals(recruitment: &Recruitment) -> Vec<(u64, serenity::RoleId)> {
     let mut removals = recruitment
         .joined_ids
         .iter()
@@ -6486,6 +6487,40 @@ pub(crate) mod tests {
             recruitment_seconds: 60,
             done: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// Discord는 텍스트 입력의 `value`가 있으면 1자 이상이어야 한다. 빈 문자열을
+    /// 보내면 모달 응답이 400으로 실패하고, 인터랙션이 확인되지 않아 사용자에게는
+    /// "봇이 적시에 응답하지 않았어요"로 보인다.
+    #[test]
+    fn auto_start_modal_omits_the_value_when_nothing_is_set_yet() {
+        let recruitment = recruitment_fixture();
+        assert_eq!(recruitment.auto_start_players, None);
+
+        let json = serde_json::to_value(auto_start_modal(serenity::GuildId::new(1), &recruitment))
+            .unwrap();
+        let input = &json["components"][0]["components"][0];
+
+        assert!(
+            input.get("value").is_none_or(|value| value.is_null()),
+            "빈 value가 전송되면 안 된다: {input}"
+        );
+        assert_eq!(input["custom_id"], "auto_start_players");
+        assert!(input["label"].as_str().unwrap().chars().count() <= 45);
+        assert!(input["placeholder"].as_str().unwrap().chars().count() <= 100);
+        assert_eq!(json["custom_id"], "autostart:1");
+        assert!(json["title"].as_str().unwrap().chars().count() <= 45);
+    }
+
+    #[test]
+    fn auto_start_modal_prefills_the_current_setting() {
+        let mut recruitment = recruitment_fixture();
+        recruitment.auto_start_players = Some(6);
+
+        let json = serde_json::to_value(auto_start_modal(serenity::GuildId::new(1), &recruitment))
+            .unwrap();
+
+        assert_eq!(json["components"][0]["components"][0]["value"], "6");
     }
 
     #[test]

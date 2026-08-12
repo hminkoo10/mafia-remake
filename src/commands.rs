@@ -6,8 +6,7 @@
 use super::web_settings;
 use super::{
     AnonymousNameMode, Context, ContractorContractDraft, Data, Error, GAME_NOTIFICATION_ROLE,
-    LeaderboardMetric, MAX_GAME_PLAYERS, Recruitment, RunningGame,
-    SPECTATOR_ROLE,
+    LeaderboardMetric, MAX_GAME_PLAYERS, Recruitment, RunningGame, SPECTATOR_ROLE,
 };
 use crate::channel::*;
 use crate::embed::*;
