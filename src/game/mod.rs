@@ -2040,6 +2040,51 @@ mod tests {
         );
     }
 
+    /// 사망자도 조회에 걸린다.
+    #[test]
+    fn civil_servant_query_matches_dead_players() {
+        let mut game = civil_servant_test_game();
+        game.mark_dead(3);
+
+        game.submit_civil_servant_query(2, Role::Doctor).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert_eq!(
+            result.civil_servant_results.get(&2).map(String::as_str),
+            Some("[Three님이 의사로 조회되었습니다.]")
+        );
+    }
+
+    /// 기자 특종도 이슈 트리거다. 공개 발표라도 하루 몫을 소모한다.
+    #[test]
+    fn reporter_scoop_triggers_the_paparazzi_issue() {
+        let mut game = civil_servant_test_game();
+        game.get_player_mut(2).unwrap().role = Role::Reporter;
+        game.day_number = 2;
+
+        game.reporter_targets.insert(2, 3);
+        let result = game.resolve_night().unwrap();
+
+        assert!(result.reporter_results.contains_key(&2));
+        assert_eq!(
+            result.paparazzi_results.get(&4).map(String::as_str),
+            Some("[Three님이 의사 직업이라는 정보를 공유받았습니다.]")
+        );
+    }
+
+    /// 기자가 자신을 특종한 경우는 "다른 사람의 직업"이 아니므로 트리거가 아니다.
+    #[test]
+    fn reporter_self_scoop_does_not_trigger_the_issue() {
+        let mut game = civil_servant_test_game();
+        game.get_player_mut(2).unwrap().role = Role::Reporter;
+        game.day_number = 2;
+
+        game.reporter_targets.insert(2, 2);
+        let result = game.resolve_night().unwrap();
+
+        assert!(result.paparazzi_results.is_empty());
+    }
+
     #[test]
     fn civil_servant_query_without_holder_consumes_the_night_use() {
         let mut game = civil_servant_test_game();

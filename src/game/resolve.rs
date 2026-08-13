@@ -367,6 +367,7 @@ impl MafiaGame {
                 .iter()
                 .map(|player| player.user_id)
                 .collect::<HashSet<_>>(),
+            &mut role_reveals,
         );
         for id in self.ensure_fanatic_reincarnation() {
             if !fanatic_inherits.contains(&id) {
@@ -771,13 +772,14 @@ impl MafiaGame {
             if !actor.alive {
                 continue;
             }
+            // 사망자도 조회에 걸린다. 생존자만 세면 "없습니다" 결과에서 사망자의
+            // 직업이 역산되는 것을 막을 수 없고, 규칙상으로도 사망자의 직업 정보를
+            // 조회로 알아낼 수 있어야 한다.
             let holders = self
                 .players
                 .iter()
                 .filter(|player| {
-                    player.alive
-                        && player.user_id != actor_id
-                        && self.visible_role(player) == queried_role
+                    player.user_id != actor_id && self.visible_role(player) == queried_role
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -1308,6 +1310,7 @@ impl MafiaGame {
     fn resolve_reporter_results(
         &mut self,
         blocked_actor_ids: &HashSet<u64>,
+        role_reveals: &mut Vec<(u8, u64, u64, Role)>,
     ) -> HashMap<u64, String> {
         let mut results = HashMap::new();
         for (actor_id, target_id) in self.reporter_targets.clone() {
@@ -1326,6 +1329,10 @@ impl MafiaGame {
             let visible_role = self.visible_role(&target);
             if visible_role != Role::Frog {
                 self.publicly_revealed_ids.insert(target.user_id);
+                // 특종도 "직업을 명확하게 알아낸" 경우라 이슈 트리거다. 본인 특종은
+                // 파파라치 결산의 actor != target 가드가 걸러낸다. 공개 정보이므로
+                // 우선순위는 비공개 조사들(0~3) 뒤로 둔다.
+                role_reveals.push((4, actor_id, target.user_id, visible_role));
             }
             results.insert(
                 actor_id,
