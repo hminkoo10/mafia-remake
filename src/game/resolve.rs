@@ -838,17 +838,18 @@ impl MafiaGame {
         let Some(target_name) = self.get_player(target_id).map(|player| player.name.clone()) else {
             return HashMap::new();
         };
-        self.share_issue_with_paparazzi(&target_name, revealed_role)
+        self.share_issue_with_paparazzi(self.day_number, &target_name, revealed_role)
     }
 
     /// 하루 한 번뿐인 이슈 공유를 실행한다. 밤 결산과 낮 해킹 결산이 같은 판단을
     /// 공유하며, 한 번 발동하면 받을 수 있는 파파라치가 없었더라도 그날 몫은 소모된다.
     pub(crate) fn share_issue_with_paparazzi(
         &mut self,
+        day: u32,
         target_name: &str,
         revealed_role: Role,
     ) -> HashMap<u64, String> {
-        if !self.paparazzi_shared_days.insert(self.day_number) {
+        if !self.paparazzi_shared_days.insert(day) {
             return HashMap::new();
         }
         let recipient_ids = self

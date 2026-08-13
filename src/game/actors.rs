@@ -336,8 +336,8 @@ impl MafiaGame {
         let mut deceived_fraudsters: Vec<(u64, String)> = Vec::new();
         // 해킹도 "다른 플레이어의 정확한 직업"을 알아내므로 파파라치 이슈 후보다.
         // 밤 결산이 이미 그날 이슈를 소모했으면 share가 알아서 무시한다.
-        let mut issue_candidate: Option<(String, Role)> = None;
-        for (actor_id, target_id) in pending {
+        let mut issue_candidate: Option<(String, Role, u32)> = None;
+        for (actor_id, (target_id, hacked_on_day)) in pending {
             let Some(actor) = self.get_player(actor_id) else {
                 continue;
             };
@@ -361,11 +361,18 @@ impl MafiaGame {
                 ),
             );
             if issue_candidate.is_none() && actor_is_citizen && actor_id != target_id {
-                issue_candidate = Some((target.name.clone(), revealed_role));
+                issue_candidate = Some((target.name.clone(), revealed_role, hacked_on_day));
             }
         }
-        if let Some((target_name, revealed_role)) = issue_candidate {
-            results.extend(self.share_issue_with_paparazzi(&target_name, revealed_role));
+        // 몫은 해킹이 일어난 날에서 차감한다. 결과가 다음 밤 시작에 전달된다고
+        // 현재 day_number(이미 +1됨)를 쓰면 다음 날 몫을 잘못 소모해, 그 밤의
+        // 조사 공유가 전부 막힌다.
+        if let Some((target_name, revealed_role, hacked_on_day)) = issue_candidate {
+            results.extend(self.share_issue_with_paparazzi(
+                hacked_on_day,
+                &target_name,
+                revealed_role,
+            ));
         }
         self.append_fraud_deception_notices(&mut results, deceived_fraudsters);
         results

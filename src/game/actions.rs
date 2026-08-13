@@ -36,7 +36,8 @@ impl MafiaGame {
             bail!("해커는 자기 자신을 해킹할 수 없습니다.");
         }
         self.hacker_targets.insert(actor_id, target_id);
-        self.hacker_pending_results.insert(actor_id, target_id);
+        self.hacker_pending_results
+            .insert(actor_id, (target_id, self.day_number));
         self.hacker_proxy_targets.insert(actor_id, target_id);
         self.hacker_used_ids.insert(actor_id);
         self.mark_rating_action(actor_id);

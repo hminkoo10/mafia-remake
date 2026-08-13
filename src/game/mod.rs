@@ -52,7 +52,9 @@ pub struct MafiaGame {
     pub reporter_skip_submitted: HashSet<u64>,
     pub reporter_used_ids: HashSet<u64>,
     pub hacker_targets: HashMap<u64, u64>,
-    pub hacker_pending_results: HashMap<u64, u64>,
+    /// 해커 → (해킹 대상, 해킹한 날). 결과는 다음 밤 시작에 전달되지만 파파라치
+    /// 이슈의 "하루 한 번"은 해킹이 일어난 날 기준으로 계산해야 한다.
+    pub hacker_pending_results: HashMap<u64, (u64, u32)>,
     pub hacker_used_ids: HashSet<u64>,
     pub hacker_proxy_targets: HashMap<u64, u64>,
     pub psychologist_used_days: HashMap<u64, u32>,
@@ -2173,6 +2175,79 @@ mod tests {
         let next_result = game.resolve_night().unwrap();
         let next_shared = next_result.paparazzi_results.get(&4).unwrap();
         assert!(next_shared.contains("파파라치"), "{next_shared}");
+    }
+
+    /// 실제 게임 순서 재현: 낮 1 해킹 → (해킹 결과는 밤 2 시작에 전달) → 밤 2 조회.
+    /// 해킹 공유의 하루 몫은 해킹이 일어난 날(1일)에서 차감돼야 하고, 밤 2의 조회
+    /// 공유(2일 몫)를 막으면 안 된다.
+    #[test]
+    fn day_hack_share_does_not_consume_the_next_days_issue() {
+        let mut game = MafiaGame::new(
+            vec![
+                (1, "One".to_string()),
+                (2, "Two".to_string()),
+                (3, "Three".to_string()),
+                (4, "Four".to_string()),
+                (5, "Five".to_string()),
+                (6, "Six".to_string()),
+            ],
+            1,
+            0,
+            0,
+            Vec::new(),
+        )
+        .unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::CivilServant),
+            (3, Role::Doctor),
+            (4, Role::Paparazzi),
+            (5, Role::Hacker),
+            (6, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        // 밤 1: 아무 조사도 없이 지나간다.
+        game.resolve_night().unwrap();
+        // 낮 1: 해커가 해킹한다.
+        game.submit_hacker_action(5, 6).unwrap();
+        // 투표가 끝나 다음 밤으로 넘어간다 (day_number 1 → 2).
+        game.start_vote().unwrap();
+        game.resolve_nomination_vote().unwrap();
+        assert_eq!(game.day_number, 2);
+
+        // 밤 2 시작: 해킹 결과가 전달되고, 공유는 1일 몫으로 처리된다.
+        let hacker_results = game.consume_hacker_results();
+        let hack_share = hacker_results.get(&4).unwrap();
+        assert!(hack_share.contains("Six"), "{hack_share}");
+        assert!(game.paparazzi_shared_days.contains(&1));
+        assert!(!game.paparazzi_shared_days.contains(&2));
+
+        // 밤 2의 조회 공유는 2일 몫으로 정상 동작해야 한다.
+        game.submit_civil_servant_query(2, Role::Doctor).unwrap();
+        let result = game.resolve_night().unwrap();
+        let night_share = result.paparazzi_results.get(&4).unwrap();
+        assert!(night_share.contains("의사"), "{night_share}");
+    }
+
+    /// 밤 1 조사가 먼저 공유되면 같은 날(1일) 낮 해킹은 이미 몫을 쓴 뒤라 공유되지
+    /// 않는다 — "하루 중 가장 먼저 알아낸 정보만".
+    #[test]
+    fn night_share_beats_the_same_days_hack() {
+        let mut game = civil_servant_test_game();
+        game.get_player_mut(5).unwrap().role = Role::Hacker;
+
+        game.submit_civil_servant_query(2, Role::Doctor).unwrap();
+        let result = game.resolve_night().unwrap();
+        assert!(result.paparazzi_results.contains_key(&4));
+
+        game.submit_hacker_action(5, 3).unwrap();
+        game.start_vote().unwrap();
+        game.resolve_nomination_vote().unwrap();
+        let hacker_results = game.consume_hacker_results();
+        assert!(hacker_results.contains_key(&5));
+        assert!(!hacker_results.contains_key(&4), "{hacker_results:?}");
     }
 
     #[test]
