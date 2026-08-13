@@ -92,6 +92,11 @@ pub struct MafiaGame {
     pub confirm_votes: HashMap<u64, bool>,
     pub police_result_announced: bool,
     pub spy_contacted: HashSet<u64>,
+    /// 사기꾼 변장: fraudster → (사기 대상 시민, 변장 직업)
+    pub fraudster_disguises: HashMap<u64, (u64, Role)>,
+    pub fraudster_contacted: HashSet<u64>,
+    /// 이번 밤 마피아팀 공격으로 교섭이 발동한 사기꾼: (id, 본인이 표적이었는지)
+    pub fraudster_contacts_this_night: Vec<(u64, bool)>,
     pub contractor_contacted: HashSet<u64>,
     pub scientist_contacted: HashSet<u64>,
     pub scientist_revive_used_ids: HashSet<u64>,
@@ -260,6 +265,9 @@ impl MafiaGame {
             confirm_votes: HashMap::new(),
             police_result_announced: false,
             spy_contacted: HashSet::new(),
+            fraudster_disguises: HashMap::new(),
+            fraudster_contacted: HashSet::new(),
+            fraudster_contacts_this_night: Vec::new(),
             contractor_contacted: HashSet::new(),
             scientist_contacted: HashSet::new(),
             scientist_revive_used_ids: HashSet::new(),
@@ -280,6 +288,7 @@ impl MafiaGame {
             rating_action_counts: HashMap::new(),
         };
         game.assign_mercenary_clients();
+        game.assign_fraudster_disguises();
         Ok(game)
     }
 
@@ -346,6 +355,7 @@ impl MafiaGame {
             Role::Mafia | Role::Villain => true,
             Role::Spy => self.spy_contacted.contains(&player.user_id),
             Role::Contractor => self.contractor_contacted.contains(&player.user_id),
+            Role::Fraudster => self.fraudster_contacted.contains(&player.user_id),
             Role::Thief => self.thief_contacted.contains(&player.user_id),
             Role::Witch => self.witch_contacted.contains(&player.user_id),
             Role::Scientist => self.scientist_contacted.contains(&player.user_id),
@@ -539,6 +549,38 @@ impl MafiaGame {
         }
     }
 
+    /// [사기] 게임 시작 시 사기꾼마다 시민팀 한 명을 무작위로 골라 정체를 알아내고
+    /// 그 직업으로 변장한다.
+    fn assign_fraudster_disguises(&mut self) {
+        let fraudster_ids = self
+            .players
+            .iter()
+            .filter(|player| player.role == Role::Fraudster)
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        let mut rng = system_random::rng();
+        for fraudster_id in fraudster_ids {
+            let mut candidates = self
+                .players
+                .iter()
+                .filter(|player| player.user_id != fraudster_id && self.is_citizen_team(player))
+                .map(|player| (player.user_id, player.role))
+                .collect::<Vec<_>>();
+            candidates.shuffle(&mut rng);
+            if let Some((target_id, target_role)) = candidates.into_iter().next() {
+                self.fraudster_disguises
+                    .insert(fraudster_id, (target_id, target_role));
+            }
+        }
+    }
+
+    /// 역할 안내 DM용: 사기꾼의 사기 대상과 변장 직업.
+    pub fn fraudster_disguise_info(&self, fraudster_id: u64) -> Option<(Player, Role)> {
+        let (target_id, disguised_role) = self.fraudster_disguises.get(&fraudster_id)?;
+        let target = self.get_player(*target_id)?.clone();
+        Some((target, *disguised_role))
+    }
+
     fn mercenary_can_block_mafia_win(&self) -> bool {
         self.players.iter().any(|player| {
             player.alive
@@ -558,9 +600,19 @@ impl MafiaGame {
     pub fn visible_role(&self, player: &Player) -> Role {
         if self.is_frog(player) {
             Role::Frog
+        } else if let Some((_, disguised_role)) = self.fraudster_disguises.get(&player.user_id) {
+            // 사기꾼은 조사 판정이 변장한 시민 직업으로 나온다.
+            *disguised_role
         } else {
             player.role
         }
+    }
+
+    /// 살아있고 아직 접선하지 않은 변장 사기꾼인가. 조사 판정을 속이는 기준.
+    pub fn is_disguised_fraudster(&self, player: &Player) -> bool {
+        player.alive
+            && player.role == Role::Fraudster
+            && self.fraudster_disguises.contains_key(&player.user_id)
     }
 
     pub fn can_mafia_attack(&self, player: &Player, _attacker_id: Option<u64>) -> bool {
@@ -642,6 +694,9 @@ impl MafiaGame {
             }
             Role::Contractor => {
                 self.contractor_contacted.insert(player.user_id);
+            }
+            Role::Fraudster => {
+                self.fraudster_contacted.insert(player.user_id);
             }
             Role::Thief => {
                 self.thief_contacted.insert(player.user_id);
@@ -1800,6 +1855,155 @@ mod tests {
                 .any(|player| player.user_id == 2)
         );
         assert!(result.agent_results.contains_key(&2));
+    }
+
+    /// 스파이는 마피아를 찾아낸 밤마다 첩보를 한 번 더 쓸 수 있다 (최초 접선에만
+    /// 주어지던 보너스를 매 밤으로 확장).
+    #[test]
+    fn spy_gets_a_bonus_action_every_night_a_mafia_is_found() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Spy]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Spy),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        let first = game.submit_night_action(2, Some(1)).unwrap();
+        assert!(first.contains("한 번 더"), "{first}");
+        assert!(first.contains("[접선]"), "{first}");
+        // 보너스로 두 번째 첩보 사용 가능, 세 번째는 불가.
+        game.submit_night_action(2, Some(3)).unwrap();
+        assert!(game.submit_night_action(2, Some(4)).is_err());
+        game.resolve_night().unwrap();
+
+        // 다음 밤에도 마피아를 찾아내면 다시 한 번 더 쓸 수 있다.
+        game.phase = Phase::Night;
+        game.day_number += 1;
+        let next = game.submit_night_action(2, Some(1)).unwrap();
+        assert!(next.contains("한 번 더"), "{next}");
+        // 이미 접선한 상태라 접선 안내는 반복되지 않는다.
+        assert!(!next.contains("[접선]"), "{next}");
+        assert!(game.submit_night_action(2, Some(4)).is_ok());
+    }
+
+    /// 사기꾼 기본 배치: 1 마피아, 2 사기꾼(3=의사로 변장), 3 의사, 4 경찰, 5 시민.
+    fn fraudster_test_game() -> MafiaGame {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 1, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Fraudster),
+            (3, Role::Doctor),
+            (4, Role::Police),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.fraudster_disguises.clear();
+        game.fraudster_disguises.insert(2, (3, Role::Doctor));
+        game
+    }
+
+    #[test]
+    fn fraudster_disguise_changes_role_judgment_and_deceives_investigators() {
+        let mut game = fraudster_test_game();
+        game.get_player_mut(4).unwrap().role = Role::Inspector;
+
+        let fraudster = game.get_player(2).unwrap().clone();
+        assert_eq!(game.visible_role(&fraudster), Role::Doctor);
+        assert!(!game.is_known_mafia_team(&fraudster));
+
+        // 형사가 사기꾼을 수사하면 변장 직업이 나오고, 사기꾼은 속임 알림을 받는다.
+        game.submit_night_action(4, Some(2)).unwrap();
+        let result = game.resolve_night().unwrap();
+        assert_eq!(
+            result.inspector_results.get(&4).map(String::as_str),
+            Some("[Two님의 직업은 의사입니다.]")
+        );
+        assert!(
+            result
+                .fraudster_results
+                .get(&2)
+                .is_some_and(|text| text.contains("[Four님을 속였습니다.]")),
+            "{:?}",
+            result.fraudster_results
+        );
+    }
+
+    #[test]
+    fn fraudster_deceives_the_police_team_check() {
+        let mut game = fraudster_test_game();
+
+        game.submit_night_action(4, Some(2)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert_eq!(result.police_target_is_mafia, Some(false));
+        assert!(
+            result
+                .fraudster_results
+                .get(&2)
+                .is_some_and(|text| text.contains("[Four님을 속였습니다.]")),
+            "{:?}",
+            result.fraudster_results
+        );
+    }
+
+    #[test]
+    fn fraudster_survives_mafia_attack_and_contacts_the_team() {
+        let mut game = fraudster_test_game();
+
+        game.submit_night_action(1, Some(2)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(game.get_player(2).unwrap().alive);
+        assert!(result.killed_players.is_empty());
+        assert_eq!(result.fraudster_contacts, vec![2]);
+        assert!(
+            result
+                .fraudster_results
+                .get(&2)
+                .is_some_and(|text| text.contains("[교섭]")),
+            "{:?}",
+            result.fraudster_results
+        );
+        let fraudster = game.get_player(2).unwrap().clone();
+        assert!(game.is_known_mafia_team(&fraudster));
+    }
+
+    /// 사기 대상이 표적이 되면 공격 성공 여부와 무관하게 접선한다.
+    #[test]
+    fn attack_on_the_disguise_target_contacts_the_fraudster() {
+        let mut game = fraudster_test_game();
+
+        game.submit_night_action(1, Some(3)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(!game.get_player(3).unwrap().alive);
+        assert_eq!(result.fraudster_contacts, vec![2]);
+        let fraudster = game.get_player(2).unwrap().clone();
+        assert!(game.is_known_mafia_team(&fraudster));
+    }
+
+    #[test]
+    fn fraudster_gets_a_disguise_at_game_start() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let game = MafiaGame::new(players, 1, 1, 1, vec![Role::Fraudster]).unwrap();
+        let fraudster = game
+            .players
+            .iter()
+            .find(|player| player.role == Role::Fraudster)
+            .unwrap();
+
+        let (target_id, disguised_role) = game.fraudster_disguises[&fraudster.user_id];
+        let target = game.get_player(target_id).unwrap();
+        assert!(game.is_citizen_team(target));
+        assert_eq!(target.role, disguised_role);
+        assert_ne!(target_id, fraudster.user_id);
     }
 
     /// 공무원/파파라치 기본 배치: 1 마피아, 2 공무원, 3 의사, 4 파파라치, 5 시민.

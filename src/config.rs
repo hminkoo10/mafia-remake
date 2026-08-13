@@ -48,6 +48,8 @@ pub struct BotConfig {
     #[serde(default = "default_true")]
     pub enable_contractor: bool,
     #[serde(default = "default_true")]
+    pub enable_fraudster: bool,
+    #[serde(default = "default_true")]
     pub enable_witch: bool,
     #[serde(default = "default_true")]
     pub enable_scientist: bool,

@@ -1692,6 +1692,7 @@ fn role_name(role: Role) -> String {
         Role::Witch => "마녀",
         Role::Scientist => "과학자",
         Role::Contractor => "청부업자",
+        Role::Fraudster => "사기꾼",
         Role::Joker => "조커",
         Role::Priest => "성직자",
         Role::Frog => "개구리",

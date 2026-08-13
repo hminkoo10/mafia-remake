@@ -334,6 +334,7 @@ impl MafiaGame {
             .collect::<Vec<_>>();
         pending.sort_unstable();
         let mut results = HashMap::new();
+        let mut deceived_fraudsters: Vec<(u64, String)> = Vec::new();
         // 해킹도 "다른 플레이어의 정확한 직업"을 알아내므로 파파라치 이슈 후보다.
         // 밤 결산이 이미 그날 이슈를 소모했으면 share가 알아서 무시한다.
         let mut issue_candidate: Option<(String, Role)> = None;
@@ -349,6 +350,9 @@ impl MafiaGame {
             }
             let actor_is_citizen = self.is_citizen_team(actor);
             let revealed_role = self.visible_role(target);
+            if self.is_disguised_fraudster(target) {
+                deceived_fraudsters.push((target.user_id, actor.name.clone()));
+            }
             results.insert(
                 actor_id,
                 format!(
@@ -364,7 +368,30 @@ impl MafiaGame {
         if let Some((target_name, revealed_role)) = issue_candidate {
             results.extend(self.share_issue_with_paparazzi(&target_name, revealed_role));
         }
+        self.append_fraud_deception_notices(&mut results, deceived_fraudsters);
         results
+    }
+
+    /// 낮 조사(해킹·숙청 조사)가 변장 사기꾼을 평가했을 때의 "속임" 알림.
+    pub(crate) fn append_fraud_deception_notices(
+        &mut self,
+        results: &mut HashMap<u64, String>,
+        deceived: Vec<(u64, String)>,
+    ) {
+        for (fraudster_id, actor_name) in deceived {
+            if !self.is_alive(fraudster_id) {
+                continue;
+            }
+            let line = format!("[{actor_name}님을 속였습니다.]");
+            results
+                .entry(fraudster_id)
+                .and_modify(|text| {
+                    text.push('\n');
+                    text.push_str(&line);
+                })
+                .or_insert(line);
+            self.record_rating_event(fraudster_id, 2, "변장으로 조사 속임");
+        }
     }
 
     pub fn psychologist_day_actors(&self) -> Vec<Player> {

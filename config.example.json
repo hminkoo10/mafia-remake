@@ -24,6 +24,7 @@
   "enable_graverobber": true,
   "enable_spy": true,
   "enable_contractor": true,
+  "enable_fraudster": true,
   "enable_witch": true,
   "enable_scientist": true,
   "enable_madam": true,

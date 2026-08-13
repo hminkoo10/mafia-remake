@@ -217,12 +217,27 @@ pub fn role_message(game: &MafiaGame, player: &Player) -> String {
     } else {
         "시민팀"
     };
-    format!(
+    let mut message = format!(
         "당신의 역할은 **{}** 입니다.\n진영: **{}**\n\n{}",
         player.role.value(),
         team,
         role_short_guide(player.role)
-    )
+    );
+    // [사기] 사기꾼은 게임 시작 시 사기 대상과 변장 직업을 바로 알게 된다.
+    if player.role == Role::Fraudster {
+        if let Some((target, disguised_role)) = game.fraudster_disguise_info(player.user_id) {
+            message.push_str(&format!(
+                "\n\n[사기] {}님의 직업은 **{}**입니다.\n당신은 **{}**{} 변장했습니다. 조사 판정이 {}{} 표시됩니다.\n[교섭] 당신 또는 사기 대상이 마피아팀의 처형 대상이 되면 마피아팀과 접선하며, 당신은 마피아팀에게 처형되지 않습니다.",
+                target.name,
+                disguised_role.value(),
+                disguised_role.value(),
+                mafia_remake::model::korean_ro_particle(disguised_role.value()),
+                disguised_role.value(),
+                mafia_remake::model::korean_ro_particle(disguised_role.value()),
+            ));
+        }
+    }
+    message
 }
 
 fn mercenary_contract_received_message() -> &'static str {
@@ -253,7 +268,12 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Terrorist => "지목한 위험 대상을 함께 데려갈 수 있습니다.",
         Role::Lover => "연인과 정보를 공유하고 서로를 지킵니다.",
         Role::Soldier => "마피아 공격을 한 번 버팁니다.",
-        Role::Spy => "밤마다 직업을 확인하고 마피아와 접선합니다.",
+        Role::Spy => {
+            "밤마다 한 명의 직업을 알아내고, 마피아를 찾아내면 그 밤 한 번 더 첩보를 사용합니다."
+        }
+        Role::Fraudster => {
+            "시민 한 명의 직업으로 변장해 조사를 속이고, 변장 대상이나 자신이 마피아의 표적이 되면 접선합니다."
+        }
         Role::Contractor => "두 명의 직업을 맞히면 암살합니다.",
         Role::Thief => "지목 투표한 대상의 능력을 훔칩니다.",
         Role::Witch => "밤에 대상을 개구리로 저주합니다.",
@@ -686,6 +706,7 @@ pub async fn run_night(
             "inspector_target_notices": running_write.replay_text_results(&result.inspector_target_notices),
             "civil_servant": running_write.replay_text_results(&result.civil_servant_results),
             "paparazzi": running_write.replay_text_results(&result.paparazzi_results),
+            "fraudster": running_write.replay_text_results(&result.fraudster_results),
             "spy": running_write.replay_text_results(&result.spy_results),
             "contractor": running_write.replay_text_results(&result.contractor_results),
             "witch": running_write.replay_text_results(&result.witch_results),
@@ -716,6 +737,7 @@ pub async fn run_night(
             "contacts": {
                 "spy": result.spy_contacts.clone(),
                 "contractor": result.contractor_contacts.clone(),
+                "fraudster": result.fraudster_contacts.clone(),
                 "witch": result.witch_contacts.clone(),
                 "godfather": result.godfather_contacts.clone(),
                 "nurse": result.nurse_contacts.clone(),
@@ -735,6 +757,7 @@ pub async fn run_night(
             &result.inspector_target_notices,
             &result.civil_servant_results,
             &result.paparazzi_results,
+            &result.fraudster_results,
             &result.spy_results,
             &result.contractor_results,
             &result.witch_results,
@@ -1017,6 +1040,7 @@ pub async fn run_night(
         .spy_contacts
         .iter()
         .chain(&result.contractor_contacts)
+        .chain(&result.fraudster_contacts)
         .chain(&result.witch_contacts)
     {
         let player = running.read().await.game.get_player(*user_id).cloned();
@@ -1457,6 +1481,7 @@ pub async fn send_private_result_maps(
         result.inspector_target_notices.clone(),
         result.civil_servant_results.clone(),
         result.paparazzi_results.clone(),
+        result.fraudster_results.clone(),
         result.spy_results.clone(),
         result.contractor_results.clone(),
         result.witch_results.clone(),

@@ -23,6 +23,7 @@ pub enum Role {
     Mercenary,
     Spy,
     Contractor,
+    Fraudster,
     Thief,
     Witch,
     Scientist,
@@ -65,6 +66,7 @@ impl Role {
             Self::Hypnotist => "최면술사",
             Self::Mercenary => "용병",
             Self::Spy => "스파이",
+            Self::Fraudster => "사기꾼",
             Self::Contractor => "청부업자",
             Self::Thief => "도둑",
             Self::Witch => "마녀",
@@ -93,6 +95,7 @@ impl Role {
             Self::Mafia
                 | Self::Spy
                 | Self::Contractor
+                | Self::Fraudster
                 | Self::Thief
                 | Self::Witch
                 | Self::Scientist
@@ -176,6 +179,7 @@ pub fn mafia_team_roles() -> HashSet<Role> {
         Role::Mafia,
         Role::Spy,
         Role::Contractor,
+        Role::Fraudster,
         Role::Thief,
         Role::Witch,
         Role::Scientist,
@@ -219,6 +223,7 @@ pub const CITIZEN_SPECIAL_ROLES: &[Role] = &[
 pub const MAFIA_SPECIAL_ROLES: &[Role] = &[
     Role::Spy,
     Role::Contractor,
+    Role::Fraudster,
     Role::Thief,
     Role::Witch,
     Role::Scientist,
@@ -231,6 +236,7 @@ pub const NEUTRAL_SPECIAL_ROLES: &[Role] = &[Role::Joker];
 pub const PUBLIC_MAFIA_SPECIAL_ROLES: &[Role] = &[
     Role::Spy,
     Role::Contractor,
+    Role::Fraudster,
     Role::Thief,
     Role::Witch,
     Role::Scientist,
@@ -272,6 +278,7 @@ pub const CONTRACTOR_GUESS_ROLES: &[Role] = &[
     Role::Scientist,
     Role::Madam,
     Role::Thief,
+    Role::Fraudster,
     Role::Detective,
     Role::Shaman,
     Role::Priest,
@@ -403,6 +410,7 @@ pub const fn contractor_guess_role_group(role: Role) -> ContractorGuessRoleGroup
         | Role::Scientist
         | Role::Madam
         | Role::Thief
+        | Role::Fraudster
         | Role::CultLeader
         | Role::Fanatic
         | Role::Joker => ContractorGuessRoleGroup::MafiaCultNeutral,
@@ -437,6 +445,8 @@ pub struct NightResult {
     pub inspector_target_notices: std::collections::HashMap<u64, String>,
     pub civil_servant_results: std::collections::HashMap<u64, String>,
     pub paparazzi_results: std::collections::HashMap<u64, String>,
+    pub fraudster_results: std::collections::HashMap<u64, String>,
+    pub fraudster_contacts: Vec<u64>,
     pub spy_results: std::collections::HashMap<u64, String>,
     pub spy_contacts: Vec<u64>,
     pub contractor_results: std::collections::HashMap<u64, String>,

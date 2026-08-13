@@ -3455,6 +3455,7 @@ pub async fn configure_extra_roles(
     soldier: Option<bool>,
     civil_servant: Option<bool>,
     paparazzi: Option<bool>,
+    fraudster: Option<bool>,
     cult_team: Option<bool>,
 ) -> Result<(), Error> {
     if !require_manager(ctx).await? {
@@ -3493,6 +3494,9 @@ pub async fn configure_extra_roles(
     }
     if let Some(v) = paparazzi {
         config_write.enable_paparazzi = v;
+    }
+    if let Some(v) = fraudster {
+        config_write.enable_fraudster = v;
     }
     if let Some(v) = thief {
         config_write.enable_thief = v;
@@ -5841,6 +5845,7 @@ pub fn find_role_by_name(name: &str) -> Option<Role> {
         Role::Mercenary,
         Role::Spy,
         Role::Contractor,
+        Role::Fraudster,
         Role::Thief,
         Role::Witch,
         Role::Scientist,

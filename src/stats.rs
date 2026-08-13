@@ -44,6 +44,7 @@ const ROLE_STATS_ORDER: &[Role] = &[
     Role::Soldier,
     Role::Spy,
     Role::Contractor,
+    Role::Fraudster,
     Role::Thief,
     Role::Witch,
     Role::Scientist,
@@ -766,6 +767,10 @@ fn role_specific_rating_adjustment(player: &Player, role: Role, won: bool) -> (i
         ),
         Role::Spy => (if won { 1 } else { 0 }, "스파이 접선/교란 기여"),
         Role::Contractor => (if won { 1 } else { 0 }, "청부업자 표적 압박 기여"),
+        Role::Fraudster => (
+            if won { alive_win_points } else { 0 },
+            "사기꾼 변장/교섭 기여",
+        ),
         Role::Thief => (if won { 1 } else { 0 }, "도둑 능력 탈취 기여"),
         Role::Witch => (if won { 1 } else { 0 }, "마녀 저주 교란 기여"),
         Role::Scientist => (if won { 1 } else { 0 }, "과학자 부활 변수 기여"),

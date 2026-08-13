@@ -375,6 +375,8 @@ impl MafiaGame {
         }
 
         let paparazzi_results = self.resolve_paparazzi_issue(&role_reveals);
+        let (fraudster_results, fraudster_contacts) =
+            self.resolve_fraudster_results(&blocked_actor_ids, &role_reveals);
         let result = NightResult {
             killed: killed_players.first().cloned(),
             protected,
@@ -388,6 +390,8 @@ impl MafiaGame {
             inspector_target_notices,
             civil_servant_results,
             paparazzi_results,
+            fraudster_results,
+            fraudster_contacts,
             spy_results,
             spy_contacts,
             contractor_results,
@@ -868,6 +872,109 @@ impl MafiaGame {
             );
         }
         results
+    }
+
+    /// 사기꾼 결산: 교섭 접선 안내와 "속임" 판정 알림.
+    /// 조사 계열이 변장 사기꾼을 평가하면 사기꾼에게 "[000님을 속였습니다.]"가 간다.
+    fn resolve_fraudster_results(
+        &mut self,
+        blocked_actor_ids: &HashSet<u64>,
+        role_reveals: &[(u8, u64, u64, Role)],
+    ) -> (HashMap<u64, String>, Vec<u64>) {
+        let mut results: HashMap<u64, String> = HashMap::new();
+        let mut contacts = Vec::new();
+        let push_line = |map: &mut HashMap<u64, String>, id: u64, line: String| {
+            map.entry(id)
+                .and_modify(|text| {
+                    text.push('\n');
+                    text.push_str(&line);
+                })
+                .or_insert(line);
+        };
+
+        for (fraudster_id, self_targeted) in std::mem::take(&mut self.fraudster_contacts_this_night)
+        {
+            if !self.is_alive(fraudster_id) || blocked_actor_ids.contains(&fraudster_id) {
+                continue;
+            }
+            let line = if self_targeted {
+                "[교섭] 마피아팀의 처형 대상이 되었지만 사기꾼은 처형되지 않습니다. 마피아팀과 접선했습니다."
+            } else {
+                "[교섭] 사기 대상이 마피아팀의 처형 대상이 되어 마피아팀과 접선했습니다."
+            };
+            push_line(&mut results, fraudster_id, line.to_string());
+            contacts.push(fraudster_id);
+            self.record_rating_event(fraudster_id, 2, "교섭으로 마피아팀 접선");
+        }
+
+        // 속임 판정 수집: 사기꾼별로 이번 밤 자신을 평가한 조사자 목록(중복 제거).
+        let mut deceived: HashMap<u64, Vec<u64>> = HashMap::new();
+        let note = |map: &mut HashMap<u64, Vec<u64>>, fraudster_id: u64, actor_id: u64| {
+            let actors = map.entry(fraudster_id).or_default();
+            if !actors.contains(&actor_id) {
+                actors.push(actor_id);
+            }
+        };
+        // 직업을 그대로 알아낸 조사 (조회·수사·지령·성불)
+        for (_, actor_id, target_id, _) in role_reveals {
+            let Some(target) = self.get_player(*target_id) else {
+                continue;
+            };
+            if self.is_disguised_fraudster(target) && actor_id != target_id {
+                note(&mut deceived, *target_id, *actor_id);
+            }
+        }
+        // 경찰 조사(도둑의 경찰 조사 포함): 마피아 여부 판정을 속인다.
+        // 이미 접선한 사기꾼은 표준 규칙대로 마피아로 판정되므로 속임이 아니다.
+        for (actor_id, target_id) in self.police_targets.iter().chain(&self.thief_police_targets) {
+            if blocked_actor_ids.contains(actor_id) || !self.is_alive(*actor_id) {
+                continue;
+            }
+            let Some(target) = self.get_player(*target_id) else {
+                continue;
+            };
+            if self.is_disguised_fraudster(target)
+                && !self.fraudster_contacted.contains(&target.user_id)
+            {
+                note(&mut deceived, *target_id, *actor_id);
+            }
+        }
+        // 스파이 첩보
+        for (actor_id, target_ids) in &self.spy_targets {
+            if blocked_actor_ids.contains(actor_id) || !self.is_alive(*actor_id) {
+                continue;
+            }
+            for target_id in target_ids {
+                let Some(target) = self.get_player(*target_id) else {
+                    continue;
+                };
+                if self.is_disguised_fraudster(target) {
+                    note(&mut deceived, *target_id, *actor_id);
+                }
+            }
+        }
+        let mut rating_events = Vec::new();
+        for (fraudster_id, actor_ids) in deceived {
+            if blocked_actor_ids.contains(&fraudster_id) {
+                continue;
+            }
+            for actor_id in actor_ids {
+                let Some(actor_name) = self.get_player(actor_id).map(|actor| actor.name.clone())
+                else {
+                    continue;
+                };
+                push_line(
+                    &mut results,
+                    fraudster_id,
+                    format!("[{actor_name}님을 속였습니다.]"),
+                );
+                rating_events.push(fraudster_id);
+            }
+        }
+        for fraudster_id in rating_events {
+            self.record_rating_event(fraudster_id, 2, "변장으로 조사 속임");
+        }
+        (results, contacts)
     }
 
     fn resolve_inspector_results(
@@ -1644,7 +1751,9 @@ impl MafiaGame {
                 .iter()
                 .filter(|player| {
                     player.user_id != agent.user_id
-                        && self.is_citizen_team(player)
+                        && (self.is_citizen_team(player)
+                            || (self.is_disguised_fraudster(player)
+                                && !self.fraudster_contacted.contains(&player.user_id)))
                         && !self.agent_discovered_ids.contains(&player.user_id)
                         && !self.is_publicly_revealed(player)
                 })
@@ -1740,6 +1849,37 @@ impl MafiaGame {
         };
         if !target.alive {
             return;
+        }
+        // [교섭] 사기꾼 본인이 마피아팀 처형 대상이 되면 죽지 않고 접선한다.
+        if target.role == Role::Fraudster {
+            if !self.fraudster_contacted.contains(&target.user_id) {
+                self.fraudster_contacts_this_night
+                    .push((target.user_id, true));
+                self.contact_mafia_team_member(&target);
+            }
+            return;
+        }
+        // 사기 대상이 처형 대상이 되면 사기꾼이 접선한다. 처형 성공 여부와 무관하므로
+        // 보호 판정보다 먼저 처리하고, 공격 자체는 평소대로 진행한다.
+        let watching_fraudster_ids = self
+            .fraudster_disguises
+            .iter()
+            .filter(|(_, (disguise_target_id, _))| *disguise_target_id == target.user_id)
+            .map(|(fraudster_id, _)| *fraudster_id)
+            .collect::<Vec<_>>();
+        for fraudster_id in watching_fraudster_ids {
+            if self.fraudster_contacted.contains(&fraudster_id) {
+                continue;
+            }
+            let Some(fraudster) = self.get_player(fraudster_id).cloned() else {
+                continue;
+            };
+            if !fraudster.alive {
+                continue;
+            }
+            self.fraudster_contacts_this_night
+                .push((fraudster_id, false));
+            self.contact_mafia_team_member(&fraudster);
         }
         if let Some(lover_savior) = self.lover_sacrifice_for(&target) {
             self.kill_player(

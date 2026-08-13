@@ -75,6 +75,7 @@ impl MafiaGame {
     pub fn consume_vigilante_results(&mut self) -> HashMap<u64, String> {
         let pending = std::mem::take(&mut self.vigilante_pending_results);
         let mut results = HashMap::new();
+        let mut deceived_fraudsters: Vec<(u64, String)> = Vec::new();
         for (actor_id, target_id) in pending {
             let Some(actor) = self.get_player(actor_id).cloned() else {
                 continue;
@@ -95,11 +96,18 @@ impl MafiaGame {
             } else {
                 "마피아팀이 아닙니다"
             };
+            if self.is_disguised_fraudster(&target)
+                && !self.fraudster_contacted.contains(&target.user_id)
+                && !self.is_known_mafia_team(&target)
+            {
+                deceived_fraudsters.push((target.user_id, actor.name.clone()));
+            }
             results.insert(
                 actor_id,
                 format!("[숙청] {} 님은 **{}**.", target.name, result_text),
             );
         }
+        self.append_fraud_deception_notices(&mut results, deceived_fraudsters);
         results
     }
 
@@ -670,14 +678,16 @@ impl MafiaGame {
             target.name,
             self.visible_role(&target).value()
         )];
-        if target.role == Role::Mafia && !self.spy_contacted.contains(&actor_id) {
-            self.spy_contacted.insert(actor_id);
-            self.spy_bonus_pending.insert(actor_id);
-            self.spy_contacts_this_night.push(actor_id);
-            lines.push(
-                "[접선] 마피아와 접선했습니다. 이번 밤에 한 번 더 첩보를 사용할 수 있습니다."
-                    .to_string(),
-            );
+        if target.role == Role::Mafia {
+            if self.spy_contacted.insert(actor_id) {
+                self.spy_contacts_this_night.push(actor_id);
+                lines.push("[접선] 마피아와 접선했습니다.".to_string());
+            }
+            // 마피아를 찾아낸 밤에는 첩보를 한 번 더 쓸 수 있다 (밤마다 최대 1회 추가).
+            if self.spy_actions_used(actor_id) == 1 {
+                self.spy_bonus_pending.insert(actor_id);
+                lines.push("이번 밤에 한 번 더 첩보를 사용할 수 있습니다.".to_string());
+            }
         }
         if self.spy_bonus_pending.contains(&actor_id) && self.spy_actions_used(actor_id) >= 2 {
             self.spy_bonus_pending.remove(&actor_id);
