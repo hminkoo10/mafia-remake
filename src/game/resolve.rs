@@ -142,6 +142,7 @@ impl MafiaGame {
         self.police_targets.remove(&actor_id);
         self.thief_police_targets.remove(&actor_id);
         self.inspector_targets.remove(&actor_id);
+        self.civil_servant_targets.remove(&actor_id);
         self.vigilante_targets.remove(&actor_id);
         self.hypnotist_targets.remove(&actor_id);
         self.mercenary_targets.remove(&actor_id);
@@ -341,12 +342,17 @@ impl MafiaGame {
             police_target_id,
             godfather_target_id,
         );
+        // 파파라치 이슈용: 시민팀이 이번 밤 알아낸 "다른 플레이어의 정확한 직업" 목록.
+        // (우선순위, 알아낸 사람, 대상, 직업) — 우선순위가 낮을수록 먼저 알아낸 것으로 본다.
+        let mut role_reveals: Vec<(u8, u64, u64, Role)> = Vec::new();
+        let civil_servant_results =
+            self.resolve_civil_servant_results(&blocked_actor_ids, &mut role_reveals);
         let (inspector_results, inspector_target_notices) =
-            self.resolve_inspector_results(&blocked_actor_ids);
+            self.resolve_inspector_results(&blocked_actor_ids, &mut role_reveals);
         let (spy_results, spy_contacts) = self.resolve_spy_results(&blocked_actor_ids);
         let godfather_results = self.resolve_godfather_results(&blocked_actor_ids);
         let (shaman_results, shaman_purifications) =
-            self.resolve_shaman_results(&blocked_actor_ids);
+            self.resolve_shaman_results(&blocked_actor_ids, &mut role_reveals);
         self.apply_hypnotist_targets(&blocked_actor_ids);
         let (nurse_results, nurse_contacts) = self.resolve_nurse_results(&blocked_actor_ids);
         let gangster_results = self.resolve_gangster_results(&blocked_actor_ids);
@@ -355,7 +361,7 @@ impl MafiaGame {
         let mut fanatic_inherits = self.ensure_fanatic_reincarnation();
         let (priest_results, priest_revives) = self.resolve_priest_results(&killed_players);
         let graverobber_results = self.resolve_graverobbers(&killed_players);
-        let agent_results = self.resolve_agent_results(&blocked_actor_ids);
+        let agent_results = self.resolve_agent_results(&blocked_actor_ids, &mut role_reveals);
         let reporter_results = self.resolve_reporter_results(
             &killed_players
                 .iter()
@@ -368,6 +374,7 @@ impl MafiaGame {
             }
         }
 
+        let paparazzi_results = self.resolve_paparazzi_issue(&role_reveals);
         let result = NightResult {
             killed: killed_players.first().cloned(),
             protected,
@@ -379,6 +386,8 @@ impl MafiaGame {
             detective_results,
             inspector_results,
             inspector_target_notices,
+            civil_servant_results,
+            paparazzi_results,
             spy_results,
             spy_contacts,
             contractor_results,
@@ -620,6 +629,7 @@ impl MafiaGame {
         self.police_targets.clear();
         self.thief_police_targets.clear();
         self.inspector_targets.clear();
+        self.civil_servant_targets.clear();
         self.vigilante_targets.clear();
         self.hypnotist_targets.clear();
         self.mercenary_targets.clear();
@@ -736,9 +746,134 @@ impl MafiaGame {
         results
     }
 
+    /// 공무원 조회 결산. 지목한 직업의 생존 보유자를 알려주고, 없으면 없다고
+    /// 알려준다(그날 밤 능력은 이미 소모됨). 조회 성공은 파파라치 이슈의
+    /// 최우선 공유 후보다.
+    fn resolve_civil_servant_results(
+        &mut self,
+        blocked_actor_ids: &HashSet<u64>,
+        role_reveals: &mut Vec<(u8, u64, u64, Role)>,
+    ) -> HashMap<u64, String> {
+        use crate::model::korean_ro_particle;
+        let mut results = HashMap::new();
+        let mut rating_actor_ids = Vec::new();
+        for (actor_id, queried_role) in self.civil_servant_targets.clone() {
+            if blocked_actor_ids.contains(&actor_id) {
+                continue;
+            }
+            let Some(actor) = self.get_player(actor_id) else {
+                continue;
+            };
+            if !actor.alive {
+                continue;
+            }
+            let holders = self
+                .players
+                .iter()
+                .filter(|player| {
+                    player.alive
+                        && player.user_id != actor_id
+                        && self.visible_role(player) == queried_role
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if holders.is_empty() {
+                results.insert(
+                    actor_id,
+                    "[해당 직업을 보유한 플레이어가 없습니다.]".to_string(),
+                );
+                continue;
+            }
+            let names = holders
+                .iter()
+                .map(|player| format!("{}님", player.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            results.insert(
+                actor_id,
+                format!(
+                    "[{names}이 {}{} 조회되었습니다.]",
+                    queried_role.value(),
+                    korean_ro_particle(queried_role.value())
+                ),
+            );
+            rating_actor_ids.push(actor_id);
+            for holder in &holders {
+                role_reveals.push((0, actor_id, holder.user_id, queried_role));
+            }
+        }
+        for actor_id in rating_actor_ids {
+            self.record_rating_event(actor_id, 3, "조회로 직업 확인");
+        }
+        results
+    }
+
+    /// 파파라치 이슈: 시민팀이 이번 하루 중 처음으로 "다른 플레이어의 정확한 직업"을
+    /// 알아냈을 때 그 정보를 함께 받는다. 팀만 알아내는 능력(경찰·자경단원 등),
+    /// 자기 자신에 대한 정보, 마피아팀(도둑)이 훔친 능력으로 알아낸 정보는 제외한다.
+    fn resolve_paparazzi_issue(
+        &mut self,
+        role_reveals: &[(u8, u64, u64, Role)],
+    ) -> HashMap<u64, String> {
+        let mut reveals = role_reveals.to_vec();
+        reveals.sort_unstable_by_key(|(priority, actor_id, target_id, _)| {
+            (*priority, *actor_id, *target_id)
+        });
+        let Some((_, _, target_id, revealed_role)) =
+            reveals.into_iter().find(|(_, actor_id, target_id, _)| {
+                actor_id != target_id
+                    && self
+                        .get_player(*actor_id)
+                        .is_some_and(|actor| self.is_citizen_team(actor))
+            })
+        else {
+            return HashMap::new();
+        };
+        let Some(target_name) = self.get_player(target_id).map(|player| player.name.clone()) else {
+            return HashMap::new();
+        };
+        self.share_issue_with_paparazzi(&target_name, revealed_role)
+    }
+
+    /// 하루 한 번뿐인 이슈 공유를 실행한다. 밤 결산과 낮 해킹 결산이 같은 판단을
+    /// 공유하며, 한 번 발동하면 받을 수 있는 파파라치가 없었더라도 그날 몫은 소모된다.
+    pub(crate) fn share_issue_with_paparazzi(
+        &mut self,
+        target_name: &str,
+        revealed_role: Role,
+    ) -> HashMap<u64, String> {
+        if !self.paparazzi_shared_days.insert(self.day_number) {
+            return HashMap::new();
+        }
+        let recipient_ids = self
+            .players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && player.role == Role::Paparazzi
+                    && !self.is_frog(player)
+                    && !self.is_madam_seduced(player)
+            })
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        let mut results = HashMap::new();
+        for paparazzi_id in recipient_ids {
+            self.record_rating_event(paparazzi_id, 2, "이슈로 직업 정보 공유");
+            results.insert(
+                paparazzi_id,
+                format!(
+                    "[{target_name}님이 {} 직업이라는 정보를 공유받았습니다.]",
+                    revealed_role.value()
+                ),
+            );
+        }
+        results
+    }
+
     fn resolve_inspector_results(
         &mut self,
         blocked_actor_ids: &HashSet<u64>,
+        role_reveals: &mut Vec<(u8, u64, u64, Role)>,
     ) -> (HashMap<u64, String>, HashMap<u64, String>) {
         let mut results = HashMap::new();
         let mut target_notices = HashMap::new();
@@ -775,6 +910,7 @@ impl MafiaGame {
                         self.visible_role(target).value()
                     ),
                 );
+                role_reveals.push((1, *actor_id, *target_id, self.visible_role(target)));
             }
         }
         self.inspector_used_ids.extend(used_actor_ids);
@@ -1030,6 +1166,7 @@ impl MafiaGame {
     fn resolve_shaman_results(
         &mut self,
         blocked_actor_ids: &HashSet<u64>,
+        role_reveals: &mut Vec<(u8, u64, u64, Role)>,
     ) -> (HashMap<u64, String>, Vec<u64>) {
         let mut results = HashMap::new();
         let mut purifications = Vec::new();
@@ -1048,6 +1185,7 @@ impl MafiaGame {
             }
             self.purified_dead_ids.insert(target.user_id);
             purifications.push(target.user_id);
+            role_reveals.push((3, actor_id, target.user_id, self.visible_role(&target)));
             results.insert(
                 actor_id,
                 format!(
@@ -1479,7 +1617,11 @@ impl MafiaGame {
         (results, cult_bells)
     }
 
-    fn resolve_agent_results(&mut self, blocked_actor_ids: &HashSet<u64>) -> HashMap<u64, String> {
+    fn resolve_agent_results(
+        &mut self,
+        blocked_actor_ids: &HashSet<u64>,
+        role_reveals: &mut Vec<(u8, u64, u64, Role)>,
+    ) -> HashMap<u64, String> {
         let surviving_players = self
             .players
             .iter()
@@ -1515,6 +1657,7 @@ impl MafiaGame {
             let mut rng = system_random::rng();
             let target = candidates.choose(&mut rng).cloned().unwrap();
             self.agent_discovered_ids.insert(target.user_id);
+            role_reveals.push((2, agent.user_id, target.user_id, self.visible_role(&target)));
             results.insert(
                 agent.user_id,
                 format!(

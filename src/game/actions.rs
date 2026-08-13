@@ -7,7 +7,10 @@
     clippy::type_complexity
 )]
 
-use crate::model::{Phase, Player, Role, is_contractor_guess_role};
+use crate::model::{
+    Phase, Player, Role, is_civil_servant_query_role, is_contractor_guess_role,
+    korean_object_particle,
+};
 use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 
@@ -263,6 +266,9 @@ impl MafiaGame {
                 "형사는 자기 자신을 수사할 수 없습니다.",
                 "수사 대상",
             ),
+            Role::CivilServant => {
+                bail!("공무원은 조회할 직업을 선택 메뉴에서 골라야 합니다.")
+            }
             Role::Vigilante => self.submit_vigilante_night_action(actor_id, target_id),
             Role::Hypnotist => self.submit_hypnotist_action(actor_id, target_id),
             Role::Mercenary => self.submit_mercenary_action(actor_id, target_id),
@@ -365,6 +371,43 @@ impl MafiaGame {
             self.terrorist_action_submitted.insert(actor_id);
         }
         Ok(format!("{}: {}", label, selected.name))
+    }
+
+    /// 공무원 조회: 직업 하나를 지목해 밤 종료 시 보유자를 알아낸다. 없는 직업을
+    /// 골라도 능력은 소모되므로, 한 번 제출하면 같은 밤에는 바꾸거나 다시 시도할 수
+    /// 없다.
+    pub fn submit_civil_servant_query(&mut self, actor_id: u64, role: Role) -> Result<String> {
+        if self.phase != Phase::Night {
+            bail!("지금은 밤이 아닙니다.");
+        }
+        let actor = self.require_alive(actor_id)?.clone();
+        let effective_role = if actor.role == Role::Thief {
+            self.thief_night_role(&actor)
+        } else {
+            Some(actor.role)
+        };
+        if effective_role != Some(Role::CivilServant) {
+            bail!("공무원만 조회를 사용할 수 있습니다.");
+        }
+        if self.is_frog(&actor) {
+            bail!("개구리 상태에서는 밤 행동을 사용할 수 없습니다.");
+        }
+        if self.is_madam_seduced(&actor) {
+            bail!("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.");
+        }
+        if !is_civil_servant_query_role(role) {
+            bail!("조회할 수 없는 직업입니다.");
+        }
+        if self.civil_servant_targets.contains_key(&actor_id) {
+            bail!("조회는 밤마다 한 번만 사용할 수 있습니다. 이미 이번 밤 조회를 제출했습니다.");
+        }
+        self.civil_servant_targets.insert(actor_id, role);
+        self.mark_rating_action(actor_id);
+        Ok(format!(
+            "[{}{} 조회합니다.]",
+            role.value(),
+            korean_object_particle(role.value())
+        ))
     }
 
     /// 형사 수사는 게임당 1회다. 밤 중에는 대상을 바꿀 수 있어야 하므로 소모는
@@ -755,6 +798,9 @@ impl MafiaGame {
                 "자기 자신은 수사할 수 없습니다.",
                 &format!("{prefix}수사 대상"),
             ),
+            Role::CivilServant => {
+                bail!("공무원은 조회할 직업을 선택 메뉴에서 골라야 합니다.")
+            }
             Role::Vigilante => self
                 .submit_vigilante_night_action(actor_id, target_id)
                 .map(|message| format!("{prefix}{message}")),

@@ -48,6 +48,7 @@ impl MafiaGame {
                 Role::Inspector => {
                     has_other_alive && !self.inspector_used_ids.contains(&player.user_id)
                 }
+                Role::CivilServant => has_other_alive,
                 Role::Vigilante => !self.vigilante_execution_targets(player).is_empty(),
                 Role::Hypnotist => self.hypnotist_can_act_at_night(player),
                 Role::Mercenary => {
@@ -144,6 +145,7 @@ impl MafiaGame {
             Role::Thief => self.stolen_night_action_submitted(actor),
             Role::Police => self.police_targets.contains_key(&actor.user_id),
             Role::Inspector => self.inspector_targets.contains_key(&actor.user_id),
+            Role::CivilServant => self.civil_servant_targets.contains_key(&actor.user_id),
             Role::Vigilante => self.vigilante_targets.contains_key(&actor.user_id),
             Role::Hypnotist => self.hypnotist_targets.contains_key(&actor.user_id),
             Role::Mercenary => self.mercenary_targets.contains_key(&actor.user_id),
@@ -188,6 +190,7 @@ impl MafiaGame {
             | Role::Nurse
             | Role::Police
             | Role::Inspector
+            | Role::CivilServant
             | Role::Vigilante
             | Role::Reporter
             | Role::Detective
@@ -242,6 +245,7 @@ impl MafiaGame {
                 self.inspector_targets.contains_key(&actor.user_id)
                     || self.inspector_used_ids.contains(&actor.user_id)
             }
+            Some(Role::CivilServant) => self.civil_servant_targets.contains_key(&actor.user_id),
             Some(Role::Vigilante) => self.vigilante_targets.contains_key(&actor.user_id),
             Some(Role::Reporter) => {
                 self.reporter_targets.contains_key(&actor.user_id)
@@ -325,8 +329,14 @@ impl MafiaGame {
     }
 
     pub fn consume_hacker_results(&mut self) -> HashMap<u64, String> {
-        let pending = std::mem::take(&mut self.hacker_pending_results);
+        let mut pending = std::mem::take(&mut self.hacker_pending_results)
+            .into_iter()
+            .collect::<Vec<_>>();
+        pending.sort_unstable();
         let mut results = HashMap::new();
+        // 해킹도 "다른 플레이어의 정확한 직업"을 알아내므로 파파라치 이슈 후보다.
+        // 밤 결산이 이미 그날 이슈를 소모했으면 share가 알아서 무시한다.
+        let mut issue_candidate: Option<(String, Role)> = None;
         for (actor_id, target_id) in pending {
             let Some(actor) = self.get_player(actor_id) else {
                 continue;
@@ -337,14 +347,22 @@ impl MafiaGame {
             if !actor.alive {
                 continue;
             }
+            let actor_is_citizen = self.is_citizen_team(actor);
+            let revealed_role = self.visible_role(target);
             results.insert(
                 actor_id,
                 format!(
                     "[해킹] {} 님의 직업은 **{}** 입니다.",
                     target.name,
-                    self.visible_role(target).value()
+                    revealed_role.value()
                 ),
             );
+            if issue_candidate.is_none() && actor_is_citizen && actor_id != target_id {
+                issue_candidate = Some((target.name.clone(), revealed_role));
+            }
+        }
+        if let Some((target_name, revealed_role)) = issue_candidate {
+            results.extend(self.share_issue_with_paparazzi(&target_name, revealed_role));
         }
         results
     }

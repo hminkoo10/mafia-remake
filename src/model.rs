@@ -34,6 +34,8 @@ pub enum Role {
     Judge,
     Terrorist,
     Lover,
+    CivilServant,
+    Paparazzi,
     CultLeader,
     Fanatic,
     Frog,
@@ -75,6 +77,8 @@ impl Role {
             Self::Judge => "판사",
             Self::Terrorist => "테러리스트",
             Self::Lover => "연인",
+            Self::CivilServant => "공무원",
+            Self::Paparazzi => "파파라치",
             Self::CultLeader => "교주",
             Self::Fanatic => "광신도",
             Self::Frog => "개구리",
@@ -201,6 +205,8 @@ pub const CITIZEN_SPECIAL_ROLES: &[Role] = &[
     Role::Hacker,
     Role::Terrorist,
     Role::Lover,
+    Role::CivilServant,
+    Role::Paparazzi,
     Role::Soldier,
     Role::Nurse,
     Role::Gangster,
@@ -244,6 +250,8 @@ pub const PUBLIC_CITIZEN_SPECIAL_ROLES: &[Role] = &[
     Role::Hacker,
     Role::Terrorist,
     Role::Lover,
+    Role::CivilServant,
+    Role::Paparazzi,
     Role::Soldier,
     Role::Nurse,
     Role::Gangster,
@@ -274,6 +282,8 @@ pub const CONTRACTOR_GUESS_ROLES: &[Role] = &[
     Role::Hacker,
     Role::Terrorist,
     Role::Lover,
+    Role::CivilServant,
+    Role::Paparazzi,
     Role::Soldier,
     Role::Nurse,
     Role::Gangster,
@@ -286,6 +296,65 @@ pub const CONTRACTOR_GUESS_ROLES: &[Role] = &[
     Role::Joker,
     Role::Citizen,
 ];
+
+/// 공무원 조회 대상 직업. "시민팀 직업 중 경찰 계열, 시민 직업을 제외한" 목록으로,
+/// 이번 게임에 실제로 배정됐는지와 무관하게 항상 전부 고를 수 있다(없는 직업을
+/// 고르면 조회가 헛돌고 그날 밤 능력이 소모되는 것이 규칙의 일부다).
+/// Discord 셀렉트 상한(25개)을 넘지 않아야 한다.
+pub const CIVIL_SERVANT_QUERY_ROLES: &[Role] = &[
+    Role::Doctor,
+    Role::Nurse,
+    Role::Detective,
+    Role::Shaman,
+    Role::Priest,
+    Role::Graverobber,
+    Role::Politician,
+    Role::Judge,
+    Role::Reporter,
+    Role::Hacker,
+    Role::Terrorist,
+    Role::Lover,
+    Role::Paparazzi,
+    Role::Soldier,
+    Role::Gangster,
+    Role::Prophet,
+    Role::Psychologist,
+    Role::Hypnotist,
+    Role::Mercenary,
+];
+
+pub fn is_civil_servant_query_role(role: Role) -> bool {
+    CIVIL_SERVANT_QUERY_ROLES.contains(&role)
+}
+
+/// 을/를 — 받침 유무로 목적격 조사를 고른다. 한글이 아니면 병기한다.
+pub fn korean_object_particle(word: &str) -> &'static str {
+    match word.chars().next_back() {
+        Some(last) if ('가'..='힣').contains(&last) => {
+            if (last as u32 - 0xAC00) % 28 != 0 {
+                "을"
+            } else {
+                "를"
+            }
+        }
+        _ => "을(를)",
+    }
+}
+
+/// (으)로 — 받침이 없거나 ㄹ 받침이면 "로", 그 외 받침은 "으로".
+pub fn korean_ro_particle(word: &str) -> &'static str {
+    match word.chars().next_back() {
+        Some(last) if ('가'..='힣').contains(&last) => {
+            let jongseong = (last as u32 - 0xAC00) % 28;
+            if jongseong == 0 || jongseong == 8 {
+                "로"
+            } else {
+                "으로"
+            }
+        }
+        _ => "(으)로",
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractorGuessRoleGroup {
@@ -366,6 +435,8 @@ pub struct NightResult {
     pub detective_results: std::collections::HashMap<u64, String>,
     pub inspector_results: std::collections::HashMap<u64, String>,
     pub inspector_target_notices: std::collections::HashMap<u64, String>,
+    pub civil_servant_results: std::collections::HashMap<u64, String>,
+    pub paparazzi_results: std::collections::HashMap<u64, String>,
     pub spy_results: std::collections::HashMap<u64, String>,
     pub spy_contacts: Vec<u64>,
     pub contractor_results: std::collections::HashMap<u64, String>,
@@ -431,6 +502,35 @@ pub struct ConfirmVoteResult {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn korean_particles_follow_the_final_consonant() {
+        assert_eq!(korean_object_particle("의사"), "를");
+        assert_eq!(korean_object_particle("공무원"), "을");
+        assert_eq!(korean_ro_particle("의사"), "로");
+        assert_eq!(korean_ro_particle("연인"), "으로");
+        // ㄹ 받침은 "로"를 쓴다.
+        assert_eq!(korean_ro_particle("서울"), "로");
+        assert_eq!(korean_ro_particle("abc"), "(으)로");
+    }
+
+    /// 공무원 조회 목록: 경찰 계열·시민·공무원 자신 제외, 시민팀만, 셀렉트 상한 이하.
+    #[test]
+    fn civil_servant_query_roles_exclude_police_lineage_and_citizen() {
+        assert!(CIVIL_SERVANT_QUERY_ROLES.len() <= 25);
+        for role in CIVIL_SERVANT_QUERY_ROLES {
+            assert!(!role.is_investigation_role(), "{role:?}");
+            assert!(!role.is_mafia_team(), "{role:?}");
+            assert_ne!(*role, Role::Citizen);
+            assert_ne!(*role, Role::CivilServant);
+            assert_ne!(*role, Role::CultLeader);
+            assert_ne!(*role, Role::Fanatic);
+            assert_ne!(*role, Role::Joker);
+        }
+        assert!(is_civil_servant_query_role(Role::Doctor));
+        assert!(is_civil_servant_query_role(Role::Paparazzi));
+        assert!(!is_civil_servant_query_role(Role::Police));
+    }
 
     #[test]
     fn contractor_guess_roles_are_partitioned_and_exclude_investigation_roles() {

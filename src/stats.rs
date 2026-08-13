@@ -39,6 +39,8 @@ const ROLE_STATS_ORDER: &[Role] = &[
     Role::Hacker,
     Role::Terrorist,
     Role::Lover,
+    Role::CivilServant,
+    Role::Paparazzi,
     Role::Soldier,
     Role::Spy,
     Role::Contractor,
@@ -752,6 +754,11 @@ fn role_specific_rating_adjustment(player: &Player, role: Role, won: bool) -> (i
             "테러리스트 교환 압박 기여",
         ),
         Role::Lover => (if won { 1 } else { 0 }, "연인 생존 연계 기여"),
+        Role::CivilServant => (
+            if won { alive_win_points } else { 0 },
+            "공무원 조회 정보 기여",
+        ),
+        Role::Paparazzi => (if won { 1 } else { 0 }, "파파라치 정보 공유 기여"),
         Role::Soldier => (if won { 1 } else { 0 }, "군인 방탄 생존 기여"),
         Role::Mafia => (
             if won { alive_win_points } else { 0 },
@@ -796,6 +803,7 @@ fn role_has_core_action(role: Role) -> bool {
             | Role::Detective
             | Role::Shaman
             | Role::Priest
+            | Role::CivilServant
             | Role::Spy
             | Role::Contractor
             | Role::Thief

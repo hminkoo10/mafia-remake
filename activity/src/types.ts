@@ -52,6 +52,8 @@ export interface GameState {
   contractor_can_act: boolean;
   contractor_targets: ContractorTarget[];
   contractor_guess_roles: string[];
+  /** 공무원 조회 가능 직업 목록 (공무원 밤 행동일 때만 채워짐) */
+  civil_servant_query_roles: string[];
 }
 
 export type ActionType =

@@ -35,6 +35,8 @@
   "enable_hacker": true,
   "enable_terrorist": true,
   "enable_lover": true,
+  "enable_civil_servant": true,
+  "enable_paparazzi": true,
   "enable_priest": true,
   "enable_shaman": true,
   "enable_soldier": true,

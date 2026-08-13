@@ -155,7 +155,9 @@ pub struct GameStateDto {
     pub day_skip_threshold: u32,                      // 과반 기준 인원수
     pub contractor_can_act: bool,                     // 청부업자 청부 가능 여부
     pub contractor_targets: Vec<ContractorTargetDto>, // 청부 가능 대상 목록
-    pub contractor_guess_roles: Vec<String>,          // 추측 가능 직업 목록
+    pub contractor_guess_roles: Vec<String>,
+    /// 공무원 조회 가능 직업 목록 (공무원으로 밤 행동이 가능할 때만 채워짐)
+    pub civil_servant_query_roles: Vec<String>, // 추측 가능 직업 목록
 }
 
 #[derive(Deserialize)]
@@ -520,6 +522,7 @@ async fn state_handler(
             contractor_can_act: false,
             contractor_targets: vec![],
             contractor_guess_roles: vec![],
+            civil_servant_query_roles: vec![],
         },
     };
 
@@ -585,23 +588,59 @@ async fn action_handler(
     let mut discord_update = None;
     let result: Result<Option<String>, String> = match body.action.as_str() {
         "night_action" => {
-            let target = body
-                .target_id
-                .as_deref()
-                .and_then(|s| s.parse::<u64>().ok());
-            match running.game.submit_night_action(user_id, target) {
-                Ok(selection_message) => {
-                    // 경찰은 대상을 고른 즉시 조사 결과를 본다 (Discord 쪽과 동일).
-                    let selection_message = match running.game.police_result_for_actor(user_id) {
-                        Some(result) => format!("{selection_message}\n{result}"),
-                        None => selection_message,
-                    };
-                    let actor = running.game.get_player(user_id).cloned();
-                    let effective_role = actor
-                        .as_ref()
-                        .map(|actor| effective_night_role(&running.game, actor));
-                    let target_ids = target.into_iter().collect::<Vec<_>>();
-                    running.record_replay_event(
+            // 공무원은 대상이 플레이어가 아니라 직업 이름으로 들어온다.
+            let civil_servant_query = running
+                .game
+                .get_player(user_id)
+                .filter(|player| effective_night_role(&running.game, player) == Role::CivilServant)
+                .and(body.target_id.as_deref())
+                .and_then(crate::commands::find_role_by_name);
+            if let Some(queried_role) = civil_servant_query {
+                match running
+                    .game
+                    .submit_civil_servant_query(user_id, queried_role)
+                {
+                    Ok(selection_message) => {
+                        running.record_replay_event(
+                            "night_action",
+                            Some(user_id),
+                            &[],
+                            serde_json::json!({
+                                "choice": "role_query",
+                                "effective_role": Role::CivilServant.value(),
+                                "effective_role_key": format!("{:?}", Role::CivilServant),
+                                "queried_role": queried_role.value(),
+                                "queried_role_key": format!("{:?}", queried_role),
+                                "message": selection_message.clone(),
+                                "source": "activity",
+                            }),
+                        );
+                        if running.game.should_finish_night_early() {
+                            running.night_notify.notify_one();
+                        }
+                        Ok(Some(selection_message))
+                    }
+                    Err(error) => Err(error.to_string()),
+                }
+            } else {
+                let target = body
+                    .target_id
+                    .as_deref()
+                    .and_then(|s| s.parse::<u64>().ok());
+                match running.game.submit_night_action(user_id, target) {
+                    Ok(selection_message) => {
+                        // 경찰은 대상을 고른 즉시 조사 결과를 본다 (Discord 쪽과 동일).
+                        let selection_message = match running.game.police_result_for_actor(user_id)
+                        {
+                            Some(result) => format!("{selection_message}\n{result}"),
+                            None => selection_message,
+                        };
+                        let actor = running.game.get_player(user_id).cloned();
+                        let effective_role = actor
+                            .as_ref()
+                            .map(|actor| effective_night_role(&running.game, actor));
+                        let target_ids = target.into_iter().collect::<Vec<_>>();
+                        running.record_replay_event(
                         "night_action",
                         Some(user_id),
                         &target_ids,
@@ -613,22 +652,23 @@ async fn action_handler(
                             "source": "activity",
                         }),
                     );
-                    if actor.as_ref().is_some_and(|player| {
-                        player.role == Role::Mafia
-                            || (player.role == Role::Thief
-                                && running.game.thief_night_role(player) == Some(Role::Mafia))
-                    }) {
-                        discord_update = Some(ActivityDiscordUpdate::PrivateRoleStatus {
-                            guild_id: guild_key,
-                            role: Role::Mafia,
-                        });
+                        if actor.as_ref().is_some_and(|player| {
+                            player.role == Role::Mafia
+                                || (player.role == Role::Thief
+                                    && running.game.thief_night_role(player) == Some(Role::Mafia))
+                        }) {
+                            discord_update = Some(ActivityDiscordUpdate::PrivateRoleStatus {
+                                guild_id: guild_key,
+                                role: Role::Mafia,
+                            });
+                        }
+                        if running.game.should_finish_night_early() {
+                            running.night_notify.notify_one();
+                        }
+                        Ok(Some(selection_message))
                     }
-                    if running.game.should_finish_night_early() {
-                        running.night_notify.notify_one();
-                    }
-                    Ok(Some(selection_message))
+                    Err(error) => Err(error.to_string()),
                 }
-                Err(error) => Err(error.to_string()),
             }
         }
         "day_vote" => {
@@ -1011,6 +1051,7 @@ async fn handle_ws(mut socket: WebSocket, state: ActivityState, user_id: u64, gu
                         contractor_can_act: false,
                         contractor_targets: vec![],
                         contractor_guess_roles: vec![],
+            civil_servant_query_roles: vec![],
                     },
                 };
 
@@ -1260,6 +1301,19 @@ fn build_game_state(
         vec![]
     };
 
+    let civil_servant_query_roles = if night_action_available
+        && me_role_for_targets
+            .as_ref()
+            .is_some_and(|player| effective_night_role(game, player) == Role::CivilServant)
+    {
+        mafia_remake::model::CIVIL_SERVANT_QUERY_ROLES
+            .iter()
+            .map(|r| r.value().to_string())
+            .collect()
+    } else {
+        vec![]
+    };
+
     let phase_ends_at = phase_deadline_unix_ms(running.phase_deadline, game.phase);
 
     GameStateDto {
@@ -1291,6 +1345,7 @@ fn build_game_state(
         contractor_can_act,
         contractor_targets,
         contractor_guess_roles,
+        civil_servant_query_roles,
     }
 }
 
@@ -1626,6 +1681,8 @@ fn role_name(role: Role) -> String {
         Role::Prophet => "예언자",
         Role::Shaman => "영매",
         Role::Lover => "연인",
+        Role::CivilServant => "공무원",
+        Role::Paparazzi => "파파라치",
         Role::Godfather => "대부",
         Role::Gangster => "건달",
         Role::Spy => "스파이",

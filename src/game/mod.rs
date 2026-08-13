@@ -39,6 +39,10 @@ pub struct MafiaGame {
     pub thief_police_targets: HashMap<u64, u64>,
     pub inspector_targets: HashMap<u64, u64>,
     pub inspector_used_ids: HashSet<u64>,
+    /// 공무원 조회: actor → 이번 밤 조회할 직업
+    pub civil_servant_targets: HashMap<u64, Role>,
+    /// 파파라치 이슈: 이슈가 이미 발동한 day_number들. 하루의 첫 직업 정보만 공유된다.
+    pub paparazzi_shared_days: HashSet<u32>,
     pub vigilante_targets: HashMap<u64, u64>,
     pub vigilante_pending_results: HashMap<u64, u64>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
@@ -205,6 +209,8 @@ impl MafiaGame {
             thief_police_targets: HashMap::new(),
             inspector_targets: HashMap::new(),
             inspector_used_ids: HashSet::new(),
+            civil_servant_targets: HashMap::new(),
+            paparazzi_shared_days: HashSet::new(),
             vigilante_targets: HashMap::new(),
             vigilante_pending_results: HashMap::new(),
             vigilante_known_enemy_ids: HashMap::new(),
@@ -1794,6 +1800,161 @@ mod tests {
                 .any(|player| player.user_id == 2)
         );
         assert!(result.agent_results.contains_key(&2));
+    }
+
+    /// 공무원/파파라치 기본 배치: 1 마피아, 2 공무원, 3 의사, 4 파파라치, 5 시민.
+    fn civil_servant_test_game() -> MafiaGame {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::CivilServant),
+            (3, Role::Doctor),
+            (4, Role::Paparazzi),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game
+    }
+
+    #[test]
+    fn civil_servant_query_reveals_the_role_holder_and_shares_with_paparazzi() {
+        let mut game = civil_servant_test_game();
+
+        let ack = game.submit_civil_servant_query(2, Role::Doctor).unwrap();
+        assert_eq!(ack, "[의사를 조회합니다.]");
+
+        let result = game.resolve_night().unwrap();
+
+        assert_eq!(
+            result.civil_servant_results.get(&2).map(String::as_str),
+            Some("[Three님이 의사로 조회되었습니다.]")
+        );
+        assert_eq!(
+            result.paparazzi_results.get(&4).map(String::as_str),
+            Some("[Three님이 의사 직업이라는 정보를 공유받았습니다.]")
+        );
+    }
+
+    #[test]
+    fn civil_servant_query_without_holder_consumes_the_night_use() {
+        let mut game = civil_servant_test_game();
+
+        game.submit_civil_servant_query(2, Role::Prophet).unwrap();
+        // 같은 밤에는 다시 시도할 수 없다.
+        assert!(game.submit_civil_servant_query(2, Role::Doctor).is_err());
+
+        let result = game.resolve_night().unwrap();
+        assert_eq!(
+            result.civil_servant_results.get(&2).map(String::as_str),
+            Some("[해당 직업을 보유한 플레이어가 없습니다.]")
+        );
+        // 알아낸 직업이 없으므로 파파라치에게도 공유되지 않는다.
+        assert!(result.paparazzi_results.is_empty());
+
+        // 다음 밤에는 다시 조회할 수 있다.
+        game.phase = Phase::Night;
+        game.day_number += 1;
+        assert!(game.submit_civil_servant_query(2, Role::Doctor).is_ok());
+    }
+
+    #[test]
+    fn civil_servant_cannot_query_police_lineage_or_citizen() {
+        let mut game = civil_servant_test_game();
+
+        for role in [
+            Role::Police,
+            Role::Agent,
+            Role::Vigilante,
+            Role::Inspector,
+            Role::Citizen,
+            Role::Mafia,
+            Role::CivilServant,
+        ] {
+            assert!(
+                game.submit_civil_servant_query(2, role).is_err(),
+                "{role:?} must not be queryable"
+            );
+        }
+    }
+
+    #[test]
+    fn paparazzi_shares_only_the_first_reveal_and_only_once_per_day() {
+        let mut game = MafiaGame::new(
+            vec![
+                (1, "One".to_string()),
+                (2, "Two".to_string()),
+                (3, "Three".to_string()),
+                (4, "Four".to_string()),
+                (5, "Five".to_string()),
+                (6, "Six".to_string()),
+            ],
+            1,
+            0,
+            0,
+            Vec::new(),
+        )
+        .unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::CivilServant),
+            (3, Role::Doctor),
+            (4, Role::Paparazzi),
+            (5, Role::Inspector),
+            (6, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        // 같은 밤에 공무원 조회(의사)와 형사 수사(시민)가 함께 성공해도
+        // 공유되는 것은 우선순위가 높은 조회 결과 하나뿐이다.
+        game.submit_civil_servant_query(2, Role::Doctor).unwrap();
+        game.submit_night_action(5, Some(6)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        let shared = result.paparazzi_results.get(&4).unwrap();
+        assert!(shared.contains("Three"), "{shared}");
+        assert!(shared.contains("의사"), "{shared}");
+        assert!(!shared.contains("Six"), "{shared}");
+
+        // 같은 날에는 두 번 공유되지 않았고, 다음 날에는 다시 공유된다.
+        game.phase = Phase::Night;
+        game.day_number += 1;
+        game.submit_civil_servant_query(2, Role::Paparazzi).unwrap();
+        let next_result = game.resolve_night().unwrap();
+        let next_shared = next_result.paparazzi_results.get(&4).unwrap();
+        assert!(next_shared.contains("파파라치"), "{next_shared}");
+    }
+
+    #[test]
+    fn paparazzi_is_not_triggered_by_team_only_information() {
+        let mut game = civil_servant_test_game();
+        game.get_player_mut(2).unwrap().role = Role::Police;
+
+        // 경찰 조사는 마피아 여부(팀)만 알아내므로 이슈가 발동하지 않는다.
+        game.submit_night_action(2, Some(1)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert_eq!(result.police_target_is_mafia, Some(true));
+        assert!(result.paparazzi_results.is_empty());
+    }
+
+    /// 도둑(마피아팀)이 훔친 능력으로 알아낸 정보는 "시민팀이 알아낸 정보"가
+    /// 아니므로 파파라치에게 공유되지 않는다.
+    #[test]
+    fn paparazzi_ignores_reveals_made_by_the_mafia_team() {
+        let mut game = civil_servant_test_game();
+        game.get_player_mut(2).unwrap().role = Role::Thief;
+        game.thief_stolen_roles.insert(2, Role::CivilServant);
+
+        game.submit_civil_servant_query(2, Role::Doctor).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert_eq!(
+            result.civil_servant_results.get(&2).map(String::as_str),
+            Some("[Three님이 의사로 조회되었습니다.]")
+        );
+        assert!(result.paparazzi_results.is_empty());
     }
 
     #[test]

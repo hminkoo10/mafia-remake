@@ -74,6 +74,10 @@ pub struct BotConfig {
     #[serde(default = "default_true")]
     pub enable_priest: bool,
     #[serde(default = "default_true")]
+    pub enable_civil_servant: bool,
+    #[serde(default = "default_true")]
+    pub enable_paparazzi: bool,
+    #[serde(default = "default_true")]
     pub enable_soldier: bool,
     #[serde(default = "default_true")]
     pub enable_nurse: bool,

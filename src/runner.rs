@@ -240,6 +240,12 @@ pub fn role_short_guide(role: Role) -> &'static str {
             "게임 중 한 번만 수사할 수 있고, 같은 팀이면 직업을 확인하며 대상에게 자신의 정체를 알립니다."
         }
         Role::Detective => "밤 행동의 이동 경로를 추적합니다.",
+        Role::CivilServant => {
+            "밤마다 직업 하나를 조회해 그 직업을 가진 생존자를 알아냅니다. 경찰 계열과 시민은 조회할 수 없습니다."
+        }
+        Role::Paparazzi => {
+            "하루에 한 번, 시민팀이 처음으로 알아낸 다른 사람의 직업 정보를 함께 공유받습니다."
+        }
         Role::Shaman => "사망자를 성불하고 직업을 확인합니다.",
         Role::Priest => "사망자를 한 번 소생시킬 수 있습니다.",
         Role::Reporter => "두 번째 밤부터 특종으로 직업을 공개합니다.",
@@ -678,6 +684,8 @@ pub async fn run_night(
             "detective": running_write.replay_text_results(&result.detective_results),
             "inspector": running_write.replay_text_results(&result.inspector_results),
             "inspector_target_notices": running_write.replay_text_results(&result.inspector_target_notices),
+            "civil_servant": running_write.replay_text_results(&result.civil_servant_results),
+            "paparazzi": running_write.replay_text_results(&result.paparazzi_results),
             "spy": running_write.replay_text_results(&result.spy_results),
             "contractor": running_write.replay_text_results(&result.contractor_results),
             "witch": running_write.replay_text_results(&result.witch_results),
@@ -725,6 +733,8 @@ pub async fn run_night(
             &result.detective_results,
             &result.inspector_results,
             &result.inspector_target_notices,
+            &result.civil_servant_results,
+            &result.paparazzi_results,
             &result.spy_results,
             &result.contractor_results,
             &result.witch_results,
@@ -1106,6 +1116,17 @@ pub async fn send_night_action_dm(
         )
         .await;
     }
+    // 공무원은 플레이어가 아니라 직업을 고르므로 전용 셀렉트를 쓴다.
+    if role == Role::CivilServant {
+        return send_player_secret_detailed(
+            ctx,
+            running,
+            actor,
+            "공무원 조회할 직업을 선택하세요\n밤이 끝날 때 그 직업을 가진 생존자를 알려드립니다.\n**조회는 밤마다 한 번뿐이며, 제출 후에는 바꿀 수 없습니다.** 이번 게임에 없는 직업을 골라도 조회는 소모됩니다.",
+            civil_servant_query_components(guild_id, actor.user_id),
+        )
+        .await;
+    }
     let mut prompt = if can_change {
         format!(
             "{} 밤 행동을 선택하세요\n밤이 끝나기 전 다시 선택하면 대상을 변경할 수 있습니다.",
@@ -1126,6 +1147,28 @@ pub async fn send_night_action_dm(
         night_action_components(guild_id, actor.user_id, role, &targets),
     )
     .await
+}
+
+/// 공무원 조회용 직업 셀렉트. 경찰 계열과 시민을 제외한 시민팀 직업 전체를
+/// 보여준다(이번 게임에 없는 직업도 포함 — 헛조회도 규칙의 일부).
+pub fn civil_servant_query_components(
+    guild_id: serenity::GuildId,
+    actor_id: u64,
+) -> Vec<serenity::CreateActionRow> {
+    let options = mafia_remake::model::CIVIL_SERVANT_QUERY_ROLES
+        .iter()
+        .take(25)
+        .map(|role| serenity::CreateSelectMenuOption::new(role.value(), role.value()))
+        .collect::<Vec<_>>();
+    vec![serenity::CreateActionRow::SelectMenu(
+        serenity::CreateSelectMenu::new(
+            format!("civilquery:{}:{}", guild_id.get(), actor_id),
+            serenity::CreateSelectMenuKind::String { options },
+        )
+        .placeholder("조회할 직업을 선택하세요 (밤마다 1회, 변경 불가)")
+        .min_values(1)
+        .max_values(1),
+    )]
 }
 
 /// 게임당 1회만 쓸 수 있는 밤 능력은 선택 화면에서 그 사실을 알린다.
@@ -1327,6 +1370,7 @@ pub fn night_placeholder(role: Role) -> &'static str {
         Role::Nurse => "처방/치료 대상을 선택하세요",
         Role::Police => "조사할 대상을 선택하세요",
         Role::Inspector => "수사할 대상을 선택하세요 (1회용)",
+        Role::CivilServant => "조회할 직업을 선택하세요",
         Role::Vigilante => "숙청할 대상을 선택하세요",
         Role::Hypnotist => "최면을 걸 대상을 선택하세요",
         Role::Mercenary => "처형할 대상을 선택하세요",
@@ -1411,6 +1455,8 @@ pub async fn send_private_result_maps(
         result.detective_results.clone(),
         result.inspector_results.clone(),
         result.inspector_target_notices.clone(),
+        result.civil_servant_results.clone(),
+        result.paparazzi_results.clone(),
         result.spy_results.clone(),
         result.contractor_results.clone(),
         result.witch_results.clone(),

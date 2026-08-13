@@ -37,13 +37,67 @@ export function ActionPanel({ state, onActionSent }: Props) {
   }
 
   const showNightAction = state.phase === "Night" && me?.alive && state.can_act;
+  const isCivilServantQuery = showNightAction && state.civil_servant_query_roles.length > 0;
 
   return (
     <>
       {resultBanner}
-      {showNightAction && <NightActionPanel state={state} onActionSent={onActionSent} />}
+      {isCivilServantQuery && <CivilServantPanel state={state} onActionSent={onActionSent} />}
+      {showNightAction && !isCivilServantQuery && (
+        <NightActionPanel state={state} onActionSent={onActionSent} />
+      )}
       {showSkip && <SkipPanel state={state} onActionSent={onActionSent} />}
     </>
+  );
+}
+
+// ─── 공무원 조회 패널 ────────────────────────────────────────────
+
+function CivilServantPanel({ state, onActionSent }: Props) {
+  const [selectedRole, setSelectedRole] = useState<string>("");
+  const [pending, setPending] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function submit() {
+    if (!selectedRole) {
+      setMsg("❌ 조회할 직업을 선택하세요.");
+      return;
+    }
+    setPending(true);
+    setMsg(null);
+    const res = await sendAction({ action: "night_action", target_id: selectedRole });
+    setMsg(res.ok ? "✅ 조회 제출 완료 (결과는 밤이 끝날 때)" : res.message ?? "오류 발생");
+    if (res.ok) onActionSent();
+    setPending(false);
+  }
+
+  return (
+    <div style={panelStyle("#00897b")}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: "#80cbc4" }}>🗂️ 공무원 조회</div>
+      <div style={{ fontSize: 11, color: "#888" }}>
+        직업 하나를 조회하면 밤이 끝날 때 그 직업을 가진 생존자를 알려줍니다.
+        조회는 밤마다 한 번뿐이고 제출 후에는 바꿀 수 없으며, 없는 직업을 골라도 소모됩니다.
+      </div>
+      <select
+        value={selectedRole}
+        onChange={(e) => setSelectedRole(e.target.value)}
+        disabled={pending}
+        style={selectStyle}
+      >
+        <option value="">— 조회할 직업 선택 —</option>
+        {state.civil_servant_query_roles.map((role) => (
+          <option key={role} value={role}>{role}</option>
+        ))}
+      </select>
+      <button
+        disabled={pending || !selectedRole}
+        onClick={submit}
+        style={btnStyle("#00897b", pending || !selectedRole)}
+      >
+        ✔ 조회 제출
+      </button>
+      {msg && <StatusMsg text={msg} />}
+    </div>
   );
 }
 
@@ -289,7 +343,8 @@ function nightActionLabel(role: string | null): string {
     건달: "위협 대상 선택", 교주: "포섭 대상 선택", 광신도: "포섭 대상 선택",
     마담: "유혹은 지목 투표로 적용됩니다", 마녀: "저주 대상 선택", 스파이: "감시 대상 선택",
     간호사: "처방 대상 선택", 영매: "교신 대상 선택", 성직자: "정화 대상 선택",
-    테러리스트: "폭탄 대상 선택", 과학자: "소생 대상 선택",
+    테러리스트: "폭탄 대상 선택", 과학자: "소생 대상 선택", 형사: "수사 대상 선택 (1회용)",
+    공무원: "조회할 직업 선택",
   };
   return role ? (map[role] ?? "행동 대상 선택") : "행동 대상 선택";
 }

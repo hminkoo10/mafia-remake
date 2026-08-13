@@ -538,6 +538,7 @@ function ActionConsole({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [contractTargets, setContractTargets] = useState<[string, string]>(["", ""]);
+  const [queryRole, setQueryRole] = useState("");
   const [contractRoles, setContractRoles] = useState<[string, string]>(["", ""]);
   const [psychologistTargets, setPsychologistTargets] = useState<[string, string]>(["", ""]);
   const me = state.players.find((p) => p.is_you);
@@ -575,6 +576,7 @@ function ActionConsole({
   }
 
   const canNightAction = state.phase === "Night" && me?.alive && state.can_act;
+  const isCivilServantQuery = Boolean(canNightAction) && state.civil_servant_query_roles.length > 0;
   const nightTargetSelected = Boolean(selectedTarget && nightTargets.some((player) => player.id === selectedTarget));
   const specialTargetSelected = Boolean(selectedTarget && specialTargets.some((player) => player.id === selectedTarget));
   const canSkip = state.phase === "Day" && me?.alive;
@@ -592,7 +594,31 @@ function ActionConsole({
         {selectedPlayer && <span className="selected-chip">{selectedPlayer.name}</span>}
       </div>
 
-      {canNightAction && (
+      {isCivilServantQuery && (
+        <div className="action-group">
+          <div className="section-kicker">조회할 직업 (밤마다 1회, 제출 후 변경 불가)</div>
+          <select value={queryRole} onChange={(e) => setQueryRole(e.target.value)}>
+            <option value="">직업 선택</option>
+            {state.civil_servant_query_roles.map((role) => (
+              <option key={role} value={role}>
+                {role}
+              </option>
+            ))}
+          </select>
+          <div className="command-row">
+            <button
+              className="primary-command"
+              disabled={busy || !queryRole}
+              onClick={() => run({ action: "night_action", target_id: queryRole }, "조회 제출 완료")}
+              type="button"
+            >
+              조회 제출
+            </button>
+          </div>
+        </div>
+      )}
+
+      {canNightAction && !isCivilServantQuery && (
         <div className="action-group">
           <TargetGrid
             players={nightTargets}

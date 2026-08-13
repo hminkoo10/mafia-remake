@@ -441,6 +441,10 @@ pub async fn handle_component(
             handle_night_action(ctx, data, component, parse_guild(guild)?, actor_id.parse()?)
                 .await?
         }
+        ["civilquery", guild, actor_id] => {
+            handle_civil_servant_query(ctx, data, component, parse_guild(guild)?, actor_id.parse()?)
+                .await?
+        }
         ["terrorist_defense", guild, actor_id] => {
             handle_terrorist_final_defense_target(
                 ctx,
@@ -1490,6 +1494,76 @@ pub async fn handle_recruitment_finish(
         .await;
     } else {
         ack_component(ctx, component).await;
+    }
+    Ok(())
+}
+
+/// 공무원 조회 제출. 제출 즉시 확정되며 같은 밤에는 바꿀 수 없다.
+pub async fn handle_civil_servant_query(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    guild_id: serenity::GuildId,
+    actor_id: u64,
+) -> Result<()> {
+    if component.user.id.get() != actor_id {
+        send_component_private(ctx, component, "본인에게 온 선택지만 사용할 수 있습니다.").await?;
+        return Ok(());
+    }
+    let Some(role) = selected_values(component)
+        .first()
+        .and_then(|value| find_role_by_name(value))
+    else {
+        send_component_private(ctx, component, "조회할 직업을 선택해야 합니다.").await?;
+        return Ok(());
+    };
+    let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
+        send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
+        return Ok(());
+    };
+    let (message, done) = {
+        let mut running_write = running.write().await;
+        let message = match running_write
+            .game
+            .submit_civil_servant_query(actor_id, role)
+        {
+            Ok(message) => message,
+            Err(error) => {
+                send_component_private(ctx, component, error.to_string()).await?;
+                return Ok(());
+            }
+        };
+        running_write.record_replay_event(
+            "night_action",
+            Some(actor_id),
+            &[],
+            serde_json::json!({
+                "choice": "role_query",
+                "effective_role": Role::CivilServant.value(),
+                "effective_role_key": format!("{:?}", Role::CivilServant),
+                "queried_role": role.value(),
+                "queried_role_key": format!("{:?}", role),
+                "message": message.clone(),
+            }),
+        );
+        (message, running_write.game.should_finish_night_early())
+    };
+    component
+        .create_response(
+            ctx,
+            serenity::CreateInteractionResponse::UpdateMessage(
+                serenity::CreateInteractionResponseMessage::new()
+                    .embed(make_embed(
+                        format!("{message}\n결과는 밤이 끝날 때 전달됩니다."),
+                        "공무원 조회",
+                        serenity::Colour::DARK_GREEN,
+                    ))
+                    .components(vec![]),
+            ),
+        )
+        .await?;
+    if done {
+        running.read().await.night_notify.notify_one();
     }
     Ok(())
 }
@@ -3379,6 +3453,8 @@ pub async fn configure_extra_roles(
     mercenary: Option<bool>,
     thief: Option<bool>,
     soldier: Option<bool>,
+    civil_servant: Option<bool>,
+    paparazzi: Option<bool>,
     cult_team: Option<bool>,
 ) -> Result<(), Error> {
     if !require_manager(ctx).await? {
@@ -3411,6 +3487,12 @@ pub async fn configure_extra_roles(
     }
     if let Some(v) = mercenary {
         config_write.enable_mercenary = v;
+    }
+    if let Some(v) = civil_servant {
+        config_write.enable_civil_servant = v;
+    }
+    if let Some(v) = paparazzi {
+        config_write.enable_paparazzi = v;
     }
     if let Some(v) = thief {
         config_write.enable_thief = v;
@@ -5770,6 +5852,8 @@ pub fn find_role_by_name(name: &str) -> Option<Role> {
         Role::Judge,
         Role::Terrorist,
         Role::Lover,
+        Role::CivilServant,
+        Role::Paparazzi,
         Role::CultLeader,
         Role::Fanatic,
         Role::Citizen,
