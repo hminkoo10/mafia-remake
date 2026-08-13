@@ -2253,14 +2253,37 @@ mod tests {
         let mafia_result = game.police_result_for_actor(2).unwrap();
         assert!(mafia_result.contains("One"), "{mafia_result}");
         assert!(mafia_result.contains("마피아팀입니다"), "{mafia_result}");
+    }
 
-        game.submit_night_action(2, Some(3)).unwrap();
-        let citizen_result = game.police_result_for_actor(2).unwrap();
-        assert!(citizen_result.contains("Three"), "{citizen_result}");
-        assert!(
-            citizen_result.contains("마피아팀이 아닙니다"),
-            "{citizen_result}"
-        );
+    /// 결과가 즉시 나오므로 같은 밤에 대상을 바꾸면 연속 조사가 된다. 첫 제출로
+    /// 고정하고, 다음 밤에는 다시 조사할 수 있다.
+    #[test]
+    fn police_investigation_locks_after_the_first_submission() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 1, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Police),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.submit_night_action(2, Some(1)).unwrap();
+        let error = game.submit_night_action(2, Some(3)).unwrap_err();
+        assert!(error.to_string().contains("이미 이번 밤"), "{error}");
+        // 결과는 첫 대상 그대로다.
+        let result = game.police_result_for_actor(2).unwrap();
+        assert!(result.contains("One"), "{result}");
+        // 잠긴 행동은 변경 가능 목록에 없어야 밤 조기 종료가 막히지 않는다.
+        let police = game.get_player(2).unwrap().clone();
+        assert!(!game.night_action_can_be_changed(&police));
+
+        game.resolve_night().unwrap();
+        game.phase = Phase::Night;
+        game.day_number += 1;
+        assert!(game.submit_night_action(2, Some(3)).is_ok());
     }
 
     #[test]

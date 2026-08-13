@@ -259,15 +259,22 @@ impl MafiaGame {
                 Some("건달은 자기 자신을 공갈할 수 없습니다."),
                 "공갈 대상",
             ),
-            Role::Police => self.once_target_action(
-                actor_id,
-                target_id,
-                "조사 대상을 선택해야 합니다.",
-                "",
-                RoleActionMap::Police,
-                Some("경찰은 자기 자신을 조사할 수 없습니다."),
-                "조사 투표 대상",
-            ),
+            Role::Police => {
+                // 조사 결과가 제출 즉시 나오므로, 대상 변경을 허용하면 한 밤에 여러 명을
+                // 연속 조사할 수 있게 된다. 첫 제출로 고정한다.
+                if self.police_targets.contains_key(&actor_id) {
+                    bail!("경찰 조사는 밤마다 한 번뿐입니다. 이미 이번 밤 조사를 마쳤습니다.");
+                }
+                self.once_target_action(
+                    actor_id,
+                    target_id,
+                    "조사 대상을 선택해야 합니다.",
+                    "",
+                    RoleActionMap::Police,
+                    Some("경찰은 자기 자신을 조사할 수 없습니다."),
+                    "조사 투표 대상",
+                )
+            }
             Role::Inspector => self.submit_inspector_action(
                 actor_id,
                 target_id,
@@ -793,15 +800,21 @@ impl MafiaGame {
             Role::Nurse => self
                 .submit_nurse_action(actor_id, target_id)
                 .map(|message| format!("{prefix}{message}")),
-            Role::Police => self.once_target_action(
-                actor_id,
-                target_id,
-                "조사 대상을 선택해야 합니다.",
-                "",
-                RoleActionMap::ThiefPolice,
-                Some("자기 자신은 조사할 수 없습니다."),
-                &format!("{prefix}조사 대상"),
-            ),
+            Role::Police => {
+                // 훔친 경찰 조사도 즉시 결과가 나오므로 같은 밤 재조사를 막는다.
+                if self.thief_police_targets.contains_key(&actor_id) {
+                    bail!("경찰 조사는 밤마다 한 번뿐입니다. 이미 이번 밤 조사를 마쳤습니다.");
+                }
+                self.once_target_action(
+                    actor_id,
+                    target_id,
+                    "조사 대상을 선택해야 합니다.",
+                    "",
+                    RoleActionMap::ThiefPolice,
+                    Some("자기 자신은 조사할 수 없습니다."),
+                    &format!("{prefix}조사 대상"),
+                )
+            }
             Role::Inspector => self.submit_inspector_action(
                 actor_id,
                 target_id,
