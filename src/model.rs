@@ -491,6 +491,11 @@ pub struct VoteResult {
     pub madam_seduced: Vec<Player>,
     pub madam_newly_contacted: Vec<Player>,
     pub blocked_voters: Vec<Player>,
+    /// 도둑별 도벽 결과. 투표가 끝난 뒤에야 어떤 능력을 훔쳤는지 알려준다.
+    #[serde(default)]
+    pub thief_steal_results: std::collections::HashMap<u64, String>,
+    #[serde(default)]
+    pub thief_newly_contacted: Vec<Player>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

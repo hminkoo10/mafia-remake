@@ -966,7 +966,7 @@ async fn action_handler(
             }
         }
         "thief_action" => Ok(Some(
-            "도벽은 별도 행동이 아니라 지목 투표한 대상에게 자동으로 적용됩니다.".to_string(),
+            "도벽은 별도 행동이 아니라 마지막 지목 투표 대상에게 자동으로 적용되고, 결과는 투표가 끝난 뒤 전달됩니다.".to_string(),
         )),
         _ => Err(format!("알 수 없는 액션: {}", body.action)),
     };

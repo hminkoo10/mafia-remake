@@ -2043,7 +2043,7 @@ pub async fn handle_thief(
     send_component_private(
         ctx,
         component,
-        "도벽은 별도 선택이 아니라 지목 투표한 대상에게 자동으로 적용됩니다.",
+        "도벽은 별도 선택이 아니라 마지막 지목 투표 대상에게 자동으로 적용되고, 결과는 투표가 끝난 뒤 전달됩니다.",
     )
     .await?;
     Ok(())

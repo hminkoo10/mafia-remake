@@ -3067,6 +3067,17 @@ mod tests {
         let vote_message = game.submit_day_vote(thief_id, Some(police_id)).unwrap();
         assert!(vote_message.contains("투표 대상"));
         assert!(vote_message.contains("[도벽]"));
+        // 훔친 직업은 투표 응답이 아니라 투표 결산 후에야 알려준다.
+        assert!(!vote_message.contains("경찰"), "{vote_message}");
+        let vote_result = game.resolve_nomination_vote().unwrap();
+        assert!(
+            vote_result
+                .thief_steal_results
+                .get(&thief_id)
+                .is_some_and(|text| text.contains("경찰")),
+            "{:?}",
+            vote_result.thief_steal_results
+        );
         game.phase = Phase::Night;
         game.submit_night_action(police_id, Some(police_target_id))
             .unwrap();
@@ -3147,7 +3158,16 @@ mod tests {
         game.phase = Phase::Day;
         game.start_vote().unwrap();
         let vote_message = game.submit_day_vote(thief_id, Some(vigilante_id)).unwrap();
-        assert!(vote_message.contains("자경단원"));
+        assert!(!vote_message.contains("자경단원"), "{vote_message}");
+        let vote_result = game.resolve_nomination_vote().unwrap();
+        assert!(
+            vote_result
+                .thief_steal_results
+                .get(&thief_id)
+                .is_some_and(|text| text.contains("자경단원")),
+            "{:?}",
+            vote_result.thief_steal_results
+        );
 
         game.phase = Phase::Night;
         assert!(
@@ -3199,9 +3219,28 @@ mod tests {
         game.phase = Phase::Day;
         game.start_vote().unwrap();
         let vote_message = game.submit_day_vote(thief_id, Some(mafia_id)).unwrap();
+        // 접선도 투표 결산 시점에 이뤄진다.
+        assert!(!vote_message.contains("접선"), "{vote_message}");
+        assert!(!game.thief_contacted.contains(&thief_id));
+        let vote_result = game.resolve_nomination_vote().unwrap();
         let thief = game.get_player(thief_id).unwrap().clone();
 
-        assert!(vote_message.contains("마피아팀과 접선했습니다"));
+        assert!(
+            vote_result
+                .thief_steal_results
+                .get(&thief_id)
+                .is_some_and(|text| text.contains("마피아팀과 접선했습니다")),
+            "{:?}",
+            vote_result.thief_steal_results
+        );
+        assert_eq!(
+            vote_result
+                .thief_newly_contacted
+                .iter()
+                .map(|player| player.user_id)
+                .collect::<Vec<_>>(),
+            vec![thief_id]
+        );
         assert!(game.thief_contacted.contains(&thief_id));
         assert!(game.is_known_mafia_team(&thief));
         assert_eq!(game.thief_night_role(&thief), Some(Role::Mafia));
@@ -3214,6 +3253,44 @@ mod tests {
         );
         assert!(game.submit_night_action(thief_id, Some(target_id)).is_ok());
         assert_eq!(game.mafia_targets.get(&thief_id), Some(&target_id));
+    }
+
+    /// 투표를 바꿔가며 여러 명의 직업을 알아내는 것을 막는다: 훔치는 대상은 마지막
+    /// 지목 하나뿐이고, 결과도 결산 때 한 번만 나온다.
+    #[test]
+    fn thief_steal_follows_only_the_final_vote_target() {
+        let mut game = MafiaGame::new(basic_players(), 1, 1, 0, vec![Role::Thief]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Thief),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.phase = Phase::Day;
+        game.start_vote().unwrap();
+        let first = game.submit_day_vote(2, Some(3)).unwrap();
+        assert!(!first.contains("의사"), "{first}");
+        let second = game.submit_day_vote(2, Some(1)).unwrap();
+        assert!(!second.contains("마피아"), "{second}");
+
+        let vote_result = game.resolve_nomination_vote().unwrap();
+
+        // 마지막 지목(마피아)만 훔쳤고, 결과도 하나뿐이다.
+        assert_eq!(vote_result.thief_steal_results.len(), 1);
+        assert!(
+            vote_result
+                .thief_steal_results
+                .get(&2)
+                .is_some_and(|text| text.contains("One") && !text.contains("의사")),
+            "{:?}",
+            vote_result.thief_steal_results
+        );
+        let thief = game.get_player(2).unwrap().clone();
+        assert_eq!(game.thief_night_role(&thief), Some(Role::Mafia));
     }
 
     #[test]

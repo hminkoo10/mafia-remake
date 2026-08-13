@@ -277,7 +277,9 @@ pub fn role_short_guide(role: Role) -> &'static str {
             "시민 한 명의 직업으로 변장해 조사를 속이고, 변장 대상이나 자신이 마피아의 표적이 되면 접선합니다."
         }
         Role::Contractor => "두 명의 직업을 맞히면 암살합니다.",
-        Role::Thief => "지목 투표한 대상의 능력을 훔칩니다.",
+        Role::Thief => {
+            "마지막으로 지목 투표한 대상의 능력을 훔칩니다. 결과는 투표가 끝난 뒤 전달됩니다."
+        }
         Role::Witch => "밤에 대상을 개구리로 저주합니다.",
         Role::Scientist => {
             "처음부터 마피아팀입니다. 첫 사망 전에는 미접선 보조처럼 시민 판정을 받고, 첫 사망 후 접선되어 다음 밤 부활합니다."
@@ -2178,6 +2180,7 @@ pub async fn run_vote(
             .unwrap_or_default();
         let vote_counts = running_write.replay_vote_counts(&result.vote_counts);
         let weighted_vote_counts = running_write.replay_vote_counts(&result.weighted_vote_counts);
+        let thief_steal = running_write.replay_text_results(&result.thief_steal_results);
         running_write.record_replay_event(
             "nomination_vote_resolved",
             None,
@@ -2191,11 +2194,13 @@ pub async fn run_vote(
                 "madam_seduced_user_ids": result.madam_seduced.iter().map(|player| player.user_id).collect::<Vec<_>>(),
                 "madam_newly_contacted_user_ids": result.madam_newly_contacted.iter().map(|player| player.user_id).collect::<Vec<_>>(),
                 "blocked_voter_user_ids": result.blocked_voters.iter().map(|player| player.user_id).collect::<Vec<_>>(),
+                "thief_steal": thief_steal,
             }),
         );
         result
     };
     handle_madam_seduction_result(ctx, data, running, &vote_result).await;
+    deliver_thief_steal_results(ctx, data, running, &vote_result).await;
     sync_cult_team_channel_access(ctx, data, running).await;
     sync_lover_chat_access(ctx, data, running).await;
     let vote_summary = {
@@ -2473,6 +2478,28 @@ pub async fn run_vote(
     )
     .await?;
     Ok(())
+}
+
+/// 도벽 결과는 투표가 끝난 뒤에야 도둑에게 전달된다. 마피아 직업을 훔쳐 접선한
+/// 도둑에게는 마피아 채널 접근도 함께 열어준다.
+async fn deliver_thief_steal_results(
+    ctx: &serenity::Context,
+    data: &Data,
+    running: &Arc<RwLock<RunningGame>>,
+    vote_result: &VoteResult,
+) {
+    for (thief_id, message) in &vote_result.thief_steal_results {
+        let player = running.read().await.game.get_player(*thief_id).cloned();
+        let Some(player) = player.filter(|player| player.alive) else {
+            continue;
+        };
+        if !send_player_secret(ctx, running, &player, message.clone(), vec![]).await {
+            eprintln!("failed to deliver thief steal result: user_id={thief_id}");
+        }
+    }
+    for thief in &vote_result.thief_newly_contacted {
+        grant_private_role_member_access(ctx, data, running, Role::Mafia, thief).await;
+    }
 }
 
 fn terrorist_execution_message(terrorist: &Player, target: &Player) -> String {

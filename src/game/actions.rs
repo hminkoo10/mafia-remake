@@ -153,23 +153,26 @@ impl MafiaGame {
         ))
     }
 
-    pub fn submit_thief_steal(&mut self, actor_id: u64, target_id: u64) -> Result<String> {
-        if self.phase != Phase::Vote {
-            bail!("도둑의 도벽은 투표 시간에만 사용할 수 있습니다.");
+    /// 도벽 결산. 투표 중에는 대상만 기록되고(마지막 지목이 대상), 결과는 투표가
+    /// 끝난 뒤에 전달된다 — 투표 중 대상을 바꿔가며 여러 직업을 알아내는 것을 막는다.
+    /// 반환: (도둑에게 보낼 결과 메시지, 이번에 마피아팀과 새로 접선했는지).
+    pub(crate) fn resolve_thief_steal(
+        &mut self,
+        actor_id: u64,
+        target_id: u64,
+    ) -> Option<(String, bool)> {
+        let actor = self.get_player(actor_id)?.clone();
+        if actor.role != Role::Thief
+            || !actor.alive
+            || self.is_frog(&actor)
+            || actor_id == target_id
+            || self.thief_used_days.get(&actor_id) == Some(&self.day_number)
+        {
+            return None;
         }
-        let actor = self.require_alive(actor_id)?.clone();
-        if actor.role != Role::Thief {
-            bail!("도둑만 도벽을 사용할 수 있습니다.");
-        }
-        if self.is_frog(&actor) {
-            bail!("개구리 상태에서는 능력을 사용할 수 없습니다.");
-        }
-        if self.thief_used_days.get(&actor_id) == Some(&self.day_number) {
-            bail!("오늘은 이미 도벽을 사용했습니다.");
-        }
-        let target = self.require_alive(target_id)?.clone();
-        if actor_id == target_id {
-            bail!("도둑은 자기 자신을 훔칠 수 없습니다.");
+        let target = self.get_player(target_id)?.clone();
+        if !target.alive {
+            return None;
         }
         self.thief_used_days.insert(actor_id, self.day_number);
         self.thief_stolen_roles.insert(actor_id, target.role);
@@ -197,7 +200,7 @@ impl MafiaGame {
             self.record_rating_event(actor_id, 2, "도벽으로 마피아팀 접선");
             lines.push("[교련] 마피아 직업을 훔쳐 마피아팀과 접선했습니다.".to_string());
         }
-        Ok(lines.join("\n"))
+        Some((lines.join("\n"), contacted_now))
     }
 
     pub fn submit_night_action(&mut self, actor_id: u64, target_id: Option<u64>) -> Result<String> {

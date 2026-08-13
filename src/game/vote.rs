@@ -43,14 +43,49 @@ impl MafiaGame {
         }
         self.day_votes.insert(voter.user_id, Some(target.user_id));
         let mut lines = vec![format!("투표 대상: {}", target.name)];
+        // 도벽은 투표 종료 시 마지막 지목 대상에게 적용된다. 여기서 결과를 주면
+        // 투표를 바꿔가며 여러 명의 직업을 연속으로 알아낼 수 있어 결과를 미룬다.
         if voter.role == Role::Thief
             && voter.user_id != target.user_id
             && !self.is_frog(&voter)
             && self.thief_used_days.get(&voter.user_id) != Some(&self.day_number)
         {
-            lines.push(self.submit_thief_steal(voter.user_id, target.user_id)?);
+            lines.push(
+                "[도벽] 투표가 끝나면 마지막으로 지목한 대상의 능력을 훔칩니다. 결과는 투표 종료 후에 전달됩니다."
+                    .to_string(),
+            );
         }
         Ok(lines.join("\n\n"))
+    }
+
+    /// 투표 종료 시 도둑들의 도벽을 최종 지목 대상으로 결산한다.
+    fn resolve_thief_steals(
+        &mut self,
+        live_votes: &HashMap<u64, Option<u64>>,
+    ) -> (HashMap<u64, String>, Vec<crate::model::Player>) {
+        let mut results = HashMap::new();
+        let mut newly_contacted = Vec::new();
+        let thief_votes = live_votes
+            .iter()
+            .filter_map(|(voter_id, target_id)| Some((*voter_id, (*target_id)?)))
+            .filter(|(voter_id, _)| {
+                self.get_player(*voter_id)
+                    .is_some_and(|voter| voter.role == Role::Thief)
+            })
+            .collect::<Vec<_>>();
+        for (thief_id, target_id) in thief_votes {
+            let Some((message, contacted_now)) = self.resolve_thief_steal(thief_id, target_id)
+            else {
+                continue;
+            };
+            results.insert(thief_id, message);
+            if contacted_now {
+                if let Some(thief) = self.get_player(thief_id).cloned() {
+                    newly_contacted.push(thief);
+                }
+            }
+        }
+        (results, newly_contacted)
     }
 
     pub fn resolve_nomination_vote(&mut self) -> Result<VoteResult> {
@@ -74,12 +109,15 @@ impl MafiaGame {
             .cloned()
             .collect::<Vec<_>>();
         let (madam_seduced, madam_newly_contacted) = self.apply_madam_seduction(&live_votes);
+        let (thief_steal_results, thief_newly_contacted) = self.resolve_thief_steals(&live_votes);
         if live_votes.is_empty() {
             self.advance_to_next_night();
             return Ok(VoteResult {
                 blocked_voters,
                 madam_seduced,
                 madam_newly_contacted,
+                thief_steal_results,
+                thief_newly_contacted,
                 ..Default::default()
             });
         }
@@ -104,6 +142,8 @@ impl MafiaGame {
                 madam_seduced,
                 madam_newly_contacted,
                 blocked_voters,
+                thief_steal_results,
+                thief_newly_contacted,
                 ..Default::default()
             });
         }
@@ -116,6 +156,8 @@ impl MafiaGame {
                 madam_seduced,
                 madam_newly_contacted,
                 blocked_voters,
+                thief_steal_results,
+                thief_newly_contacted,
                 ..Default::default()
             });
         }
@@ -128,6 +170,8 @@ impl MafiaGame {
             madam_seduced,
             madam_newly_contacted,
             blocked_voters,
+            thief_steal_results,
+            thief_newly_contacted,
             ..Default::default()
         })
     }
