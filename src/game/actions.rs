@@ -67,48 +67,35 @@ impl MafiaGame {
         if actor_id == target_id {
             bail!("자경단원은 자기 자신을 조사할 수 없습니다.");
         }
-        self.vigilante_pending_results.insert(actor_id, target_id);
         self.vigilante_investigation_used_ids.insert(actor_id);
         self.mark_rating_action(actor_id);
-        Ok(format!("숙청 조사 대상: {}", target.name))
-    }
-
-    pub fn consume_vigilante_results(&mut self) -> HashMap<u64, String> {
-        let pending = std::mem::take(&mut self.vigilante_pending_results);
-        let mut results = HashMap::new();
-        let mut deceived_fraudsters: Vec<(u64, String)> = Vec::new();
-        for (actor_id, target_id) in pending {
-            let Some(actor) = self.get_player(actor_id).cloned() else {
-                continue;
-            };
-            let Some(target) = self.get_player(target_id).cloned() else {
-                continue;
-            };
-            if !actor.alive {
-                continue;
-            }
-            let result_text = if self.is_known_mafia_team(&target) {
-                self.vigilante_known_enemy_ids
-                    .entry(actor_id)
-                    .or_default()
-                    .insert(target_id);
-                self.record_rating_event(actor_id, 3, "숙청 조사로 마피아팀 확인");
-                "마피아팀입니다"
-            } else {
-                "마피아팀이 아닙니다"
-            };
+        // 경찰 계열 공통 규칙: 조사 결과는 제출 즉시 나오고, 조사는 반복할 수 없다
+        // (숙청 조사는 원래 게임당 1회). 변장 사기꾼에게 속은 알림은 밤 시작에 전달한다.
+        let result_text = if self.is_known_mafia_team(&target) {
+            self.vigilante_known_enemy_ids
+                .entry(actor_id)
+                .or_default()
+                .insert(target_id);
+            self.record_rating_event(actor_id, 3, "숙청 조사로 마피아팀 확인");
+            "마피아팀입니다"
+        } else {
             if self.is_disguised_fraudster(&target)
                 && !self.fraudster_contacted.contains(&target.user_id)
-                && !self.is_known_mafia_team(&target)
             {
-                deceived_fraudsters.push((target.user_id, actor.name.clone()));
+                self.pending_deception_notices
+                    .push((target.user_id, actor.name.clone()));
             }
-            results.insert(
-                actor_id,
-                format!("[숙청] {} 님은 **{}**.", target.name, result_text),
-            );
-        }
-        self.append_fraud_deception_notices(&mut results, deceived_fraudsters);
+            "마피아팀이 아닙니다"
+        };
+        Ok(format!("[숙청] {} 님은 **{}**.", target.name, result_text))
+    }
+
+    /// 낮 조사(숙청 조사)가 변장 사기꾼을 평가해 쌓인 "속임" 알림을 밤 시작에
+    /// 전달할 맵으로 꺼낸다.
+    pub fn consume_vigilante_results(&mut self) -> HashMap<u64, String> {
+        let pending = std::mem::take(&mut self.pending_deception_notices);
+        let mut results = HashMap::new();
+        self.append_fraud_deception_notices(&mut results, pending);
         results
     }
 
@@ -439,6 +426,8 @@ impl MafiaGame {
         self_error: &str,
         label: &str,
     ) -> Result<String> {
+        // 경찰 계열 공통 규칙: 결과는 제출 즉시 나오고, 나온 뒤에는 대상을 바꿀 수
+        // 없다. 즉시 결과가 나오므로 1회용 소모도 제출 시점에 확정한다.
         if self.inspector_used_ids.contains(&actor_id) {
             bail!("형사 수사는 게임 중 한 번만 사용할 수 있습니다. 이미 사용했습니다.");
         }
@@ -451,7 +440,31 @@ impl MafiaGame {
             Some(self_error),
             label,
         )?;
-        Ok(format!("{result}\n[형사 수사는 1회용입니다.]"))
+        self.inspector_used_ids.insert(actor_id);
+        let immediate = self
+            .inspector_targets
+            .get(&actor_id)
+            .copied()
+            .and_then(|resolved_target_id| {
+                let actor = self.get_player(actor_id)?;
+                let target = self.get_player(resolved_target_id)?;
+                Some(if self.team_key(actor) == self.team_key(target) {
+                    format!(
+                        "[{}님의 직업은 {}입니다.]",
+                        target.name,
+                        self.visible_role(target).value()
+                    )
+                } else {
+                    format!(
+                        "[{}님은 당신과 다른 팀이라 직업을 알 수 없습니다.]",
+                        target.name
+                    )
+                })
+            })
+            .unwrap_or_default();
+        Ok(format!(
+            "{result}\n{immediate}\n[형사 수사는 1회용이며, 이번 밤에는 대상을 바꿀 수 없습니다.]"
+        ))
     }
 
     fn submit_nurse_action(&mut self, actor_id: u64, target_id: Option<u64>) -> Result<String> {

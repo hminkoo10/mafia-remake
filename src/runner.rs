@@ -252,9 +252,9 @@ pub fn role_short_guide(role: Role) -> &'static str {
             "밤마다 한 명을 조사해 즉시 결과를 확인합니다. 대상은 제출 후 바꿀 수 없습니다."
         }
         Role::Agent => "밤마다 시민팀 지령 정보를 받습니다.",
-        Role::Vigilante => "낮에 조사하고 밤에 숙청할 수 있습니다.",
+        Role::Vigilante => "낮에 조사(1회, 즉시 결과)하고 밤에 숙청할 수 있습니다.",
         Role::Inspector => {
-            "게임 중 한 번만 수사할 수 있고, 같은 팀이면 직업을 확인하며 대상에게 자신의 정체를 알립니다."
+            "게임 중 한 번만 수사할 수 있고, 결과는 제출 즉시 나옵니다. 같은 팀이면 직업을 확인하며 대상에게 자신의 정체를 알립니다."
         }
         Role::Detective => "밤 행동의 이동 경로를 추적합니다.",
         Role::CivilServant => {
@@ -1203,7 +1203,7 @@ pub fn civil_servant_query_components(
 pub fn night_action_notice(role: Role) -> Option<&'static str> {
     match role {
         Role::Inspector => Some(
-            "**이 수사는 1회용입니다.** 게임 중 한 번만 사용할 수 있으니 대상을 신중히 고르세요.",
+            "**이 수사는 1회용입니다.** 게임 중 한 번만 사용할 수 있고, 결과는 제출 즉시 나오며 대상을 바꿀 수 없습니다.",
         ),
         Role::Priest => Some("**이 소생은 1회용입니다.** 게임 중 한 번만 사용할 수 있습니다."),
         Role::Police => {
@@ -1400,7 +1400,7 @@ pub fn night_placeholder(role: Role) -> &'static str {
         Role::Doctor => "보호할 대상을 선택하세요",
         Role::Nurse => "처방/치료 대상을 선택하세요",
         Role::Police => "조사할 대상을 선택하세요 (밤마다 1회, 변경 불가)",
-        Role::Inspector => "수사할 대상을 선택하세요 (1회용)",
+        Role::Inspector => "수사할 대상을 선택하세요 (1회용, 변경 불가)",
         Role::CivilServant => "조회할 직업을 선택하세요",
         Role::Vigilante => "숙청할 대상을 선택하세요",
         Role::Hypnotist => "최면을 걸 대상을 선택하세요",
@@ -1484,7 +1484,6 @@ pub async fn send_private_result_maps(
 ) {
     let mut maps = vec![
         result.detective_results.clone(),
-        result.inspector_results.clone(),
         result.inspector_target_notices.clone(),
         result.civil_servant_results.clone(),
         result.paparazzi_results.clone(),

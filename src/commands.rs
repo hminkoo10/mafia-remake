@@ -2023,13 +2023,7 @@ pub async fn handle_vigilante(
         "vigilante_investigation",
         "숙청 조사 완료",
         |game, actor, target| game.submit_vigilante_investigation(actor, target),
-        |game, actor, message| {
-            let investigation = game
-                .consume_vigilante_results()
-                .remove(&actor)
-                .unwrap_or_else(|| "조사 결과를 확인하지 못했습니다.".to_string());
-            format!("{message}\n\n{investigation}")
-        },
+        |_game, _actor, message| message,
     )
     .await
 }

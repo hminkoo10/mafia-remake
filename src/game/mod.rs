@@ -44,7 +44,9 @@ pub struct MafiaGame {
     /// 파파라치 이슈: 이슈가 이미 발동한 day_number들. 하루의 첫 직업 정보만 공유된다.
     pub paparazzi_shared_days: HashSet<u32>,
     pub vigilante_targets: HashMap<u64, u64>,
-    pub vigilante_pending_results: HashMap<u64, u64>,
+    /// 낮 조사가 변장 사기꾼을 평가해 생긴 "속임" 알림 (사기꾼 id, 조사자 이름).
+    /// 밤 시작에 전달된다.
+    pub pending_deception_notices: Vec<(u64, String)>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -219,7 +221,7 @@ impl MafiaGame {
             civil_servant_targets: HashMap::new(),
             paparazzi_shared_days: HashSet::new(),
             vigilante_targets: HashMap::new(),
-            vigilante_pending_results: HashMap::new(),
+            pending_deception_notices: Vec::new(),
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -2404,16 +2406,22 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
 
-        // 밤 중에는 대상을 바꿀 수 있다.
-        game.submit_night_action(2, Some(3)).unwrap();
-        game.submit_night_action(2, Some(4)).unwrap();
+        // 경찰 계열 공통 규칙: 결과가 제출 즉시 나오므로 대상을 바꿀 수 없다.
+        let immediate = game.submit_night_action(2, Some(3)).unwrap();
+        assert!(
+            immediate.contains("[Three님의 직업은 의사입니다.]"),
+            "{immediate}"
+        );
+        assert!(game.inspector_used_ids.contains(&2));
+        let error = game.submit_night_action(2, Some(4)).unwrap_err();
+        assert!(error.to_string().contains("한 번만"), "{error}");
+        // 밤 종료 시에도 결과 기록(리플레이/대상 알림)은 그대로 남는다.
         assert!(
             game.resolve_night()
                 .unwrap()
                 .inspector_results
                 .contains_key(&2)
         );
-        assert!(game.inspector_used_ids.contains(&2));
 
         game.phase = Phase::Night;
         assert!(
@@ -2423,6 +2431,52 @@ mod tests {
                 .any(|actor| actor.user_id == 2)
         );
         assert!(game.submit_night_action(2, Some(3)).is_err());
+    }
+
+    /// 다른 팀 수사도 즉시 "알 수 없음"이 나오고 1회용은 소모된다.
+    #[test]
+    fn inspector_gets_an_immediate_no_result_for_another_team() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Inspector),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        let immediate = game.submit_night_action(2, Some(1)).unwrap();
+        assert!(
+            immediate.contains("[One님은 당신과 다른 팀이라 직업을 알 수 없습니다.]"),
+            "{immediate}"
+        );
+        assert!(game.inspector_used_ids.contains(&2));
+    }
+
+    /// 자경단원 숙청 조사도 제출 즉시 결과가 나온다.
+    #[test]
+    fn vigilante_investigation_returns_the_result_immediately() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Vigilante]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Vigilante),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.phase = Phase::Day;
+
+        let citizen_result = game.submit_vigilante_investigation(2, 3).unwrap();
+        assert!(
+            citizen_result.contains("[숙청] Three 님은 **마피아팀이 아닙니다**."),
+            "{citizen_result}"
+        );
+        // 게임 중 1회라 재조사는 막힌다.
+        assert!(game.submit_vigilante_investigation(2, 1).is_err());
     }
 
     /// 다른 팀을 수사하면 결과가 없지만 1회용은 그대로 소모된다.
