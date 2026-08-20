@@ -363,6 +363,77 @@ pub fn korean_ro_particle(word: &str) -> &'static str {
     }
 }
 
+/// 역할과 별개로 게임마다 배정되는 개인 티어 능력. 2티어는 능력 없음이고,
+/// 한 게임 안에서 같은 능력이 두 명에게 배정되지 않는다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TierAbility {
+    /// 3티어: 패배 시 레이팅 손실 10% 완화
+    RatingShield,
+    /// 3티어: 게임 채널 슬로우모드 무시
+    SlowmodeBypass,
+    /// 4티어 마피아팀: 경찰을 공격하면 보호를 무시하고 처형
+    Lawless,
+    /// 4티어 마피아팀: 첫날 밤 공격이 자기 자신에게 쓴 치료를 무시
+    NightRaid,
+    /// 4티어 마피아팀: 마피아팀이 죽인 대상의 직업을 알아내고, 시민팀이면 '시민'으로 만든다
+    Cleanup,
+    /// 4티어 마피아팀: 투표 처형 시 도주, 다음날 투표 시작 때 사망
+    Escape,
+    /// 4티어 시민팀: 밤에 유언 작성, 밤에 죽으면 전체 공개
+    LastWill,
+}
+
+impl TierAbility {
+    pub const fn value(self) -> &'static str {
+        match self {
+            Self::RatingShield => "가호",
+            Self::SlowmodeBypass => "달변",
+            Self::Lawless => "무법",
+            Self::NightRaid => "야습",
+            Self::Cleanup => "수습",
+            Self::Escape => "도주",
+            Self::LastWill => "유언",
+        }
+    }
+
+    pub const fn tier(self) -> u8 {
+        match self {
+            Self::RatingShield | Self::SlowmodeBypass => 3,
+            _ => 4,
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::RatingShield => "패배해도 레이팅 손실이 10% 줄어듭니다.",
+            Self::SlowmodeBypass => "게임 채널의 슬로우모드를 무시하고 채팅할 수 있습니다.",
+            Self::Lawless => {
+                "마피아팀의 밤 공격이 경찰을 노리면 치료를 무시하고 무조건 처형합니다."
+            }
+            Self::NightRaid => "첫날 밤 마피아팀의 공격이 자기 자신에게 쓴 치료를 무시합니다.",
+            Self::Cleanup => {
+                "마피아팀이 죽인 대상의 직업을 알아내고, 시민팀이면 그 직업을 '시민'으로 바꿔 숨깁니다."
+            }
+            Self::Escape => {
+                "투표로 처형될 때 도주해 살아남지만, 다음날 투표가 시작될 때 사망합니다."
+            }
+            Self::LastWill => {
+                "밤에 유언을 작성할 수 있고, 밤에 사망하면 작성한 유언이 모두에게 공개됩니다."
+            }
+        }
+    }
+}
+
+pub const TIER3_ABILITIES: &[TierAbility] =
+    &[TierAbility::RatingShield, TierAbility::SlowmodeBypass];
+pub const TIER4_MAFIA_ABILITIES: &[TierAbility] = &[
+    TierAbility::Lawless,
+    TierAbility::NightRaid,
+    TierAbility::Cleanup,
+    TierAbility::Escape,
+];
+pub const TIER4_CITIZEN_ABILITIES: &[TierAbility] = &[TierAbility::LastWill];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractorGuessRoleGroup {
     Citizen,
@@ -449,6 +520,10 @@ pub struct NightResult {
     pub fraudster_contacts: Vec<u64>,
     /// [불침번] 군인이 막아낸 능력 알림.
     pub soldier_watch_results: std::collections::HashMap<u64, String>,
+    /// 티어 능력(무법·야습·수습) 활약 알림.
+    pub tier_ability_results: std::collections::HashMap<u64, String>,
+    /// 밤에 사망한 유언 보유자의 (이름, 유언) — 아침에 전체 공개.
+    pub published_wills: Vec<(String, String)>,
     pub spy_results: std::collections::HashMap<u64, String>,
     pub spy_contacts: Vec<u64>,
     pub contractor_results: std::collections::HashMap<u64, String>,
@@ -503,6 +578,9 @@ pub struct VoteResult {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConfirmVoteResult {
     pub executed: Option<Player>,
+    /// [도주] 처형 대신 도주한 플레이어. 다음날 투표 시작 때 사망한다.
+    #[serde(default)]
+    pub escaped: Option<Player>,
     pub approved: bool,
     pub tied: bool,
     pub blocked_by_politician: bool,

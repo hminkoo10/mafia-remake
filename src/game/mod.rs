@@ -13,7 +13,7 @@ pub mod actors;
 pub mod resolve;
 pub mod vote;
 
-use crate::model::{Phase, Player, Role, Winner};
+use crate::model::{Phase, Player, Role, TierAbility, Winner};
 use crate::system_random;
 use anyhow::{Result, bail};
 use rand::{RngCore, seq::SliceRandom};
@@ -51,6 +51,16 @@ pub struct MafiaGame {
     pub pending_soldier_watch_notices: Vec<(u64, String)>,
     /// [불침번]에 막혀 변장에 실패한 사기꾼 → 막아낸 군인.
     pub fraudster_blocked_by_soldier: HashMap<u64, u64>,
+    /// 개인 티어 (2/3/4). 능력은 tier_abilities에 별도 저장.
+    pub player_tiers: HashMap<u64, u8>,
+    /// 티어 능력 보유자. 게임 내 능력별 최대 1명.
+    pub tier_abilities: HashMap<u64, TierAbility>,
+    /// [유언] 작성된 유언.
+    pub last_wills: HashMap<u64, String>,
+    /// [도주] 도주한 플레이어 → 도주한 날. 다음날 투표 시작 때 사망 처리한다.
+    pub escaped_on_day: HashMap<u64, u32>,
+    /// 티어 능력(무법·야습) 발동 알림 대기열. 밤 결산 때 전달한다.
+    pub pending_tier_ability_notices: Vec<(u64, String)>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -228,6 +238,11 @@ impl MafiaGame {
             pending_deception_notices: Vec::new(),
             pending_soldier_watch_notices: Vec::new(),
             fraudster_blocked_by_soldier: HashMap::new(),
+            player_tiers: HashMap::new(),
+            tier_abilities: HashMap::new(),
+            last_wills: HashMap::new(),
+            escaped_on_day: HashMap::new(),
+            pending_tier_ability_notices: Vec::new(),
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -299,6 +314,7 @@ impl MafiaGame {
         };
         game.assign_mercenary_clients();
         game.assign_fraudster_disguises();
+        game.assign_tier_abilities();
         Ok(game)
     }
 
@@ -588,6 +604,89 @@ impl MafiaGame {
                 }
             }
         }
+    }
+
+    /// 개인 티어 배정: 2티어 50% / 3티어 35% / 4티어 15%. 능력은 게임 내에서
+    /// 중복되지 않으며, 해당 티어의 풀이 소진되면 아래 티어로 내려간다.
+    fn assign_tier_abilities(&mut self) {
+        use crate::model::{TIER3_ABILITIES, TIER4_CITIZEN_ABILITIES, TIER4_MAFIA_ABILITIES};
+        let mut order = self.players.clone();
+        let mut rng = system_random::rng();
+        order.shuffle(&mut rng);
+        let mut used: HashSet<TierAbility> = HashSet::new();
+        for player in order {
+            let roll = rng.next_u64() % 100;
+            let mut tier: u8 = if roll < 50 {
+                2
+            } else if roll < 85 {
+                3
+            } else {
+                4
+            };
+            let mut ability = None;
+            if tier == 4 {
+                let pool: &[TierAbility] = if self.is_mafia_team(&player) {
+                    TIER4_MAFIA_ABILITIES
+                } else {
+                    TIER4_CITIZEN_ABILITIES
+                };
+                ability = pick_unused_ability(pool, &used, &mut rng);
+                if ability.is_none() {
+                    tier = 3;
+                }
+            }
+            if tier == 3 && ability.is_none() {
+                ability = pick_unused_ability(TIER3_ABILITIES, &used, &mut rng);
+                if ability.is_none() {
+                    tier = 2;
+                }
+            }
+            self.player_tiers.insert(player.user_id, tier);
+            if let Some(ability) = ability {
+                used.insert(ability);
+                self.tier_abilities.insert(player.user_id, ability);
+            }
+        }
+    }
+
+    /// 살아있는 보유자가 있는지 (마피아팀 패시브 판정용).
+    pub(crate) fn mafia_team_has_tier_ability(&self, ability: TierAbility) -> bool {
+        self.tier_abilities.iter().any(|(user_id, held)| {
+            *held == ability
+                && self.get_player(*user_id).is_some_and(|player| {
+                    player.alive && self.is_mafia_team(player) && !self.is_frog(player)
+                })
+        })
+    }
+
+    pub fn player_tier_ability(&self, user_id: u64) -> Option<TierAbility> {
+        self.tier_abilities.get(&user_id).copied()
+    }
+
+    /// 살아있는 마피아팀 보유자의 id.
+    pub(crate) fn mafia_tier_ability_holder(&self, ability: TierAbility) -> Option<u64> {
+        self.tier_abilities
+            .iter()
+            .find(|(user_id, held)| {
+                **held == ability
+                    && self.get_player(**user_id).is_some_and(|player| {
+                        player.alive && self.is_mafia_team(player) && !self.is_frog(player)
+                    })
+            })
+            .map(|(user_id, _)| *user_id)
+    }
+
+    /// 대상에게 걸린 치료가 전부 자기 자신이 쓴 것인지 ([야습] 판정).
+    pub(crate) fn protection_is_self_heal_only(&self, target_id: u64) -> bool {
+        let healers = self
+            .doctor_targets
+            .iter()
+            .chain(&self.nurse_targets)
+            .chain(&self.nurse_prescription_targets)
+            .filter(|(_, healed_id)| **healed_id == target_id)
+            .map(|(healer_id, _)| *healer_id)
+            .collect::<Vec<_>>();
+        !healers.is_empty() && healers.iter().all(|healer_id| *healer_id == target_id)
     }
 
     /// 역할 안내 DM용: 사기꾼의 사기 대상과 변장 직업.
@@ -1179,6 +1278,20 @@ enum RoleActionMap {
     Witch,
     Terrorist,
     Mercenary,
+}
+
+fn pick_unused_ability(
+    pool: &[TierAbility],
+    used: &std::collections::HashSet<TierAbility>,
+    rng: &mut impl rand::RngCore,
+) -> Option<TierAbility> {
+    let mut candidates = pool
+        .iter()
+        .copied()
+        .filter(|ability| !used.contains(ability))
+        .collect::<Vec<_>>();
+    candidates.shuffle(rng);
+    candidates.into_iter().next()
 }
 
 const ROLE_ASSIGNMENT_RANDOM_JITTER: u64 = 50_000;
@@ -1871,6 +1984,237 @@ mod tests {
                 .any(|player| player.user_id == 2)
         );
         assert!(result.agent_results.contains_key(&2));
+    }
+
+    /// 티어 배정: 모든 플레이어가 2~4티어를 받고, 능력은 게임 내 중복이 없다.
+    #[test]
+    fn tier_abilities_are_assigned_uniquely() {
+        for _ in 0..20 {
+            let players = (1..=10)
+                .map(|id| (id as u64, format!("P{id}")))
+                .collect::<Vec<_>>();
+            let game = MafiaGame::new(players, 2, 1, 1, Vec::new()).unwrap();
+
+            assert_eq!(game.player_tiers.len(), 10);
+            for tier in game.player_tiers.values() {
+                assert!((2..=4).contains(tier), "{tier}");
+            }
+            // 능력 중복 없음
+            let abilities = game.tier_abilities.values().collect::<Vec<_>>();
+            let unique = abilities.iter().collect::<std::collections::HashSet<_>>();
+            assert_eq!(abilities.len(), unique.len());
+            // 4티어 능력의 팀 제약
+            for (user_id, ability) in &game.tier_abilities {
+                let player = game.get_player(*user_id).unwrap();
+                match ability {
+                    TierAbility::Lawless
+                    | TierAbility::NightRaid
+                    | TierAbility::Cleanup
+                    | TierAbility::Escape => {
+                        assert!(game.is_mafia_team(player), "{ability:?}")
+                    }
+                    TierAbility::LastWill => assert!(!game.is_mafia_team(player)),
+                    _ => {}
+                }
+                // 능력 보유 = 3티어 이상
+                assert!(game.player_tiers[user_id] >= 3);
+            }
+        }
+    }
+
+    /// [무법] 경찰을 노린 공격은 치료를 무시한다.
+    #[test]
+    fn lawless_pierces_doctor_protection_on_police() {
+        let mut game = MafiaGame::new(basic_players(), 1, 1, 1, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Police),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.player_tiers.insert(1, 4);
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Lawless);
+
+        game.submit_night_action(3, Some(2)).unwrap(); // 의사가 경찰 보호
+        game.submit_night_action(1, Some(2)).unwrap(); // 마피아가 경찰 공격
+        let result = game.resolve_night().unwrap();
+
+        assert!(
+            result
+                .killed_players
+                .iter()
+                .any(|player| player.user_id == 2),
+            "{:?}",
+            result.killed_players
+        );
+        assert!(
+            result
+                .tier_ability_results
+                .get(&1)
+                .is_some_and(|text| text.contains("[무법]")),
+            "{:?}",
+            result.tier_ability_results
+        );
+    }
+
+    /// [야습] 첫날 밤 자가 치료만 무시한다. 남이 치료해 준 경우는 못 뚫는다.
+    #[test]
+    fn night_raid_pierces_only_self_heal_on_night_one() {
+        let mut game = MafiaGame::new(basic_players(), 1, 1, 1, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Police),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::NightRaid);
+
+        // 의사 자가 치료 → 야습이 뚫는다.
+        game.submit_night_action(3, Some(3)).unwrap();
+        game.submit_night_action(1, Some(3)).unwrap();
+        let result = game.resolve_night().unwrap();
+        assert!(
+            result
+                .killed_players
+                .iter()
+                .any(|player| player.user_id == 3),
+            "{:?}",
+            result.killed_players
+        );
+    }
+
+    /// [수습] 마피아팀이 죽인 시민팀의 직업이 '시민'으로 바뀌고 보유자가 원 직업을 안다.
+    #[test]
+    fn cleanup_hides_the_victims_role_and_informs_the_holder() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 1, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Police),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Cleanup);
+
+        game.submit_night_action(1, Some(3)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(
+            result
+                .tier_ability_results
+                .get(&1)
+                .is_some_and(|text| text.contains("의사")),
+            "{:?}",
+            result.tier_ability_results
+        );
+        // 발표용 사망자 목록과 실제 직업 모두 '시민'으로 바뀐다.
+        assert_eq!(
+            result
+                .killed_players
+                .iter()
+                .find(|player| player.user_id == 3)
+                .map(|player| player.role),
+            Some(Role::Citizen)
+        );
+        assert_eq!(game.get_player(3).unwrap().role, Role::Citizen);
+    }
+
+    /// [도주] 처형 대신 도주하고, 다음날 투표 시작 때 사망한다.
+    #[test]
+    fn escape_defers_the_execution_to_the_next_vote() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 1, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Police),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Escape);
+
+        // 1을 지목해 찬반 가결.
+        game.phase = Phase::Day;
+        game.start_vote().unwrap();
+        for voter in [2, 3, 4, 5] {
+            game.submit_day_vote(voter, Some(1)).unwrap();
+        }
+        game.resolve_nomination_vote().unwrap();
+        game.start_confirmation_vote().unwrap();
+        for voter in [2, 3, 4, 5] {
+            game.submit_confirmation_vote(voter, true).unwrap();
+        }
+        let confirm = game.resolve_confirmation_vote(1).unwrap();
+
+        assert!(confirm.executed.is_none());
+        assert_eq!(
+            confirm.escaped.as_ref().map(|player| player.user_id),
+            Some(1)
+        );
+        assert!(game.get_player(1).unwrap().alive);
+
+        // 다음날 투표 시작 → 사망.
+        game.phase = Phase::Day;
+        let executed = game.start_vote().unwrap();
+        assert_eq!(
+            executed
+                .iter()
+                .map(|player| player.user_id)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert!(!game.get_player(1).unwrap().alive);
+        // 도주는 1회뿐 — 능력은 소모됐다.
+        assert!(game.tier_abilities.get(&1).is_none());
+    }
+
+    /// [유언] 밤에 죽으면 유언이 공개된다. 살아있으면 공개되지 않는다.
+    #[test]
+    fn last_will_is_published_only_when_the_writer_dies_at_night() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 1, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Police),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(4, TierAbility::LastWill);
+
+        game.submit_last_will(4, "마피아는 1번입니다").unwrap();
+        // 유언 능력이 없는 사람은 작성 불가.
+        assert!(game.submit_last_will(5, "테스트").is_err());
+
+        // 첫 밤: 죽지 않음 → 공개 없음.
+        game.submit_night_action(1, Some(3)).unwrap();
+        let result = game.resolve_night().unwrap();
+        assert!(result.published_wills.is_empty());
+
+        // 다음 밤: 작성자가 죽음 → 공개.
+        game.phase = Phase::Night;
+        game.day_number += 1;
+        game.submit_night_action(1, Some(4)).unwrap();
+        let result = game.resolve_night().unwrap();
+        assert_eq!(
+            result.published_wills,
+            vec![("Four".to_string(), "마피아는 1번입니다".to_string())]
+        );
     }
 
     /// [불침번] 스파이가 군인을 첩보하면 정보가 막히고 군인이 스파이의 정체를 안다.

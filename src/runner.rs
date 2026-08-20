@@ -245,6 +245,29 @@ pub fn role_message(game: &MafiaGame, player: &Player) -> String {
             );
         }
     }
+    // 개인 티어 안내 (비공개).
+    let tier = game.player_tiers.get(&player.user_id).copied().unwrap_or(2);
+    match game.player_tier_ability(player.user_id) {
+        Some(ability) => {
+            message.push_str(&format!(
+                "
+
+당신의 티어: **{}티어**
+티어 능력 [{}]: {}",
+                tier,
+                ability.value(),
+                ability.description()
+            ));
+        }
+        None => {
+            message.push_str(&format!(
+                "
+
+당신의 티어: **{}티어** (티어 능력 없음)",
+                tier
+            ));
+        }
+    }
     // [불침번] 군인은 게임 시작 시 자신을 노린 사기를 막아낸 사실을 안다.
     if player.role == Role::Soldier {
         let blocked_fraudsters = game
@@ -651,6 +674,51 @@ pub async fn run_night(
         )
         .await?;
     }
+    // [유언] 보유자에게 매 밤 작성 버튼을 보낸다.
+    let will_holders = {
+        let running_read = running.read().await;
+        running_read
+            .game
+            .players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && running_read.game.player_tier_ability(player.user_id)
+                        == Some(mafia_remake::model::TierAbility::LastWill)
+                    && !running_read.game.is_frog(player)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for holder in will_holders {
+        let has_will = running
+            .read()
+            .await
+            .game
+            .last_wills
+            .contains_key(&holder.user_id);
+        let prompt = if has_will {
+            "이전에 작성한 유언이 있습니다. 다시 작성하면 덮어씁니다.\n밤에 사망하면 아침에 유언이 모두에게 공개됩니다."
+        } else {
+            "[유언] 밤 동안 유언을 작성할 수 있습니다.\n밤에 사망하면 아침에 유언이 모두에게 공개됩니다."
+        };
+        let _ = send_player_secret(
+            ctx,
+            running,
+            &holder,
+            prompt,
+            vec![serenity::CreateActionRow::Buttons(vec![
+                serenity::CreateButton::new(format!(
+                    "lastwill:{}:{}",
+                    guild_id.get(),
+                    holder.user_id
+                ))
+                .label("유언 작성")
+                .style(serenity::ButtonStyle::Secondary),
+            ])],
+        )
+        .await;
+    }
     let has_changeable_mafia_action = { running.write().await.game.has_changeable_mafia_action() };
     if has_changeable_mafia_action {
         upsert_private_role_status_message(ctx, running, Role::Mafia).await;
@@ -738,6 +806,8 @@ pub async fn run_night(
             "paparazzi": running_write.replay_text_results(&result.paparazzi_results),
             "fraudster": running_write.replay_text_results(&result.fraudster_results),
             "soldier_watch": running_write.replay_text_results(&result.soldier_watch_results),
+            "tier_ability": running_write.replay_text_results(&result.tier_ability_results),
+            "published_wills": result.published_wills.iter().map(|(name, will)| serde_json::json!({"name": name, "will": will})).collect::<Vec<_>>(),
             "spy": running_write.replay_text_results(&result.spy_results),
             "contractor": running_write.replay_text_results(&result.contractor_results),
             "witch": running_write.replay_text_results(&result.witch_results),
@@ -790,6 +860,7 @@ pub async fn run_night(
             &result.paparazzi_results,
             &result.fraudster_results,
             &result.soldier_watch_results,
+            &result.tier_ability_results,
             &result.spy_results,
             &result.contractor_results,
             &result.witch_results,
@@ -939,6 +1010,24 @@ pub async fn run_night(
                 .join("\n");
             message.push_str("\n\n연인 희생\n");
             message.push_str(&lover_lines);
+        }
+        if !result.published_wills.is_empty() {
+            let will_lines = result
+                .published_wills
+                .iter()
+                .map(|(name, will)| format!("- {}님의 유언: {}", name, will))
+                .collect::<Vec<_>>()
+                .join(
+                    "
+",
+                );
+            message.push_str(
+                "
+
+[유언 공개]
+",
+            );
+            message.push_str(&will_lines);
         }
         if !result.terrorist_retaliations.is_empty() {
             let retaliation_lines = result
@@ -1517,6 +1606,7 @@ pub async fn send_private_result_maps(
         result.paparazzi_results.clone(),
         result.fraudster_results.clone(),
         result.soldier_watch_results.clone(),
+        result.tier_ability_results.clone(),
         result.spy_results.clone(),
         result.contractor_results.clone(),
         result.witch_results.clone(),
@@ -2130,9 +2220,10 @@ pub async fn run_vote(
     running: &Arc<RwLock<RunningGame>>,
 ) -> Result<()> {
     let config = data.config.read().await.clone();
+    let escaped_executions;
     let (guild_id, vote_notify, seconds, alive) = {
         let mut running_write = running.write().await;
-        running_write.game.start_vote()?;
+        escaped_executions = running_write.game.start_vote()?;
         running_write.phase_deadline =
             Some(Instant::now() + Duration::from_secs(config.vote_seconds));
         running_write.day_chat_open = false;
@@ -2143,6 +2234,7 @@ pub async fn run_vote(
             &[],
             serde_json::json!({
                 "phase": "vote",
+                "escaped_executed_user_ids": escaped_executions.iter().map(|player| player.user_id).collect::<Vec<_>>(),
                 "duration_seconds": config.vote_seconds,
             }),
         );
@@ -2158,6 +2250,30 @@ pub async fn run_vote(
                 .collect::<Vec<_>>(),
         )
     };
+    // [도주] 전날 처형을 피해 도주한 플레이어는 투표 시작과 함께 사망한다.
+    if !escaped_executions.is_empty() {
+        apply_death_side_effects(ctx, data, running, &escaped_executions).await;
+        let lines = escaped_executions
+            .iter()
+            .map(|player| format!("[전날 도주했던 {}님이 처형당했습니다.]", player.name))
+            .collect::<Vec<_>>()
+            .join("\n");
+        send_game_embed(
+            ctx,
+            running,
+            lines,
+            "도주자 처형",
+            serenity::Colour::RED,
+            vec![],
+            true,
+            true,
+        )
+        .await?;
+        // 이 사망으로 승패가 갈렸으면 투표를 진행하지 않는다 (루프의 승자 발표가 처리).
+        if running.read().await.game.winner().is_some() {
+            return Ok(());
+        }
+    }
     upsert_game_status(ctx, running).await;
     set_game_channel_chat(ctx, data, running, false).await;
     let mut options = alive
@@ -2392,6 +2508,7 @@ pub async fn run_vote(
             serde_json::json!({
                 "nominee_user_id": nominee.user_id,
                 "executed_user_id": result.executed.as_ref().map(|player| player.user_id),
+                "escaped_user_id": result.escaped.as_ref().map(|player| player.user_id),
                 "extra_killed_user_ids": result.extra_killed.iter().map(|player| player.user_id).collect::<Vec<_>>(),
                 "approved": result.approved,
                 "tied": result.tied,
@@ -2437,7 +2554,17 @@ pub async fn run_vote(
     sync_cult_team_channel_access(ctx, data, running).await;
     sync_lover_chat_access(ctx, data, running).await;
     upsert_game_status(ctx, running).await;
-    let (message, color, include_dead) = if confirm_result.blocked_by_politician {
+    let (message, color, include_dead) = if let Some(escaped) = &confirm_result.escaped {
+        (
+            format!(
+                "[{}님이 도주했습니다!]
+찬반투표로 처형이 결정되었지만 {}님은 처형장을 탈출했습니다. 다음날 투표가 시작될 때 처형됩니다.{judge_notice}{summary_section}",
+                escaped.name, escaped.name
+            ),
+            serenity::Colour::ORANGE,
+            false,
+        )
+    } else if confirm_result.blocked_by_politician {
         (
             format!(
                 "찬반투표 결과, {} 님은 **정치인** 입니다.\n[정치인은 투표로 죽지 않습니다]\n\n{} 님은 처형되지 않고 밤으로 넘어갑니다.{judge_notice}{summary_section}",

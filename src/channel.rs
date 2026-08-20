@@ -1516,7 +1516,8 @@ pub fn game_rule_text(
         "사망자의 직업은 즉시 공개되지 않습니다."
     };
     format!(
-        "{}\n\n게임은 밤과 낮을 반복합니다.\n- 역할 설명: 전체 역할 설명은 `/역할설명`, 본인 역할 설명은 `/마피아능력`으로 확인할 수 있습니다.\n- 밤: 게임 채널 채팅과 반응이 비활성화되고, 밤 행동이 있는 역할은 DM으로 행동합니다.\n- 낮: 생존자는 자유롭게 토론합니다. 생존자 과반이 `바로 투표`를 누르면 토론을 끝내고 지목 투표로 넘어갑니다. 시간이 끝나면 생존자 과반으로 1분 연장을 정할 수 있고, 연장은 낮마다 1번만 가능합니다.\n- 마피아 수 공개: 아침 생존 마피아 수는 {}.\n- 투표: 생존자는 최후변론에 세울 사람 또는 스킵을 선택합니다. 지목자는 20초 동안 혼자 최후변론을 하고, 이후 찬반투표 과반 결과를 따릅니다.\n- 경찰 공개: 조사 성공 여부는 {}. 실제 조사 결과는 경찰에게만 전달됩니다.\n- 채팅: 낮 토론 슬로우모드는 {}초이며 최후변론 중에는 해제됩니다.\n- 사망자: {death_rule} 게임 채널 채팅/반응 권한은 제거되고 '{DEAD_PLAYER_ROLE}' 역할이 부여됩니다.\n\n승리 조건\n- 시민 진영: 모든 마피아를 제거하면 승리합니다.\n- 마피아 진영: 생존 마피아 수가 나머지 생존자 수 이상이면 승리합니다.\n- 교주팀: 교주팀 생존자가 비교주팀 생존자 이상이면 승리합니다.\n- 조커: 낮 투표로 처형되면 즉시 단독 승리합니다.",
+        "{}\n\n게임은 밤과 낮을 반복합니다.\n- 역할 설명: 전체 역할 설명은 `/역할설명`, 본인 역할 설명은 `/마피아능력`으로 확인할 수 있습니다.
+- 개인 티어: 게임마다 각자 2티어(50%)/3티어(35%)/4티어(15%)가 비공개로 배정됩니다. 3·4티어는 추가 능력을 하나 받고, 같은 능력은 한 게임에 한 명뿐입니다. 내 티어는 역할 DM에서 확인합니다.\n- 밤: 게임 채널 채팅과 반응이 비활성화되고, 밤 행동이 있는 역할은 DM으로 행동합니다.\n- 낮: 생존자는 자유롭게 토론합니다. 생존자 과반이 `바로 투표`를 누르면 토론을 끝내고 지목 투표로 넘어갑니다. 시간이 끝나면 생존자 과반으로 1분 연장을 정할 수 있고, 연장은 낮마다 1번만 가능합니다.\n- 마피아 수 공개: 아침 생존 마피아 수는 {}.\n- 투표: 생존자는 최후변론에 세울 사람 또는 스킵을 선택합니다. 지목자는 20초 동안 혼자 최후변론을 하고, 이후 찬반투표 과반 결과를 따릅니다.\n- 경찰 공개: 조사 성공 여부는 {}. 실제 조사 결과는 경찰에게만 전달됩니다.\n- 채팅: 낮 토론 슬로우모드는 {}초이며 최후변론 중에는 해제됩니다.\n- 사망자: {death_rule} 게임 채널 채팅/반응 권한은 제거되고 '{DEAD_PLAYER_ROLE}' 역할이 부여됩니다.\n\n승리 조건\n- 시민 진영: 모든 마피아를 제거하면 승리합니다.\n- 마피아 진영: 생존 마피아 수가 나머지 생존자 수 이상이면 승리합니다.\n- 교주팀: 교주팀 생존자가 비교주팀 생존자 이상이면 승리합니다.\n- 조커: 낮 투표로 처형되면 즉시 단독 승리합니다.",
         public_role_count_text(game),
         if config.reveal_morning_mafia_count {
             "공개됩니다"
@@ -1994,7 +1995,64 @@ pub async fn setup_game_channels(
     sync_cult_team_channel_access(ctx, data, running).await;
     create_memo_channels(ctx, running, roles, category).await?;
     create_shaman_chat_channel(ctx, running, roles, category).await?;
+    apply_slowmode_bypass_overwrites(ctx, running).await;
     Ok(())
+}
+
+/// [달변] 슬로우모드 무시: Discord는 메시지 관리 권한 보유자에게 슬로우모드를
+/// 적용하지 않으므로, 게임 채널에 한해 보유자에게 그 권한을 준다. 이 멤버는 게임
+/// 채널의 메시지를 관리(삭제/고정)할 수도 있게 되는 부작용이 있다 — 친구 서버
+/// 전제의 절충이다. cleanup_game에서 오버라이트를 제거한다.
+pub async fn apply_slowmode_bypass_overwrites(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+) {
+    let (channel_id, holder_ids) = {
+        let running_read = running.read().await;
+        (
+            running_read.channel_id,
+            slowmode_bypass_holder_ids(&running_read.game),
+        )
+    };
+    for user_id in holder_ids {
+        let overwrite = serenity::PermissionOverwrite {
+            allow: serenity::Permissions::MANAGE_MESSAGES,
+            deny: serenity::Permissions::empty(),
+            kind: serenity::PermissionOverwriteType::Member(serenity::UserId::new(user_id)),
+        };
+        apply_permission_if_changed(ctx, running, channel_id, overwrite).await;
+    }
+}
+
+pub fn slowmode_bypass_holder_ids(game: &MafiaGame) -> Vec<u64> {
+    game.tier_abilities
+        .iter()
+        .filter(|(_, ability)| **ability == mafia_remake::model::TierAbility::SlowmodeBypass)
+        .map(|(user_id, _)| *user_id)
+        .collect()
+}
+
+/// cleanup에서 [달변] 오버라이트를 제거한다.
+pub async fn remove_slowmode_bypass_overwrites(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+) {
+    let (channel_id, holder_ids) = {
+        let running_read = running.read().await;
+        (
+            running_read.channel_id,
+            slowmode_bypass_holder_ids(&running_read.game),
+        )
+    };
+    for user_id in holder_ids {
+        delete_permission_and_invalidate(
+            ctx,
+            running,
+            channel_id,
+            serenity::PermissionOverwriteType::Member(serenity::UserId::new(user_id)),
+        )
+        .await;
+    }
 }
 
 pub async fn hide_original_game_channel_for_anonymous(
@@ -4943,6 +5001,7 @@ pub async fn cleanup_game(
     // Block in-flight personal dead-chat creation before collecting channels to delete.
     running.write().await.game.phase = Phase::Ended;
     restore_channel_slowmode(ctx, running).await;
+    remove_slowmode_bypass_overwrites(ctx, running).await;
     restore_member_game_channel_chat(ctx, running).await;
     restore_game_channel_chat(ctx, running).await;
     restore_all_frog_game_channel_permissions(ctx, running).await;

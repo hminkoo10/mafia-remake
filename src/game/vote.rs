@@ -7,21 +7,36 @@
     clippy::type_complexity
 )]
 
-use crate::model::{ConfirmVoteResult, Phase, Role, VoteResult};
+use crate::model::{ConfirmVoteResult, Phase, Role, TierAbility, VoteResult};
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 
 use super::MafiaGame;
 
 impl MafiaGame {
-    pub fn start_vote(&mut self) -> Result<()> {
+    /// 투표 시작. [도주]로 전날 처형을 피한 플레이어는 이 시점에 사망 처리되어
+    /// 반환된다 (공개 발표용).
+    pub fn start_vote(&mut self) -> Result<Vec<crate::model::Player>> {
         if self.phase != Phase::Day {
             bail!("낮 단계에서만 투표를 시작할 수 있습니다.");
         }
         self.phase = Phase::Vote;
         self.day_votes.clear();
         self.confirm_votes.clear();
-        Ok(())
+        let due_ids = self
+            .escaped_on_day
+            .iter()
+            .filter(|(_, escaped_day)| **escaped_day < self.day_number)
+            .map(|(user_id, _)| *user_id)
+            .collect::<Vec<_>>();
+        let mut executed = Vec::new();
+        for user_id in due_ids {
+            self.escaped_on_day.remove(&user_id);
+            if let Some(killed) = self.mark_dead(user_id) {
+                executed.push(killed);
+            }
+        }
+        Ok(executed)
     }
 
     pub fn submit_day_vote(&mut self, voter_id: u64, target_id: Option<u64>) -> Result<String> {
@@ -267,6 +282,30 @@ impl MafiaGame {
             }
         } else if approved {
             if let Some(target) = target.as_ref() {
+                // [도주] 처형 대신 도주한다. 다음날 투표 시작 때 사망한다.
+                if target.alive
+                    && self.tier_abilities.get(&target.user_id) == Some(&TierAbility::Escape)
+                    && !self.escaped_on_day.contains_key(&target.user_id)
+                {
+                    self.escaped_on_day.insert(target.user_id, self.day_number);
+                    self.tier_abilities.remove(&target.user_id);
+                    self.terrorist_execution_targets.clear();
+                    self.ensure_fanatic_reincarnation();
+                    self.advance_to_next_night();
+                    return Ok(ConfirmVoteResult {
+                        executed: None,
+                        escaped: Some(target.clone()),
+                        approved,
+                        tied,
+                        blocked_by_politician,
+                        extra_killed: Vec::new(),
+                        weighted_vote_counts: vote_counts.clone(),
+                        vote_counts,
+                        judge: if decided_by_judge { judge } else { None },
+                        judge_choice: if decided_by_judge { judge_choice } else { None },
+                        decided_by_judge,
+                    });
+                }
                 executed = self.mark_dead(target.user_id);
                 if target.role == Role::Joker {
                     self.joker_won = true;
@@ -284,6 +323,7 @@ impl MafiaGame {
         self.advance_to_next_night();
         Ok(ConfirmVoteResult {
             executed,
+            escaped: None,
             approved,
             tied,
             blocked_by_politician,

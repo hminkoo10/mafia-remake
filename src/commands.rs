@@ -437,6 +437,9 @@ pub async fn handle_component(
         ["autostart", guild] => {
             handle_auto_start_open(ctx, data, component, parse_guild(guild)?).await?
         }
+        ["lastwill", guild, user] => {
+            handle_last_will_open(ctx, data, component, parse_guild(guild)?, user.parse()?).await?
+        }
         ["night", guild, actor_id, _role] => {
             handle_night_action(ctx, data, component, parse_guild(guild)?, actor_id.parse()?)
                 .await?
@@ -528,8 +531,14 @@ pub async fn handle_modal(
 ) -> Result<()> {
     let custom_id = modal.data.custom_id.as_str();
     let parts = custom_id.split(':').collect::<Vec<_>>();
-    if let ["autostart", guild] = parts.as_slice() {
-        handle_auto_start_submit(ctx, data, modal, parse_guild(guild)?).await?;
+    match parts.as_slice() {
+        ["autostart", guild] => {
+            handle_auto_start_submit(ctx, data, modal, parse_guild(guild)?).await?;
+        }
+        ["lastwill", guild, user] => {
+            handle_last_will_submit(ctx, data, modal, parse_guild(guild)?, user.parse()?).await?;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1564,6 +1573,96 @@ pub async fn handle_civil_servant_query(
         .await?;
     if done {
         running.read().await.night_notify.notify_one();
+    }
+    Ok(())
+}
+
+/// [유언] 버튼: 작성 모달을 띄운다.
+pub async fn handle_last_will_open(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    guild_id: serenity::GuildId,
+    user_id: u64,
+) -> Result<()> {
+    if component.user.id.get() != user_id {
+        send_component_private(ctx, component, "본인에게 온 선택지만 사용할 수 있습니다.").await?;
+        return Ok(());
+    }
+    let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
+        send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
+        return Ok(());
+    };
+    let current_will = {
+        let running_read = running.read().await;
+        running_read.game.last_wills.get(&user_id).cloned()
+    };
+    let mut input = serenity::CreateInputText::new(
+        serenity::InputTextStyle::Paragraph,
+        "유언 (최대 300자)",
+        "last_will_text",
+    )
+    .placeholder("밤에 사망하면 아침에 모두에게 공개됩니다.")
+    .min_length(1)
+    .max_length(300)
+    .required(true);
+    if let Some(will) = current_will.filter(|will| !will.is_empty()) {
+        input = input.value(will);
+    }
+    component
+        .create_response(
+            ctx,
+            serenity::CreateInteractionResponse::Modal(
+                serenity::CreateModal::new(
+                    format!("lastwill:{}:{}", guild_id.get(), user_id),
+                    "유언 작성",
+                )
+                .components(vec![serenity::CreateActionRow::InputText(input)]),
+            ),
+        )
+        .await?;
+    Ok(())
+}
+
+pub async fn handle_last_will_submit(
+    ctx: &serenity::Context,
+    data: &Data,
+    modal: &serenity::ModalInteraction,
+    guild_id: serenity::GuildId,
+    user_id: u64,
+) -> Result<()> {
+    if modal.user.id.get() != user_id {
+        send_modal_private(
+            ctx,
+            modal,
+            "본인에게 온 선택지만 사용할 수 있습니다.",
+            serenity::Colour::RED,
+        )
+        .await?;
+        return Ok(());
+    }
+    let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
+        send_modal_private(
+            ctx,
+            modal,
+            "진행 중인 게임이 없습니다.",
+            serenity::Colour::RED,
+        )
+        .await?;
+        return Ok(());
+    };
+    let text = modal_value(modal, "last_will_text").unwrap_or_default();
+    let result = {
+        let mut running_write = running.write().await;
+        running_write.game.submit_last_will(user_id, &text)
+    };
+    match result {
+        Ok(message) => {
+            send_modal_private(ctx, modal, message, serenity::Colour::DARK_GREEN).await?;
+        }
+        Err(error) => {
+            send_modal_private(ctx, modal, error.to_string(), serenity::Colour::RED).await?;
+        }
     }
     Ok(())
 }

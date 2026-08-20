@@ -7,7 +7,7 @@
     clippy::type_complexity
 )]
 
-use crate::model::{NightResult, Phase, Player, Role};
+use crate::model::{NightResult, Phase, Player, Role, TierAbility};
 use crate::system_random;
 use anyhow::{Result, bail};
 use rand::prelude::IndexedRandom;
@@ -318,6 +318,20 @@ impl MafiaGame {
             );
         }
         let terrorist_retaliations = self.resolve_terrorist_night_retaliations(&mut killed_players);
+        // [수습] 마피아팀이 죽인 대상의 직업을 보유자에게 알려주고, 시민팀이면
+        // 발표·이후 조사에서 '시민'으로 보이게 바꾼다 (레이팅은 시작 직업 기준).
+        self.resolve_cleanup(&mut killed_players, &killed_by_mafia_team_ids);
+        // [유언] 밤에 죽은 유언 보유자의 유언을 아침에 공개한다.
+        let published_wills = killed_players
+            .iter()
+            .filter(|player| {
+                self.tier_abilities.get(&player.user_id) == Some(&TierAbility::LastWill)
+            })
+            .filter_map(|player| {
+                let will = self.last_wills.get(&player.user_id)?.clone();
+                Some((player.name.clone(), will))
+            })
+            .collect::<Vec<_>>();
         for (actor_id, message) in self.activate_mercenaries_for_killed_clients(&killed_players) {
             mercenary_results
                 .entry(actor_id)
@@ -379,6 +393,7 @@ impl MafiaGame {
         let (fraudster_results, fraudster_contacts) =
             self.resolve_fraudster_results(&blocked_actor_ids, &role_reveals);
         let soldier_watch_results = self.drain_soldier_watch_notices();
+        let tier_ability_results = self.drain_tier_ability_notices();
         let result = NightResult {
             killed: killed_players.first().cloned(),
             protected,
@@ -395,6 +410,8 @@ impl MafiaGame {
             fraudster_results,
             fraudster_contacts,
             soldier_watch_results,
+            tier_ability_results,
+            published_wills,
             spy_results,
             spy_contacts,
             contractor_results,
@@ -875,6 +892,64 @@ impl MafiaGame {
                     revealed_role.value()
                 ),
             );
+        }
+        results
+    }
+
+    /// [수습] 처리. 보유자가 살아있는 마피아팀일 때만 발동한다.
+    fn resolve_cleanup(
+        &mut self,
+        killed_players: &mut [Player],
+        killed_by_mafia_team_ids: &HashSet<u64>,
+    ) {
+        let Some(holder_id) = self.mafia_tier_ability_holder(TierAbility::Cleanup) else {
+            return;
+        };
+        if killed_players
+            .iter()
+            .any(|player| player.user_id == holder_id)
+        {
+            return;
+        }
+        for victim in killed_players
+            .iter_mut()
+            .filter(|player| killed_by_mafia_team_ids.contains(&player.user_id))
+        {
+            let original_role = victim.role;
+            self.pending_tier_ability_notices.push((
+                holder_id,
+                format!(
+                    "[수습] {}님의 직업은 {}이었습니다.",
+                    victim.name,
+                    original_role.value()
+                ),
+            ));
+            let is_citizen = self
+                .get_player(victim.user_id)
+                .is_some_and(|player| self.is_citizen_team(player));
+            if is_citizen && original_role != Role::Citizen {
+                if let Some(player) = self.get_player_mut(victim.user_id) {
+                    player.role = Role::Citizen;
+                }
+                victim.role = Role::Citizen;
+            }
+        }
+    }
+
+    /// 티어 능력(무법·야습·수습) 알림 대기열을 결산 맵으로 꺼낸다.
+    fn drain_tier_ability_notices(&mut self) -> HashMap<u64, String> {
+        let mut results: HashMap<u64, String> = HashMap::new();
+        for (user_id, line) in std::mem::take(&mut self.pending_tier_ability_notices) {
+            if !self.is_alive(user_id) {
+                continue;
+            }
+            results
+                .entry(user_id)
+                .and_modify(|text| {
+                    text.push('\n');
+                    text.push_str(&line);
+                })
+                .or_insert(line);
         }
         results
     }
@@ -1951,11 +2026,40 @@ impl MafiaGame {
             lover_sacrifices.push((lover_savior, target));
             return;
         }
-        if enhanced_protection_ids.contains(&target.user_id) {
-            return;
+        // [무법] 경찰을 노린 마피아팀 공격은 치료를 무시한다.
+        // [야습] 첫날 밤에는 자기 자신에게 쓴 치료를 무시한다.
+        let lawless_pierce =
+            target.role == Role::Police && self.mafia_team_has_tier_ability(TierAbility::Lawless);
+        let night_raid_pierce = self.day_number == 1
+            && self.mafia_team_has_tier_ability(TierAbility::NightRaid)
+            && self.protection_is_self_heal_only(target.user_id);
+        let pierce_protection = lawless_pierce || night_raid_pierce;
+        if pierce_protection
+            && (enhanced_protection_ids.contains(&target.user_id)
+                || protected_ids.contains(&target.user_id))
+        {
+            let (ability, reason) = if lawless_pierce {
+                (TierAbility::Lawless, "경찰 보호를 무시하고 처형했습니다")
+            } else {
+                (
+                    TierAbility::NightRaid,
+                    "첫날 밤 자가 치료를 무시하고 처형했습니다",
+                )
+            };
+            if let Some(holder_id) = self.mafia_tier_ability_holder(ability) {
+                self.pending_tier_ability_notices.push((
+                    holder_id,
+                    format!("[{}] {}님의 {reason}.", ability.value(), target.name),
+                ));
+            }
         }
-        if !ignore_doctor && protected_ids.contains(&target.user_id) {
-            return;
+        if !pierce_protection {
+            if enhanced_protection_ids.contains(&target.user_id) {
+                return;
+            }
+            if !ignore_doctor && protected_ids.contains(&target.user_id) {
+                return;
+            }
         }
         if allow_soldier_block
             && target.role == Role::Soldier

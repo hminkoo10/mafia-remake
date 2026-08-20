@@ -202,6 +202,27 @@ impl MafiaGame {
         Some((lines.join("\n"), contacted_now, None))
     }
 
+    /// [유언] 밤에 유언을 작성/수정한다. 밤에 죽으면 아침에 전체 공개된다.
+    pub fn submit_last_will(&mut self, actor_id: u64, text: &str) -> Result<String> {
+        if self.phase != Phase::Night {
+            bail!("유언은 밤에만 작성할 수 있습니다.");
+        }
+        let actor = self.require_alive(actor_id)?.clone();
+        if self.tier_abilities.get(&actor_id) != Some(&crate::model::TierAbility::LastWill) {
+            bail!("유언 능력이 없습니다.");
+        }
+        if self.is_frog(&actor) {
+            bail!("개구리 상태에서는 유언을 작성할 수 없습니다.");
+        }
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            bail!("유언 내용을 입력하세요.");
+        }
+        let stored = trimmed.chars().take(300).collect::<String>();
+        self.last_wills.insert(actor_id, stored);
+        Ok("유언을 작성했습니다. 밤에 사망하면 아침에 모두에게 공개됩니다.".to_string())
+    }
+
     pub fn submit_night_action(&mut self, actor_id: u64, target_id: Option<u64>) -> Result<String> {
         if self.phase != Phase::Night {
             bail!("지금은 밤이 아닙니다.");

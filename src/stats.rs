@@ -641,11 +641,19 @@ fn rating_change_for_player(
     let raw_delta = team_delta + role_delta + streak_delta;
     // 승리는 최소 +5를 보장하고, 패배는 활약으로 0까지 줄일 수 있지만 오르지는
     // 않으며 한 판에 -20을 넘게 잃지 않는다.
-    let raw_final_delta = if won {
+    let mut raw_final_delta = if won {
         clamp(raw_delta, WIN_DELTA_MIN, WIN_DELTA_MAX)
     } else {
         clamp(raw_delta, LOSS_DELTA_MIN, 0)
     };
+    // [가호] 3티어: 패배 손실 10% 완화.
+    let rating_shield = !won
+        && raw_final_delta < 0
+        && game.player_tier_ability(player.user_id)
+            == Some(crate::model::TierAbility::RatingShield);
+    if rating_shield {
+        raw_final_delta = (raw_final_delta as f64 * 0.9).round() as i64;
+    }
     let first_death_relief = first_death_loss_relief(game, player, raw_final_delta, won);
     let final_delta = raw_final_delta + first_death_relief;
     let after = (old_rating + final_delta).max(0);
@@ -680,6 +688,9 @@ fn rating_change_for_player(
     }
     if !won && raw_delta < LOSS_DELTA_MIN {
         reasons.push(format!("패배 손실 상한 {LOSS_DELTA_MIN} 적용"));
+    }
+    if rating_shield {
+        reasons.push("[가호] 패배 손실 10% 완화".to_string());
     }
     if first_death_relief > 0 {
         reasons.push(format!("첫 사망 패배 완화 +{first_death_relief}"));
