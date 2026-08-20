@@ -773,14 +773,20 @@ pub fn lover_chat_is_open(game: &MafiaGame) -> bool {
 }
 
 pub fn can_use_anonymous_general_chat(running: &RunningGame, player: &Player) -> bool {
-    if !player.alive || is_player_chat_silenced(running, player) {
+    if !player.alive {
         return false;
     }
-    if running.game.phase == Phase::Day && running.day_chat_open {
-        return true;
-    }
-    running.game.phase == Phase::FinalDefense
+    // 최후변론 대상자는 마담에게 유혹당했어도 자신의 변론은 할 수 있어야 한다.
+    // (개구리 저주는 말 자체를 잃는 상태라 그대로 막는다.)
+    if running.game.phase == Phase::FinalDefense
         && running.final_defense_user_id == Some(player.user_id)
+    {
+        return !running.game.is_frog(player);
+    }
+    if is_player_chat_silenced(running, player) {
+        return false;
+    }
+    running.game.phase == Phase::Day && running.day_chat_open
 }
 
 pub fn is_player_chat_silenced(running: &RunningGame, player: &Player) -> bool {
@@ -6223,6 +6229,29 @@ pub(crate) mod tests {
 
         running.game.phase = Phase::Day;
         running.day_chat_open = true;
+        assert!(!can_use_anonymous_general_chat(&running, &player));
+    }
+
+    /// 마담에게 유혹당해도 자신의 최후변론은 할 수 있어야 한다. 개구리는 예외이고,
+    /// 대상자가 아닌 유혹 상태 플레이어는 여전히 말할 수 없다.
+    #[test]
+    fn seduced_nominee_can_speak_during_their_final_defense() {
+        let mut running = dead_chat_test_running();
+        running.anonymous_enabled = true;
+        let player = running.game.players[0].clone();
+        running.game.madam_seduced_ids.insert(player.user_id);
+
+        running.game.phase = Phase::FinalDefense;
+        running.final_defense_user_id = Some(player.user_id);
+        assert!(can_use_anonymous_general_chat(&running, &player));
+
+        // 대상자가 아니면 유혹 상태라 말할 수 없다.
+        let other = running.game.players[1].clone();
+        running.game.madam_seduced_ids.insert(other.user_id);
+        assert!(!can_use_anonymous_general_chat(&running, &other));
+
+        // 개구리 저주는 최후변론에서도 말이 막힌다.
+        running.game.frog_user_ids.insert(player.user_id);
         assert!(!can_use_anonymous_general_chat(&running, &player));
     }
 

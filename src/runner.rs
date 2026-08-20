@@ -2238,9 +2238,8 @@ pub async fn run_vote(
     };
     sync_anonymous_general_chat_permissions(ctx, running).await;
     set_channel_slowmode(ctx, running, 0).await;
-    if !running.read().await.game.is_frog(&nominee)
-        && !running.read().await.game.is_madam_seduced(&nominee)
-    {
+    // 마담에게 유혹당한 대상자도 자신의 최후변론은 할 수 있다 (개구리만 예외).
+    if !running.read().await.game.is_frog(&nominee) {
         set_member_game_channel_chat(ctx, running, &nominee, true).await;
     }
     if !terrorist_targets.is_empty()
