@@ -235,7 +235,31 @@ pub fn role_message(game: &MafiaGame, player: &Player) -> String {
                 disguised_role.value(),
                 mafia_remake::model::korean_ro_particle(disguised_role.value()),
             ));
+        } else if game
+            .fraudster_blocked_by_soldier
+            .contains_key(&player.user_id)
+        {
+            // [불침번]에 막힌 경우. 군인의 정체는 사기꾼에게 알려주지 않는다.
+            message.push_str(
+                "\n\n[사기] 사기 대상이 불침번을 서고 있어 변장에 실패했습니다. 이번 게임에는 변장 없이 사기꾼 그대로 판정됩니다.",
+            );
         }
+    }
+    // [불침번] 군인은 게임 시작 시 자신을 노린 사기를 막아낸 사실을 안다.
+    if player.role == Role::Soldier {
+        let blocked_fraudsters = game
+            .fraudster_blocked_by_soldier
+            .iter()
+            .filter(|(_, soldier_id)| **soldier_id == player.user_id)
+            .filter_map(|(fraudster_id, _)| game.get_player(*fraudster_id))
+            .map(|fraudster| {
+                format!(
+                    "\n\n[불침번] 사기꾼 {}님의 사기를 막아냈습니다.",
+                    fraudster.name
+                )
+            })
+            .collect::<String>();
+        message.push_str(&blocked_fraudsters);
     }
     message
 }
@@ -269,7 +293,9 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Hacker => "낮에 해킹해 직업을 확인하고 능력을 우회합니다.",
         Role::Terrorist => "지목한 위험 대상을 함께 데려갈 수 있습니다.",
         Role::Lover => "연인과 정보를 공유하고 서로를 지킵니다.",
-        Role::Soldier => "마피아 공격을 한 번 버팁니다.",
+        Role::Soldier => {
+            "마피아 공격을 한 번 버티고, 불침번으로 스파이의 첩보·도둑의 도벽·사기꾼의 사기·청부업자의 청부를 막아내며 그 정체를 알아냅니다."
+        }
         Role::Spy => {
             "밤마다 한 명의 직업을 알아내고, 마피아를 찾아내면 그 밤 한 번 더 첩보를 사용합니다."
         }
@@ -711,6 +737,7 @@ pub async fn run_night(
             "civil_servant": running_write.replay_text_results(&result.civil_servant_results),
             "paparazzi": running_write.replay_text_results(&result.paparazzi_results),
             "fraudster": running_write.replay_text_results(&result.fraudster_results),
+            "soldier_watch": running_write.replay_text_results(&result.soldier_watch_results),
             "spy": running_write.replay_text_results(&result.spy_results),
             "contractor": running_write.replay_text_results(&result.contractor_results),
             "witch": running_write.replay_text_results(&result.witch_results),
@@ -762,6 +789,7 @@ pub async fn run_night(
             &result.civil_servant_results,
             &result.paparazzi_results,
             &result.fraudster_results,
+            &result.soldier_watch_results,
             &result.spy_results,
             &result.contractor_results,
             &result.witch_results,
@@ -1488,6 +1516,7 @@ pub async fn send_private_result_maps(
         result.civil_servant_results.clone(),
         result.paparazzi_results.clone(),
         result.fraudster_results.clone(),
+        result.soldier_watch_results.clone(),
         result.spy_results.clone(),
         result.contractor_results.clone(),
         result.witch_results.clone(),

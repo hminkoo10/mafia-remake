@@ -447,6 +447,8 @@ pub struct NightResult {
     pub paparazzi_results: std::collections::HashMap<u64, String>,
     pub fraudster_results: std::collections::HashMap<u64, String>,
     pub fraudster_contacts: Vec<u64>,
+    /// [불침번] 군인이 막아낸 능력 알림.
+    pub soldier_watch_results: std::collections::HashMap<u64, String>,
     pub spy_results: std::collections::HashMap<u64, String>,
     pub spy_contacts: Vec<u64>,
     pub contractor_results: std::collections::HashMap<u64, String>,

@@ -378,6 +378,7 @@ impl MafiaGame {
         let paparazzi_results = self.resolve_paparazzi_issue(&role_reveals);
         let (fraudster_results, fraudster_contacts) =
             self.resolve_fraudster_results(&blocked_actor_ids, &role_reveals);
+        let soldier_watch_results = self.drain_soldier_watch_notices();
         let result = NightResult {
             killed: killed_players.first().cloned(),
             protected,
@@ -393,6 +394,7 @@ impl MafiaGame {
             paparazzi_results,
             fraudster_results,
             fraudster_contacts,
+            soldier_watch_results,
             spy_results,
             spy_contacts,
             contractor_results,
@@ -877,6 +879,25 @@ impl MafiaGame {
         results
     }
 
+    /// [불침번] 이번 밤 군인이 막아낸 능력 알림을 결산 맵으로 꺼낸다. 죽은 군인은
+    /// 받지 못한다.
+    fn drain_soldier_watch_notices(&mut self) -> HashMap<u64, String> {
+        let mut results: HashMap<u64, String> = HashMap::new();
+        for (soldier_id, line) in std::mem::take(&mut self.pending_soldier_watch_notices) {
+            if !self.is_alive(soldier_id) {
+                continue;
+            }
+            results
+                .entry(soldier_id)
+                .and_modify(|text| {
+                    text.push('\n');
+                    text.push_str(&line);
+                })
+                .or_insert(line);
+        }
+        results
+    }
+
     /// 사기꾼 결산: 교섭 접선 안내와 "속임" 판정 알림.
     /// 조사 계열이 변장 사기꾼을 평가하면 사기꾼에게 "[000님을 속였습니다.]"가 간다.
     fn resolve_fraudster_results(
@@ -1154,11 +1175,18 @@ impl MafiaGame {
             let mut lines = Vec::new();
             for target_id in target_ids {
                 if let Some(target) = self.get_player(*target_id) {
-                    lines.push(format!(
-                        "[첩보] {} 님의 직업은 **{}** 입니다.",
-                        target.name,
-                        self.visible_role(target).value()
-                    ));
+                    if target.role == Role::Soldier {
+                        lines.push(format!(
+                            "[첩보] {} 님은 불침번을 서고 있어 정보를 알아내지 못했습니다.",
+                            target.name
+                        ));
+                    } else {
+                        lines.push(format!(
+                            "[첩보] {} 님의 직업은 **{}** 입니다.",
+                            target.name,
+                            self.visible_role(target).value()
+                        ));
+                    }
                 }
             }
             if self.spy_contacts_this_night.contains(actor_id) {
@@ -1199,6 +1227,30 @@ impl MafiaGame {
                 (self.get_player(contract.0.0).cloned(), contract.0.1),
                 (self.get_player(contract.1.0).cloned(), contract.1.1),
             ];
+            // [불침번] 청부 대상에 군인이 있으면 청부 전체가 무효가 되고, 군인이
+            // 청부업자의 정체를 안다. 접선 판정도 일어나지 않는다.
+            let watching_soldiers = targets
+                .iter()
+                .filter_map(|(target, _)| {
+                    target
+                        .as_ref()
+                        .filter(|target| target.alive && target.role == Role::Soldier)
+                        .map(|target| target.user_id)
+                })
+                .collect::<Vec<_>>();
+            if !watching_soldiers.is_empty() {
+                for soldier_id in watching_soldiers {
+                    self.pending_soldier_watch_notices.push((
+                        soldier_id,
+                        format!("[불침번] 청부업자 {}님의 청부를 막아냈습니다.", actor.name),
+                    ));
+                }
+                results.insert(
+                    actor_id,
+                    "[청부] 대상이 불침번을 서고 있어 청부가 무산되었습니다.".to_string(),
+                );
+                continue;
+            }
             let matched_mafia = targets.iter().any(|(target, guessed_role)| {
                 target.as_ref().is_some_and(|target| {
                     target.alive && target.role == Role::Mafia && *guessed_role == Role::Mafia

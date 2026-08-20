@@ -47,6 +47,10 @@ pub struct MafiaGame {
     /// 낮 조사가 변장 사기꾼을 평가해 생긴 "속임" 알림 (사기꾼 id, 조사자 이름).
     /// 밤 시작에 전달된다.
     pub pending_deception_notices: Vec<(u64, String)>,
+    /// [불침번] 군인이 이번 밤 막아낸 능력 알림 (군인 id, 메시지). 밤 결산 때 전달.
+    pub pending_soldier_watch_notices: Vec<(u64, String)>,
+    /// [불침번]에 막혀 변장에 실패한 사기꾼 → 막아낸 군인.
+    pub fraudster_blocked_by_soldier: HashMap<u64, u64>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -222,6 +226,8 @@ impl MafiaGame {
             paparazzi_shared_days: HashSet::new(),
             vigilante_targets: HashMap::new(),
             pending_deception_notices: Vec::new(),
+            pending_soldier_watch_notices: Vec::new(),
+            fraudster_blocked_by_soldier: HashMap::new(),
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -572,8 +578,14 @@ impl MafiaGame {
                 .collect::<Vec<_>>();
             candidates.shuffle(&mut rng);
             if let Some((target_id, target_role)) = candidates.into_iter().next() {
-                self.fraudster_disguises
-                    .insert(fraudster_id, (target_id, target_role));
+                // [불침번] 군인을 고르면 사기가 무효가 되고 군인이 사기꾼의 정체를 안다.
+                if target_role == Role::Soldier {
+                    self.fraudster_blocked_by_soldier
+                        .insert(fraudster_id, target_id);
+                } else {
+                    self.fraudster_disguises
+                        .insert(fraudster_id, (target_id, target_role));
+                }
             }
         }
     }
@@ -1859,6 +1871,133 @@ mod tests {
                 .any(|player| player.user_id == 2)
         );
         assert!(result.agent_results.contains_key(&2));
+    }
+
+    /// [불침번] 스파이가 군인을 첩보하면 정보가 막히고 군인이 스파이의 정체를 안다.
+    #[test]
+    fn soldier_watch_blocks_spy_espionage_and_reveals_the_spy() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Spy]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Spy),
+            (3, Role::Soldier),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        let reply = game.submit_night_action(2, Some(3)).unwrap();
+        assert!(reply.contains("불침번"), "{reply}");
+        assert!(!reply.contains("군인"), "{reply}");
+
+        let result = game.resolve_night().unwrap();
+        assert_eq!(
+            result.soldier_watch_results.get(&3).map(String::as_str),
+            Some("[불침번] 스파이 Two님의 첩보를 막아냈습니다.")
+        );
+        // 밤 결산 요약에서도 직업이 새지 않는다.
+        if let Some(recap) = result.spy_results.get(&2) {
+            assert!(!recap.contains("군인"), "{recap}");
+        }
+    }
+
+    /// [불침번] 도둑이 군인에게 도벽을 쓰면 훔치지 못하고 군인이 도둑의 정체를 안다.
+    #[test]
+    fn soldier_watch_blocks_the_thief_steal() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Thief]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Thief),
+            (3, Role::Soldier),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.phase = Phase::Day;
+        game.start_vote().unwrap();
+        game.submit_day_vote(2, Some(3)).unwrap();
+        let vote_result = game.resolve_nomination_vote().unwrap();
+
+        assert!(
+            vote_result
+                .thief_steal_results
+                .get(&2)
+                .is_some_and(|text| text.contains("불침번")),
+            "{:?}",
+            vote_result.thief_steal_results
+        );
+        assert_eq!(
+            vote_result.thief_steal_results.get(&3).map(String::as_str),
+            Some("[불침번] 도둑 Two님의 도벽을 막아냈습니다.")
+        );
+        assert!(game.thief_stolen_roles.is_empty());
+        // 도벽 시도 자체는 소모된다.
+        assert_eq!(game.thief_used_days.get(&2), Some(&1));
+    }
+
+    /// [불침번] 사기꾼이 군인을 사기 대상으로 고르면 변장이 무효가 되고, 군인은
+    /// 게임 시작 안내에서 사기꾼의 정체를 안다.
+    #[test]
+    fn soldier_watch_blocks_the_fraudster_disguise() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Fraudster]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Fraudster),
+            (3, Role::Soldier),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.fraudster_disguises.clear();
+        game.fraudster_blocked_by_soldier.clear();
+        // 군인이 무작위로 뽑힌 상황을 재현한다.
+        game.fraudster_blocked_by_soldier.insert(2, 3);
+
+        let fraudster = game.get_player(2).unwrap().clone();
+        assert_eq!(game.visible_role(&fraudster), Role::Fraudster);
+        assert!(!game.is_disguised_fraudster(&fraudster));
+        assert!(game.fraudster_disguise_info(2).is_none());
+    }
+
+    /// [불침번] 청부 대상에 군인이 있으면 청부 전체가 무산되고 접선도 없다.
+    #[test]
+    fn soldier_watch_voids_the_contract_naming_a_soldier() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Contractor]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Contractor),
+            (3, Role::Soldier),
+            (4, Role::Doctor),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.phase = Phase::Night;
+        game.day_number = 2;
+        game.contractor_contracts
+            .insert(2, ((3, Role::Soldier), (4, Role::Doctor)));
+
+        let result = game.resolve_night().unwrap();
+
+        assert!(
+            result
+                .contractor_results
+                .get(&2)
+                .is_some_and(|text| text.contains("불침번")),
+            "{:?}",
+            result.contractor_results
+        );
+        assert_eq!(
+            result.soldier_watch_results.get(&3).map(String::as_str),
+            Some("[불침번] 청부업자 Two님의 청부를 막아냈습니다.")
+        );
+        assert!(result.contractor_kills.is_empty());
+        assert!(!game.contractor_contacted.contains(&2));
+        assert!(game.get_player(4).unwrap().alive);
     }
 
     /// 스파이는 마피아를 찾아낸 밤마다 첩보를 한 번 더 쓸 수 있다 (최초 접선에만

@@ -74,7 +74,8 @@ impl MafiaGame {
             })
             .collect::<Vec<_>>();
         for (thief_id, target_id) in thief_votes {
-            let Some((message, contacted_now)) = self.resolve_thief_steal(thief_id, target_id)
+            let Some((message, contacted_now, blocked_by_soldier)) =
+                self.resolve_thief_steal(thief_id, target_id)
             else {
                 continue;
             };
@@ -82,6 +83,16 @@ impl MafiaGame {
             if contacted_now {
                 if let Some(thief) = self.get_player(thief_id).cloned() {
                     newly_contacted.push(thief);
+                }
+            }
+            // [불침번] 군인은 자신을 노린 도벽을 막아내고 도둑의 정체를 안다.
+            if let Some(soldier_id) = blocked_by_soldier {
+                if let Some(thief_name) = self.get_player(thief_id).map(|thief| thief.name.clone())
+                {
+                    results.insert(
+                        soldier_id,
+                        format!("[불침번] 도둑 {thief_name}님의 도벽을 막아냈습니다."),
+                    );
                 }
             }
         }

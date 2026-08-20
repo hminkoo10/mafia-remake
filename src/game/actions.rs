@@ -148,7 +148,7 @@ impl MafiaGame {
         &mut self,
         actor_id: u64,
         target_id: u64,
-    ) -> Option<(String, bool)> {
+    ) -> Option<(String, bool, Option<u64>)> {
         let actor = self.get_player(actor_id)?.clone();
         if actor.role != Role::Thief
             || !actor.alive
@@ -163,6 +163,17 @@ impl MafiaGame {
             return None;
         }
         self.thief_used_days.insert(actor_id, self.day_number);
+        // [불침번] 군인의 능력은 훔칠 수 없고, 군인이 도둑의 정체를 안다.
+        if target.role == Role::Soldier {
+            return Some((
+                format!(
+                    "[도벽] {} 님이 불침번을 서고 있어 능력을 훔치지 못했습니다.",
+                    target.name
+                ),
+                false,
+                Some(target.user_id),
+            ));
+        }
         self.thief_stolen_roles.insert(actor_id, target.role);
         self.mark_rating_action(actor_id);
         self.record_rating_event(actor_id, 3, "도벽 실행");
@@ -188,7 +199,7 @@ impl MafiaGame {
             self.record_rating_event(actor_id, 2, "도벽으로 마피아팀 접선");
             lines.push("[교련] 마피아 직업을 훔쳐 마피아팀과 접선했습니다.".to_string());
         }
-        Some((lines.join("\n"), contacted_now))
+        Some((lines.join("\n"), contacted_now, None))
     }
 
     pub fn submit_night_action(&mut self, actor_id: u64, target_id: Option<u64>) -> Result<String> {
@@ -697,6 +708,29 @@ impl MafiaGame {
         let proxy = self.proxy_target_id(target_id);
         let target = self.require_player(proxy)?.clone();
         self.spy_targets.entry(actor_id).or_default().push(proxy);
+        // [불침번] 군인을 첩보하면 정보를 얻지 못하고, 군인이 스파이의 정체를 안다.
+        // 첩보 사용 자체는 소모된다.
+        if target.role == Role::Soldier {
+            let actor_name = self
+                .get_player(actor_id)
+                .map(|actor| actor.name.clone())
+                .unwrap_or_default();
+            self.pending_soldier_watch_notices.push((
+                target.user_id,
+                format!("[불침번] 스파이 {actor_name}님의 첩보를 막아냈습니다."),
+            ));
+            if self.spy_bonus_pending.contains(&actor_id) && self.spy_actions_used(actor_id) >= 2 {
+                self.spy_bonus_pending.remove(&actor_id);
+            }
+            return Ok(if prefix.is_empty() {
+                format!(
+                    "[첩보] {} 님은 불침번을 서고 있어 정보를 알아내지 못했습니다.",
+                    target.name
+                )
+            } else {
+                format!("{prefix}첩보 대상: {}", selected.name)
+            });
+        }
         let mut lines = vec![format!(
             "{prefix}[첩보] {} 님의 직업은 **{}** 입니다.",
             target.name,
