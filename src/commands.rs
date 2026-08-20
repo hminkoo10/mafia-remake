@@ -2642,7 +2642,7 @@ pub fn personal_stats_text(
         entry.mafia_team_games,
         stats::play_duration_text(entry.play_seconds),
         entry.rating,
-        stats::rating_rank(entry.rating),
+        stats::rating_rank(stats_file, entry.rating, entry.rating_games),
         entry.rating_peak,
         entry.rating_games,
         stats::role_stats_text(entry)
@@ -2996,7 +2996,11 @@ pub fn render_leaderboard_image(stats_file: &stats::StatsFile, metric: &str) -> 
             ("time", stats::play_duration_text(entry.play_seconds)),
             (
                 "rating",
-                format!("{} {}점", stats::rating_rank(entry.rating), entry.rating),
+                format!(
+                    "{} {}점",
+                    stats::rating_rank(stats_file, entry.rating, entry.rating_games),
+                    entry.rating
+                ),
             ),
         ];
         for (key, value) in values {

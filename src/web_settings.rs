@@ -2522,9 +2522,9 @@ async fn web_leaderboard_values(state: &WebSettingsState, metric: &str, limit: u
                 "play_seconds": entry.play_seconds,
                 "playtime": stats::play_duration_text(entry.play_seconds),
                 "rating": entry.rating,
-                "rating_rank": stats::rating_rank(entry.rating),
+                "rating_rank": stats::rating_rank(&stats_read, entry.rating, entry.rating_games),
                 "rating_peak": entry.rating_peak,
-                "rating_peak_rank": stats::rating_rank(entry.rating_peak),
+                "rating_peak_rank": stats::rating_rank(&stats_read, entry.rating_peak, entry.rating_games),
                 "rating_games": entry.rating_games,
                 "value": stats::leaderboard_value(&entry, metric),
             })
@@ -2684,7 +2684,7 @@ async fn compatible_leaderboard_values(
                 "losses": entry.losses,
                 "win_rate": win_rate,
                 "rating": entry.rating,
-                "rating_rank": stats::rating_rank(entry.rating),
+                "rating_rank": stats::rating_rank(&stats_read, entry.rating, entry.rating_games),
                 "win_streak": entry.win_streak,
                 "best_win_streak": entry.best_win_streak,
                 "most_played_role": most_played_role(&entry),
@@ -2733,7 +2733,7 @@ async fn compatible_user_stats_value(
         "losses": entry.losses,
         "win_rate": win_rate,
         "rating": entry.rating,
-        "rating_rank": stats::rating_rank(entry.rating),
+        "rating_rank": stats::rating_rank(&stats_read, entry.rating, entry.rating_games),
         "win_streak": entry.win_streak,
         "best_win_streak": entry.best_win_streak,
         "win_rate_by_role": win_rate_by_role,
@@ -3202,35 +3202,16 @@ fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> String {
 
 fn render_rating_page() -> String {
     let rank_rows = [
+        ("마스터", "상위 10%", "현재 풀에서 최상위권입니다."),
+        ("다이아", "상위 10~25%", "정상 바로 아래 경쟁 구간입니다."),
+        ("플래티나", "상위 25~45%", "평균보다 확실히 위입니다."),
+        ("골드", "상위 45~70%", "중간 구간입니다."),
+        ("실버", "상위 70~90%", "따라잡는 구간입니다."),
+        ("브론즈", "하위 10%", "지금이 바닥, 올라갈 일만 남았습니다."),
         (
-            "브론즈",
-            "1000점 미만",
-            "시작 티어(실버) 아래 구간입니다. 이기면 금방 복구됩니다.",
-        ),
-        (
-            "실버",
-            "1000~1199점",
-            "시작 구간입니다. 초기 레이팅 1000점이 여기서 출발합니다.",
-        ),
-        (
-            "골드",
-            "1200~1449점",
-            "여기부터 강등 보호가 붙습니다. 한 번 도달하면 1200점 밑으로 떨어지지 않습니다.",
-        ),
-        (
-            "플래티나",
-            "1450~1749점",
-            "상위권입니다. 도달하면 1450점이 바닥이 됩니다.",
-        ),
-        (
-            "다이아",
-            "1750~2099점",
-            "최상위 도전 구간입니다. 도달하면 1750점이 바닥이 됩니다.",
-        ),
-        (
-            "마스터",
-            "2100점 이상",
-            "최고 티어입니다. 도달하면 2100점 밑으로 떨어지지 않습니다.",
+            "배치",
+            "레이팅 반영 10판 미만",
+            "10판을 채우면 티어가 배정됩니다.",
         ),
     ]
     .into_iter()
@@ -3313,7 +3294,7 @@ fn render_rating_page() -> String {
   <div class="card"><span>패배 기본</span><strong>-12점 (최대 -20)</strong></div>
   <div class="card"><span>역할 보정</span><strong>±14점</strong></div>
   <div class="card"><span>연승 보너스</span><strong>연승당 +3, 최대 +12점</strong></div>
-  <div class="card"><span>티어 강등 보호</span><strong>골드부터 티어 하한 유지</strong></div>
+  <div class="card"><span>티어 산정</span><strong>유동 커트라인 (상대 백분위)</strong></div>
 </section>
 <section class="panel">
   <h2>점수 계산</h2>
@@ -3321,9 +3302,9 @@ fn render_rating_page() -> String {
   <table><thead><tr><th>상황</th><th>기본</th><th>보정</th><th>비고</th></tr></thead><tbody>{gain_rows}</tbody></table>
 </section>
 <section class="panel">
-  <h2>랭크표 (강등 보호)</h2>
-  <p class="meta">골드 이상 티어에 한 번 도달하면 그 티어 하한 밑으로는 절대 떨어지지 않습니다. 지더라도 티어 안에서만 내려가며, 올라간 티어는 영구히 유지됩니다. 시작 티어인 실버에는 보호가 없어 브론즈로 내려갈 수 있습니다.</p>
-  <table><thead><tr><th>랭크</th><th>레이팅</th><th>설명</th></tr></thead><tbody>{rank_rows}</tbody></table>
+  <h2>랭크표 (유동 커트라인)</h2>
+  <p class="meta">티어는 고정 점수가 아니라 배치(10판)를 마친 플레이어들 사이의 상대 위치로 정해집니다. 커트라인이 실제 분포를 따라 움직이므로, 내 점수가 그대로여도 다른 사람이 치고 올라오면 티어가 내려갈 수 있습니다. 친구끼리만 하는 서버에서도 항상 마스터는 소수입니다.</p>
+  <table><thead><tr><th>랭크</th><th>기준 (백분위)</th><th>설명</th></tr></thead><tbody>{rank_rows}</tbody></table>
 </section>
 <section class="panel">
   <h2>역할 기여 점수</h2>
@@ -3339,10 +3320,10 @@ fn render_rating_page() -> String {
 <section class="panel">
   <h2>자주 묻는 질문</h2>
   <table><tbody>
-    <tr><th>졌는데 왜 점수가 안 깎였나요?</th><td>역할 활약 점수가 손실을 상쇄했거나, 도달한 티어의 하한(강등 보호)에 걸렸기 때문입니다. 패배로 점수가 오르지는 않습니다.</td></tr>
+    <tr><th>졌는데 왜 점수가 안 깎였나요?</th><td>역할 활약 점수가 손실을 상쇄했기 때문입니다. 패배로 점수가 오르지는 않습니다.</td></tr>
     <tr><th>제일 먼저 죽고 졌는데 왜 덜 깎였나요?</th><td>첫 사망자는 게임에 영향을 줄 기회가 가장 적으므로, 패배 시 최종 손실의 25%를 완화합니다.</td></tr>
     <tr><th>마피아 판은 무조건 지는 판도 있는데 손해 아닌가요?</th><td>그래서 승리가 패배의 두 배입니다. 승률 50%면 판당 평균 +6점씩 오르고, 3판 중 1판만 이겨도 본전입니다.</td></tr>
-    <tr><th>티어가 떨어질 수도 있나요?</th><td>골드 이상은 한 번 도달하면 그 티어 하한 밑으로 내려가지 않습니다. 실버에서 브론즈로는 내려갈 수 있습니다.</td></tr>
+    <tr><th>티어가 떨어질 수도 있나요?</th><td>네. 티어는 상대 위치라서 내가 지거나 다른 사람이 올라오면 내려갈 수 있습니다. 대신 점수 자체는 한 판에 -20을 넘게 잃지 않습니다.</td></tr>
     <tr><th>역할 행동을 실패하면 무조건 감점인가요?</th><td>아닙니다. 능력을 제출했다면 핵심 능력 미사용 감점은 피합니다. 성공 이벤트가 없으면 추가 점수만 없는 구조입니다.</td></tr>
     <tr><th>랭크는 어디서 보나요?</th><td>내정보, 리더보드, 웹 리더보드, API 응답에서 볼 수 있습니다.</td></tr>
   </tbody></table>

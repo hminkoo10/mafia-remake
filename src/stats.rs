@@ -131,6 +131,9 @@ pub struct GameRatingLogItem {
     pub role: String,
     pub before: i64,
     pub after: i64,
+    /// 기록 시점의 유동 티어 (전/후). 커트라인이 판마다 움직이므로 여기서 고정한다.
+    pub before_rank: String,
+    pub after_rank: String,
     pub delta: i64,
     pub team_delta: i64,
     pub role_delta: i64,
@@ -284,6 +287,8 @@ pub fn record_game_stats(
             role: role.value().to_string(),
             before: rating_change.before,
             after: rating_change.after,
+            before_rank: String::new(),
+            after_rank: String::new(),
             delta: rating_change.delta,
             team_delta: rating_change.team_delta,
             role_delta: rating_change.role_delta,
@@ -313,6 +318,16 @@ pub fn record_game_stats(
         if overflow > 0 {
             entry.rating_history.drain(..overflow);
         }
+    }
+    // 모든 갱신이 끝난 뒤의 풀 기준으로 전/후 티어를 고정해 둔다.
+    for item in &mut rating_log {
+        let rating_games = stats
+            .users
+            .get(&item.user_id.to_string())
+            .map_or(0, |entry| entry.rating_games);
+        item.before_rank =
+            rating_rank(stats, item.before, rating_games.saturating_sub(1)).to_string();
+        item.after_rank = rating_rank(stats, item.after, rating_games).to_string();
     }
     rating_log.sort_by_key(|item| item.name.to_lowercase());
     rating_log
@@ -363,8 +378,8 @@ pub fn game_rank_change_chunks(logs: &[GameRatingLogItem], max_chars: usize) -> 
     let mut chunks = Vec::new();
     let mut current = String::new();
     for item in logs {
-        let before_rank = rating_rank(item.before);
-        let after_rank = rating_rank(item.after);
+        let before_rank = item.before_rank.as_str();
+        let after_rank = item.after_rank.as_str();
         if before_rank == after_rank {
             continue;
         }
@@ -633,17 +648,7 @@ fn rating_change_for_player(
     };
     let first_death_relief = first_death_loss_relief(game, player, raw_final_delta, won);
     let final_delta = raw_final_delta + first_death_relief;
-    // 티어 강등 보호: 시작 티어(실버)보다 위로 올라간 티어의 하한 밑으로는
-    // 떨어지지 않는다. 시작 지점(1000)까지 보호하면 신규 계정이 점수를 잃을
-    // 수 없게 되므로 골드부터 보호가 붙는다.
-    let peak_rating = entry
-        .map_or(old_rating, |entry| entry.rating_peak)
-        .max(old_rating);
-    let protected_floor = {
-        let floor = rank_floor(peak_rating);
-        if floor > INITIAL_RATING { floor } else { 0 }
-    };
-    let after = (old_rating + final_delta).max(protected_floor).max(0);
+    let after = (old_rating + final_delta).max(0);
     let mut reasons = vec![if won {
         "소속 진영 승리".to_string()
     } else {
@@ -678,9 +683,6 @@ fn rating_change_for_player(
     }
     if first_death_relief > 0 {
         reasons.push(format!("첫 사망 패배 완화 +{first_death_relief}"));
-    }
-    if old_rating + final_delta < protected_floor {
-        reasons.push(format!("티어 강등 보호 ({}점 유지)", protected_floor));
     }
     RatingChange {
         before: old_rating,
@@ -962,38 +964,43 @@ pub fn win_rate_text(wins: i64, games: i64) -> String {
     format!("{:.1}%", wins as f64 / games as f64 * 100.0)
 }
 
-/// 랭크 v2: 도달한 티어의 하한 밑으로는 내려가지 않는다 (강등 보호).
-pub fn rating_rank(rating: i64) -> &'static str {
-    if rating < 1000 {
-        "브론즈"
-    } else if rating < 1200 {
-        "실버"
-    } else if rating < 1450 {
-        "골드"
-    } else if rating < 1750 {
-        "플래티나"
-    } else if rating < 2100 {
-        "다이아"
-    } else {
+/// 랭크 v3: 유동 커트라인. 절대 점수가 아니라 배치(10판)를 마친 플레이어들
+/// 사이의 상대 위치(백분위)로 티어를 정한다. 친구끼리만 하는 소규모 풀에서는
+/// 절대 커트라인이 전원과 함께 인플레이션되므로, 커트라인이 분포를 따라
+/// 움직여야 티어가 의미를 가진다. 남이 올라오면 내가 내려갈 수도 있다.
+pub fn rating_rank(stats: &StatsFile, rating: i64, rating_games: i64) -> &'static str {
+    if rating_games < PLACEMENT_GAMES {
+        return "배치";
+    }
+    let pool = ranked_pool(stats);
+    if pool.is_empty() {
+        return "실버";
+    }
+    let above = pool.iter().filter(|&&other| other > rating).count();
+    let fraction = above as f64 / pool.len() as f64;
+    if fraction < 0.10 {
         "마스터"
+    } else if fraction < 0.25 {
+        "다이아"
+    } else if fraction < 0.45 {
+        "플래티나"
+    } else if fraction < 0.70 {
+        "골드"
+    } else if fraction < 0.90 {
+        "실버"
+    } else {
+        "브론즈"
     }
 }
 
-/// 해당 레이팅이 속한 티어의 하한선. 강등 보호의 기준선이다.
-pub fn rank_floor(rating: i64) -> i64 {
-    if rating < 1000 {
-        0
-    } else if rating < 1200 {
-        1000
-    } else if rating < 1450 {
-        1200
-    } else if rating < 1750 {
-        1450
-    } else if rating < 2100 {
-        1750
-    } else {
-        2100
-    }
+/// 티어 산정에 들어가는 레이팅 풀: 배치를 마친 모든 플레이어.
+fn ranked_pool(stats: &StatsFile) -> Vec<i64> {
+    stats
+        .users
+        .values()
+        .filter(|entry| entry.rating_games >= PLACEMENT_GAMES)
+        .map(|entry| entry.rating)
+        .collect()
 }
 
 pub fn role_stats_text(entry: &PlayerStats) -> String {
@@ -1041,7 +1048,7 @@ pub fn leaderboard_text(stats: &StatsFile, metric: &str) -> String {
             entry.mafia_team_games,
             play_duration_text(entry.play_seconds),
             entry.rating,
-            rating_rank(entry.rating)
+            rating_rank(stats, entry.rating, entry.rating_games)
         ));
     }
     lines.join("\n")
@@ -1361,25 +1368,33 @@ mod tests {
         assert_eq!(history.recent_roles, vec![Role::Spy]);
     }
 
+    /// 유동 티어: 커트라인은 배치를 마친 플레이어들의 분포에서 나온다.
     #[test]
-    fn rating_rank_maps_rating_bands() {
-        assert_eq!(rating_rank(999), "브론즈");
-        assert_eq!(rating_rank(1000), "실버");
-        assert_eq!(rating_rank(1200), "골드");
-        assert_eq!(rating_rank(1450), "플래티나");
-        assert_eq!(rating_rank(1750), "다이아");
-        assert_eq!(rating_rank(2100), "마스터");
-    }
+    fn rating_rank_is_relative_to_the_player_pool() {
+        let mut stats = StatsFile::default();
+        for (index, rating) in [900i64, 950, 1000, 1050, 1100, 1150, 1200, 1250, 1300, 1400]
+            .into_iter()
+            .enumerate()
+        {
+            let entry = ensure_player_stats(&mut stats, index as u64 + 1, "p");
+            entry.rating = rating;
+            entry.rating_games = PLACEMENT_GAMES;
+        }
 
-    /// 강등 보호: 도달한 티어의 하한이 곧 바닥이다.
-    #[test]
-    fn rank_floor_matches_tier_entry_points() {
-        assert_eq!(rank_floor(999), 0);
-        assert_eq!(rank_floor(1100), 1000);
-        assert_eq!(rank_floor(1300), 1200);
-        assert_eq!(rank_floor(1500), 1450);
-        assert_eq!(rank_floor(1800), 1750);
-        assert_eq!(rank_floor(2400), 2100);
+        // 10명 풀: 1등 마스터, 2등 다이아, 꼴찌 브론즈.
+        assert_eq!(rating_rank(&stats, 1400, PLACEMENT_GAMES), "마스터");
+        assert_eq!(rating_rank(&stats, 1300, PLACEMENT_GAMES), "다이아");
+        assert_eq!(rating_rank(&stats, 900, PLACEMENT_GAMES), "브론즈");
+        // 배치가 끝나지 않으면 티어가 없다.
+        assert_eq!(rating_rank(&stats, 1400, PLACEMENT_GAMES - 1), "배치");
+
+        // 같은 점수라도 풀이 강해지면 티어가 내려간다 (유동 커트라인).
+        for index in 0..10u64 {
+            let entry = ensure_player_stats(&mut stats, 100 + index, "q");
+            entry.rating = 1500;
+            entry.rating_games = PLACEMENT_GAMES;
+        }
+        assert_ne!(rating_rank(&stats, 1300, PLACEMENT_GAMES), "다이아");
     }
 
     #[test]
@@ -1391,6 +1406,8 @@ mod tests {
                 role: Role::Doctor.value().to_string(),
                 before: 1180,
                 after: 1210,
+                before_rank: "실버".to_string(),
+                after_rank: "골드".to_string(),
                 delta: 20,
                 team_delta: 15,
                 role_delta: 5,
@@ -1405,6 +1422,8 @@ mod tests {
                 role: Role::Mafia.value().to_string(),
                 before: 1000,
                 after: 1030,
+                before_rank: "실버".to_string(),
+                after_rank: "실버".to_string(),
                 delta: 30,
                 team_delta: 29,
                 role_delta: 1,
@@ -1429,56 +1448,6 @@ mod tests {
         assert_eq!(WIN_DELTA_MIN, 5);
         assert_eq!(LOSS_DELTA_MIN, -20);
         assert!(WIN_BASE_DELTA >= 2.0 * -LOSS_BASE_DELTA);
-    }
-
-    /// 골드(1200) 이상 도달한 플레이어는 패배해도 그 티어 하한 밑으로 떨어지지
-    /// 않고, 시작 티어(실버)는 보호받지 않는다.
-    #[test]
-    fn tier_floor_protects_reached_tiers_but_not_the_starting_tier() {
-        let game = {
-            let mut game = rating_test_game();
-            for player in &mut game.players {
-                player.alive = player.role == Role::Mafia;
-            }
-            game
-        };
-        let roles = initial_roles(&game);
-
-        // 골드 하한 바로 위의 시민이 패배: 1200 밑으로 내려가지 않는다.
-        let mut stats = StatsFile::default();
-        for player in &game.players {
-            let entry = ensure_player_stats(&mut stats, player.user_id, &player.name);
-            entry.rating = 1205;
-            entry.rating_peak = 1205;
-            entry.rating_games = 30;
-        }
-        let log = record_game_stats(&mut stats, &game, &roles, 120, Winner::Mafia);
-        let loser = log
-            .iter()
-            .find(|item| item.role != Role::Mafia.value().to_string())
-            .unwrap();
-        assert_eq!(loser.after, 1200, "{loser:?}");
-        assert!(
-            loser
-                .reasons
-                .iter()
-                .any(|reason| reason.contains("티어 강등 보호")),
-            "{:?}",
-            loser.reasons
-        );
-
-        // 실버(시작 티어)는 보호가 없어 1000 밑으로 내려갈 수 있다.
-        let mut fresh_stats = StatsFile::default();
-        for player in &game.players {
-            let entry = ensure_player_stats(&mut fresh_stats, player.user_id, &player.name);
-            entry.rating_games = 30;
-        }
-        let fresh_log = record_game_stats(&mut fresh_stats, &game, &roles, 120, Winner::Mafia);
-        let fresh_loser = fresh_log
-            .iter()
-            .find(|item| item.role != Role::Mafia.value().to_string())
-            .unwrap();
-        assert!(fresh_loser.after < 1000, "{fresh_loser:?}");
     }
 
     #[test]

@@ -2652,6 +2652,8 @@ pub struct GameResultImageRow {
     alive: bool,
     before: Option<i64>,
     after: Option<i64>,
+    before_rank: Option<String>,
+    after_rank: Option<String>,
     delta: Option<i64>,
     team_delta: Option<i64>,
     role_delta: Option<i64>,
@@ -2765,6 +2767,8 @@ pub fn game_result_rows(
                 alive: player.alive,
                 before: rating.map(|item| item.before),
                 after: rating.map(|item| item.after),
+                before_rank: rating.map(|item| item.before_rank.clone()),
+                after_rank: rating.map(|item| item.after_rank.clone()),
                 delta: rating.map(|item| item.delta),
                 team_delta: rating.map(|item| item.team_delta),
                 role_delta: rating.map(|item| item.role_delta),
@@ -3060,8 +3064,8 @@ fn draw_rating_block(
             y + 58,
             format!(
                 "{} -> {}",
-                stats::rating_rank(before),
-                stats::rating_rank(after)
+                row.before_rank.as_deref().unwrap_or("?"),
+                row.after_rank.as_deref().unwrap_or("?")
             ),
             muted,
         );
@@ -3174,8 +3178,8 @@ fn draw_rank_and_reason(
     muted: Rgb<u8>,
 ) {
     if let (Some(before), Some(after)) = (row.before, row.after) {
-        let before_rank = stats::rating_rank(before);
-        let after_rank = stats::rating_rank(after);
+        let before_rank = row.before_rank.as_deref().unwrap_or("?");
+        let after_rank = row.after_rank.as_deref().unwrap_or("?");
         let rank_text = if before_rank == after_rank {
             format!("{after_rank} 랭크 유지")
         } else if after > before {
@@ -3559,6 +3563,8 @@ mod tests {
             role: Role::Citizen.value().to_string(),
             before: 1000,
             after: 1030,
+            before_rank: "실버".to_string(),
+            after_rank: "실버".to_string(),
             delta: 30,
             team_delta: 30,
             role_delta: 0,
@@ -3845,6 +3851,8 @@ mod tests {
                 alive: true,
                 before: Some(1043),
                 after: Some(1077),
+                before_rank: Some("실버".to_string()),
+                after_rank: Some("골드".to_string()),
                 delta: Some(34),
                 team_delta: Some(29),
                 role_delta: Some(1),
@@ -3863,6 +3871,8 @@ mod tests {
                 alive: true,
                 before: Some(1000),
                 after: Some(1032),
+                before_rank: Some("실버".to_string()),
+                after_rank: Some("골드".to_string()),
                 delta: Some(32),
                 team_delta: Some(24),
                 role_delta: Some(4),
@@ -3878,6 +3888,8 @@ mod tests {
                 alive: false,
                 before: Some(1000),
                 after: Some(982),
+                before_rank: Some("실버".to_string()),
+                after_rank: Some("골드".to_string()),
                 delta: Some(-18),
                 team_delta: Some(-20),
                 role_delta: Some(2),
