@@ -11,10 +11,16 @@ use std::{
 
 pub const INITIAL_RATING: i64 = 1000;
 const RATING_HISTORY_LIMIT: usize = 20;
-const RATING_DELTA_CAP: i64 = 80;
 const ROLE_DELTA_CAP: i64 = 14;
-const LOSING_RATING_GAIN_CAP: i64 = 5;
 const FIRST_DEATH_LOSS_RELIEF_DIVISOR: i64 = 4;
+// 레이팅 v2: 팀 게임에서 패배가 절반쯤 강제되는 특성을 반영해 승리가 패배보다
+// 두 배 무겁다. 50% 승률이면 완만히 오르고, 활약 점수는 패배 손실을 줄여 준다.
+const WIN_BASE_DELTA: f64 = 24.0;
+const LOSS_BASE_DELTA: f64 = -12.0;
+const WIN_DELTA_MIN: i64 = 5;
+const WIN_DELTA_MAX: i64 = 45;
+const LOSS_DELTA_MIN: i64 = -20;
+const PLACEMENT_GAMES: i64 = 10;
 const ROLE_BALANCE_RECENT_GAMES: usize = 20;
 const ROLE_STATS_ORDER: &[Role] = &[
     Role::Mafia,
@@ -594,29 +600,50 @@ fn rating_change_for_player(
         .copied()
         .unwrap_or(INITIAL_RATING);
     let won = player_won_game(game, player, winner);
-    let score = if won { 1.0 } else { 0.0 };
     let opponent_average = opponent_average_rating(game, player, ratings, team_by_user_id);
     let entry = stats.users.get(&player.user_id.to_string());
-    let rating_multiplier = rating_progression_multiplier(old_rating, won);
-    let base_delta =
-        rating_k(entry) as f64 * (score - expected_score(old_rating, opponent_average));
+    // 상대 난이도: 로비 평균이 나보다 높으면 승리 보상이 커지고 패배 손실은 줄어든다.
+    // 매칭이 없는 공개 로비라 영향은 ±25%로 제한한다.
+    let opponent_factor = ((opponent_average - old_rating as f64) / 800.0).clamp(-0.25, 0.25);
+    let in_placement = entry.map_or(0, |entry| entry.rating_games) < PLACEMENT_GAMES;
+    let placement_multiplier = if in_placement {
+        if won { 1.5 } else { 0.5 }
+    } else {
+        1.0
+    };
+    let base = if won {
+        WIN_BASE_DELTA * (1.0 + opponent_factor)
+    } else {
+        LOSS_BASE_DELTA * (1.0 - opponent_factor)
+    };
     let team_delta = clamp(
-        (base_delta * rating_multiplier * player_count_multiplier(game.players.len())).round()
-            as i64,
-        -RATING_DELTA_CAP,
-        RATING_DELTA_CAP,
+        (base * placement_multiplier * player_count_multiplier(game.players.len())).round() as i64,
+        LOSS_DELTA_MIN,
+        WIN_DELTA_MAX,
     );
     let (role_delta, mut role_reasons) = role_rating_adjustment(game, player, initial_role, won);
     let streak_delta = win_streak_rating_bonus(entry, won);
-    let combined_delta = clamp(
-        team_delta + role_delta + streak_delta,
-        -RATING_DELTA_CAP,
-        RATING_DELTA_CAP,
-    );
-    let raw_final_delta = final_rating_delta(team_delta, role_delta + streak_delta, won);
+    let raw_delta = team_delta + role_delta + streak_delta;
+    // 승리는 최소 +5를 보장하고, 패배는 활약으로 0까지 줄일 수 있지만 오르지는
+    // 않으며 한 판에 -20을 넘게 잃지 않는다.
+    let raw_final_delta = if won {
+        clamp(raw_delta, WIN_DELTA_MIN, WIN_DELTA_MAX)
+    } else {
+        clamp(raw_delta, LOSS_DELTA_MIN, 0)
+    };
     let first_death_relief = first_death_loss_relief(game, player, raw_final_delta, won);
     let final_delta = raw_final_delta + first_death_relief;
-    let after = (old_rating + final_delta).max(0);
+    // 티어 강등 보호: 시작 티어(실버)보다 위로 올라간 티어의 하한 밑으로는
+    // 떨어지지 않는다. 시작 지점(1000)까지 보호하면 신규 계정이 점수를 잃을
+    // 수 없게 되므로 골드부터 보호가 붙는다.
+    let peak_rating = entry
+        .map_or(old_rating, |entry| entry.rating_peak)
+        .max(old_rating);
+    let protected_floor = {
+        let floor = rank_floor(peak_rating);
+        if floor > INITIAL_RATING { floor } else { 0 }
+    };
+    let after = (old_rating + final_delta).max(protected_floor).max(0);
     let mut reasons = vec![if won {
         "소속 진영 승리".to_string()
     } else {
@@ -627,17 +654,33 @@ fn rating_change_for_player(
         let next_streak = entry.map_or(1, |entry| entry.win_streak.saturating_add(1));
         reasons.push(format!("{next_streak}연승 보너스 +{streak_delta}"));
     }
-    if (rating_multiplier - 1.0).abs() > f64::EPSILON {
-        reasons.push(format!("레이팅 구간 보정 x{rating_multiplier:.2}"));
+    if opponent_factor.abs() > 0.02 {
+        reasons.push(format!(
+            "상대 난이도 보정 x{:.2}",
+            if won {
+                1.0 + opponent_factor
+            } else {
+                1.0 - opponent_factor
+            }
+        ));
     }
-    if combined_delta != team_delta + role_delta + streak_delta {
-        reasons.push("전체 레이팅 변동 상한 적용".to_string());
+    if in_placement {
+        reasons.push("배치 구간 보정 (10판 미만)".to_string());
     }
-    if !won && raw_final_delta != combined_delta {
+    if won && raw_delta < WIN_DELTA_MIN {
+        reasons.push(format!("승리 최소 보장 +{WIN_DELTA_MIN}"));
+    }
+    if !won && raw_delta > 0 {
         reasons.push("패배팀 상승 제한 적용".to_string());
+    }
+    if !won && raw_delta < LOSS_DELTA_MIN {
+        reasons.push(format!("패배 손실 상한 {LOSS_DELTA_MIN} 적용"));
     }
     if first_death_relief > 0 {
         reasons.push(format!("첫 사망 패배 완화 +{first_death_relief}"));
+    }
+    if old_rating + final_delta < protected_floor {
+        reasons.push(format!("티어 강등 보호 ({}점 유지)", protected_floor));
     }
     RatingChange {
         before: old_rating,
@@ -658,7 +701,7 @@ fn win_streak_rating_bonus(entry: Option<&PlayerStats>, won: bool) -> i64 {
     if next_streak <= 1 {
         0
     } else {
-        ((next_streak - 1) * 2).min(16)
+        ((next_streak - 1) * 3).min(12)
     }
 }
 
@@ -820,15 +863,6 @@ fn role_has_core_action(role: Role) -> bool {
     )
 }
 
-fn final_rating_delta(team_delta: i64, role_delta: i64, won: bool) -> i64 {
-    let combined_delta = clamp(team_delta + role_delta, -RATING_DELTA_CAP, RATING_DELTA_CAP);
-    if won {
-        combined_delta
-    } else {
-        combined_delta.min(LOSING_RATING_GAIN_CAP)
-    }
-}
-
 fn first_death_loss_relief(game: &MafiaGame, player: &Player, final_delta: i64, won: bool) -> i64 {
     if won || final_delta >= 0 || game.death_order.first() != Some(&player.user_id) {
         return 0;
@@ -905,49 +939,6 @@ fn opponent_average_rating(
         / candidates.len() as f64
 }
 
-fn rating_k(entry: Option<&PlayerStats>) -> i64 {
-    let rating_games = entry.map_or(0, |entry| entry.rating_games);
-    if rating_games < 10 {
-        56
-    } else if rating_games < 30 {
-        48
-    } else if rating_games < 70 {
-        40
-    } else {
-        34
-    }
-}
-
-fn rating_progression_multiplier(rating: i64, won: bool) -> f64 {
-    if won {
-        if rating < 950 {
-            1.45
-        } else if rating < 1125 {
-            1.15
-        } else if rating < 1325 {
-            0.95
-        } else if rating < 1575 {
-            0.78
-        } else if rating < 1900 {
-            0.62
-        } else {
-            0.48
-        }
-    } else if rating < 950 {
-        0.60
-    } else if rating < 1125 {
-        0.78
-    } else if rating < 1325 {
-        0.95
-    } else if rating < 1575 {
-        1.12
-    } else if rating < 1900 {
-        1.32
-    } else {
-        1.55
-    }
-}
-
 fn player_count_multiplier(player_count: usize) -> f64 {
     if player_count <= 3 {
         0.6
@@ -958,10 +949,6 @@ fn player_count_multiplier(player_count: usize) -> f64 {
     } else {
         1.1
     }
-}
-
-fn expected_score(player_rating: i64, opponent_average: f64) -> f64 {
-    1.0 / (1.0 + 10_f64.powf((opponent_average - player_rating as f64) / 400.0))
 }
 
 fn clamp(value: i64, low: i64, high: i64) -> i64 {
@@ -975,19 +962,37 @@ pub fn win_rate_text(wins: i64, games: i64) -> String {
     format!("{:.1}%", wins as f64 / games as f64 * 100.0)
 }
 
+/// 랭크 v2: 도달한 티어의 하한 밑으로는 내려가지 않는다 (강등 보호).
 pub fn rating_rank(rating: i64) -> &'static str {
-    if rating < 950 {
-        "C"
-    } else if rating < 1100 {
-        "B"
-    } else if rating < 1300 {
-        "A"
-    } else if rating < 1550 {
-        "S"
-    } else if rating < 1850 {
-        "SS"
+    if rating < 1000 {
+        "브론즈"
+    } else if rating < 1200 {
+        "실버"
+    } else if rating < 1450 {
+        "골드"
+    } else if rating < 1750 {
+        "플래티나"
+    } else if rating < 2100 {
+        "다이아"
     } else {
-        "X"
+        "마스터"
+    }
+}
+
+/// 해당 레이팅이 속한 티어의 하한선. 강등 보호의 기준선이다.
+pub fn rank_floor(rating: i64) -> i64 {
+    if rating < 1000 {
+        0
+    } else if rating < 1200 {
+        1000
+    } else if rating < 1450 {
+        1200
+    } else if rating < 1750 {
+        1450
+    } else if rating < 2100 {
+        1750
+    } else {
+        2100
     }
 }
 
@@ -1358,12 +1363,23 @@ mod tests {
 
     #[test]
     fn rating_rank_maps_rating_bands() {
-        assert_eq!(rating_rank(949), "C");
-        assert_eq!(rating_rank(950), "B");
-        assert_eq!(rating_rank(1100), "A");
-        assert_eq!(rating_rank(1300), "S");
-        assert_eq!(rating_rank(1550), "SS");
-        assert_eq!(rating_rank(1850), "X");
+        assert_eq!(rating_rank(999), "브론즈");
+        assert_eq!(rating_rank(1000), "실버");
+        assert_eq!(rating_rank(1200), "골드");
+        assert_eq!(rating_rank(1450), "플래티나");
+        assert_eq!(rating_rank(1750), "다이아");
+        assert_eq!(rating_rank(2100), "마스터");
+    }
+
+    /// 강등 보호: 도달한 티어의 하한이 곧 바닥이다.
+    #[test]
+    fn rank_floor_matches_tier_entry_points() {
+        assert_eq!(rank_floor(999), 0);
+        assert_eq!(rank_floor(1100), 1000);
+        assert_eq!(rank_floor(1300), 1200);
+        assert_eq!(rank_floor(1500), 1450);
+        assert_eq!(rank_floor(1800), 1750);
+        assert_eq!(rank_floor(2400), 2100);
     }
 
     #[test]
@@ -1373,8 +1389,8 @@ mod tests {
                 user_id: 1,
                 name: "Alpha".to_string(),
                 role: Role::Doctor.value().to_string(),
-                before: 1090,
-                after: 1110,
+                before: 1180,
+                after: 1210,
                 delta: 20,
                 team_delta: 15,
                 role_delta: 5,
@@ -1403,20 +1419,66 @@ mod tests {
 
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].contains("Alpha"));
-        assert!(chunks[0].contains("B -> A"));
+        assert!(chunks[0].contains("실버 -> 골드"));
         assert!(!chunks[0].contains("Beta"));
     }
 
+    /// v2: 승리는 최소 +5, 패배는 최대 -20이며 활약이 커도 0을 넘지 못한다.
     #[test]
-    fn rating_progression_helps_lower_ratings_more() {
+    fn rating_v2_keeps_wins_positive_and_losses_bounded() {
+        assert_eq!(WIN_DELTA_MIN, 5);
+        assert_eq!(LOSS_DELTA_MIN, -20);
+        assert!(WIN_BASE_DELTA >= 2.0 * -LOSS_BASE_DELTA);
+    }
+
+    /// 골드(1200) 이상 도달한 플레이어는 패배해도 그 티어 하한 밑으로 떨어지지
+    /// 않고, 시작 티어(실버)는 보호받지 않는다.
+    #[test]
+    fn tier_floor_protects_reached_tiers_but_not_the_starting_tier() {
+        let game = {
+            let mut game = rating_test_game();
+            for player in &mut game.players {
+                player.alive = player.role == Role::Mafia;
+            }
+            game
+        };
+        let roles = initial_roles(&game);
+
+        // 골드 하한 바로 위의 시민이 패배: 1200 밑으로 내려가지 않는다.
+        let mut stats = StatsFile::default();
+        for player in &game.players {
+            let entry = ensure_player_stats(&mut stats, player.user_id, &player.name);
+            entry.rating = 1205;
+            entry.rating_peak = 1205;
+            entry.rating_games = 30;
+        }
+        let log = record_game_stats(&mut stats, &game, &roles, 120, Winner::Mafia);
+        let loser = log
+            .iter()
+            .find(|item| item.role != Role::Mafia.value().to_string())
+            .unwrap();
+        assert_eq!(loser.after, 1200, "{loser:?}");
         assert!(
-            rating_progression_multiplier(850, true) > rating_progression_multiplier(1450, true)
+            loser
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("티어 강등 보호")),
+            "{:?}",
+            loser.reasons
         );
-        assert!(
-            rating_progression_multiplier(850, false) < rating_progression_multiplier(1450, false)
-        );
-        assert!(rating_progression_multiplier(1000, false) < 1.0);
-        assert!(rating_progression_multiplier(1700, false) > 1.0);
+
+        // 실버(시작 티어)는 보호가 없어 1000 밑으로 내려갈 수 있다.
+        let mut fresh_stats = StatsFile::default();
+        for player in &game.players {
+            let entry = ensure_player_stats(&mut fresh_stats, player.user_id, &player.name);
+            entry.rating_games = 30;
+        }
+        let fresh_log = record_game_stats(&mut fresh_stats, &game, &roles, 120, Winner::Mafia);
+        let fresh_loser = fresh_log
+            .iter()
+            .find(|item| item.role != Role::Mafia.value().to_string())
+            .unwrap();
+        assert!(fresh_loser.after < 1000, "{fresh_loser:?}");
     }
 
     #[test]
@@ -1780,11 +1842,5 @@ mod tests {
                 .iter()
                 .any(|reason| reason.contains("첫 사망 패배 완화"))
         );
-    }
-
-    #[test]
-    fn losing_team_positive_gain_is_capped() {
-        assert_eq!(final_rating_delta(-2, 10, false), LOSING_RATING_GAIN_CAP);
-        assert_eq!(final_rating_delta(-40, 10, false), -30);
     }
 }
