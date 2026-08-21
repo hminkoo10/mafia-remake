@@ -928,9 +928,8 @@ impl MafiaGame {
                 .get_player(victim.user_id)
                 .is_some_and(|player| self.is_citizen_team(player));
             if is_citizen && original_role != Role::Citizen {
-                if let Some(player) = self.get_player_mut(victim.user_id) {
-                    player.role = Role::Citizen;
-                }
+                // 실제 role은 그대로 두고 판정만 가린다. 발표용 사본만 시민으로 바꾼다.
+                self.cleanup_masked_ids.insert(victim.user_id);
                 victim.role = Role::Citizen;
             }
         }

@@ -294,6 +294,13 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         },
         &assignment_history,
     )?;
+    let game = {
+        let mut game = game;
+        // 개인 티어는 실제 게임 시작 시점에만 굴린다 (생성자에서 굴리면 테스트가
+        // 무작위 능력에 흔들린다).
+        game.assign_tier_abilities();
+        game
+    };
     let initial_roles = game.players.iter().map(|p| (p.user_id, p.role)).collect();
     let stats_snapshot = {
         let mut stats_file = ctx.data().stats.write().await;

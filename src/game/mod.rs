@@ -61,6 +61,9 @@ pub struct MafiaGame {
     pub escaped_on_day: HashMap<u64, u32>,
     /// 티어 능력(무법·야습) 발동 알림 대기열. 밤 결산 때 전달한다.
     pub pending_tier_ability_notices: Vec<(u64, String)>,
+    /// [수습]으로 직업이 '시민'으로 가려진 사망자. 실제 role은 유지하고 판정만
+    /// 가린다 — 역할 기반 내부 로직(요원 지령 등)이 깨지지 않게 하기 위함.
+    pub cleanup_masked_ids: HashSet<u64>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -243,6 +246,7 @@ impl MafiaGame {
             last_wills: HashMap::new(),
             escaped_on_day: HashMap::new(),
             pending_tier_ability_notices: Vec::new(),
+            cleanup_masked_ids: HashSet::new(),
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -314,7 +318,6 @@ impl MafiaGame {
         };
         game.assign_mercenary_clients();
         game.assign_fraudster_disguises();
-        game.assign_tier_abilities();
         Ok(game)
     }
 
@@ -608,7 +611,9 @@ impl MafiaGame {
 
     /// 개인 티어 배정: 2티어 50% / 3티어 35% / 4티어 15%. 능력은 게임 내에서
     /// 중복되지 않으며, 해당 티어의 풀이 소진되면 아래 티어로 내려간다.
-    fn assign_tier_abilities(&mut self) {
+    /// 무작위성이 게임 로직 테스트를 흔들지 않도록 생성자가 아니라 실제 게임
+    /// 시작(start_game)에서 호출한다.
+    pub fn assign_tier_abilities(&mut self) {
         use crate::model::{TIER3_ABILITIES, TIER4_CITIZEN_ABILITIES, TIER4_MAFIA_ABILITIES};
         let mut order = self.players.clone();
         let mut rng = system_random::rng();
@@ -715,6 +720,9 @@ impl MafiaGame {
     pub fn visible_role(&self, player: &Player) -> Role {
         if self.is_frog(player) {
             Role::Frog
+        } else if self.cleanup_masked_ids.contains(&player.user_id) {
+            // [수습] 가려진 사망자는 어떤 조사에서도 시민으로 보인다.
+            Role::Citizen
         } else if let Some((_, disguised_role)) = self.fraudster_disguises.get(&player.user_id) {
             // 사기꾼은 조사 판정이 변장한 시민 직업으로 나온다.
             *disguised_role
@@ -1993,7 +2001,8 @@ mod tests {
             let players = (1..=10)
                 .map(|id| (id as u64, format!("P{id}")))
                 .collect::<Vec<_>>();
-            let game = MafiaGame::new(players, 2, 1, 1, Vec::new()).unwrap();
+            let mut game = MafiaGame::new(players, 2, 1, 1, Vec::new()).unwrap();
+            game.assign_tier_abilities();
 
             assert_eq!(game.player_tiers.len(), 10);
             for tier in game.player_tiers.values() {
@@ -2118,7 +2127,8 @@ mod tests {
             "{:?}",
             result.tier_ability_results
         );
-        // 발표용 사망자 목록과 실제 직업 모두 '시민'으로 바뀐다.
+        // 발표용 사망자 목록은 '시민'으로 가려지지만 실제 직업은 유지된다
+        // (역할 기반 내부 로직이 깨지지 않도록 판정만 가린다).
         assert_eq!(
             result
                 .killed_players
@@ -2127,7 +2137,9 @@ mod tests {
                 .map(|player| player.role),
             Some(Role::Citizen)
         );
-        assert_eq!(game.get_player(3).unwrap().role, Role::Citizen);
+        let victim = game.get_player(3).unwrap().clone();
+        assert_eq!(victim.role, Role::Doctor);
+        assert_eq!(game.visible_role(&victim), Role::Citizen);
     }
 
     /// [도주] 처형 대신 도주하고, 다음날 투표 시작 때 사망한다.
