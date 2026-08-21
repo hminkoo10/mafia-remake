@@ -3024,7 +3024,9 @@ pub fn render_leaderboard_image(stats_file: &stats::StatsFile, metric: &str) -> 
         return None;
     }
 
-    const IMAGE_WIDTH: u32 = 1280;
+    // 랭크/레이팅(맨 오른쪽 칼럼)이 'SS 1368점'처럼 긴 값에서 이미지 오른쪽
+    // 끝에 잘리지 않도록 캔버스를 넉넉히 잡는다.
+    const IMAGE_WIDTH: u32 = 1360;
     const TOP_PADDING: i32 = 40;
     const SIDE_PADDING: i32 = 48;
     const HEADER_HEIGHT: i32 = 150;
