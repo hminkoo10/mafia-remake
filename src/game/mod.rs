@@ -609,51 +609,43 @@ impl MafiaGame {
         }
     }
 
-    /// 개인 티어 배정: 2티어 50% / 3티어 35% / 4티어 15%. 능력은 게임 내에서
-    /// 중복되지 않으며, 해당 티어의 풀이 소진되면 아래 티어로 내려간다.
+    /// 개인 티어 배정: 2티어 50% / 3티어 35% / 4티어 15%. 같은 능력이 여러
+    /// 명에게 겹칠 수 있다. 4티어 풀은 소속에 따라 다르다 (마피아 본대 /
+    /// 보조 마피아 / 그 외).
     /// 무작위성이 게임 로직 테스트를 흔들지 않도록 생성자가 아니라 실제 게임
     /// 시작(start_game)에서 호출한다.
     pub fn assign_tier_abilities(&mut self) {
-        use crate::model::{TIER3_ABILITIES, TIER4_CITIZEN_ABILITIES, TIER4_MAFIA_ABILITIES};
-        let mut order = self.players.clone();
+        use crate::model::{
+            TIER3_ABILITIES, TIER4_CITIZEN_ABILITIES, TIER4_MAFIA_ABILITIES,
+            TIER4_MAFIA_SUPPORT_ABILITIES,
+        };
+        let order = self.players.clone();
         let mut rng = system_random::rng();
-        order.shuffle(&mut rng);
-        let mut used: HashSet<TierAbility> = HashSet::new();
         for player in order {
-            // 보조 마피아(마피아 본대가 아닌 마피아팀)는 항상 2티어 고정이다.
-            if self.is_mafia_team(&player) && player.role != Role::Mafia {
-                self.player_tiers.insert(player.user_id, 2);
-                continue;
-            }
             let roll = rng.next_u64() % 100;
-            let mut tier: u8 = if roll < 50 {
+            let tier: u8 = if roll < 50 {
                 2
             } else if roll < 85 {
                 3
             } else {
                 4
             };
-            let mut ability = None;
-            if tier == 4 {
-                let pool: &[TierAbility] = if self.is_mafia_team(&player) {
-                    TIER4_MAFIA_ABILITIES
-                } else {
-                    TIER4_CITIZEN_ABILITIES
-                };
-                ability = pick_unused_ability(pool, &used, &mut rng);
-                if ability.is_none() {
-                    tier = 3;
+            let pool: &[TierAbility] = match tier {
+                3 => TIER3_ABILITIES,
+                4 => {
+                    if !self.is_mafia_team(&player) {
+                        TIER4_CITIZEN_ABILITIES
+                    } else if player.role == Role::Mafia {
+                        TIER4_MAFIA_ABILITIES
+                    } else {
+                        TIER4_MAFIA_SUPPORT_ABILITIES
+                    }
                 }
-            }
-            if tier == 3 && ability.is_none() {
-                ability = pick_unused_ability(TIER3_ABILITIES, &used, &mut rng);
-                if ability.is_none() {
-                    tier = 2;
-                }
-            }
+                _ => &[],
+            };
             self.player_tiers.insert(player.user_id, tier);
-            if let Some(ability) = ability {
-                used.insert(ability);
+            if !pool.is_empty() {
+                let ability = pool[(rng.next_u64() % pool.len() as u64) as usize];
                 self.tier_abilities.insert(player.user_id, ability);
             }
         }
@@ -673,17 +665,26 @@ impl MafiaGame {
         self.tier_abilities.get(&user_id).copied()
     }
 
-    /// 살아있는 마피아팀 보유자의 id.
-    pub(crate) fn mafia_tier_ability_holder(&self, ability: TierAbility) -> Option<u64> {
+    /// 살아있는 마피아팀 보유자들의 id (중복 배정 허용).
+    pub(crate) fn mafia_tier_ability_holders(&self, ability: TierAbility) -> Vec<u64> {
         self.tier_abilities
             .iter()
-            .find(|(user_id, held)| {
+            .filter(|(user_id, held)| {
                 **held == ability
                     && self.get_player(**user_id).is_some_and(|player| {
                         player.alive && self.is_mafia_team(player) && !self.is_frog(player)
                     })
             })
             .map(|(user_id, _)| *user_id)
+            .collect()
+    }
+
+    /// [확성] 보유자가 밤에도 전체 채팅을 쓸 수 있는지.
+    pub fn is_loudspeaker_active(&self, player: &Player) -> bool {
+        player.alive
+            && self.player_tier_ability(player.user_id) == Some(TierAbility::Loudspeaker)
+            && !self.is_frog(player)
+            && !self.is_madam_seduced(player)
     }
 
     /// 대상에게 걸린 치료가 전부 자기 자신이 쓴 것인지 ([야습] 판정).
@@ -1291,20 +1292,6 @@ enum RoleActionMap {
     Witch,
     Terrorist,
     Mercenary,
-}
-
-fn pick_unused_ability(
-    pool: &[TierAbility],
-    used: &std::collections::HashSet<TierAbility>,
-    rng: &mut impl rand::RngCore,
-) -> Option<TierAbility> {
-    let mut candidates = pool
-        .iter()
-        .copied()
-        .filter(|ability| !used.contains(ability))
-        .collect::<Vec<_>>();
-    candidates.shuffle(rng);
-    candidates.into_iter().next()
 }
 
 const ROLE_ASSIGNMENT_RANDOM_JITTER: u64 = 50_000;
@@ -1999,63 +1986,40 @@ mod tests {
         assert!(result.agent_results.contains_key(&2));
     }
 
-    /// 보조 마피아(스파이·마담 등 본대가 아닌 마피아팀)는 항상 2티어 고정이다.
+    /// 티어 배정: 전원이 2~4티어를 받고, 4티어 능력은 소속 풀(마피아 본대 /
+    /// 보조 마피아 / 그 외)에서만 나온다. 같은 능력이 여러 명에게 겹칠 수 있다.
     #[test]
-    fn mafia_support_roles_are_always_tier_two() {
-        for _ in 0..10 {
-            let players = (1..=8)
-                .map(|id| (id as u64, format!("P{id}")))
-                .collect::<Vec<_>>();
-            let mut game = MafiaGame::new(players, 1, 1, 1, vec![Role::Spy, Role::Madam]).unwrap();
-            game.assign_tier_abilities();
-
-            for player in &game.players {
-                if game.is_mafia_team(player) && player.role != Role::Mafia {
-                    assert_eq!(
-                        game.player_tiers.get(&player.user_id),
-                        Some(&2),
-                        "{:?}",
-                        player.role
-                    );
-                    assert!(game.player_tier_ability(player.user_id).is_none());
-                }
-            }
-        }
-    }
-
-    /// 티어 배정: 모든 플레이어가 2~4티어를 받고, 능력은 게임 내 중복이 없다.
-    #[test]
-    fn tier_abilities_are_assigned_uniquely() {
+    fn tier_abilities_follow_group_pools() {
+        use crate::model::{
+            TIER4_CITIZEN_ABILITIES, TIER4_MAFIA_ABILITIES, TIER4_MAFIA_SUPPORT_ABILITIES,
+        };
         for _ in 0..20 {
             let players = (1..=10)
                 .map(|id| (id as u64, format!("P{id}")))
                 .collect::<Vec<_>>();
-            let mut game = MafiaGame::new(players, 2, 1, 1, Vec::new()).unwrap();
+            let mut game = MafiaGame::new(players, 2, 1, 1, vec![Role::Spy, Role::Madam]).unwrap();
             game.assign_tier_abilities();
 
             assert_eq!(game.player_tiers.len(), 10);
-            for tier in game.player_tiers.values() {
-                assert!((2..=4).contains(tier), "{tier}");
-            }
-            // 능력 중복 없음
-            let abilities = game.tier_abilities.values().collect::<Vec<_>>();
-            let unique = abilities.iter().collect::<std::collections::HashSet<_>>();
-            assert_eq!(abilities.len(), unique.len());
-            // 4티어 능력의 팀 제약
-            for (user_id, ability) in &game.tier_abilities {
-                let player = game.get_player(*user_id).unwrap();
-                match ability {
-                    TierAbility::Lawless
-                    | TierAbility::NightRaid
-                    | TierAbility::Cleanup
-                    | TierAbility::Escape => {
-                        assert!(game.is_mafia_team(player), "{ability:?}")
+            for player in &game.players {
+                let tier = game.player_tiers[&player.user_id];
+                assert!((2..=4).contains(&tier), "{tier}");
+                match game.player_tier_ability(player.user_id) {
+                    None => assert_eq!(tier, 2, "{:?}", player.role),
+                    Some(ability) => {
+                        assert_eq!(tier, ability.tier(), "{:?} {ability:?}", player.role);
+                        if ability.tier() == 4 {
+                            let pool: &[TierAbility] = if !game.is_mafia_team(player) {
+                                TIER4_CITIZEN_ABILITIES
+                            } else if player.role == Role::Mafia {
+                                TIER4_MAFIA_ABILITIES
+                            } else {
+                                TIER4_MAFIA_SUPPORT_ABILITIES
+                            };
+                            assert!(pool.contains(&ability), "{:?} {ability:?}", player.role);
+                        }
                     }
-                    TierAbility::LastWill => assert!(!game.is_mafia_team(player)),
-                    _ => {}
                 }
-                // 능력 보유 = 3티어 이상
-                assert!(game.player_tiers[user_id] >= 3);
             }
         }
     }

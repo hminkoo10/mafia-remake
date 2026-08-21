@@ -381,6 +381,8 @@ pub enum TierAbility {
     Escape,
     /// 4티어 시민팀: 밤에 유언 작성, 밤에 죽으면 전체 공개
     LastWill,
+    /// 4티어 공용: 밤에도 게임 채널에 채팅 가능
+    Loudspeaker,
 }
 
 impl TierAbility {
@@ -393,6 +395,7 @@ impl TierAbility {
             Self::Cleanup => "수습",
             Self::Escape => "도주",
             Self::LastWill => "유언",
+            Self::Loudspeaker => "확성",
         }
     }
 
@@ -420,6 +423,7 @@ impl TierAbility {
             Self::LastWill => {
                 "밤에 유언을 작성할 수 있고, 밤에 사망하면 작성한 유언이 모두에게 공개됩니다."
             }
+            Self::Loudspeaker => "밤에도 게임 채널에 채팅할 수 있습니다.",
         }
     }
 }
@@ -431,8 +435,16 @@ pub const TIER4_MAFIA_ABILITIES: &[TierAbility] = &[
     TierAbility::NightRaid,
     TierAbility::Cleanup,
     TierAbility::Escape,
+    TierAbility::Loudspeaker,
 ];
-pub const TIER4_CITIZEN_ABILITIES: &[TierAbility] = &[TierAbility::LastWill];
+/// 보조 마피아(마피아 본대가 아닌 마피아팀)의 4티어 풀.
+pub const TIER4_MAFIA_SUPPORT_ABILITIES: &[TierAbility] = &[
+    TierAbility::Loudspeaker,
+    TierAbility::LastWill,
+    TierAbility::Escape,
+];
+pub const TIER4_CITIZEN_ABILITIES: &[TierAbility] =
+    &[TierAbility::LastWill, TierAbility::Loudspeaker];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractorGuessRoleGroup {

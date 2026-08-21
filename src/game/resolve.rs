@@ -902,13 +902,16 @@ impl MafiaGame {
         killed_players: &mut [Player],
         killed_by_mafia_team_ids: &HashSet<u64>,
     ) {
-        let Some(holder_id) = self.mafia_tier_ability_holder(TierAbility::Cleanup) else {
-            return;
-        };
-        if killed_players
-            .iter()
-            .any(|player| player.user_id == holder_id)
-        {
+        let holder_ids = self
+            .mafia_tier_ability_holders(TierAbility::Cleanup)
+            .into_iter()
+            .filter(|holder_id| {
+                !killed_players
+                    .iter()
+                    .any(|player| player.user_id == *holder_id)
+            })
+            .collect::<Vec<_>>();
+        if holder_ids.is_empty() {
             return;
         }
         for victim in killed_players
@@ -916,14 +919,16 @@ impl MafiaGame {
             .filter(|player| killed_by_mafia_team_ids.contains(&player.user_id))
         {
             let original_role = victim.role;
-            self.pending_tier_ability_notices.push((
-                holder_id,
-                format!(
-                    "[수습] {}님의 직업은 {}이었습니다.",
-                    victim.name,
-                    original_role.value()
-                ),
-            ));
+            for holder_id in &holder_ids {
+                self.pending_tier_ability_notices.push((
+                    *holder_id,
+                    format!(
+                        "[수습] {}님의 직업은 {}이었습니다.",
+                        victim.name,
+                        original_role.value()
+                    ),
+                ));
+            }
             let is_citizen = self
                 .get_player(victim.user_id)
                 .is_some_and(|player| self.is_citizen_team(player));
@@ -2045,7 +2050,7 @@ impl MafiaGame {
                     "첫날 밤 자가 치료를 무시하고 처형했습니다",
                 )
             };
-            if let Some(holder_id) = self.mafia_tier_ability_holder(ability) {
+            for holder_id in self.mafia_tier_ability_holders(ability) {
                 self.pending_tier_ability_notices.push((
                     holder_id,
                     format!("[{}] {}님의 {reason}.", ability.value(), target.name),

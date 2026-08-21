@@ -599,6 +599,20 @@ pub async fn run_night(
     );
     upsert_game_status(ctx, running).await;
     set_game_channel_chat(ctx, data, running, false).await;
+    // [확성] 보유자는 밤에도 전체 채팅이 열린다 (익명 게임은 릴레이 판정이 처리).
+    let loudspeakers = {
+        let running_read = running.read().await;
+        running_read
+            .game
+            .players
+            .iter()
+            .filter(|player| running_read.game.is_loudspeaker_active(player))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for holder in loudspeakers {
+        set_member_game_channel_chat(ctx, running, &holder, true).await;
+    }
     unlock_pending_dead_chats(ctx, data, running).await;
     sync_private_role_chat_permissions(ctx, data, running).await;
     sync_lover_chat_access(ctx, data, running).await;
@@ -1798,6 +1812,8 @@ pub async fn run_day(
     };
     unlock_pending_dead_chats(ctx, data, running).await;
     upsert_game_status(ctx, running).await;
+    // 밤 동안의 [확성] 개인 허용을 원상 복구한 뒤 낮 채팅을 연다.
+    restore_member_game_channel_chat(ctx, running).await;
     set_game_channel_chat(ctx, data, running, true).await;
     set_channel_slowmode(ctx, running, config.chat_slowmode_seconds).await;
     sync_private_role_chat_permissions(ctx, data, running).await;
