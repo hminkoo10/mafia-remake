@@ -620,6 +620,11 @@ impl MafiaGame {
         order.shuffle(&mut rng);
         let mut used: HashSet<TierAbility> = HashSet::new();
         for player in order {
+            // 보조 마피아(마피아 본대가 아닌 마피아팀)는 항상 2티어 고정이다.
+            if self.is_mafia_team(&player) && player.role != Role::Mafia {
+                self.player_tiers.insert(player.user_id, 2);
+                continue;
+            }
             let roll = rng.next_u64() % 100;
             let mut tier: u8 = if roll < 50 {
                 2
@@ -1992,6 +1997,30 @@ mod tests {
                 .any(|player| player.user_id == 2)
         );
         assert!(result.agent_results.contains_key(&2));
+    }
+
+    /// 보조 마피아(스파이·마담 등 본대가 아닌 마피아팀)는 항상 2티어 고정이다.
+    #[test]
+    fn mafia_support_roles_are_always_tier_two() {
+        for _ in 0..10 {
+            let players = (1..=8)
+                .map(|id| (id as u64, format!("P{id}")))
+                .collect::<Vec<_>>();
+            let mut game = MafiaGame::new(players, 1, 1, 1, vec![Role::Spy, Role::Madam]).unwrap();
+            game.assign_tier_abilities();
+
+            for player in &game.players {
+                if game.is_mafia_team(player) && player.role != Role::Mafia {
+                    assert_eq!(
+                        game.player_tiers.get(&player.user_id),
+                        Some(&2),
+                        "{:?}",
+                        player.role
+                    );
+                    assert!(game.player_tier_ability(player.user_id).is_none());
+                }
+            }
+        }
     }
 
     /// 티어 배정: 모든 플레이어가 2~4티어를 받고, 능력은 게임 내 중복이 없다.
