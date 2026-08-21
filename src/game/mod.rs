@@ -64,6 +64,8 @@ pub struct MafiaGame {
     /// [수습]으로 직업이 '시민'으로 가려진 사망자. 실제 role은 유지하고 판정만
     /// 가린다 — 역할 기반 내부 로직(요원 지령 등)이 깨지지 않게 하기 위함.
     pub cleanup_masked_ids: HashSet<u64>,
+    /// [확성]이 사용된 밤(day_number). 밤마다 보유자 전체가 1회만 쓸 수 있다.
+    pub loudspeaker_used_days: HashSet<u32>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -247,6 +249,7 @@ impl MafiaGame {
             escaped_on_day: HashMap::new(),
             pending_tier_ability_notices: Vec::new(),
             cleanup_masked_ids: HashSet::new(),
+            loudspeaker_used_days: HashSet::new(),
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -685,6 +688,25 @@ impl MafiaGame {
             && self.player_tier_ability(player.user_id) == Some(TierAbility::Loudspeaker)
             && !self.is_frog(player)
             && !self.is_madam_seduced(player)
+            // 밤마다 전체에서 단 1회. 누군가 먼저 쓰면 다른 보유자도 그 밤에는 못 쓴다.
+            && !self.loudspeaker_used_days.contains(&self.day_number)
+    }
+
+    /// [확성] 이번 밤 사용을 소모한다 (보유자 전체 공유, 밤당 1회).
+    pub fn mark_loudspeaker_used(&mut self) {
+        let day = self.day_number;
+        self.loudspeaker_used_days.insert(day);
+    }
+
+    /// 확성 능력 보유자 전원 (사용 여부와 무관).
+    pub fn loudspeaker_holders(&self) -> Vec<Player> {
+        self.players
+            .iter()
+            .filter(|player| {
+                self.player_tier_ability(player.user_id) == Some(TierAbility::Loudspeaker)
+            })
+            .cloned()
+            .collect()
     }
 
     /// 대상에게 걸린 치료가 전부 자기 자신이 쓴 것인지 ([야습] 판정).
@@ -2022,6 +2044,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// [확성]은 밤마다 보유자 전체에서 1회뿐이다. 먼저 쓰면 나머지는 그 밤에
+    /// 못 쓰고, 다음 밤에는 다시 쓸 수 있다.
+    #[test]
+    fn loudspeaker_is_shared_once_per_night() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(4, TierAbility::Loudspeaker);
+        game.tier_abilities.insert(5, TierAbility::Loudspeaker);
+
+        let fourth = game.get_player(4).unwrap().clone();
+        let fifth = game.get_player(5).unwrap().clone();
+        assert!(game.is_loudspeaker_active(&fourth));
+        assert!(game.is_loudspeaker_active(&fifth));
+
+        // 4번이 먼저 사용하면 그 밤에는 5번도(그리고 4번 본인도) 못 쓴다.
+        game.mark_loudspeaker_used();
+        assert!(!game.is_loudspeaker_active(&fourth));
+        assert!(!game.is_loudspeaker_active(&fifth));
+
+        // 다음 밤에는 다시 사용할 수 있다.
+        game.day_number += 1;
+        assert!(game.is_loudspeaker_active(&fourth));
+        assert!(game.is_loudspeaker_active(&fifth));
     }
 
     /// [무법] 경찰을 노린 공격은 치료를 무시한다.

@@ -6622,6 +6622,23 @@ pub async fn handle_anonymous_message(
     match kind {
         AnonymousMessageKind::General { .. } => {
             relay_anonymous_general_message(ctx, &running, owner_id, &body).await;
+            // [확성] 밤 메시지는 보유자 전체에서 밤당 1회. 첫 사용이 확인되면
+            // 소모 처리하고 모든 보유자의 입력을 닫는다.
+            let used_now = {
+                let mut running_write = running.write().await;
+                let is_night_loudspeaker = running_write.game.phase == Phase::Night
+                    && running_write
+                        .game
+                        .get_player(owner_id)
+                        .is_some_and(|player| running_write.game.is_loudspeaker_active(player));
+                if is_night_loudspeaker {
+                    running_write.game.mark_loudspeaker_used();
+                }
+                is_night_loudspeaker
+            };
+            if used_now {
+                close_loudspeakers_after_use(ctx, &running).await;
+            }
         }
         AnonymousMessageKind::Dead { .. } => {
             relay_anonymous_dead_message(ctx, data, &running, owner_id, &body).await;
@@ -6635,6 +6652,21 @@ pub async fn handle_anonymous_message(
         }
     }
     Ok(())
+}
+
+/// [확성] 사용 직후 모든 보유자의 밤 채팅을 닫는다 (익명 게임은 릴레이 판정이
+/// 이미 닫혔으므로 권한 동기화만 일어난다).
+pub async fn close_loudspeakers_after_use(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+) {
+    let holders = {
+        let running_read = running.read().await;
+        running_read.game.loudspeaker_holders()
+    };
+    for holder in holders {
+        set_member_game_channel_chat(ctx, running, &holder, false).await;
+    }
 }
 
 pub async fn handle_message_event(
@@ -6734,6 +6766,49 @@ pub async fn handle_message_event(
         let _ = message.delete(&ctx.http).await;
         set_shaman_channel_member_access(ctx, &running, &player, true, false).await;
         return Ok(());
+    }
+
+    // [확성] 일반 게임의 밤 채팅: 첫 메시지가 그 밤의 사용을 소모하고, 이미
+    // 사용된 뒤의 보유자 메시지는 삭제한다.
+    enum LoudspeakerAction {
+        None,
+        FirstUse,
+        Blocked,
+    }
+    let loudspeaker_action = {
+        let running_read = running.read().await;
+        if running_read.channel_id == message.channel_id
+            && running_read.game.phase == Phase::Night
+            && !running_read.anonymous_enabled
+        {
+            match running_read.game.get_player(message.author.id.get()) {
+                Some(player)
+                    if running_read.game.player_tier_ability(player.user_id)
+                        == Some(mafia_remake::model::TierAbility::Loudspeaker) =>
+                {
+                    if running_read.game.is_loudspeaker_active(player) {
+                        LoudspeakerAction::FirstUse
+                    } else {
+                        LoudspeakerAction::Blocked
+                    }
+                }
+                _ => LoudspeakerAction::None,
+            }
+        } else {
+            LoudspeakerAction::None
+        }
+    };
+    match loudspeaker_action {
+        LoudspeakerAction::FirstUse => {
+            running.write().await.game.mark_loudspeaker_used();
+            close_loudspeakers_after_use(ctx, &running).await;
+            return Ok(());
+        }
+        LoudspeakerAction::Blocked => {
+            let _ = message.delete(&ctx.http).await;
+            return Ok(());
+        }
+        LoudspeakerAction::None => {}
     }
 
     let frog_game_message = {
