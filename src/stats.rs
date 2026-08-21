@@ -990,18 +990,47 @@ pub fn rating_rank(stats: &StatsFile, rating: i64, rating_games: i64) -> &'stati
     let above = pool.iter().filter(|&&other| other > rating).count();
     let fraction = above as f64 / pool.len() as f64;
     if fraction < 0.10 {
-        "마스터"
+        "X"
     } else if fraction < 0.25 {
-        "다이아"
+        "SS"
     } else if fraction < 0.45 {
-        "플래티나"
+        "S"
     } else if fraction < 0.70 {
-        "골드"
+        "A"
     } else if fraction < 0.90 {
-        "실버"
+        "B"
     } else {
-        "브론즈"
+        "C"
     }
+}
+
+/// 현재 풀 기준 각 랭크의 커트라인(해당 랭크가 되기 위한 최소 레이팅).
+/// 배치를 마친 플레이어가 없으면 None.
+pub fn rank_cutoffs(stats: &StatsFile) -> Option<Vec<(&'static str, i64)>> {
+    let mut pool = ranked_pool(stats);
+    if pool.is_empty() {
+        return None;
+    }
+    pool.sort_unstable_by(|a, b| b.cmp(a));
+    let n = pool.len() as f64;
+    // above/n < fraction 이 되기 위한 최대 "위 인원 수" k → 커트라인 = pool[k].
+    let cutoff = |fraction: f64| -> i64 {
+        let k = ((fraction * n).ceil() as usize).saturating_sub(1);
+        pool[k.min(pool.len() - 1)]
+    };
+    Some(vec![
+        ("X", cutoff(0.10)),
+        ("SS", cutoff(0.25)),
+        ("S", cutoff(0.45)),
+        ("A", cutoff(0.70)),
+        ("B", cutoff(0.90)),
+        ("C", 0),
+    ])
+}
+
+/// 배치를 마친 플레이어 수 (랭크 풀 크기).
+pub fn ranked_pool_size(stats: &StatsFile) -> usize {
+    ranked_pool(stats).len()
 }
 
 /// 티어 산정에 들어가는 레이팅 풀: 배치를 마친 모든 플레이어.
@@ -1392,20 +1421,25 @@ mod tests {
             entry.rating_games = PLACEMENT_GAMES;
         }
 
-        // 10명 풀: 1등 마스터, 2등 다이아, 꼴찌 브론즈.
-        assert_eq!(rating_rank(&stats, 1400, PLACEMENT_GAMES), "마스터");
-        assert_eq!(rating_rank(&stats, 1300, PLACEMENT_GAMES), "다이아");
-        assert_eq!(rating_rank(&stats, 900, PLACEMENT_GAMES), "브론즈");
-        // 배치가 끝나지 않으면 티어가 없다.
+        // 10명 풀: 1등 X, 2등 SS, 꼴찌 C.
+        assert_eq!(rating_rank(&stats, 1400, PLACEMENT_GAMES), "X");
+        assert_eq!(rating_rank(&stats, 1300, PLACEMENT_GAMES), "SS");
+        assert_eq!(rating_rank(&stats, 900, PLACEMENT_GAMES), "C");
+        // 배치가 끝나지 않으면 랭크가 없다.
         assert_eq!(rating_rank(&stats, 1400, PLACEMENT_GAMES - 1), "배치");
 
-        // 같은 점수라도 풀이 강해지면 티어가 내려간다 (유동 커트라인).
+        // 커트라인은 현재 분포에서 나온다.
+        let cutoffs = rank_cutoffs(&stats).unwrap();
+        assert_eq!(cutoffs[0], ("X", 1400));
+        assert_eq!(cutoffs[1], ("SS", 1250));
+
+        // 같은 점수라도 풀이 강해지면 랭크가 내려간다 (유동 커트라인).
         for index in 0..10u64 {
             let entry = ensure_player_stats(&mut stats, 100 + index, "q");
             entry.rating = 1500;
             entry.rating_games = PLACEMENT_GAMES;
         }
-        assert_ne!(rating_rank(&stats, 1300, PLACEMENT_GAMES), "다이아");
+        assert_ne!(rating_rank(&stats, 1300, PLACEMENT_GAMES), "SS");
     }
 
     #[test]

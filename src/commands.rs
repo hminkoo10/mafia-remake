@@ -2770,6 +2770,82 @@ pub async fn show_my_info(ctx: Context<'_>) -> Result<(), Error> {
 
 #[poise::command(
     slash_command,
+    rename = "랭크컷",
+    description_localized("ko", "현재 랭크 커트라인을 확인합니다.")
+)]
+pub async fn show_rank_cutoffs(ctx: Context<'_>) -> Result<(), Error> {
+    let stats_read = ctx.data().stats.read().await;
+    let Some(cutoffs) = stats::rank_cutoffs(&stats_read) else {
+        drop(stats_read);
+        reply_embed(
+            ctx,
+            "아직 배치(레이팅 10판)를 마친 플레이어가 없어 랭크 커트라인이 없습니다.",
+            "랭크 커트라인",
+            serenity::Colour::GOLD,
+            false,
+        )
+        .await?;
+        return Ok(());
+    };
+    let pool_size = stats::ranked_pool_size(&stats_read);
+    let my_line = {
+        let user_id = ctx.author().id.get();
+        stats_read.users.get(&user_id.to_string()).map(|entry| {
+            format!(
+                "
+
+내 랭크: **{}** ({}점)",
+                stats::rating_rank(&stats_read, entry.rating, entry.rating_games),
+                entry.rating
+            )
+        })
+    };
+    drop(stats_read);
+    let bands = [
+        ("X", "상위 10%"),
+        ("SS", "상위 25%"),
+        ("S", "상위 45%"),
+        ("A", "상위 70%"),
+        ("B", "상위 90%"),
+        ("C", "그 외"),
+    ];
+    let lines = cutoffs
+        .iter()
+        .map(|(rank, cutoff)| {
+            let band = bands
+                .iter()
+                .find(|(band_rank, _)| band_rank == rank)
+                .map(|(_, band)| *band)
+                .unwrap_or("");
+            if *rank == "C" {
+                format!("**{rank}** ({band}) - 커트라인 없음")
+            } else {
+                format!("**{rank}** ({band}) - {cutoff}점 이상")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        );
+    reply_embed(
+        ctx,
+        format!(
+            "커트라인은 배치를 마친 플레이어 {pool_size}명의 현재 분포 기준이며, 판이 끝날 때마다 움직입니다.
+
+{lines}{}",
+            my_line.unwrap_or_default()
+        ),
+        "랭크 커트라인",
+        serenity::Colour::DARK_GREEN,
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+#[poise::command(
+    slash_command,
     rename = "레이팅로그",
     description_localized("ko", "내 최근 레이팅 변화 기록을 확인합니다.")
 )]

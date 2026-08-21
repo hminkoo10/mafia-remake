@@ -587,6 +587,7 @@ fn bot_commands() -> Vec<poise::Command<Data, Error>> {
         commands::memo(),
         commands::show_my_info(),
         commands::rating_log(),
+        commands::show_rank_cutoffs(),
         commands::show_leaderboard(),
         commands::reset_leaderboard(),
         commands::show_term_info(),
