@@ -115,10 +115,7 @@ fn spawn_worker_presence(token: String, name: String) {
 ///
 /// `op`는 최대 두 번(워커 → 메인) 호출될 수 있으므로 `Fn`이어야 하며, 넘겨받은
 /// `Arc<Http>`만 사용해 요청을 보내야 한다.
-pub async fn with_fallback<T, F, Fut>(
-    ctx: &serenity::Context,
-    op: F,
-) -> Result<T, serenity::Error>
+pub async fn with_fallback<T, F, Fut>(ctx: &serenity::Context, op: F) -> Result<T, serenity::Error>
 where
     F: Fn(Arc<serenity::Http>) -> Fut,
     Fut: std::future::Future<Output = Result<T, serenity::Error>>,

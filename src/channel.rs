@@ -2388,10 +2388,11 @@ pub fn final_role_reveal_text(running: &RunningGame) -> String {
     let role_detail = |player: &Player| {
         let state = if player.alive { "" } else { " (사망)" };
         format!(
-            "{}{} / 최종 진영: {}",
+            "{}{} / 최종 진영: {} / {}",
             player.role.value(),
             state,
-            final_team_text(&running.game, player)
+            final_team_text(&running.game, player),
+            crate::runner::game_result_tier_text(&running.game, player.user_id)
         )
     };
     let mut players = running.game.players.clone();

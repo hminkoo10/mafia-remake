@@ -2776,6 +2776,8 @@ pub struct GameResultImageRow {
     name: String,
     role: String,
     team: String,
+    /// "3티어 [가호]" / "2티어" — 게임 결과에 공개되는 개인 티어.
+    tier_text: String,
     alive: bool,
     before: Option<i64>,
     after: Option<i64>,
@@ -2863,6 +2865,15 @@ fn rating_log_with_result_labels(
         .collect()
 }
 
+/// 게임 결과에 공개할 티어 표기.
+pub fn game_result_tier_text(game: &MafiaGame, user_id: u64) -> String {
+    let tier = game.player_tiers.get(&user_id).copied().unwrap_or(2);
+    match game.player_tier_ability(user_id) {
+        Some(ability) => format!("{}티어 [{}]", tier, ability.value()),
+        None => format!("{}티어", tier),
+    }
+}
+
 pub fn game_result_rows(
     running: &RunningGame,
     rating_log: &[stats::GameRatingLogItem],
@@ -2891,6 +2902,7 @@ pub fn game_result_rows(
                 name: game_result_display_name(running, player),
                 role,
                 team: final_team_text(&running.game, player).to_string(),
+                tier_text: game_result_tier_text(&running.game, player.user_id),
                 alive: player.alive,
                 before: rating.map(|item| item.before),
                 after: rating.map(|item| item.after),
@@ -3073,7 +3085,7 @@ pub fn render_game_result_image(
             20.0,
             COL_ROLE + 2,
             y + 58,
-            &row.team,
+            format!("{} · {}", row.team, row.tier_text),
             team_color(&row.team),
         );
         draw_rating_block(&mut image, &font, row, COL_RATING, y, text, muted);
@@ -3968,6 +3980,25 @@ mod tests {
         }
     }
 
+    /// 게임 결과에는 티어와 능력이 공개된다.
+    #[test]
+    fn game_result_tier_text_shows_tier_and_ability() {
+        let mut running = dead_chat_test_running();
+        let first = running.game.players[0].user_id;
+        let second = running.game.players[1].user_id;
+        running.game.player_tiers.insert(first, 4);
+        running.game.player_tiers.insert(second, 2);
+        running
+            .game
+            .tier_abilities
+            .insert(first, mafia_remake::model::TierAbility::Cleanup);
+
+        assert_eq!(game_result_tier_text(&running.game, first), "4티어 [수습]");
+        assert_eq!(game_result_tier_text(&running.game, second), "2티어");
+        // 배정 기록이 없으면 기본 2티어로 표기한다.
+        assert_eq!(game_result_tier_text(&running.game, 999_999), "2티어");
+    }
+
     #[test]
     fn game_result_image_renders_png() {
         let rows = vec![
@@ -3975,6 +4006,7 @@ mod tests {
                 name: "Long Reason".to_string(),
                 role: Role::Doctor.value().to_string(),
                 team: "시민팀".to_string(),
+                tier_text: "3티어 [가호]".to_string(),
                 alive: true,
                 before: Some(1043),
                 after: Some(1077),
@@ -3995,6 +4027,7 @@ mod tests {
                 name: "Alpha".to_string(),
                 role: Role::Mafia.value().to_string(),
                 team: "마피아팀".to_string(),
+                tier_text: "3티어 [가호]".to_string(),
                 alive: true,
                 before: Some(1000),
                 after: Some(1032),
@@ -4012,6 +4045,7 @@ mod tests {
                 name: "Beta".to_string(),
                 role: Role::Doctor.value().to_string(),
                 team: "시민팀".to_string(),
+                tier_text: "3티어 [가호]".to_string(),
                 alive: false,
                 before: Some(1000),
                 after: Some(982),
