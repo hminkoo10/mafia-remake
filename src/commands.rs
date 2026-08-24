@@ -2389,6 +2389,40 @@ pub async fn stop_game(ctx: Context<'_>) -> Result<(), Error> {
     };
     if let Some((_id, running)) = ctx.data().games.remove(&guild_id) {
         let roles = halt_running_game(&running).await;
+        // 중지된 판의 역할 배정을 밸런싱 이력에 남긴다. 안 남기면 다음 판
+        // 팀 배정이 중지 전과 같은 이력을 보고 같은 팀을 거의 그대로 다시 뽑는다.
+        let aborted_players = {
+            let running_read = running.read().await;
+            running_read
+                .game
+                .players
+                .iter()
+                .map(|player| {
+                    (
+                        player.user_id,
+                        player.name.clone(),
+                        running_read
+                            .initial_roles
+                            .get(&player.user_id)
+                            .copied()
+                            .unwrap_or(player.role),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let stats_snapshot = {
+            let mut stats_file = ctx.data().stats.write().await;
+            stats::record_aborted_assignments(&mut stats_file, aborted_players);
+            stats_file.clone()
+        };
+        let stats_path = ctx.data().stats_path.clone();
+        match tokio::task::spawn_blocking(move || stats::save_stats(&*stats_path, &stats_snapshot))
+            .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => eprintln!("failed to save aborted assignments: {error:?}"),
+            Err(error) => eprintln!("failed to join aborted assignment save task: {error:?}"),
+        }
         if let Err(error) = send_game_embed(
             ctx.serenity_context(),
             &running,

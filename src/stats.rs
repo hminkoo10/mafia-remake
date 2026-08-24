@@ -105,6 +105,17 @@ pub struct PlayerStats {
     pub rating_history: Vec<RatingHistoryItem>,
     #[serde(default)]
     pub roles: HashMap<String, i64>,
+    /// 중지된 게임의 역할 배정 기록. 승패·레이팅·전적에는 반영하지 않고,
+    /// 다음 판 팀 배정의 "최근 마피아" 리센시 밸런싱에만 쓴다. 이게 없으면
+    /// 중지된 판이 이력에 남지 않아 다음 판에 같은 팀이 거의 그대로 재현된다.
+    #[serde(default)]
+    pub aborted_assignments: Vec<AbortedAssignmentItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AbortedAssignmentItem {
+    pub ended_at: String,
+    pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,6 +170,7 @@ impl Default for PlayerStats {
             rating_peak: INITIAL_RATING,
             rating_history: Vec::new(),
             roles: HashMap::new(),
+            aborted_assignments: Vec::new(),
         }
     }
 }
@@ -411,6 +423,30 @@ pub fn game_rank_change_chunks(logs: &[GameRatingLogItem], max_chars: usize) -> 
     chunks
 }
 
+/// 중지된 게임의 역할 배정을 기록한다. 승패·레이팅·역할 횟수 통계는 그대로 두고,
+/// 팀 배정 리센시 밸런싱(player_assignment_histories)에만 반영된다.
+pub fn record_aborted_assignments(
+    stats: &mut StatsFile,
+    players: impl IntoIterator<Item = (u64, String, Role)>,
+) {
+    const ABORTED_ASSIGNMENT_LIMIT: usize = 10;
+    let ended_at = Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    for (user_id, name, role) in players {
+        let entry = ensure_player_stats(stats, user_id, &name);
+        entry.aborted_assignments.push(AbortedAssignmentItem {
+            ended_at: ended_at.clone(),
+            role: role.value().to_string(),
+        });
+        let overflow = entry
+            .aborted_assignments
+            .len()
+            .saturating_sub(ABORTED_ASSIGNMENT_LIMIT);
+        if overflow > 0 {
+            entry.aborted_assignments.drain(..overflow);
+        }
+    }
+}
+
 pub fn record_role_selection(stats: &mut StatsFile, roles: impl IntoIterator<Item = Role>) {
     let mut roles = roles
         .into_iter()
@@ -522,11 +558,23 @@ pub fn player_assignment_histories(
             .filter(|(role, _)| role.is_mafia_team())
             .map(|(_, count)| *count)
             .sum();
-        let mut recent_history = entry.rating_history.iter().collect::<Vec<_>>();
-        recent_history.sort_unstable_by(|left, right| right.ended_at.cmp(&left.ended_at));
+        // 중지된 게임(aborted_assignments)도 리센시에는 포함해야 "중지 →
+        // 다음 판 같은 팀 재현"이 생기지 않는다.
+        let mut recent_history = entry
+            .rating_history
+            .iter()
+            .map(|history| (history.ended_at.as_str(), history.role.as_str()))
+            .chain(
+                entry
+                    .aborted_assignments
+                    .iter()
+                    .map(|item| (item.ended_at.as_str(), item.role.as_str())),
+            )
+            .collect::<Vec<_>>();
+        recent_history.sort_unstable_by(|left, right| right.0.cmp(left.0));
         let recent_roles = recent_history
             .into_iter()
-            .filter_map(|history| role_from_value(&history.role))
+            .filter_map(|(_, role)| role_from_value(role))
             .take(3)
             .collect();
         histories.insert(
@@ -1406,6 +1454,49 @@ mod tests {
         assert_eq!(history.games, 6);
         assert_eq!(history.mafia_role_games, 3);
         assert_eq!(history.recent_roles, vec![Role::Spy]);
+    }
+
+    /// 중지된 게임의 배정도 리센시에 최신 기록으로 반영된다. 반영이 없으면
+    /// 중지 직후 다음 판이 같은 이력을 보고 같은 팀을 거의 그대로 재현한다.
+    #[test]
+    fn aborted_assignments_count_toward_recent_roles_without_touching_records() {
+        let mut stats = StatsFile::default();
+        stats.users.insert(
+            "7".to_string(),
+            PlayerStats {
+                games: 3,
+                rating_history: vec![RatingHistoryItem {
+                    ended_at: "2026-01-02T00:00:00+09:00".to_string(),
+                    before: 1000,
+                    after: 1000,
+                    delta: 0,
+                    team_delta: 0,
+                    role_delta: 0,
+                    streak_delta: 0,
+                    role: Role::Citizen.value().to_string(),
+                    team: "citizen".to_string(),
+                    winner: Winner::Citizen.value().to_string(),
+                    players: 8,
+                    rating_reasons: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        );
+
+        record_aborted_assignments(&mut stats, [(7, "Seven".to_string(), Role::Mafia)]);
+
+        let entry = &stats.users["7"];
+        // 승패·게임 수·역할 횟수는 그대로다.
+        assert_eq!(entry.games, 3);
+        assert_eq!(entry.wins, 0);
+        assert_eq!(entry.losses, 0);
+        assert!(entry.roles.is_empty());
+        assert_eq!(entry.rating_history.len(), 1);
+
+        let histories = player_assignment_histories(&stats, &[7]);
+        // 중지된 판(마피아)이 가장 최근 기록으로 잡힌다 (Local::now가 과거
+        // 하드코딩 날짜보다 뒤라 정렬상 앞에 온다).
+        assert_eq!(histories[&7].recent_roles, vec![Role::Mafia, Role::Citizen]);
     }
 
     /// 유동 티어: 커트라인은 배치를 마친 플레이어들의 분포에서 나온다.
