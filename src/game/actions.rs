@@ -480,18 +480,17 @@ impl MafiaGame {
             .and_then(|resolved_target_id| {
                 let actor = self.get_player(actor_id)?;
                 let target = self.get_player(resolved_target_id)?;
-                Some(if self.team_key(actor) == self.team_key(target) {
-                    format!(
-                        "[{}님의 직업은 {}입니다.]",
-                        target.name,
-                        self.visible_role(target).value()
-                    )
-                } else {
-                    format!(
-                        "[{}님은 당신과 다른 팀이라 직업을 알 수 없습니다.]",
-                        target.name
-                    )
-                })
+                Some(
+                    if self.inspector_team_key(actor) == self.inspector_team_key(target) {
+                        format!(
+                            "[{}님의 직업은 {}입니다.]",
+                            target.name,
+                            self.visible_role(target).value()
+                        )
+                    } else {
+                        format!("[{}님은 시민팀이 아닙니다.]", target.name)
+                    },
+                )
             })
             .unwrap_or_default();
         Ok(format!(

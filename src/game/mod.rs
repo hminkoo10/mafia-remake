@@ -692,6 +692,26 @@ impl MafiaGame {
             && !self.loudspeaker_used_days.contains(&self.day_number)
     }
 
+    /// 형사 판정용 팀. 다른 조사(경찰·심리학자)와 달리 접선 여부와 무관하게 실제
+    /// 소속으로 판정한다 — 마피아팀·교주팀 대상은 항상 "시민팀이 아닙니다"가 되고
+    /// 알림도 가지 않는다. 변장 사기꾼만은 예외로 시민으로 판정되어 속인다.
+    pub(crate) fn inspector_team_key(&self, player: &Player) -> &'static str {
+        if self.is_disguised_fraudster(player)
+            && !self.fraudster_contacted.contains(&player.user_id)
+        {
+            return "citizen";
+        }
+        if self.is_cult_team(player) {
+            "cult"
+        } else if self.is_mafia_team(player) {
+            "mafia"
+        } else if player.role == Role::Joker {
+            "joker"
+        } else {
+            "citizen"
+        }
+    }
+
     /// [확성] 이번 밤 사용을 소모한다 (보유자 전체 공유, 밤당 1회).
     pub fn mark_loudspeaker_used(&mut self) {
         let day = self.day_number;
@@ -2968,7 +2988,7 @@ mod tests {
         assert!(game.submit_night_action(2, Some(3)).is_err());
     }
 
-    /// 다른 팀 수사도 즉시 "알 수 없음"이 나오고 1회용은 소모된다.
+    /// 다른 팀 수사는 즉시 "시민팀이 아닙니다"만 나오고 1회용은 소모된다.
     #[test]
     fn inspector_gets_an_immediate_no_result_for_another_team() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
@@ -2984,10 +3004,39 @@ mod tests {
 
         let immediate = game.submit_night_action(2, Some(1)).unwrap();
         assert!(
-            immediate.contains("[One님은 당신과 다른 팀이라 직업을 알 수 없습니다.]"),
+            immediate.contains("[One님은 시민팀이 아닙니다.]"),
             "{immediate}"
         );
         assert!(game.inspector_used_ids.contains(&2));
+    }
+
+    /// 형사는 접선 여부와 무관하게 실제 소속으로 판정한다: 접선 전 마피아 보조나
+    /// 교주팀도 "시민팀이 아닙니다"가 나오고, 대상에게 알림이 가지 않는다.
+    #[test]
+    fn inspector_judges_by_real_team_without_notifying_the_target() {
+        for enemy_role in [Role::Spy, Role::CultLeader] {
+            let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
+            for (id, role) in [
+                (1, Role::Mafia),
+                (2, Role::Inspector),
+                (3, enemy_role),
+                (4, Role::Citizen),
+                (5, Role::Citizen),
+            ] {
+                game.get_player_mut(id).unwrap().role = role;
+            }
+            assert!(!game.is_known_mafia_team(game.get_player(3).unwrap()));
+
+            let immediate = game.submit_night_action(2, Some(3)).unwrap();
+            assert!(
+                immediate.contains("[Three님은 시민팀이 아닙니다.]"),
+                "{enemy_role:?}: {immediate}"
+            );
+
+            let result = game.resolve_night().unwrap();
+            assert!(!result.inspector_results.contains_key(&2));
+            assert!(!result.inspector_target_notices.contains_key(&3));
+        }
     }
 
     /// 자경단원 숙청 조사도 제출 즉시 결과가 나온다.

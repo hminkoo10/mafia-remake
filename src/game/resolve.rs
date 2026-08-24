@@ -1105,7 +1105,7 @@ impl MafiaGame {
             used_actor_ids.push(*actor_id);
             // 수사 대상이 이 밤에 죽어도 수사 자체는 이미 끝났으므로 결과는 전달한다.
             // 다만 이미 죽은 대상에게는 형사의 정체를 알리지 않는다.
-            if self.team_key(actor) == self.team_key(target) {
+            if self.inspector_team_key(actor) == self.inspector_team_key(target) {
                 if target.alive {
                     target_notices.insert(
                         target.user_id,
