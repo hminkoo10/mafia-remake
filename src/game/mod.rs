@@ -2092,6 +2092,59 @@ mod tests {
         assert!((12.0..=18.0).contains(&tier4), "4티어 {tier4:.2}%");
     }
 
+    /// 능력 배정이 풀 안에서 균등하게 나오는지 대량 표본으로 확인한다.
+    /// 3티어 풀(2종)과 소속별 4티어 풀(본대 5종 / 보조 3종 / 그 외 2종)마다
+    /// 각 능력의 비율이 균등 기대치 ±6%p 안이어야 한다 (풀당 표본 1,800+
+    /// 기준 표준편차의 5배 이상이라 사실상 플레이크가 나지 않는다).
+    #[test]
+    fn tier_ability_rolls_are_uniform_within_each_pool() {
+        use crate::model::{
+            TIER3_ABILITIES, TIER4_CITIZEN_ABILITIES, TIER4_MAFIA_ABILITIES,
+            TIER4_MAFIA_SUPPORT_ABILITIES,
+        };
+        let mut tier3: HashMap<TierAbility, u32> = HashMap::new();
+        let mut tier4_mafia: HashMap<TierAbility, u32> = HashMap::new();
+        let mut tier4_support: HashMap<TierAbility, u32> = HashMap::new();
+        let mut tier4_citizen: HashMap<TierAbility, u32> = HashMap::new();
+        for _ in 0..6000 {
+            let players = (1..=10)
+                .map(|id| (id as u64, format!("P{id}")))
+                .collect::<Vec<_>>();
+            let mut game = MafiaGame::new(players, 2, 1, 1, vec![Role::Spy, Role::Madam]).unwrap();
+            game.assign_tier_abilities();
+            for player in &game.players {
+                let Some(ability) = game.player_tier_ability(player.user_id) else {
+                    continue;
+                };
+                let bucket = if ability.tier() == 3 {
+                    &mut tier3
+                } else if !game.is_mafia_team(player) {
+                    &mut tier4_citizen
+                } else if player.role == Role::Mafia {
+                    &mut tier4_mafia
+                } else {
+                    &mut tier4_support
+                };
+                *bucket.entry(ability).or_default() += 1;
+            }
+        }
+        let check = |label: &str, counts: &HashMap<TierAbility, u32>, pool: &[TierAbility]| {
+            let total: u32 = counts.values().sum();
+            let expected = 100.0 / pool.len() as f64;
+            for ability in pool {
+                let share = counts.get(ability).copied().unwrap_or(0) as f64 * 100.0 / total as f64;
+                assert!(
+                    (share - expected).abs() <= 6.0,
+                    "{label} {ability:?}: {share:.2}% (기대 {expected:.2}%, 표본 {total})"
+                );
+            }
+        };
+        check("3티어", &tier3, TIER3_ABILITIES);
+        check("4티어 본대", &tier4_mafia, TIER4_MAFIA_ABILITIES);
+        check("4티어 보조", &tier4_support, TIER4_MAFIA_SUPPORT_ABILITIES);
+        check("4티어 그 외", &tier4_citizen, TIER4_CITIZEN_ABILITIES);
+    }
+
     /// [확성]은 밤마다 보유자 전체에서 1회뿐이다. 먼저 쓰면 나머지는 그 밤에
     /// 못 쓰고, 다음 밤에는 다시 쓸 수 있다.
     #[test]
