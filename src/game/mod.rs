@@ -2066,6 +2066,32 @@ mod tests {
         }
     }
 
+    /// 티어 확률(2티어 50% / 3티어 35% / 4티어 15%)이 실제 분포로 나오는지
+    /// 대량 표본으로 확인한다. 허용 오차 ±3%p는 표본 20,000명 기준 표준편차의
+    /// 8배 이상이라 사실상 플레이크가 나지 않는다.
+    #[test]
+    fn tier_probabilities_match_the_declared_distribution() {
+        let mut counts = [0u32; 3];
+        let mut total = 0u32;
+        for _ in 0..2000 {
+            let players = (1..=10)
+                .map(|id| (id as u64, format!("P{id}")))
+                .collect::<Vec<_>>();
+            let mut game = MafiaGame::new(players, 2, 1, 1, Vec::new()).unwrap();
+            game.assign_tier_abilities();
+            for tier in game.player_tiers.values() {
+                counts[(*tier - 2) as usize] += 1;
+                total += 1;
+            }
+        }
+        assert_eq!(total, 20_000);
+        let percent = |count: u32| count as f64 * 100.0 / total as f64;
+        let (tier2, tier3, tier4) = (percent(counts[0]), percent(counts[1]), percent(counts[2]));
+        assert!((47.0..=53.0).contains(&tier2), "2티어 {tier2:.2}%");
+        assert!((32.0..=38.0).contains(&tier3), "3티어 {tier3:.2}%");
+        assert!((12.0..=18.0).contains(&tier4), "4티어 {tier4:.2}%");
+    }
+
     /// [확성]은 밤마다 보유자 전체에서 1회뿐이다. 먼저 쓰면 나머지는 그 밤에
     /// 못 쓰고, 다음 밤에는 다시 쓸 수 있다.
     #[test]
