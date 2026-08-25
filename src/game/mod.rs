@@ -2945,6 +2945,46 @@ mod tests {
         );
     }
 
+    /// 사립탐정이 경찰을 추적하면 경찰의 조사 사용 여부와 대상이 보인다.
+    #[test]
+    fn detective_sees_police_investigation_activity() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 1, vec![Role::Detective]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Detective),
+            (3, Role::Police),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        // 경찰이 5번을 조사하고, 사탐이 경찰을 추적한다.
+        game.submit_night_action(3, Some(5)).unwrap();
+        game.submit_night_action(2, Some(3)).unwrap();
+        let result = game.resolve_night().unwrap();
+        assert_eq!(
+            result.detective_results.get(&2).map(String::as_str),
+            Some("P3 님은 밤에 P5 님에게 능력을 사용했습니다.")
+        );
+
+        // 다음 밤 경찰이 조사하지 않으면 미사용으로 나온다.
+        game.phase = Phase::Night;
+        game.day_number = 2;
+        game.submit_night_action(2, Some(3)).unwrap();
+        let result = game.resolve_night().unwrap();
+        assert_eq!(
+            result.detective_results.get(&2).map(String::as_str),
+            Some("P3 님은 밤에 능력을 사용하지 않았습니다.")
+        );
+    }
+
     /// [수배] 첫 낮이 될 때 접선하지 않은 마피아팀 명단이 보유자에게 오고,
     /// 이미 접선한 보조와 둘째 밤 이후는 제외된다.
     #[test]
