@@ -1630,15 +1630,23 @@ pub fn investigation_candidates_text(config: &config::BotConfig) -> String {
 
 pub fn current_settings_text(config: &config::BotConfig, prefix: &str) -> String {
     format!(
-        "{prefix}\n게임 상태: {}\n기본 직업: 마피아 {}명, 의사 {}명, 수사직 {}명\n최대 참가 인원: {}\n참가자 모집 시간: {}초\n특수룰 수: 시민 {}개, 마피아 {}개, 중립 {}개\n활성 특수룰: {}\n수사직 후보: {}\n교주팀: {}\n채팅 슬로우모드: {}초\n사망 시 직업 공개: {}\n경찰 조사 성공 여부 공개: {}\n아침 생존 마피아 수 공개: {}\n익명 채팅: {}\n익명 이름 방식: {}",
+        "{prefix}\n게임 상태: {}\n기본 직업: 마피아 {}명, 의사 {}, 수사직 {}\n최대 참가 인원: {}\n참가자 모집 시간: {}초\n특수룰 수: 시민 {}개, 마피아 {}개, 중립 {}개\n활성 특수룰: {}\n수사직 후보: {}\n교주팀: {}\n채팅 슬로우모드: {}초\n사망 시 직업 공개: {}\n경찰 조사 성공 여부 공개: {}\n아침 생존 마피아 수 공개: {}\n익명 채팅: {}\n익명 이름 방식: {}",
         if config.game_enabled {
             "활성화"
         } else {
             "비활성화"
         },
         config.default_mafia_count,
-        config.default_doctor_count,
-        config.default_police_count,
+        if config.default_doctor_count > 0 {
+            "활성화"
+        } else {
+            "비활성화"
+        },
+        if config.default_police_count > 0 {
+            "활성화"
+        } else {
+            "비활성화"
+        },
         max_player_setting_text(config),
         config.effective_recruitment_seconds(),
         config.citizen_special_count,

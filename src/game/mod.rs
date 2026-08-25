@@ -3018,6 +3018,74 @@ mod tests {
         );
     }
 
+    /// 경찰이 그 밤에 죽어도(예: 소생으로 부활 예정) 제출한 조사 표는
+    /// 요약 집계에 그대로 남는다.
+    #[test]
+    fn police_recap_counts_votes_from_officers_killed_that_night() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 1, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Police),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        game.submit_night_action(2, Some(3)).unwrap();
+        game.submit_night_action(1, Some(2)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(!game.get_player(2).unwrap().alive);
+        assert_eq!(
+            result.police_target.as_ref().map(|player| player.user_id),
+            Some(3),
+            "{result:?}"
+        );
+    }
+
+    /// 경찰이 1명일 때 조사 대상이 같은 밤에 죽어도 결과가 성립한다
+    /// ("과반 미달" 오표시 회귀 방지).
+    #[test]
+    fn single_police_result_survives_the_targets_death() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 1, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Police),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+
+        // 경찰이 3번을 조사하고, 마피아가 같은 밤 3번을 죽인다.
+        game.submit_night_action(2, Some(3)).unwrap();
+        game.submit_night_action(1, Some(3)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(!game.get_player(3).unwrap().alive);
+        assert_eq!(
+            result.police_target.as_ref().map(|player| player.user_id),
+            Some(3),
+            "{result:?}"
+        );
+        assert_eq!(result.police_target_is_mafia, Some(false));
+    }
+
     /// [수배] 첫 낮이 될 때 접선하지 않은 마피아팀 명단이 보유자에게 오고,
     /// 이미 접선한 보조와 둘째 밤 이후는 제외된다.
     #[test]
@@ -4917,8 +4985,9 @@ mod tests {
         assert!(game.get_player(3).unwrap().alive);
     }
 
+    /// 조사는 제출 즉시 성립하므로, 경찰이 같은 밤에 죽어도 결과는 남는다.
     #[test]
-    fn police_result_is_canceled_when_police_dies_same_night() {
+    fn police_result_stands_when_police_dies_same_night() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
         for (id, role) in [
             (1, Role::Mafia),
@@ -4935,8 +5004,11 @@ mod tests {
         let result = game.resolve_night().unwrap();
 
         assert!(result.killed_players.iter().any(|p| p.user_id == 2));
-        assert!(result.police_target.is_none());
-        assert_eq!(result.police_target_is_mafia, None);
+        assert_eq!(
+            result.police_target.as_ref().map(|player| player.user_id),
+            Some(1)
+        );
+        assert_eq!(result.police_target_is_mafia, Some(true));
     }
 
     #[test]

@@ -1718,9 +1718,8 @@ pub async fn handle_night_action(
                 return Ok(());
             }
         };
-        // 경찰은 대상을 고른 즉시 조사 결과를 본다. 대상을 바꾸면 바꾼 대상의 결과가
-        // 다시 붙는다. 밤이 끝날 때 나오는 결과는 경찰이 여러 명일 때의 과반 결과이므로
-        // 그대로 남겨둔다.
+        // 경찰은 대상을 고른 즉시 조사 결과를 본다. 밤이 끝날 때 나오는 결과는
+        // 같은 내용의 재안내다.
         let message = match running_write.game.police_result_for_actor(actor_id) {
             Some(result) => format!("{message}\n{result}"),
             None => message,
@@ -3328,8 +3327,8 @@ pub async fn reset_leaderboard(ctx: Context<'_>) -> Result<(), Error> {
 pub async fn configure_game(
     ctx: Context<'_>,
     #[description = "마피아 수"] mafia: Option<u32>,
-    #[description = "의사 수"] doctor: Option<u32>,
-    #[description = "경찰 수"] police: Option<u32>,
+    #[description = "의사 활성화 여부"] doctor: Option<bool>,
+    #[description = "경찰 활성화 여부"] police: Option<bool>,
     #[description = "시민 특수룰 수"] citizen_special: Option<u32>,
     #[description = "마피아 특수룰 수"] mafia_special: Option<u32>,
     #[description = "중립 특수룰 수"] neutral_special: Option<u32>,
@@ -3373,10 +3372,10 @@ pub async fn configure_game(
         config_write.default_mafia_count = value;
     }
     if let Some(value) = doctor {
-        config_write.default_doctor_count = value;
+        config_write.default_doctor_count = u32::from(value);
     }
     if let Some(value) = police {
-        config_write.default_police_count = value;
+        config_write.default_police_count = u32::from(value);
     }
     if let Some(value) = citizen_special {
         config_write.citizen_special_count = value;

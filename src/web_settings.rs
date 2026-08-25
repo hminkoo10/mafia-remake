@@ -760,15 +760,15 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
     ),
     field(
         "default_doctor_count",
-        "기본 의사 수",
-        WebFieldKind::Int,
-        Some(0),
+        "의사 활성화",
+        WebFieldKind::Bool,
+        None,
     ),
     field(
         "default_police_count",
-        "기본 경찰 수",
-        WebFieldKind::Int,
-        Some(0),
+        "경찰 활성화",
+        WebFieldKind::Bool,
+        None,
     ),
     field(
         "default_joker_count",
@@ -2434,8 +2434,10 @@ async fn web_status_values(state: &WebSettingsState) -> Value {
                 format!("{}명", config.max_player_count)
             },
             "role_summary": format!(
-                "마피아 {}명, 의사 {}명, 수사직 {}명",
-                config.default_mafia_count, config.default_doctor_count, config.default_police_count
+                "마피아 {}명, 의사 {}, 수사직 {}",
+                config.default_mafia_count,
+                if config.default_doctor_count > 0 { "활성화" } else { "비활성화" },
+                if config.default_police_count > 0 { "활성화" } else { "비활성화" }
             ),
             "special_summary": format!(
                 "시민 {}개, 마피아 {}개, 중립 {}개",
@@ -3819,8 +3821,8 @@ fn config_value(config: &BotConfig, name: &str) -> String {
         "vote_seconds" => config.vote_seconds.to_string(),
         "chat_slowmode_seconds" => config.chat_slowmode_seconds.to_string(),
         "default_mafia_count" => config.default_mafia_count.to_string(),
-        "default_doctor_count" => config.default_doctor_count.to_string(),
-        "default_police_count" => config.default_police_count.to_string(),
+        "default_doctor_count" => (config.default_doctor_count > 0).to_string(),
+        "default_police_count" => (config.default_police_count > 0).to_string(),
         "default_joker_count" => config.default_joker_count.to_string(),
         "citizen_special_count" => config.citizen_special_count.to_string(),
         "mafia_special_count" => config.mafia_special_count.to_string(),
@@ -3948,6 +3950,8 @@ fn set_bool(config: &mut BotConfig, name: &str, value: bool) -> std::result::Res
         "use_vigilante" => config.use_vigilante = value,
         "enable_detective" => config.enable_detective = value,
         "enable_inspector" => config.enable_inspector = value,
+        "default_doctor_count" => config.default_doctor_count = u32::from(value),
+        "default_police_count" => config.default_police_count = u32::from(value),
         "enable_graverobber" => config.enable_graverobber = value,
         "enable_spy" => config.enable_spy = value,
         "enable_contractor" => config.enable_contractor = value,
@@ -4005,8 +4009,6 @@ fn set_int(config: &mut BotConfig, name: &str, value: u64) -> std::result::Resul
         "vote_seconds" => config.vote_seconds = value,
         "chat_slowmode_seconds" => config.chat_slowmode_seconds = value,
         "default_mafia_count" => config.default_mafia_count = value as u32,
-        "default_doctor_count" => config.default_doctor_count = value as u32,
-        "default_police_count" => config.default_police_count = value as u32,
         "default_joker_count" => config.default_joker_count = value as u32,
         "citizen_special_count" => config.citizen_special_count = value as u32,
         "mafia_special_count" => config.mafia_special_count = value as u32,

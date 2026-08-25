@@ -1731,7 +1731,7 @@ pub async fn announce_police_result(
             };
             format!("조사 결과: {} 님은 **{}**.", target.name, result_text)
         } else {
-            "경찰 조사 대상이 과반에 도달하지 못해 이번 밤 조사 결과가 없습니다.".to_string()
+            "이번 밤 경찰 조사가 없었습니다.".to_string()
         };
         (police_players, message)
     };
@@ -1756,7 +1756,7 @@ pub async fn announce_public_police_status(
     }
     let (message, color) = if result.police_target.is_none() {
         (
-            "경찰 조사는 성공하지 못했습니다. 대상이 과반에 도달하지 못했거나 선택이 완료되지 않았습니다.",
+            "이번 밤 경찰 조사가 진행되지 않았습니다.",
             serenity::Colour::ORANGE,
         )
     } else if result.police_target_is_mafia.unwrap_or(false) {

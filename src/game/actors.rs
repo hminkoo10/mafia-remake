@@ -10,7 +10,7 @@
 use crate::model::{Phase, Player, Role};
 use std::collections::{HashMap, HashSet};
 
-use super::{MafiaGame, count_values, majority_required};
+use super::MafiaGame;
 
 impl MafiaGame {
     pub fn night_action_actors(&mut self) -> Vec<Player> {
@@ -451,32 +451,10 @@ impl MafiaGame {
 
     pub fn police_result_ready(&mut self) -> bool {
         let actors = self.police_action_actors();
-        if actors.is_empty() {
-            return false;
-        }
-        let actor_ids = actors
-            .iter()
-            .map(|player| player.user_id)
-            .collect::<HashSet<_>>();
-        let live_targets = self
-            .police_targets
-            .iter()
-            .filter(|(actor_id, target_id)| {
-                actor_ids.contains(actor_id)
-                    && self.is_alive(**actor_id)
-                    && self.is_alive(**target_id)
-            })
-            .map(|(actor_id, target_id)| (*actor_id, *target_id))
-            .collect::<HashMap<_, _>>();
-        if live_targets.is_empty() {
-            return false;
-        }
-        if live_targets.len() == actors.len() {
-            return true;
-        }
-        count_values(live_targets.values().copied())
-            .values()
-            .any(|count| *count >= majority_required(actors.len()))
+        !actors.is_empty()
+            && actors
+                .iter()
+                .all(|actor| self.police_targets.contains_key(&actor.user_id))
     }
 
     pub fn current_police_result(&self) -> (Option<Player>, Option<bool>) {
@@ -485,20 +463,18 @@ impl MafiaGame {
 
     pub(crate) fn current_police_result_excluding(
         &self,
-        blocked_actor_ids: &HashSet<u64>,
+        _blocked_actor_ids: &HashSet<u64>,
     ) -> (Option<Player>, Option<bool>) {
-        let police_targets = self
+        // 경찰은 1인 역할이고 조사는 제출 즉시 성립한다. 과반 집계 없이 이번 밤
+        // 제출된 경찰 조사를 그대로 쓴다 (경찰·대상이 그 밤에 죽어도 유지).
+        let target_id = self
             .police_targets
             .iter()
-            .filter_map(|(&actor_id, &target_id)| {
-                if blocked_actor_ids.contains(&actor_id) {
-                    return None;
-                }
-                let actor = self.get_player(actor_id)?;
-                (actor.role == Role::Police).then_some((actor_id, target_id))
+            .find(|(actor_id, _)| {
+                self.get_player(**actor_id)
+                    .is_some_and(|actor| actor.role == Role::Police)
             })
-            .collect::<HashMap<_, _>>();
-        let target_id = self.majority_target(&police_targets);
+            .map(|(_, target_id)| *target_id);
         let target = target_id.and_then(|id| self.get_player(id).cloned());
         let is_mafia = target
             .as_ref()
@@ -509,8 +485,7 @@ impl MafiaGame {
     pub fn police_result_message(&self) -> String {
         let (target, is_mafia) = self.current_police_result();
         let Some(target) = target else {
-            return "경찰 조사 대상이 과반에 도달하지 못해 이번 밤 조사 결과가 없습니다."
-                .to_string();
+            return "이번 밤 경찰 조사가 없었습니다.".to_string();
         };
         let result_text = if is_mafia.unwrap_or(false) {
             "마피아입니다"
@@ -543,10 +518,8 @@ impl MafiaGame {
             _ => &self.police_targets,
         };
         let target_id = *targets.get(&actor_id)?;
+        // 대상이 그 밤에 죽었어도 이미 성립한 조사 결과는 그대로 전달한다.
         let target = self.get_player(target_id)?;
-        if !target.alive {
-            return None;
-        }
         let result_text = if self.is_police_detected_mafia_team(target) {
             "마피아팀입니다"
         } else {

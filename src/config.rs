@@ -122,8 +122,12 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<BotConfig> {
     }
     let text = fs::read_to_string(path)
         .with_context(|| format!("config 파일을 읽지 못했습니다: {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("config JSON을 파싱하지 못했습니다: {}", path.display()))
+    let mut config: BotConfig = serde_json::from_str(&text)
+        .with_context(|| format!("config JSON을 파싱하지 못했습니다: {}", path.display()))?;
+    // 경찰·의사는 1인 역할이다. 과거 다인 설정 파일도 0/1로 눌러 읽는다.
+    config.default_doctor_count = config.default_doctor_count.min(1);
+    config.default_police_count = config.default_police_count.min(1);
+    Ok(config)
 }
 
 pub fn save_config(path: impl AsRef<Path>, config: &BotConfig) -> Result<()> {

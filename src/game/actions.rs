@@ -302,7 +302,7 @@ impl MafiaGame {
                     "",
                     RoleActionMap::Police,
                     Some("경찰은 자기 자신을 조사할 수 없습니다."),
-                    "조사 투표 대상",
+                    "조사 대상",
                 )
             }
             Role::Inspector => self.submit_inspector_action(
