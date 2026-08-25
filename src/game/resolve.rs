@@ -393,6 +393,7 @@ impl MafiaGame {
         let (fraudster_results, fraudster_contacts) =
             self.resolve_fraudster_results(&blocked_actor_ids, &role_reveals);
         self.queue_wanted_notices();
+        self.queue_directive_notices();
         let soldier_watch_results = self.drain_soldier_watch_notices();
         let tier_ability_results = self.drain_tier_ability_notices();
         let result = NightResult {
@@ -967,6 +968,67 @@ impl MafiaGame {
         for holder_id in holders {
             self.pending_tier_ability_notices
                 .push((holder_id, line.clone()));
+        }
+    }
+
+    /// [지령] 첫 번째 낮이 될 때: 마피아·청부업자 보유자는 경찰 계열 생존자
+    /// 한 명이 누구인지, 그 외 보조·교주 보유자는 정체가 밝혀지지 않은 시민팀
+    /// 한 명의 직업을 안다. 도굴꾼이 퍼블 경찰 계열을 도굴했으면 도굴꾼의
+    /// 역할이 이미 경찰 계열로 바뀐 뒤라(resolve_graverobbers) 도굴꾼으로 뜬다.
+    fn queue_directive_notices(&mut self) {
+        if self.day_number != 1 {
+            return;
+        }
+        let holders = self
+            .players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && !self.is_frog(player)
+                    && self.tier_abilities.get(&player.user_id) == Some(&TierAbility::Directive)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if holders.is_empty() {
+            return;
+        }
+        let police_line = self
+            .players
+            .iter()
+            .filter(|player| player.alive && player.role.is_investigation_role())
+            .cloned()
+            .collect::<Vec<_>>();
+        let hidden_citizens = self
+            .players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && self.is_citizen_team(player)
+                    && !self.publicly_revealed_ids.contains(&player.user_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut rng = system_random::rng();
+        for holder in holders {
+            let line = if holder.role == Role::Mafia || holder.role == Role::Contractor {
+                match police_line.choose(&mut rng) {
+                    None => "[지령] 경찰 계열 생존자가 없습니다.".to_string(),
+                    Some(target) => {
+                        format!("[지령] {}님은 경찰 계열 직업입니다.", target.name)
+                    }
+                }
+            } else {
+                match hidden_citizens.choose(&mut rng) {
+                    None => "[지령] 정체가 밝혀지지 않은 시민팀 생존자가 없습니다.".to_string(),
+                    Some(target) => format!(
+                        "[지령] {}님의 직업은 {}입니다.",
+                        target.name,
+                        self.visible_role(target).value()
+                    ),
+                }
+            };
+            self.pending_tier_ability_notices
+                .push((holder.user_id, line));
         }
     }
 

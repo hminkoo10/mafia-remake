@@ -2157,6 +2157,49 @@ mod tests {
         assert!(!result.tier_ability_results.contains_key(&1));
     }
 
+    /// [지령] 첫 낮에 마피아·청부업자 보유자는 경찰 계열이 누군지, 보조·교주
+    /// 보유자는 미공개 시민팀 한 명의 직업을 안다.
+    #[test]
+    fn directive_gives_role_appropriate_intel_on_first_day() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 1, vec![Role::Spy]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Spy),
+            (3, Role::Police),
+            (4, Role::Doctor),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Directive);
+        game.tier_abilities.insert(2, TierAbility::Directive);
+        // 정체가 공개된 시민은 지령 대상에서 빠진다. 4~8 중 4만 남기고 공개해
+        // 보조 지령 결과를 결정적으로 만든다.
+        for id in [3, 5, 6, 7, 8] {
+            game.publicly_revealed_ids.insert(id);
+        }
+
+        let result = game.resolve_night().unwrap();
+        let mafia_notice = &result.tier_ability_results[&1];
+        assert_eq!(mafia_notice, "[지령] P3님은 경찰 계열 직업입니다.");
+        let spy_notice = &result.tier_ability_results[&2];
+        assert_eq!(spy_notice, "[지령] P4님의 직업은 의사입니다.");
+
+        // 둘째 밤부터는 오지 않는다.
+        game.phase = Phase::Night;
+        game.day_number = 2;
+        let result = game.resolve_night().unwrap();
+        assert!(!result.tier_ability_results.contains_key(&1));
+        assert!(!result.tier_ability_results.contains_key(&2));
+    }
+
     /// [확성]은 밤마다 보유자 전체에서 1회뿐이다. 먼저 쓰면 나머지는 그 밤에
     /// 못 쓰고, 다음 밤에는 다시 쓸 수 있다.
     #[test]

@@ -385,6 +385,9 @@ pub enum TierAbility {
     Loudspeaker,
     /// 4티어 마피아 본대: 첫 낮에 접선하지 않은 마피아팀 명단 파악
     Wanted,
+    /// 4티어 마피아팀·교주: 첫 낮에 지령 정보 (마피아·청부업자는 경찰 계열
+    /// 한 명, 그 외 보조·교주는 미공개 시민팀 한 명의 직업)
+    Directive,
 }
 
 impl TierAbility {
@@ -399,6 +402,7 @@ impl TierAbility {
             Self::LastWill => "유언",
             Self::Loudspeaker => "확성",
             Self::Wanted => "수배",
+            Self::Directive => "지령",
         }
     }
 
@@ -430,6 +434,9 @@ impl TierAbility {
                 "밤에도 게임 채널에 메시지를 보낼 수 있습니다. 밤마다 단 한 번이며, 확성 보유자가 여러 명이면 그 밤에 먼저 보낸 한 명만 쓸 수 있습니다."
             }
             Self::Wanted => "첫 번째 낮이 될 때 아직 접선하지 않은 마피아팀 명단을 알 수 있습니다.",
+            Self::Directive => {
+                "첫 번째 낮이 될 때 지령을 받습니다. 마피아·청부업자는 경찰 계열 생존자 한 명이 누구인지, 그 외 보조 직업과 교주는 정체가 밝혀지지 않은 시민팀 한 명의 직업을 알아냅니다."
+            }
         }
     }
 }
@@ -443,12 +450,14 @@ pub const TIER4_MAFIA_ABILITIES: &[TierAbility] = &[
     TierAbility::Escape,
     TierAbility::Loudspeaker,
     TierAbility::Wanted,
+    TierAbility::Directive,
 ];
 /// 보조 마피아(마피아 본대가 아닌 마피아팀)의 4티어 풀.
 pub const TIER4_MAFIA_SUPPORT_ABILITIES: &[TierAbility] = &[
     TierAbility::Loudspeaker,
     TierAbility::LastWill,
     TierAbility::Escape,
+    TierAbility::Directive,
 ];
 pub const TIER4_CITIZEN_ABILITIES: &[TierAbility] =
     &[TierAbility::LastWill, TierAbility::Loudspeaker];
@@ -456,6 +465,11 @@ pub const TIER4_CITIZEN_ABILITIES: &[TierAbility] =
 /// 4티어 풀은 시작 시점 역할로 정해진다: 마피아 본대 / 마피아팀 보조(역할별
 /// 고유 능력 포함) / 그 외. 역할별 고유 능력은 여기서 공통 풀에 덧붙인다.
 pub fn tier4_pool(role: Role) -> Vec<TierAbility> {
+    if role == Role::CultLeader {
+        let mut pool = TIER4_CITIZEN_ABILITIES.to_vec();
+        pool.push(TierAbility::Directive);
+        return pool;
+    }
     if !role.is_mafia_team() {
         return TIER4_CITIZEN_ABILITIES.to_vec();
     }
