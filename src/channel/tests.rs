@@ -220,8 +220,7 @@ fn enabled_base_jokers_are_included_in_role_counts() {
 
 #[test]
 fn public_role_count_does_not_count_inspector_as_two_people() {
-    let role_counts =
-        HashMap::from([(Role::Mafia, 1), (Role::Inspector, 1), (Role::Citizen, 3)]);
+    let role_counts = HashMap::from([(Role::Mafia, 1), (Role::Inspector, 1), (Role::Citizen, 3)]);
 
     let text = public_role_count_text_from_counts(&role_counts, Some(5));
 
@@ -404,8 +403,7 @@ fn forced_cleanup_removes_only_game_managed_permission_bits() {
     let kind = serenity::PermissionOverwriteType::Role(serenity::RoleId::new(7));
     let overwrite = serenity::PermissionOverwrite {
         allow: serenity::Permissions::MANAGE_MESSAGES | serenity::Permissions::SEND_MESSAGES,
-        deny: serenity::Permissions::VIEW_CHANNEL
-            | serenity::Permissions::CREATE_PUBLIC_THREADS,
+        deny: serenity::Permissions::VIEW_CHANNEL | serenity::Permissions::CREATE_PUBLIC_THREADS,
         kind,
     };
 
@@ -669,8 +667,8 @@ fn auto_start_modal_omits_the_value_when_nothing_is_set_yet() {
     let recruitment = recruitment_fixture();
     assert_eq!(recruitment.auto_start_players, None);
 
-    let json = serde_json::to_value(auto_start_modal(serenity::GuildId::new(1), &recruitment))
-        .unwrap();
+    let json =
+        serde_json::to_value(auto_start_modal(serenity::GuildId::new(1), &recruitment)).unwrap();
     let input = &json["components"][0]["components"][0];
 
     assert!(
@@ -689,8 +687,8 @@ fn auto_start_modal_prefills_the_current_setting() {
     let mut recruitment = recruitment_fixture();
     recruitment.auto_start_players = Some(6);
 
-    let json = serde_json::to_value(auto_start_modal(serenity::GuildId::new(1), &recruitment))
-        .unwrap();
+    let json =
+        serde_json::to_value(auto_start_modal(serenity::GuildId::new(1), &recruitment)).unwrap();
 
     assert_eq!(json["components"][0]["components"][0]["value"], "6");
 }
