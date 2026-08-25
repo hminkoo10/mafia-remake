@@ -208,7 +208,7 @@ impl MafiaGame {
             bail!("유언은 밤에만 작성할 수 있습니다.");
         }
         let actor = self.require_alive(actor_id)?.clone();
-        if self.tier_abilities.get(&actor_id) != Some(&crate::model::TierAbility::LastWill) {
+        if !self.has_tier_ability(actor_id, crate::model::TierAbility::LastWill) {
             bail!("유언 능력이 없습니다.");
         }
         if self.is_frog(&actor) {

@@ -51,10 +51,10 @@ pub struct MafiaGame {
     pub pending_soldier_watch_notices: Vec<(u64, String)>,
     /// [불침번]에 막혀 변장에 실패한 사기꾼 → 막아낸 군인.
     pub fraudster_blocked_by_soldier: HashMap<u64, u64>,
-    /// 개인 티어 (2/3/4). 능력은 tier_abilities에 별도 저장.
+    /// 개인 티어 (2~6). 능력은 tier_abilities에 별도 저장.
     pub player_tiers: HashMap<u64, u8>,
-    /// 티어 능력 보유자. 게임 내 능력별 최대 1명.
-    pub tier_abilities: HashMap<u64, TierAbility>,
+    /// 티어 능력 보유 목록. 5티어는 2개, 6티어는 3개까지 들어간다.
+    pub tier_abilities: HashMap<u64, Vec<TierAbility>>,
     /// [유언] 작성된 유언.
     pub last_wills: HashMap<u64, String>,
     /// [도주] 도주한 플레이어 → 도주한 날. 다음날 투표 시작 때 사망 처리한다.
@@ -638,22 +638,33 @@ impl MafiaGame {
         let mut rng = system_random::rng();
         for player in order {
             let roll = rng.next_u64() % 100;
-            let tier: u8 = if roll < 50 {
+            let tier: u8 = if roll < 40 {
                 2
-            } else if roll < 85 {
+            } else if roll < 70 {
                 3
-            } else {
+            } else if roll < 85 {
                 4
-            };
-            let pool: Vec<TierAbility> = match tier {
-                3 => TIER3_ABILITIES.to_vec(),
-                4 => tier4_pool(player.role),
-                _ => Vec::new(),
+            } else if roll < 95 {
+                5
+            } else {
+                6
             };
             self.player_tiers.insert(player.user_id, tier);
-            if !pool.is_empty() {
-                let ability = pool[(rng.next_u64() % pool.len() as u64) as usize];
-                self.tier_abilities.insert(player.user_id, ability);
+            let abilities: Vec<TierAbility> = match tier {
+                3 => {
+                    vec![TIER3_ABILITIES[(rng.next_u64() % TIER3_ABILITIES.len() as u64) as usize]]
+                }
+                4..=6 => {
+                    // 5티어는 2개, 6티어는 3개. 풀이 그보다 작으면 풀 크기까지만.
+                    let mut pool = tier4_pool(player.role);
+                    pool.shuffle(&mut rng);
+                    pool.truncate((tier as usize - 3).min(pool.len()));
+                    pool
+                }
+                _ => Vec::new(),
+            };
+            if !abilities.is_empty() {
+                self.tier_abilities.insert(player.user_id, abilities);
             }
         }
     }
@@ -665,22 +676,30 @@ impl MafiaGame {
             .iter()
             .filter(|player| player.alive && player.role == Role::Mafia && !self.is_frog(player))
             .collect::<Vec<_>>();
-        alive_mafia.len() == 1
-            && self.tier_abilities.get(&alive_mafia[0].user_id) == Some(&TierAbility::AllIn)
+        alive_mafia.len() == 1 && self.has_tier_ability(alive_mafia[0].user_id, TierAbility::AllIn)
     }
 
     /// 살아있는 보유자가 있는지 (마피아팀 패시브 판정용).
     pub(crate) fn mafia_team_has_tier_ability(&self, ability: TierAbility) -> bool {
         self.tier_abilities.iter().any(|(user_id, held)| {
-            *held == ability
+            held.contains(&ability)
                 && self.get_player(*user_id).is_some_and(|player| {
                     player.alive && self.is_mafia_team(player) && !self.is_frog(player)
                 })
         })
     }
 
-    pub fn player_tier_ability(&self, user_id: u64) -> Option<TierAbility> {
-        self.tier_abilities.get(&user_id).copied()
+    pub fn player_tier_abilities(&self, user_id: u64) -> Vec<TierAbility> {
+        self.tier_abilities
+            .get(&user_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn has_tier_ability(&self, user_id: u64, ability: TierAbility) -> bool {
+        self.tier_abilities
+            .get(&user_id)
+            .is_some_and(|held| held.contains(&ability))
     }
 
     /// 살아있는 마피아팀 보유자들의 id (중복 배정 허용).
@@ -688,7 +707,7 @@ impl MafiaGame {
         self.tier_abilities
             .iter()
             .filter(|(user_id, held)| {
-                **held == ability
+                held.contains(&ability)
                     && self.get_player(**user_id).is_some_and(|player| {
                         player.alive && self.is_mafia_team(player) && !self.is_frog(player)
                     })
@@ -700,7 +719,7 @@ impl MafiaGame {
     /// [확성] 보유자가 밤에도 전체 채팅을 쓸 수 있는지.
     pub fn is_loudspeaker_active(&self, player: &Player) -> bool {
         player.alive
-            && self.player_tier_ability(player.user_id) == Some(TierAbility::Loudspeaker)
+            && self.has_tier_ability(player.user_id, TierAbility::Loudspeaker)
             && !self.is_frog(player)
             && !self.is_madam_seduced(player)
             // 밤마다 전체에서 단 1회. 누군가 먼저 쓰면 다른 보유자도 그 밤에는 못 쓴다.
@@ -741,9 +760,7 @@ impl MafiaGame {
     pub fn loudspeaker_holders(&self) -> Vec<Player> {
         self.players
             .iter()
-            .filter(|player| {
-                self.player_tier_ability(player.user_id) == Some(TierAbility::Loudspeaker)
-            })
+            .filter(|player| self.has_tier_ability(player.user_id, TierAbility::Loudspeaker))
             .cloned()
             .collect()
     }
@@ -806,7 +823,7 @@ impl MafiaGame {
         player.alive
             && self.phase == Phase::Night
             && self.day_number == 1
-            && self.tier_abilities.get(&player.user_id) == Some(&TierAbility::Hypocrisy)
+            && self.has_tier_ability(player.user_id, TierAbility::Hypocrisy)
     }
 
     /// 살아있고 아직 접선하지 않은 변장 사기꾼인가. 조사 판정을 속이는 기준.
@@ -2061,8 +2078,9 @@ mod tests {
         assert!(result.agent_results.contains_key(&2));
     }
 
-    /// 티어 배정: 전원이 2~4티어를 받고, 4티어 능력은 시작 역할의 풀에서만
-    /// 나온다. 같은 능력이 여러 명에게 겹칠 수 있다.
+    /// 티어 배정: 전원이 2~6티어를 받고, 4티어 이상 능력은 시작 역할의
+    /// 풀에서 티어에 맞는 개수(4=1, 5=2, 6=3, 풀이 작으면 풀 크기)만큼 서로
+    /// 다른 능력으로 나온다. 같은 능력이 여러 플레이어에게 겹칠 수는 있다.
     #[test]
     fn tier_abilities_follow_group_pools() {
         use crate::model::tier4_pool;
@@ -2076,17 +2094,27 @@ mod tests {
             assert_eq!(game.player_tiers.len(), 10);
             for player in &game.players {
                 let tier = game.player_tiers[&player.user_id];
-                assert!((2..=4).contains(&tier), "{tier}");
-                match game.player_tier_ability(player.user_id) {
-                    None => assert_eq!(tier, 2, "{:?}", player.role),
-                    Some(ability) => {
-                        assert_eq!(tier, ability.tier(), "{:?} {ability:?}", player.role);
-                        if ability.tier() == 4 {
-                            assert!(
-                                tier4_pool(player.role).contains(&ability),
-                                "{:?} {ability:?}",
-                                player.role
-                            );
+                assert!((2..=6).contains(&tier), "{tier}");
+                let abilities = game.player_tier_abilities(player.user_id);
+                match tier {
+                    2 => assert!(abilities.is_empty(), "{:?} {abilities:?}", player.role),
+                    3 => {
+                        assert_eq!(abilities.len(), 1, "{abilities:?}");
+                        assert_eq!(abilities[0].tier(), 3, "{abilities:?}");
+                    }
+                    _ => {
+                        let pool = tier4_pool(player.role);
+                        let expected = (tier as usize - 3).min(pool.len());
+                        assert_eq!(
+                            abilities.len(),
+                            expected,
+                            "{:?} {tier} {abilities:?}",
+                            player.role
+                        );
+                        let unique = abilities.iter().collect::<HashSet<_>>();
+                        assert_eq!(unique.len(), abilities.len(), "{abilities:?}");
+                        for ability in &abilities {
+                            assert!(pool.contains(ability), "{:?} {ability:?}", player.role);
                         }
                     }
                 }
@@ -2094,12 +2122,12 @@ mod tests {
         }
     }
 
-    /// 티어 확률(2티어 50% / 3티어 35% / 4티어 15%)이 실제 분포로 나오는지
-    /// 대량 표본으로 확인한다. 허용 오차 ±3%p는 표본 20,000명 기준 표준편차의
-    /// 8배 이상이라 사실상 플레이크가 나지 않는다.
+    /// 티어 확률(2티어 40% / 3티어 30% / 4티어 15% / 5티어 10% / 6티어 5%)이
+    /// 실제 분포로 나오는지 대량 표본으로 확인한다. 허용 오차 ±3%p는 표본
+    /// 20,000명 기준 표준편차의 8배 이상이라 사실상 플레이크가 나지 않는다.
     #[test]
     fn tier_probabilities_match_the_declared_distribution() {
-        let mut counts = [0u32; 3];
+        let mut counts = [0u32; 5];
         let mut total = 0u32;
         for _ in 0..2000 {
             let players = (1..=10)
@@ -2114,16 +2142,20 @@ mod tests {
         }
         assert_eq!(total, 20_000);
         let percent = |count: u32| count as f64 * 100.0 / total as f64;
-        let (tier2, tier3, tier4) = (percent(counts[0]), percent(counts[1]), percent(counts[2]));
-        assert!((47.0..=53.0).contains(&tier2), "2티어 {tier2:.2}%");
-        assert!((32.0..=38.0).contains(&tier3), "3티어 {tier3:.2}%");
-        assert!((12.0..=18.0).contains(&tier4), "4티어 {tier4:.2}%");
+        for (index, expected) in [40.0, 30.0, 15.0, 10.0, 5.0].into_iter().enumerate() {
+            let share = percent(counts[index]);
+            assert!(
+                (share - expected).abs() <= 3.0,
+                "{}티어 {share:.2}% (기대 {expected}%)",
+                index + 2
+            );
+        }
     }
 
     /// 능력 배정이 풀 안에서 균등하게 나오는지 대량 표본으로 확인한다.
-    /// 3티어 풀(2종)과 소속별 4티어 풀(본대 5종 / 보조 3종 / 그 외 2종)마다
-    /// 각 능력의 비율이 균등 기대치 ±6%p 안이어야 한다 (풀당 표본 1,800+
-    /// 기준 표준편차의 5배 이상이라 사실상 플레이크가 나지 않는다).
+    /// 3티어 풀과 역할별 4티어 이상 풀마다 각 능력의 비율이 균등 기대치
+    /// ±6%p 안이어야 한다 (다중 배정도 서로 다른 능력을 균등 추출하므로
+    /// 능력별 점유율 기대치는 1/풀 크기 그대로다).
     #[test]
     fn tier_ability_rolls_are_uniform_within_each_pool() {
         use crate::model::{TIER3_ABILITIES, tier4_pool};
@@ -2136,15 +2168,14 @@ mod tests {
             let mut game = MafiaGame::new(players, 2, 1, 1, vec![Role::Spy, Role::Madam]).unwrap();
             game.assign_tier_abilities();
             for player in &game.players {
-                let Some(ability) = game.player_tier_ability(player.user_id) else {
-                    continue;
-                };
-                let bucket = if ability.tier() == 3 {
-                    &mut tier3
-                } else {
-                    tier4_by_role.entry(player.role).or_default()
-                };
-                *bucket.entry(ability).or_default() += 1;
+                for ability in game.player_tier_abilities(player.user_id) {
+                    let bucket = if ability.tier() == 3 {
+                        &mut tier3
+                    } else {
+                        tier4_by_role.entry(player.role).or_default()
+                    };
+                    *bucket.entry(ability).or_default() += 1;
+                }
             }
         }
         let check = |label: &str, counts: &HashMap<TierAbility, u32>, pool: &[TierAbility]| {
@@ -2185,7 +2216,7 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Wanted);
+        game.tier_abilities.insert(1, vec![TierAbility::Wanted]);
         game.madam_contacted.insert(3);
 
         let result = game.resolve_night().unwrap();
@@ -2222,8 +2253,8 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Directive);
-        game.tier_abilities.insert(2, TierAbility::Directive);
+        game.tier_abilities.insert(1, vec![TierAbility::Directive]);
+        game.tier_abilities.insert(2, vec![TierAbility::Directive]);
         // 정체가 공개된 시민은 지령 대상에서 빠진다. 4~8 중 4만 남기고 공개해
         // 보조 지령 결과를 결정적으로 만든다.
         for id in [3, 5, 6, 7, 8] {
@@ -2258,7 +2289,7 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Hypocrisy);
+        game.tier_abilities.insert(1, vec![TierAbility::Hypocrisy]);
 
         let mafia = game.get_player(1).unwrap().clone();
         // 경찰 판정: 첫 밤에는 마피아팀이 아니라고 나온다.
@@ -2292,7 +2323,8 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Concealment);
+        game.tier_abilities
+            .insert(1, vec![TierAbility::Concealment]);
         game.mafia_targets.insert(1, 3);
         game.doctor_targets.insert(2, 3);
 
@@ -2313,7 +2345,8 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Concealment);
+        game.tier_abilities
+            .insert(1, vec![TierAbility::Concealment]);
         game.mafia_targets.insert(1, 2);
 
         let result = game.resolve_night().unwrap();
@@ -2356,7 +2389,7 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Snipe);
+        game.tier_abilities.insert(1, vec![TierAbility::Snipe]);
 
         // 1일차 밤: 치료에 막혀 실패 → 저격 장전.
         game.mafia_targets.insert(1, 4);
@@ -2406,7 +2439,7 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Poison);
+        game.tier_abilities.insert(1, vec![TierAbility::Poison]);
 
         // 1일차 밤: 치료에 막혀 실패 → 중독.
         game.mafia_targets.insert(1, 3);
@@ -2455,7 +2488,7 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Poison);
+        game.tier_abilities.insert(1, vec![TierAbility::Poison]);
 
         // 교주를 치료에 막혀 처형 실패 → 중독 안 됨.
         game.mafia_targets.insert(1, 4);
@@ -2485,7 +2518,7 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::AllIn);
+        game.tier_abilities.insert(1, vec![TierAbility::AllIn]);
 
         // 동료 마피아가 살아있으면 발동하지 않는다 (치료에 막힌다).
         game.mafia_targets.insert(1, 5);
@@ -2519,7 +2552,7 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Exorcism);
+        game.tier_abilities.insert(1, vec![TierAbility::Exorcism]);
         game.mafia_targets.insert(1, 3);
 
         let result = game.resolve_night().unwrap();
@@ -2537,8 +2570,10 @@ mod tests {
     fn loudspeaker_is_shared_once_per_night() {
         let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
         game.tier_abilities.clear();
-        game.tier_abilities.insert(4, TierAbility::Loudspeaker);
-        game.tier_abilities.insert(5, TierAbility::Loudspeaker);
+        game.tier_abilities
+            .insert(4, vec![TierAbility::Loudspeaker]);
+        game.tier_abilities
+            .insert(5, vec![TierAbility::Loudspeaker]);
 
         let fourth = game.get_player(4).unwrap().clone();
         let fifth = game.get_player(5).unwrap().clone();
@@ -2571,7 +2606,7 @@ mod tests {
         }
         game.player_tiers.insert(1, 4);
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Lawless);
+        game.tier_abilities.insert(1, vec![TierAbility::Lawless]);
 
         game.submit_night_action(3, Some(2)).unwrap(); // 의사가 경찰 보호
         game.submit_night_action(1, Some(2)).unwrap(); // 마피아가 경찰 공격
@@ -2609,7 +2644,7 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Lawless);
+        game.tier_abilities.insert(1, vec![TierAbility::Lawless]);
 
         game.submit_night_action(3, Some(2)).unwrap();
         game.submit_night_action(1, Some(2)).unwrap();
@@ -2639,7 +2674,7 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::NightRaid);
+        game.tier_abilities.insert(1, vec![TierAbility::NightRaid]);
 
         // 의사 자가 치료 → 야습이 뚫고, 의사 정체가 전체 공개된다.
         game.submit_night_action(3, Some(3)).unwrap();
@@ -2678,7 +2713,7 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Cleanup);
+        game.tier_abilities.insert(1, vec![TierAbility::Cleanup]);
 
         game.submit_night_action(1, Some(3)).unwrap();
         let result = game.resolve_night().unwrap();
@@ -2720,7 +2755,7 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(1, TierAbility::Escape);
+        game.tier_abilities.insert(1, vec![TierAbility::Escape]);
 
         // 1을 지목해 찬반 가결.
         game.phase = Phase::Day;
@@ -2771,7 +2806,7 @@ mod tests {
             game.get_player_mut(id).unwrap().role = role;
         }
         game.tier_abilities.clear();
-        game.tier_abilities.insert(4, TierAbility::LastWill);
+        game.tier_abilities.insert(4, vec![TierAbility::LastWill]);
 
         game.submit_last_will(4, "마피아는 1번입니다").unwrap();
         // 유언 능력이 없는 사람은 작성 불가.

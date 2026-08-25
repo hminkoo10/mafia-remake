@@ -6817,8 +6817,10 @@ pub async fn handle_message_event(
         {
             match running_read.game.get_player(message.author.id.get()) {
                 Some(player)
-                    if running_read.game.player_tier_ability(player.user_id)
-                        == Some(mafia_remake::model::TierAbility::Loudspeaker) =>
+                    if running_read.game.has_tier_ability(
+                        player.user_id,
+                        mafia_remake::model::TierAbility::Loudspeaker,
+                    ) =>
                 {
                     if running_read.game.is_loudspeaker_active(player) {
                         LoudspeakerAction::FirstUse

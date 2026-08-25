@@ -247,24 +247,19 @@ pub fn role_message(game: &MafiaGame, player: &Player) -> String {
     }
     // 개인 티어 안내 (비공개).
     let tier = game.player_tiers.get(&player.user_id).copied().unwrap_or(2);
-    match game.player_tier_ability(player.user_id) {
-        Some(ability) => {
+    let abilities = game.player_tier_abilities(player.user_id);
+    if abilities.is_empty() {
+        message.push_str(&format!(
+            "\n\n당신의 티어: **{}티어** (티어 능력 없음)",
+            tier
+        ));
+    } else {
+        message.push_str(&format!("\n\n당신의 티어: **{}티어**", tier));
+        for ability in &abilities {
             message.push_str(&format!(
-                "
-
-당신의 티어: **{}티어**
-티어 능력 [{}]: {}",
-                tier,
+                "\n티어 능력 [{}]: {}",
                 ability.value(),
                 ability.description()
-            ));
-        }
-        None => {
-            message.push_str(&format!(
-                "
-
-당신의 티어: **{}티어** (티어 능력 없음)",
-                tier
             ));
         }
     }
@@ -697,8 +692,10 @@ pub async fn run_night(
             .iter()
             .filter(|player| {
                 player.alive
-                    && running_read.game.player_tier_ability(player.user_id)
-                        == Some(mafia_remake::model::TierAbility::LastWill)
+                    && running_read.game.has_tier_ability(
+                        player.user_id,
+                        mafia_remake::model::TierAbility::LastWill,
+                    )
                     && !running_read.game.is_frog(player)
             })
             .cloned()
@@ -2904,9 +2901,19 @@ fn rating_log_with_result_labels(
 /// 게임 결과에 공개할 티어 표기.
 pub fn game_result_tier_text(game: &MafiaGame, user_id: u64) -> String {
     let tier = game.player_tiers.get(&user_id).copied().unwrap_or(2);
-    match game.player_tier_ability(user_id) {
-        Some(ability) => format!("{}티어 [{}]", tier, ability.value()),
-        None => format!("{}티어", tier),
+    let abilities = game.player_tier_abilities(user_id);
+    if abilities.is_empty() {
+        format!("{}티어", tier)
+    } else {
+        format!(
+            "{}티어 [{}]",
+            tier,
+            abilities
+                .iter()
+                .map(|ability| ability.value())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 
@@ -4027,7 +4034,7 @@ mod tests {
         running
             .game
             .tier_abilities
-            .insert(first, mafia_remake::model::TierAbility::Cleanup);
+            .insert(first, vec![mafia_remake::model::TierAbility::Cleanup]);
 
         assert_eq!(game_result_tier_text(&running.game, first), "4티어 [수습]");
         assert_eq!(game_result_tier_text(&running.game, second), "2티어");

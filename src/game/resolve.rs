@@ -331,9 +331,7 @@ impl MafiaGame {
         // [유언] 밤에 죽은 유언 보유자의 유언을 아침에 공개한다.
         let published_wills = killed_players
             .iter()
-            .filter(|player| {
-                self.tier_abilities.get(&player.user_id) == Some(&TierAbility::LastWill)
-            })
+            .filter(|player| self.has_tier_ability(player.user_id, TierAbility::LastWill))
             .filter_map(|player| {
                 let will = self.last_wills.get(&player.user_id)?.clone();
                 Some((player.name.clone(), will))
@@ -995,7 +993,7 @@ impl MafiaGame {
             .filter(|player| {
                 player.alive
                     && !self.is_frog(player)
-                    && self.tier_abilities.get(&player.user_id) == Some(&TierAbility::Directive)
+                    && self.has_tier_ability(player.user_id, TierAbility::Directive)
             })
             .cloned()
             .collect::<Vec<_>>();

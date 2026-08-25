@@ -697,8 +697,7 @@ fn rating_change_for_player(
     // [가호] 3티어: 패배 손실 10% 완화.
     let rating_shield = !won
         && raw_final_delta < 0
-        && game.player_tier_ability(player.user_id)
-            == Some(crate::model::TierAbility::RatingShield);
+        && game.has_tier_ability(player.user_id, crate::model::TierAbility::RatingShield);
     if rating_shield {
         raw_final_delta = (raw_final_delta as f64 * 0.9).round() as i64;
     }

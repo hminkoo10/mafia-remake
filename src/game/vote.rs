@@ -284,11 +284,16 @@ impl MafiaGame {
             if let Some(target) = target.as_ref() {
                 // [도주] 처형 대신 도주한다. 다음날 투표 시작 때 사망한다.
                 if target.alive
-                    && self.tier_abilities.get(&target.user_id) == Some(&TierAbility::Escape)
+                    && self.has_tier_ability(target.user_id, TierAbility::Escape)
                     && !self.escaped_on_day.contains_key(&target.user_id)
                 {
                     self.escaped_on_day.insert(target.user_id, self.day_number);
-                    self.tier_abilities.remove(&target.user_id);
+                    if let Some(held) = self.tier_abilities.get_mut(&target.user_id) {
+                        held.retain(|ability| *ability != TierAbility::Escape);
+                        if held.is_empty() {
+                            self.tier_abilities.remove(&target.user_id);
+                        }
+                    }
                     self.terrorist_execution_targets.clear();
                     self.ensure_fanatic_reincarnation();
                     self.advance_to_next_night();
