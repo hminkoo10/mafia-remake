@@ -963,16 +963,24 @@ impl MafiaGame {
         killed_players: &mut [Player],
         killed_by_mafia_team_ids: &HashSet<u64>,
     ) {
-        let holder_ids = self
+        let not_killed = |holder_id: &u64| {
+            !killed_players
+                .iter()
+                .any(|player| player.user_id == *holder_id)
+        };
+        let cleanup_holder_ids = self
             .mafia_tier_ability_holders(TierAbility::Cleanup)
             .into_iter()
-            .filter(|holder_id| {
-                !killed_players
-                    .iter()
-                    .any(|player| player.user_id == *holder_id)
-            })
+            .filter(not_killed)
             .collect::<Vec<_>>();
-        if holder_ids.is_empty() {
+        // [뒷처리] 접선한 대부도 같은 효과를 낸다.
+        let fixer_holder_ids = self
+            .mafia_tier_ability_holders(TierAbility::Fixer)
+            .into_iter()
+            .filter(|holder_id| self.godfather_contacted.contains(holder_id))
+            .filter(not_killed)
+            .collect::<Vec<_>>();
+        if cleanup_holder_ids.is_empty() && fixer_holder_ids.is_empty() {
             return;
         }
         for victim in killed_players
@@ -980,15 +988,19 @@ impl MafiaGame {
             .filter(|player| killed_by_mafia_team_ids.contains(&player.user_id))
         {
             let original_role = victim.role;
-            for holder_id in &holder_ids {
-                self.pending_tier_ability_notices.push((
-                    *holder_id,
-                    format!(
-                        "[수습] {}님의 직업은 {}이었습니다.",
-                        victim.name,
-                        original_role.value()
-                    ),
-                ));
+            for (holder_ids, label) in
+                [(&cleanup_holder_ids, "수습"), (&fixer_holder_ids, "뒷처리")]
+            {
+                for holder_id in holder_ids {
+                    self.pending_tier_ability_notices.push((
+                        *holder_id,
+                        format!(
+                            "[{label}] {}님의 직업은 {}이었습니다.",
+                            victim.name,
+                            original_role.value()
+                        ),
+                    ));
+                }
             }
             let is_citizen = self
                 .get_player(victim.user_id)

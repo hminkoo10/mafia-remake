@@ -262,6 +262,10 @@ pub fn role_message(game: &MafiaGame, player: &Player) -> String {
                 ability.description()
             ));
         }
+        // [직감] 청부업자에게 시민팀 직업 힌트를 함께 전달한다.
+        if let Some(hint) = game.intuition_hints.get(&player.user_id) {
+            message.push_str(&format!("\n{hint}"));
+        }
     }
     // [불침번] 군인은 게임 시작 시 자신을 노린 사기를 막아낸 사실을 안다.
     if player.role == Role::Soldier {

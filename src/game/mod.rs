@@ -86,6 +86,8 @@ pub struct MafiaGame {
     pub amnesia_suppressed_ids: HashSet<u64>,
     /// [분석] 부활 시 전달할 공격자 정보.
     pub pending_analysis_notices: HashMap<u64, String>,
+    /// [직감] 역할 DM에 함께 전달할 시민팀 직업 힌트.
+    pub intuition_hints: HashMap<u64, String>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -280,6 +282,7 @@ impl MafiaGame {
             condolence_stolen_this_night: HashSet::new(),
             amnesia_suppressed_ids: HashSet::new(),
             pending_analysis_notices: HashMap::new(),
+            intuition_hints: HashMap::new(),
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -688,6 +691,44 @@ impl MafiaGame {
             if !abilities.is_empty() {
                 self.tier_abilities.insert(player.user_id, abilities);
             }
+        }
+        self.prepare_intuition_hints();
+    }
+
+    /// [직감] 보유 청부업자에게 시민팀 한 명의 직업 힌트를 만든다. 역할 DM에
+    /// 함께 전달돼 첫 밤 청부 예측부터 쓸 수 있다.
+    pub(crate) fn prepare_intuition_hints(&mut self) {
+        use rand::prelude::IndexedRandom;
+        let holders = self
+            .players
+            .iter()
+            .filter(|player| {
+                player.alive && self.has_tier_ability(player.user_id, TierAbility::Intuition)
+            })
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        if holders.is_empty() {
+            return;
+        }
+        let citizens = self
+            .players
+            .iter()
+            .filter(|player| self.is_citizen_team(player))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut rng = system_random::rng();
+        for holder_id in holders {
+            let Some(target) = citizens.choose(&mut rng) else {
+                continue;
+            };
+            self.intuition_hints.insert(
+                holder_id,
+                format!(
+                    "[직감] {}님의 직업은 {}입니다.",
+                    target.name,
+                    target.role.value()
+                ),
+            );
         }
     }
 
@@ -2819,6 +2860,82 @@ mod tests {
         assert!(game.scientist_pending_revive_ids.contains(&2));
         let notice = game.take_analysis_notice(2).unwrap();
         assert!(notice.contains("P1님의 직업은 마피아입니다"), "{notice}");
+    }
+
+    /// [직감] 보유 청부업자는 시작 시 시민팀 한 명의 직업 힌트를 받는다.
+    #[test]
+    fn intuition_prepares_a_citizen_role_hint() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Contractor]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Contractor),
+            (3, Role::Doctor),
+            (4, Role::Doctor),
+            (5, Role::Doctor),
+            (6, Role::Doctor),
+            (7, Role::Doctor),
+            (8, Role::Doctor),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(2, vec![TierAbility::Intuition]);
+        game.prepare_intuition_hints();
+
+        let hint = game.intuition_hints.get(&2).unwrap();
+        assert!(hint.contains("[직감]"), "{hint}");
+        assert!(hint.contains("의사"), "{hint}");
+    }
+
+    /// [뒷처리] 접선한 대부는 마피아팀 처형 희생자의 직업을 알고 시민팀이면
+    /// 시민으로 가린다. 접선 전에는 발동하지 않는다.
+    #[test]
+    fn fixer_masks_victims_only_after_contact() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Godfather]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Godfather),
+            (3, Role::Doctor),
+            (4, Role::Nurse),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(2, vec![TierAbility::Fixer]);
+
+        // 접선 전에는 발동하지 않는다.
+        game.mafia_targets.insert(1, 3);
+        let result = game.resolve_night().unwrap();
+        assert!(!result.tier_ability_results.contains_key(&2), "{result:?}");
+        assert!(!game.cleanup_masked_ids.contains(&3));
+
+        // 접선 후에는 직업을 알아내고 시민으로 가린다.
+        game.godfather_contacted.insert(2);
+        game.phase = Phase::Night;
+        game.day_number = 2;
+        game.mafia_targets.insert(1, 4);
+        let result = game.resolve_night().unwrap();
+        assert!(
+            result.tier_ability_results[&2].contains("[뒷처리] P4님의 직업은 간호사이었습니다."),
+            "{result:?}"
+        );
+        assert!(game.cleanup_masked_ids.contains(&4));
+        assert!(
+            result
+                .killed_players
+                .iter()
+                .any(|player| player.user_id == 4 && player.role == Role::Citizen)
+        );
     }
 
     /// [수배] 첫 낮이 될 때 접선하지 않은 마피아팀 명단이 보유자에게 오고,

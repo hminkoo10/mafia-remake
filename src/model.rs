@@ -424,6 +424,10 @@ pub enum TierAbility {
     Distortion,
     /// 4티어 과학자: 자해 부활 때 자신을 공격한 플레이어의 직업을 안다
     Analysis,
+    /// 4티어 청부업자: 게임 시작 시 시민팀 한 명의 직업 힌트
+    Intuition,
+    /// 4티어 대부: 접선 상태에서 마피아팀 처형 희생자의 직업 파악 + 시민 은폐
+    Fixer,
 }
 
 impl TierAbility {
@@ -457,6 +461,8 @@ impl TierAbility {
             Self::Amnesia => "망각술",
             Self::Distortion => "왜곡",
             Self::Analysis => "분석",
+            Self::Intuition => "직감",
+            Self::Fixer => "뒷처리",
         }
     }
 
@@ -533,6 +539,12 @@ impl TierAbility {
             }
             Self::Distortion => "첫 번째 밤에 마피아에게 지목되어도 죽지 않고 마피아와 접선합니다.",
             Self::Analysis => "자해 능력으로 부활할 때 자신을 공격한 플레이어의 직업을 알아냅니다.",
+            Self::Intuition => {
+                "게임 시작 시 시민팀 한 명의 직업을 미리 알아내 청부 예측에 활용할 수 있습니다."
+            }
+            Self::Fixer => {
+                "마피아와 접선한 상태에서 마피아팀이 처형한 대상의 직업을 알아내고, 시민팀이면 그 직업을 '시민'으로 바꿔 숨깁니다."
+            }
         }
     }
 }
@@ -594,6 +606,8 @@ pub fn tier4_pool(role: Role) -> Vec<TierAbility> {
         Role::Thief => pool.extend([TierAbility::Successor, TierAbility::Condolence]),
         Role::Witch => pool.push(TierAbility::Amnesia),
         Role::Scientist => pool.extend([TierAbility::Distortion, TierAbility::Analysis]),
+        Role::Contractor => pool.push(TierAbility::Intuition),
+        Role::Godfather => pool.push(TierAbility::Fixer),
         _ => {}
     }
     pool
