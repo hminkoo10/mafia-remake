@@ -72,6 +72,8 @@ pub struct MafiaGame {
     pub snipe_armed: bool,
     /// [야습] 이번 밤 관통된 자가 치료 의사(아침에 전체 공개).
     pub pending_night_raid_reveals: Vec<Player>,
+    /// [독살] 중독된 플레이어 → 사망하는 밤의 day_number.
+    pub poisoned_death_days: HashMap<u64, u32>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -259,6 +261,7 @@ impl MafiaGame {
             concealed_kill_failure: false,
             snipe_armed: false,
             pending_night_raid_reveals: Vec::new(),
+            poisoned_death_days: HashMap::new(),
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -2375,6 +2378,79 @@ mod tests {
         let result = game.resolve_night().unwrap();
         assert!(!game.get_player(3).unwrap().alive, "{result:?}");
         assert!(result.soldier_blocks.is_empty());
+    }
+
+    /// [독살] 시민팀 처형 실패 시 중독되어 다음 밤에 죽고, 마피아팀 보조는
+    /// 면역이다.
+    #[test]
+    fn poison_kills_a_protected_citizen_one_day_later() {
+        let mut game = MafiaGame::new(basic_players(), 1, 1, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Doctor),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Poison);
+
+        // 1일차 밤: 치료에 막혀 실패 → 중독.
+        game.mafia_targets.insert(1, 3);
+        game.doctor_targets.insert(2, 3);
+        let result = game.resolve_night().unwrap();
+        assert!(game.get_player(3).unwrap().alive);
+        assert!(
+            result.tier_ability_results[&1].contains("[독살]"),
+            "{result:?}"
+        );
+        assert_eq!(game.poisoned_death_days.get(&3), Some(&2));
+
+        // 2일차 밤 결산: 중독 사망.
+        game.phase = Phase::Night;
+        game.day_number = 2;
+        let result = game.resolve_night().unwrap();
+        assert!(!game.get_player(3).unwrap().alive);
+        assert!(
+            result
+                .killed_players
+                .iter()
+                .any(|player| player.user_id == 3),
+            "{:?}",
+            result.killed_players
+        );
+        assert!(game.poisoned_death_days.is_empty());
+    }
+
+    /// [독살] 교주·광신도·마피아팀 보조는 중독되지 않는다.
+    #[test]
+    fn poison_does_not_affect_cult_or_mafia_support() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 1, 0, vec![Role::Spy]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Doctor),
+            (3, Role::Spy),
+            (4, Role::CultLeader),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Poison);
+
+        // 교주를 치료에 막혀 처형 실패 → 중독 안 됨.
+        game.mafia_targets.insert(1, 4);
+        game.doctor_targets.insert(2, 4);
+        game.resolve_night().unwrap();
+        assert!(game.poisoned_death_days.is_empty());
     }
 
     /// [확성]은 밤마다 보유자 전체에서 1회뿐이다. 먼저 쓰면 나머지는 그 밤에

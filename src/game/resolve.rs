@@ -186,6 +186,8 @@ impl MafiaGame {
         let mut killed_by_mafia_team_ids = HashSet::new();
         let mut soldier_blocks = Vec::new();
         let mut lover_sacrifices = Vec::new();
+        // [독살] 지난밤 중독된 플레이어는 이번 밤 결산 시작 시 사망한다.
+        self.resolve_poison_deaths(&mut killed_players, &mut killed_by_mafia_team_ids);
         let initial_protected_ids = protected_ids.clone();
         let initial_enhanced_protection_ids = enhanced_protection_ids.clone();
 
@@ -2171,10 +2173,12 @@ impl MafiaGame {
         }
         if !pierce_protection {
             if enhanced_protection_ids.contains(&target.user_id) {
+                self.try_poison_on_kill_failure(&target);
                 self.mark_concealed_kill_failure(&target);
                 return;
             }
             if !ignore_doctor && protected_ids.contains(&target.user_id) {
+                self.try_poison_on_kill_failure(&target);
                 self.mark_concealed_kill_failure(&target);
                 return;
             }
@@ -2185,6 +2189,7 @@ impl MafiaGame {
             && !self.soldier_bulletproof_used.contains(&target.user_id)
         {
             self.soldier_bulletproof_used.insert(target.user_id);
+            self.try_poison_on_kill_failure(&target);
             // [은폐] 방탄은 소모되지만 공개 문구와 정체 공개가 사라진다.
             if self.mark_concealed_kill_failure(&target) {
                 return;
@@ -2199,6 +2204,55 @@ impl MafiaGame {
             killed_players,
             killed_by_mafia_team_ids,
         );
+    }
+
+    /// [독살] 시민팀 처형 실패 시 대상을 중독시킨다. 하루 뒤(다음 밤 결산 시작)
+    /// 사망한다. 포교된 시민팀도 걸리지만 교주·광신도·마피아팀 보조는 면역이다.
+    fn try_poison_on_kill_failure(&mut self, target: &Player) {
+        if !self.mafia_team_has_tier_ability(TierAbility::Poison) {
+            return;
+        }
+        let base_role = target.role;
+        if base_role.is_mafia_team()
+            || base_role == Role::CultLeader
+            || base_role == Role::Fanatic
+            || base_role == Role::Joker
+        {
+            return;
+        }
+        if self
+            .poisoned_death_days
+            .insert(target.user_id, self.day_number + 1)
+            .is_some()
+        {
+            return;
+        }
+        let line = format!(
+            "[독살] {}님을 중독시켰습니다. 하루 뒤 사망합니다.",
+            target.name
+        );
+        for holder_id in self.mafia_tier_ability_holders(TierAbility::Poison) {
+            self.pending_tier_ability_notices
+                .push((holder_id, line.clone()));
+        }
+    }
+
+    /// [독살] 이번 밤이 사망 예정일인 중독자를 처리한다.
+    fn resolve_poison_deaths(
+        &mut self,
+        killed_players: &mut Vec<Player>,
+        killed_by_mafia_team_ids: &mut HashSet<u64>,
+    ) {
+        let due = self
+            .poisoned_death_days
+            .iter()
+            .filter(|(_, death_day)| **death_day <= self.day_number)
+            .map(|(user_id, _)| *user_id)
+            .collect::<Vec<_>>();
+        for user_id in due {
+            self.poisoned_death_days.remove(&user_id);
+            self.kill_player(user_id, true, killed_players, killed_by_mafia_team_ids);
+        }
     }
 
     /// [은폐] 처형 실패를 조용한 밤으로 가린다. 보유자가 있으면 true를 돌려주고

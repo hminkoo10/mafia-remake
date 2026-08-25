@@ -394,6 +394,8 @@ pub enum TierAbility {
     Concealment,
     /// 4티어 마피아 본대: 전날 밤 처형 실패 시 이번 밤 모든 보호 무시
     Snipe,
+    /// 4티어 마피아 본대: 시민팀 처형 실패 시 중독 → 하루 뒤 사망
+    Poison,
 }
 
 impl TierAbility {
@@ -412,6 +414,7 @@ impl TierAbility {
             Self::Hypocrisy => "위선",
             Self::Concealment => "은폐",
             Self::Snipe => "저격",
+            Self::Poison => "독살",
         }
     }
 
@@ -455,6 +458,9 @@ impl TierAbility {
             Self::Snipe => {
                 "전날 밤 마피아팀 처형이 실패했다면, 이번 밤 처형 대상의 치료·방탄 등 모든 보호를 무시합니다."
             }
+            Self::Poison => {
+                "밤에 시민팀 처형이 실패하면 대상을 중독시켜 하루 뒤 사망하게 합니다. 포교된 시민팀에게도 통하지만 교주·광신도·마피아팀 보조에게는 통하지 않습니다."
+            }
         }
     }
 }
@@ -472,6 +478,7 @@ pub const TIER4_MAFIA_ABILITIES: &[TierAbility] = &[
     TierAbility::Hypocrisy,
     TierAbility::Concealment,
     TierAbility::Snipe,
+    TierAbility::Poison,
 ];
 /// 보조 마피아(마피아 본대가 아닌 마피아팀)의 4티어 풀.
 pub const TIER4_MAFIA_SUPPORT_ABILITIES: &[TierAbility] = &[
