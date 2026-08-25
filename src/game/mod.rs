@@ -618,10 +618,7 @@ impl MafiaGame {
     /// 무작위성이 게임 로직 테스트를 흔들지 않도록 생성자가 아니라 실제 게임
     /// 시작(start_game)에서 호출한다.
     pub fn assign_tier_abilities(&mut self) {
-        use crate::model::{
-            TIER3_ABILITIES, TIER4_CITIZEN_ABILITIES, TIER4_MAFIA_ABILITIES,
-            TIER4_MAFIA_SUPPORT_ABILITIES,
-        };
+        use crate::model::{TIER3_ABILITIES, tier4_pool};
         let order = self.players.clone();
         let mut rng = system_random::rng();
         for player in order {
@@ -633,18 +630,10 @@ impl MafiaGame {
             } else {
                 4
             };
-            let pool: &[TierAbility] = match tier {
-                3 => TIER3_ABILITIES,
-                4 => {
-                    if !self.is_mafia_team(&player) {
-                        TIER4_CITIZEN_ABILITIES
-                    } else if player.role == Role::Mafia {
-                        TIER4_MAFIA_ABILITIES
-                    } else {
-                        TIER4_MAFIA_SUPPORT_ABILITIES
-                    }
-                }
-                _ => &[],
+            let pool: Vec<TierAbility> = match tier {
+                3 => TIER3_ABILITIES.to_vec(),
+                4 => tier4_pool(player.role),
+                _ => Vec::new(),
             };
             self.player_tiers.insert(player.user_id, tier);
             if !pool.is_empty() {
@@ -2028,13 +2017,11 @@ mod tests {
         assert!(result.agent_results.contains_key(&2));
     }
 
-    /// 티어 배정: 전원이 2~4티어를 받고, 4티어 능력은 소속 풀(마피아 본대 /
-    /// 보조 마피아 / 그 외)에서만 나온다. 같은 능력이 여러 명에게 겹칠 수 있다.
+    /// 티어 배정: 전원이 2~4티어를 받고, 4티어 능력은 시작 역할의 풀에서만
+    /// 나온다. 같은 능력이 여러 명에게 겹칠 수 있다.
     #[test]
     fn tier_abilities_follow_group_pools() {
-        use crate::model::{
-            TIER4_CITIZEN_ABILITIES, TIER4_MAFIA_ABILITIES, TIER4_MAFIA_SUPPORT_ABILITIES,
-        };
+        use crate::model::tier4_pool;
         for _ in 0..20 {
             let players = (1..=10)
                 .map(|id| (id as u64, format!("P{id}")))
@@ -2051,14 +2038,11 @@ mod tests {
                     Some(ability) => {
                         assert_eq!(tier, ability.tier(), "{:?} {ability:?}", player.role);
                         if ability.tier() == 4 {
-                            let pool: &[TierAbility] = if !game.is_mafia_team(player) {
-                                TIER4_CITIZEN_ABILITIES
-                            } else if player.role == Role::Mafia {
-                                TIER4_MAFIA_ABILITIES
-                            } else {
-                                TIER4_MAFIA_SUPPORT_ABILITIES
-                            };
-                            assert!(pool.contains(&ability), "{:?} {ability:?}", player.role);
+                            assert!(
+                                tier4_pool(player.role).contains(&ability),
+                                "{:?} {ability:?}",
+                                player.role
+                            );
                         }
                     }
                 }
@@ -2098,15 +2082,10 @@ mod tests {
     /// 기준 표준편차의 5배 이상이라 사실상 플레이크가 나지 않는다).
     #[test]
     fn tier_ability_rolls_are_uniform_within_each_pool() {
-        use crate::model::{
-            TIER3_ABILITIES, TIER4_CITIZEN_ABILITIES, TIER4_MAFIA_ABILITIES,
-            TIER4_MAFIA_SUPPORT_ABILITIES,
-        };
+        use crate::model::{TIER3_ABILITIES, tier4_pool};
         let mut tier3: HashMap<TierAbility, u32> = HashMap::new();
-        let mut tier4_mafia: HashMap<TierAbility, u32> = HashMap::new();
-        let mut tier4_support: HashMap<TierAbility, u32> = HashMap::new();
-        let mut tier4_citizen: HashMap<TierAbility, u32> = HashMap::new();
-        for _ in 0..6000 {
+        let mut tier4_by_role: HashMap<Role, HashMap<TierAbility, u32>> = HashMap::new();
+        for _ in 0..10_000 {
             let players = (1..=10)
                 .map(|id| (id as u64, format!("P{id}")))
                 .collect::<Vec<_>>();
@@ -2118,12 +2097,8 @@ mod tests {
                 };
                 let bucket = if ability.tier() == 3 {
                     &mut tier3
-                } else if !game.is_mafia_team(player) {
-                    &mut tier4_citizen
-                } else if player.role == Role::Mafia {
-                    &mut tier4_mafia
                 } else {
-                    &mut tier4_support
+                    tier4_by_role.entry(player.role).or_default()
                 };
                 *bucket.entry(ability).or_default() += 1;
             }
@@ -2140,9 +2115,9 @@ mod tests {
             }
         };
         check("3티어", &tier3, TIER3_ABILITIES);
-        check("4티어 본대", &tier4_mafia, TIER4_MAFIA_ABILITIES);
-        check("4티어 보조", &tier4_support, TIER4_MAFIA_SUPPORT_ABILITIES);
-        check("4티어 그 외", &tier4_citizen, TIER4_CITIZEN_ABILITIES);
+        for (role, counts) in &tier4_by_role {
+            check(role.value(), counts, &tier4_pool(*role));
+        }
     }
 
     /// [확성]은 밤마다 보유자 전체에서 1회뿐이다. 먼저 쓰면 나머지는 그 밤에

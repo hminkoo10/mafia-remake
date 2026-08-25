@@ -448,6 +448,18 @@ pub const TIER4_MAFIA_SUPPORT_ABILITIES: &[TierAbility] = &[
 pub const TIER4_CITIZEN_ABILITIES: &[TierAbility] =
     &[TierAbility::LastWill, TierAbility::Loudspeaker];
 
+/// 4티어 풀은 시작 시점 역할로 정해진다: 마피아 본대 / 마피아팀 보조(역할별
+/// 고유 능력 포함) / 그 외. 역할별 고유 능력은 여기서 공통 풀에 덧붙인다.
+pub fn tier4_pool(role: Role) -> Vec<TierAbility> {
+    if !role.is_mafia_team() {
+        return TIER4_CITIZEN_ABILITIES.to_vec();
+    }
+    if role == Role::Mafia {
+        return TIER4_MAFIA_ABILITIES.to_vec();
+    }
+    TIER4_MAFIA_SUPPORT_ABILITIES.to_vec()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractorGuessRoleGroup {
     Citizen,
