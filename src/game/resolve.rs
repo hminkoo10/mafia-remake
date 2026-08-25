@@ -2131,8 +2131,8 @@ impl MafiaGame {
         // [무법] 경찰을 노린 마피아팀 공격은 치료를 무시한다.
         // [야습] 첫날 밤에는 자기 자신에게 쓴 치료를 무시한다.
         // [저격] 전날 밤 처형이 실패했다면 이번 밤은 모든 보호를 무시한다.
-        let lawless_pierce =
-            target.role == Role::Police && self.mafia_team_has_tier_ability(TierAbility::Lawless);
+        let lawless_pierce = target.role.is_investigation_role()
+            && self.mafia_team_has_tier_ability(TierAbility::Lawless);
         let night_raid_pierce = self.day_number == 1
             && self.mafia_team_has_tier_ability(TierAbility::NightRaid)
             && self.protection_is_self_heal_only(target.user_id);
@@ -2143,7 +2143,10 @@ impl MafiaGame {
                 || protected_ids.contains(&target.user_id))
         {
             let (ability, reason) = if lawless_pierce {
-                (TierAbility::Lawless, "경찰 보호를 무시하고 처형했습니다")
+                (
+                    TierAbility::Lawless,
+                    "경찰 계열이라 보호를 무시하고 처형했습니다",
+                )
             } else if night_raid_pierce {
                 (
                     TierAbility::NightRaid,

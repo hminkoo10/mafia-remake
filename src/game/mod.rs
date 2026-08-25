@@ -2438,6 +2438,36 @@ mod tests {
         );
     }
 
+    /// [무법] 경찰뿐 아니라 형사 등 경찰 계열 전체를 관통해 처형한다.
+    #[test]
+    fn lawless_pierces_protection_on_any_investigation_role() {
+        let mut game = MafiaGame::new(basic_players(), 1, 1, 0, vec![Role::Inspector]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Inspector),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Lawless);
+
+        game.submit_night_action(3, Some(2)).unwrap();
+        game.submit_night_action(1, Some(2)).unwrap();
+        let result = game.resolve_night().unwrap();
+
+        assert!(
+            result
+                .killed_players
+                .iter()
+                .any(|player| player.user_id == 2),
+            "{:?}",
+            result.killed_players
+        );
+    }
+
     /// [야습] 첫날 밤 자가 치료만 무시한다. 남이 치료해 준 경우는 못 뚫는다.
     #[test]
     fn night_raid_pierces_only_self_heal_on_night_one() {
