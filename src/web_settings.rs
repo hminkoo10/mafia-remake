@@ -5,6 +5,8 @@ use dashmap::DashMap;
 use mafia_remake::config::{self, BotConfig};
 use mafia_remake::model::{
     CITIZEN_SPECIAL_ROLES, MAFIA_SPECIAL_ROLES, NEUTRAL_SPECIAL_ROLES, Phase, Role,
+    TIER3_ABILITIES, TIER4_CITIZEN_ABILITIES, TIER4_MAFIA_ABILITIES, TIER4_MAFIA_SUPPORT_ABILITIES,
+    TierAbility, tier4_pool,
 };
 use mafia_remake::stats::{self, StatsFile};
 use mafia_remake::system_random;
@@ -2202,6 +2204,7 @@ async fn route_public_request(state: &WebSettingsState, path: &str, query: &str)
         }
         "/rating" => Some(http_response("200 OK", &render_rating_page())),
         "/roles" => Some(http_response("200 OK", &render_roles_page())),
+        "/tiers" => Some(http_response("200 OK", &render_tiers_page())),
         "/api" | "/api/docs" => Some(http_response(
             "200 OK",
             &render_api_docs_page(&state.base_url),
@@ -2922,7 +2925,7 @@ fn safe_text(value: Option<&Value>) -> String {
 }
 
 fn render_nav() -> &'static str {
-    r#"<nav class="nav"><a href="/">홈</a><a href="/status">상태판</a><a href="/leaderboard">리더보드</a><a href="/rating">레이팅 설명</a><a href="/roles">역할 설명</a><a href="/api/docs">API 문서</a></nav>"#
+    r#"<nav class="nav"><a href="/">홈</a><a href="/status">상태판</a><a href="/leaderboard">리더보드</a><a href="/rating">레이팅 설명</a><a href="/roles">역할 설명</a><a href="/tiers">티어 능력</a><a href="/api/docs">API 문서</a></nav>"#
 }
 
 fn render_status_summary(status: &Value) -> String {
@@ -3379,6 +3382,102 @@ fn render_roles_page() -> String {
         );
     }
     base_html("마피아 역할 설명", &body, false)
+}
+
+fn render_tier_ability_cards(abilities: &[TierAbility]) -> String {
+    abilities
+        .iter()
+        .map(|ability| {
+            format!(
+                r#"<article class="role-card"><div class="role-head"><div class="role-title"><h3>{}</h3></div><div class="role-tags"><span class="pill">{}티어</span></div></div><p class="role-summary">{}</p></article>"#,
+                html_escape(ability.value()),
+                ability.tier(),
+                html_escape(ability.description())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn render_tier_section(title: &str, description: &str, abilities: &[TierAbility]) -> String {
+    if abilities.is_empty() {
+        return String::new();
+    }
+    format!(
+        r#"<section class="panel role-section"><h2>{}<span class="pill">{}개</span></h2><p class="meta">{}</p><div class="role-grid">{}</div></section>"#,
+        html_escape(title),
+        abilities.len(),
+        html_escape(description),
+        render_tier_ability_cards(abilities)
+    )
+}
+
+/// 티어 능력 설명 페이지. 풀 구성은 실제 배정 로직(tier4_pool)에서 그대로
+/// 가져와 코드와 자동으로 동기화된다.
+fn render_tiers_page() -> String {
+    let mut body = String::from(
+        r#"<section class="panel"><h2>개인 티어 시스템</h2><p class="meta">게임마다 모든 플레이어가 티어를 비공개로 배정받습니다. 내 티어와 능력은 게임 시작 시 역할 DM에서 확인할 수 있고, 게임 결과에서 전원의 티어가 공개됩니다.</p><ul><li>확률: 2티어 40% / 3티어 30% / 4티어 15% / 5티어 10% / 6티어 5%</li><li>2티어는 능력이 없고, 3티어는 3티어 능력 1개를 받습니다.</li><li>4티어부터는 소속·역할에 맞는 풀에서 4티어 이상 능력을 받습니다 — 4티어 1개, 5티어 2개, 6티어 3개 (서로 다른 능력, 풀이 작으면 풀 크기까지).</li><li>같은 능력이 여러 플레이어에게 겹쳐서 배정될 수 있습니다.</li></ul></section>"#,
+    );
+    body.push_str(&render_tier_section(
+        "3티어 능력",
+        "소속과 무관하게 3티어가 되면 이 중 하나를 받습니다.",
+        TIER3_ABILITIES,
+    ));
+    body.push_str(&render_tier_section(
+        "4티어 이상 · 마피아 본대",
+        "역할이 '마피아'인 플레이어의 풀입니다.",
+        TIER4_MAFIA_ABILITIES,
+    ));
+    body.push_str(&render_tier_section(
+        "4티어 이상 · 마피아팀 보조 공통",
+        "스파이·마담·도둑 등 마피아팀 보조 직업이 공통으로 받을 수 있는 능력입니다. 아래 역할 전용 능력과 합쳐진 풀에서 뽑힙니다.",
+        TIER4_MAFIA_SUPPORT_ABILITIES,
+    ));
+    // 역할 전용 능력: 보조 공통 풀에 덧붙는 부분만 뽑아 보여준다.
+    let support_common = TIER4_MAFIA_SUPPORT_ABILITIES;
+    let exclusive_roles = [
+        Role::Spy,
+        Role::Fraudster,
+        Role::Madam,
+        Role::Thief,
+        Role::Witch,
+        Role::Scientist,
+        Role::Contractor,
+        Role::Godfather,
+    ];
+    let mut exclusive_sections = String::new();
+    for role in exclusive_roles {
+        let extras = tier4_pool(role)
+            .into_iter()
+            .filter(|ability| !support_common.contains(ability))
+            .collect::<Vec<_>>();
+        if extras.is_empty() {
+            continue;
+        }
+        let _ = write!(
+            exclusive_sections,
+            r#"<h3 class="meta">{}</h3><div class="role-grid">{}</div>"#,
+            html_escape(role.value()),
+            render_tier_ability_cards(&extras)
+        );
+    }
+    if !exclusive_sections.is_empty() {
+        let _ = write!(
+            body,
+            r#"<section class="panel role-section"><h2>4티어 이상 · 보조 역할 전용</h2><p class="meta">해당 역할일 때만 풀에 추가되는 고유 능력입니다 (보조 공통 능력과 합쳐진 풀에서 뽑힙니다).</p>{exclusive_sections}</section>"#,
+        );
+    }
+    body.push_str(&render_tier_section(
+        "4티어 이상 · 교주",
+        "교주 전용 풀 전체입니다.",
+        &tier4_pool(Role::CultLeader),
+    ));
+    body.push_str(&render_tier_section(
+        "4티어 이상 · 그 외 (시민팀·중립)",
+        "마피아팀·교주가 아닌 플레이어의 풀입니다.",
+        TIER4_CITIZEN_ABILITIES,
+    ));
+    base_html("티어 능력 설명", &body, false)
 }
 
 fn render_role_card(guide: &WebRoleGuide) -> String {
@@ -4960,6 +5059,45 @@ mod tests {
         assert!(html.contains("role-rating"));
         assert!(html.contains("레이팅 요소"));
         assert!(html.contains("role-grid"));
+    }
+
+    /// 티어 페이지는 실제 풀에 있는 모든 능력을 담아야 한다 (코드와 자동 동기화).
+    #[test]
+    fn tiers_page_lists_every_pool_ability() {
+        let html = render_tiers_page();
+
+        assert!(html.contains("티어 능력 설명"));
+        assert!(html.contains(r#"<a href="/tiers">티어 능력</a>"#));
+        assert!(html.contains("2티어 40% / 3티어 30% / 4티어 15% / 5티어 10% / 6티어 5%"));
+        let mut all = TIER3_ABILITIES.to_vec();
+        all.extend_from_slice(TIER4_MAFIA_ABILITIES);
+        all.extend(tier4_pool(Role::CultLeader));
+        all.extend_from_slice(TIER4_CITIZEN_ABILITIES);
+        for role in [
+            Role::Spy,
+            Role::Fraudster,
+            Role::Madam,
+            Role::Thief,
+            Role::Witch,
+            Role::Scientist,
+            Role::Contractor,
+            Role::Godfather,
+            Role::Villain,
+        ] {
+            all.extend(tier4_pool(role));
+        }
+        for ability in all {
+            assert!(
+                html.contains(&format!("<h3>{}</h3>", ability.value())),
+                "{:?} 누락",
+                ability
+            );
+            assert!(
+                html.contains(&html_escape(ability.description())),
+                "{:?} 설명 누락",
+                ability
+            );
+        }
     }
 
     #[test]
