@@ -6656,8 +6656,8 @@ pub async fn handle_anonymous_message(
     match kind {
         AnonymousMessageKind::General { .. } => {
             relay_anonymous_general_message(ctx, &running, owner_id, &body).await;
-            // [확성] 밤 메시지는 보유자 전체에서 밤당 1회. 첫 사용이 확인되면
-            // 소모 처리하고 모든 보유자의 입력을 닫는다.
+            // [확성] 밤 메시지는 보유자 전체에서 밤당 1회 + 인당 게임 중 1회.
+            // 첫 사용이 확인되면 소모 처리하고 모든 보유자의 입력을 닫는다.
             let used_now = {
                 let mut running_write = running.write().await;
                 let is_night_loudspeaker = running_write.game.phase == Phase::Night
@@ -6666,7 +6666,7 @@ pub async fn handle_anonymous_message(
                         .get_player(owner_id)
                         .is_some_and(|player| running_write.game.is_loudspeaker_active(player));
                 if is_night_loudspeaker {
-                    running_write.game.mark_loudspeaker_used();
+                    running_write.game.mark_loudspeaker_used(owner_id);
                 }
                 is_night_loudspeaker
             };
@@ -6836,7 +6836,11 @@ pub async fn handle_message_event(
     };
     match loudspeaker_action {
         LoudspeakerAction::FirstUse => {
-            running.write().await.game.mark_loudspeaker_used();
+            running
+                .write()
+                .await
+                .game
+                .mark_loudspeaker_used(message.author.id.get());
             close_loudspeakers_after_use(ctx, &running).await;
             return Ok(());
         }
