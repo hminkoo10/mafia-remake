@@ -82,6 +82,10 @@ pub struct MafiaGame {
     pub pending_tier_ability_contacts: Vec<u64>,
     /// [조문] 이번 밤에 도벽한 도둑 — 이번 밤 정리에서 훔친 직업을 지우지 않는다.
     pub condolence_stolen_this_night: HashSet<u64>,
+    /// [망각술] 저주 상태로 죽어 사망 능력이 봉인된 플레이어.
+    pub amnesia_suppressed_ids: HashSet<u64>,
+    /// [분석] 부활 시 전달할 공격자 정보.
+    pub pending_analysis_notices: HashMap<u64, String>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -274,6 +278,8 @@ impl MafiaGame {
             debut_vote_penalty_ids: HashSet::new(),
             pending_tier_ability_contacts: Vec::new(),
             condolence_stolen_this_night: HashSet::new(),
+            amnesia_suppressed_ids: HashSet::new(),
+            pending_analysis_notices: HashMap::new(),
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -437,6 +443,10 @@ impl MafiaGame {
 
     pub(crate) fn terrorist_retaliation_target(&self, terrorist: &Player) -> Option<Player> {
         if !self.has_terrorist_ability(terrorist) {
+            return None;
+        }
+        // [망각술] 저주 상태로 죽은 테러리스트는 지목 반격이 발동하지 않는다.
+        if self.amnesia_suppressed_ids.contains(&terrorist.user_id) {
             return None;
         }
         let target_id = self.terrorist_targets.get(&terrorist.user_id).copied()?;
@@ -779,6 +789,25 @@ impl MafiaGame {
         ));
     }
 
+    /// [망각술] 살아있는 보유 마녀 목록.
+    pub(crate) fn amnesia_witch_ids(&self) -> Vec<u64> {
+        self.players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && player.role == Role::Witch
+                    && !self.is_frog(player)
+                    && self.has_tier_ability(player.user_id, TierAbility::Amnesia)
+            })
+            .map(|player| player.user_id)
+            .collect()
+    }
+
+    /// [분석] 부활한 과학자에게 전달할 공격자 정보를 꺼낸다.
+    pub fn take_analysis_notice(&mut self, user_id: u64) -> Option<String> {
+        self.pending_analysis_notices.remove(&user_id)
+    }
+
     /// [후계자] 마피아 본대가 전멸하면 보유 도둑이 마피아가 된다.
     pub(crate) fn ensure_thief_succession(&mut self) -> Vec<u64> {
         if self
@@ -1089,12 +1118,28 @@ impl MafiaGame {
         }
         self.players[index].alive = false;
         self.death_order.push(user_id);
+        // [망각술] 저주(개구리) 상태로 죽으면 사망 시 직업 능력이 발동하지 않는다.
+        let amnesia_suppressed =
+            self.frog_user_ids.contains(&user_id) && !self.amnesia_witch_ids().is_empty();
+        if amnesia_suppressed {
+            self.amnesia_suppressed_ids.insert(user_id);
+            let victim_name = self.players[index].name.clone();
+            for holder_id in self.amnesia_witch_ids() {
+                self.pending_tier_ability_notices.push((
+                    holder_id,
+                    format!(
+                        "[망각술] 저주받은 {victim_name}님이 사망해 직업 능력 발동을 막았습니다."
+                    ),
+                ));
+            }
+        }
         self.frog_user_ids.remove(&user_id);
         self.day_votes.remove(&user_id);
         self.confirm_votes.remove(&user_id);
         self.day_votes
             .retain(|_, target_id| target_id.is_none_or(|id| id != user_id));
-        if self.players[index].role == Role::Scientist
+        if !amnesia_suppressed
+            && self.players[index].role == Role::Scientist
             && self.scientist_revive_used_ids.insert(user_id)
         {
             self.scientist_pending_revive_ids.insert(user_id);
@@ -2680,6 +2725,100 @@ mod tests {
         game.day_number = 2;
         game.resolve_night().unwrap();
         assert!(game.thief_stolen_roles.get(&2).is_none());
+    }
+
+    /// [망각술] 저주 상태로 죽은 테러리스트의 지목 반격이 발동하지 않는다.
+    #[test]
+    fn amnesia_blocks_death_abilities_of_cursed_victims() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Witch]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Witch),
+            (3, Role::Terrorist),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(2, vec![TierAbility::Amnesia]);
+        game.frog_user_ids.insert(3);
+        game.terrorist_targets.insert(3, 4);
+        game.mafia_targets.insert(1, 3);
+
+        let result = game.resolve_night().unwrap();
+        assert!(!game.get_player(3).unwrap().alive);
+        // 지목 반격이 봉인되어 4번은 살아있다.
+        assert!(game.get_player(4).unwrap().alive, "{result:?}");
+        assert!(result.terrorist_retaliations.is_empty());
+        assert!(result.tier_ability_results[&2].contains("[망각술]"));
+    }
+
+    /// [왜곡] 첫 밤 마피아의 공격을 받은 과학자 보유자는 죽지 않고 접선한다.
+    /// [분석]은 부활 시 공격자 정보를 전달한다.
+    #[test]
+    fn distortion_intercepts_the_first_night_attack() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Scientist]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Scientist),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(2, vec![TierAbility::Distortion]);
+        game.mafia_targets.insert(1, 2);
+
+        let result = game.resolve_night().unwrap();
+        assert!(game.get_player(2).unwrap().alive, "{result:?}");
+        assert!(game.scientist_contacted.contains(&2));
+        assert!(result.tier_ability_contacts.contains(&2));
+        assert!(result.tier_ability_results[&2].contains("[왜곡]"));
+    }
+
+    /// [분석] 자해 부활 예정 과학자가 공격자 정보를 받는다.
+    #[test]
+    fn analysis_records_the_attacker_for_the_reviving_scientist() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Scientist]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Scientist),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(2, vec![TierAbility::Analysis]);
+        game.mafia_targets.insert(1, 2);
+
+        game.resolve_night().unwrap();
+        assert!(!game.get_player(2).unwrap().alive);
+        assert!(game.scientist_pending_revive_ids.contains(&2));
+        let notice = game.take_analysis_notice(2).unwrap();
+        assert!(notice.contains("P1님의 직업은 마피아입니다"), "{notice}");
     }
 
     /// [수배] 첫 낮이 될 때 접선하지 않은 마피아팀 명단이 보유자에게 오고,

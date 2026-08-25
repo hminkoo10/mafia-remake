@@ -457,6 +457,15 @@ async fn apply_timed_night_event_side_effects(
         let roles = channel_role_ids(ctx, guild_id, &config, data.bot_user_id).await?;
         for player in &revived_players {
             restore_revived_player_roles(ctx, running, roles, player).await;
+            // [분석] 부활한 과학자에게 공격자 정보를 전달한다.
+            let notice = running
+                .write()
+                .await
+                .game
+                .take_analysis_notice(player.user_id);
+            if let Some(notice) = notice {
+                let _ = send_player_secret(ctx, running, player, notice, vec![]).await;
+            }
         }
         send_game_embed(
             ctx,

@@ -412,6 +412,7 @@ impl MafiaGame {
         let paparazzi_results = self.resolve_paparazzi_issue(&role_reveals);
         let (fraudster_results, fraudster_contacts) =
             self.resolve_fraudster_results(&blocked_actor_ids, &role_reveals);
+        self.record_analysis_notices(&killed_players);
         self.resolve_honeytrap_notices();
         self.queue_autopsy_notices(&killed_players.clone());
         self.queue_wanted_notices();
@@ -2139,6 +2140,20 @@ impl MafiaGame {
         if !target.alive {
             return;
         }
+        // [왜곡] 첫 밤에 마피아가 과학자 보유자를 노리면 죽지 않고 접선한다.
+        if target.role == Role::Scientist
+            && self.day_number == 1
+            && self.has_tier_ability(target.user_id, TierAbility::Distortion)
+            && !self.scientist_contacted.contains(&target.user_id)
+        {
+            self.scientist_contacted.insert(target.user_id);
+            self.pending_tier_ability_contacts.push(target.user_id);
+            self.pending_tier_ability_notices.push((
+                target.user_id,
+                "[왜곡] 마피아의 공격을 받아내고 마피아와 접선했습니다.".to_string(),
+            ));
+            return;
+        }
         // [교섭] 사기꾼 본인이 마피아팀 처형 대상이 되면 죽지 않고 접선한다.
         if target.role == Role::Fraudster {
             if !self.fraudster_contacted.contains(&target.user_id) {
@@ -2262,6 +2277,38 @@ impl MafiaGame {
             killed_players,
             killed_by_mafia_team_ids,
         );
+    }
+
+    /// [분석] 이번 밤 죽은 과학자 보유자(자해 부활 예정)에게 전달할 공격자
+    /// 정보를 기록한다. 부활 시점에 전달된다.
+    fn record_analysis_notices(&mut self, killed_players: &[Player]) {
+        for victim in killed_players {
+            if !self.has_tier_ability(victim.user_id, TierAbility::Analysis) {
+                continue;
+            }
+            if !self.scientist_pending_revive_ids.contains(&victim.user_id) {
+                continue;
+            }
+            let attacker_id = self
+                .mafia_targets
+                .iter()
+                .chain(&self.godfather_targets)
+                .chain(&self.vigilante_targets)
+                .chain(&self.mercenary_targets)
+                .find(|(_, target_id)| **target_id == victim.user_id)
+                .map(|(actor_id, _)| *actor_id);
+            let Some(attacker) = attacker_id.and_then(|id| self.get_player(id)).cloned() else {
+                continue;
+            };
+            self.pending_analysis_notices.insert(
+                victim.user_id,
+                format!(
+                    "[분석] 당신을 공격한 {}님의 직업은 {}입니다.",
+                    attacker.name,
+                    attacker.role.value()
+                ),
+            );
+        }
     }
 
     /// [미인계] 이번 밤 시민팀 밤 행동 대상 맵을 훑어 보유자에게 알림을 쌓는다.

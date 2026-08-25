@@ -418,6 +418,12 @@ pub enum TierAbility {
     Successor,
     /// 4티어 도둑: 밤에 사망자의 직업을 도벽할 수 있다
     Condolence,
+    /// 4티어 마녀: 저주받은 대상이 죽을 때 사망 시 직업 능력이 발동하지 않는다
+    Amnesia,
+    /// 4티어 과학자: 첫 밤 마피아의 공격을 받아내고 접선한다
+    Distortion,
+    /// 4티어 과학자: 자해 부활 때 자신을 공격한 플레이어의 직업을 안다
+    Analysis,
 }
 
 impl TierAbility {
@@ -448,6 +454,9 @@ impl TierAbility {
             Self::Debut => "데뷔",
             Self::Successor => "후계자",
             Self::Condolence => "조문",
+            Self::Amnesia => "망각술",
+            Self::Distortion => "왜곡",
+            Self::Analysis => "분석",
         }
     }
 
@@ -519,6 +528,11 @@ impl TierAbility {
             Self::Condolence => {
                 "밤에 성불하지 않은 사망자의 직업을 도벽할 수 있습니다. 훔친 능력은 다음 밤까지 사용할 수 있습니다."
             }
+            Self::Amnesia => {
+                "저주받은 대상이 사망할 때 그 직업의 사망 능력(지목 반격, 자해 부활 등)이 발동하지 않습니다."
+            }
+            Self::Distortion => "첫 번째 밤에 마피아에게 지목되어도 죽지 않고 마피아와 접선합니다.",
+            Self::Analysis => "자해 능력으로 부활할 때 자신을 공격한 플레이어의 직업을 알아냅니다.",
         }
     }
 }
@@ -578,6 +592,8 @@ pub fn tier4_pool(role: Role) -> Vec<TierAbility> {
         Role::Fraudster => pool.push(TierAbility::Honeytrap),
         Role::Madam => pool.extend([TierAbility::Allure, TierAbility::Debut]),
         Role::Thief => pool.extend([TierAbility::Successor, TierAbility::Condolence]),
+        Role::Witch => pool.push(TierAbility::Amnesia),
+        Role::Scientist => pool.extend([TierAbility::Distortion, TierAbility::Analysis]),
         _ => {}
     }
     pool
