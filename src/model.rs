@@ -383,6 +383,8 @@ pub enum TierAbility {
     LastWill,
     /// 4티어 공용: 밤에도 게임 채널에 채팅 가능
     Loudspeaker,
+    /// 4티어 마피아 본대: 첫 낮에 접선하지 않은 마피아팀 명단 파악
+    Wanted,
 }
 
 impl TierAbility {
@@ -396,6 +398,7 @@ impl TierAbility {
             Self::Escape => "도주",
             Self::LastWill => "유언",
             Self::Loudspeaker => "확성",
+            Self::Wanted => "수배",
         }
     }
 
@@ -426,6 +429,7 @@ impl TierAbility {
             Self::Loudspeaker => {
                 "밤에도 게임 채널에 메시지를 보낼 수 있습니다. 밤마다 단 한 번이며, 확성 보유자가 여러 명이면 그 밤에 먼저 보낸 한 명만 쓸 수 있습니다."
             }
+            Self::Wanted => "첫 번째 낮이 될 때 아직 접선하지 않은 마피아팀 명단을 알 수 있습니다.",
         }
     }
 }
@@ -438,6 +442,7 @@ pub const TIER4_MAFIA_ABILITIES: &[TierAbility] = &[
     TierAbility::Cleanup,
     TierAbility::Escape,
     TierAbility::Loudspeaker,
+    TierAbility::Wanted,
 ];
 /// 보조 마피아(마피아 본대가 아닌 마피아팀)의 4티어 풀.
 pub const TIER4_MAFIA_SUPPORT_ABILITIES: &[TierAbility] = &[

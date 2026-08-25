@@ -392,6 +392,7 @@ impl MafiaGame {
         let paparazzi_results = self.resolve_paparazzi_issue(&role_reveals);
         let (fraudster_results, fraudster_contacts) =
             self.resolve_fraudster_results(&blocked_actor_ids, &role_reveals);
+        self.queue_wanted_notices();
         let soldier_watch_results = self.drain_soldier_watch_notices();
         let tier_ability_results = self.drain_tier_ability_notices();
         let result = NightResult {
@@ -937,6 +938,35 @@ impl MafiaGame {
                 self.cleanup_masked_ids.insert(victim.user_id);
                 victim.role = Role::Citizen;
             }
+        }
+    }
+
+    /// [수배] 첫 번째 낮이 될 때(첫 밤 결산) 접선하지 않은 마피아팀 명단을
+    /// 보유자에게 알린다. 밤 사망 처리 후에 불러 아침 생존자 기준으로 잡는다.
+    fn queue_wanted_notices(&mut self) {
+        if self.day_number != 1 {
+            return;
+        }
+        let holders = self.mafia_tier_ability_holders(TierAbility::Wanted);
+        if holders.is_empty() {
+            return;
+        }
+        let uncontacted = self
+            .players
+            .iter()
+            .filter(|player| {
+                player.alive && self.is_mafia_team(player) && !self.is_known_mafia_team(player)
+            })
+            .map(|player| player.name.clone())
+            .collect::<Vec<_>>();
+        let line = if uncontacted.is_empty() {
+            "[수배] 접선하지 않은 마피아팀이 없습니다.".to_string()
+        } else {
+            format!("[수배] 접선하지 않은 마피아팀: {}", uncontacted.join(", "))
+        };
+        for holder_id in holders {
+            self.pending_tier_ability_notices
+                .push((holder_id, line.clone()));
         }
     }
 

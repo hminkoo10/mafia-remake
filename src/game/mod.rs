@@ -2120,6 +2120,43 @@ mod tests {
         }
     }
 
+    /// [수배] 첫 낮이 될 때 접선하지 않은 마피아팀 명단이 보유자에게 오고,
+    /// 이미 접선한 보조와 둘째 밤 이후는 제외된다.
+    #[test]
+    fn wanted_lists_uncontacted_mafia_team_on_first_day() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Spy, Role::Madam]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Spy),
+            (3, Role::Madam),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Wanted);
+        game.madam_contacted.insert(3);
+
+        let result = game.resolve_night().unwrap();
+        let notice = &result.tier_ability_results[&1];
+        assert!(notice.contains("[수배]"), "{notice}");
+        assert!(notice.contains("P2"), "{notice}");
+        assert!(!notice.contains("P3"), "{notice}");
+
+        // 둘째 밤부터는 다시 오지 않는다.
+        game.phase = Phase::Night;
+        game.day_number = 2;
+        let result = game.resolve_night().unwrap();
+        assert!(!result.tier_ability_results.contains_key(&1));
+    }
+
     /// [확성]은 밤마다 보유자 전체에서 1회뿐이다. 먼저 쓰면 나머지는 그 밤에
     /// 못 쓰고, 다음 밤에는 다시 쓸 수 있다.
     #[test]
