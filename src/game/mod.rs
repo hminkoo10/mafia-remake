@@ -683,10 +683,17 @@ impl MafiaGame {
                     vec![TIER3_ABILITIES[(rng.next_u64() % TIER3_ABILITIES.len() as u64) as usize]]
                 }
                 4..=6 => {
-                    // 5티어는 2개, 6티어는 3개. 풀이 그보다 작으면 풀 크기까지만.
+                    // 5티어는 2개, 6티어는 3개. 4티어 이상 풀이 그보다 작으면
+                    // (예: 시민팀 풀은 유언·확성 2개) 3티어 능력으로 채운다.
+                    let want = tier as usize - 3;
                     let mut pool = tier4_pool(player.role);
                     pool.shuffle(&mut rng);
-                    pool.truncate((tier as usize - 3).min(pool.len()));
+                    if pool.len() < want {
+                        let mut filler = TIER3_ABILITIES.to_vec();
+                        filler.shuffle(&mut rng);
+                        pool.extend(filler);
+                    }
+                    pool.truncate(want.min(pool.len()));
                     pool
                 }
                 _ => Vec::new(),
@@ -2355,7 +2362,7 @@ mod tests {
     /// 다른 능력으로 나온다. 같은 능력이 여러 플레이어에게 겹칠 수는 있다.
     #[test]
     fn tier_abilities_follow_group_pools() {
-        use crate::model::tier4_pool;
+        use crate::model::{TIER3_ABILITIES, tier4_pool};
         for _ in 0..20 {
             let players = (1..=10)
                 .map(|id| (id as u64, format!("P{id}")))
@@ -2376,7 +2383,8 @@ mod tests {
                     }
                     _ => {
                         let pool = tier4_pool(player.role);
-                        let expected = (tier as usize - 3).min(pool.len());
+                        let want = tier as usize - 3;
+                        let expected = want.min(pool.len() + TIER3_ABILITIES.len());
                         assert_eq!(
                             abilities.len(),
                             expected,
@@ -2386,7 +2394,19 @@ mod tests {
                         let unique = abilities.iter().collect::<HashSet<_>>();
                         assert_eq!(unique.len(), abilities.len(), "{abilities:?}");
                         for ability in &abilities {
-                            assert!(pool.contains(ability), "{:?} {ability:?}", player.role);
+                            assert!(
+                                pool.contains(ability) || TIER3_ABILITIES.contains(ability),
+                                "{:?} {ability:?}",
+                                player.role
+                            );
+                        }
+                        // 3티어 채움은 4티어 풀을 다 쓴 뒤에만 일어난다.
+                        if abilities.iter().any(|ability| !pool.contains(ability)) {
+                            let tier4_count = abilities
+                                .iter()
+                                .filter(|ability| pool.contains(ability))
+                                .count();
+                            assert_eq!(tier4_count, pool.len(), "{abilities:?}");
                         }
                     }
                 }
