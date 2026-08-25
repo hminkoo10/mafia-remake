@@ -327,6 +327,7 @@ impl MafiaGame {
         // [수습] 마피아팀이 죽인 대상의 직업을 보유자에게 알려주고, 시민팀이면
         // 발표·이후 조사에서 '시민'으로 보이게 바꾼다 (레이팅은 시작 직업 기준).
         self.resolve_cleanup(&mut killed_players, &killed_by_mafia_team_ids);
+        self.resolve_exorcism(&killed_players, &killed_by_mafia_team_ids);
         // [유언] 밤에 죽은 유언 보유자의 유언을 아침에 공개한다.
         let published_wills = killed_players
             .iter()
@@ -2141,7 +2142,10 @@ impl MafiaGame {
             && self.mafia_team_has_tier_ability(TierAbility::NightRaid)
             && self.protection_is_self_heal_only(target.user_id);
         let snipe_pierce = self.snipe_armed && self.mafia_team_has_tier_ability(TierAbility::Snipe);
-        let pierce_protection = lawless_pierce || night_raid_pierce || snipe_pierce;
+        // [승부수] 마지막 마피아의 처형은 무조건 성공한다.
+        let all_in_pierce = self.all_in_active();
+        let pierce_protection =
+            lawless_pierce || night_raid_pierce || snipe_pierce || all_in_pierce;
         if pierce_protection
             && (enhanced_protection_ids.contains(&target.user_id)
                 || protected_ids.contains(&target.user_id))
@@ -2156,8 +2160,13 @@ impl MafiaGame {
                     TierAbility::NightRaid,
                     "첫날 밤 자가 치료를 무시하고 처형했습니다",
                 )
-            } else {
+            } else if snipe_pierce {
                 (TierAbility::Snipe, "모든 보호를 무시하고 처형했습니다")
+            } else {
+                (
+                    TierAbility::AllIn,
+                    "승부수로 모든 보호를 무시하고 처형했습니다",
+                )
             };
             for holder_id in self.mafia_tier_ability_holders(ability) {
                 self.pending_tier_ability_notices.push((
@@ -2185,6 +2194,7 @@ impl MafiaGame {
         }
         if allow_soldier_block
             && !snipe_pierce
+            && !all_in_pierce
             && target.role == Role::Soldier
             && !self.soldier_bulletproof_used.contains(&target.user_id)
         {
@@ -2204,6 +2214,38 @@ impl MafiaGame {
             killed_players,
             killed_by_mafia_team_ids,
         );
+    }
+
+    /// [퇴마] 마피아팀이 죽인 비마피아팀 희생자를 성불시킨다.
+    /// 성불된 사망자는 영매 접촉·성직자 소생 대상에서 빠진다.
+    fn resolve_exorcism(
+        &mut self,
+        killed_players: &[Player],
+        killed_by_mafia_team_ids: &HashSet<u64>,
+    ) {
+        let holders = self.mafia_tier_ability_holders(TierAbility::Exorcism);
+        if holders.is_empty() {
+            return;
+        }
+        for victim in killed_players
+            .iter()
+            .filter(|player| killed_by_mafia_team_ids.contains(&player.user_id))
+        {
+            let Some(real) = self.get_player(victim.user_id).cloned() else {
+                continue;
+            };
+            if self.is_mafia_team(&real) {
+                continue;
+            }
+            if !self.purified_dead_ids.insert(victim.user_id) {
+                continue;
+            }
+            let line = format!("[퇴마] {}님을 성불시켰습니다.", victim.name);
+            for holder_id in &holders {
+                self.pending_tier_ability_notices
+                    .push((*holder_id, line.clone()));
+            }
+        }
     }
 
     /// [독살] 시민팀 처형 실패 시 대상을 중독시킨다. 하루 뒤(다음 밤 결산 시작)

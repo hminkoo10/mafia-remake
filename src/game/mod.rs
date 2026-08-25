@@ -658,6 +658,17 @@ impl MafiaGame {
         }
     }
 
+    /// [승부수] 살아있는 마피아 본대가 보유자 한 명뿐인 상태인가.
+    pub(crate) fn all_in_active(&self) -> bool {
+        let alive_mafia = self
+            .players
+            .iter()
+            .filter(|player| player.alive && player.role == Role::Mafia && !self.is_frog(player))
+            .collect::<Vec<_>>();
+        alive_mafia.len() == 1
+            && self.tier_abilities.get(&alive_mafia[0].user_id) == Some(&TierAbility::AllIn)
+    }
+
     /// 살아있는 보유자가 있는지 (마피아팀 패시브 판정용).
     pub(crate) fn mafia_team_has_tier_ability(&self, ability: TierAbility) -> bool {
         self.tier_abilities.iter().any(|(user_id, held)| {
@@ -2451,6 +2462,73 @@ mod tests {
         game.doctor_targets.insert(2, 4);
         game.resolve_night().unwrap();
         assert!(game.poisoned_death_days.is_empty());
+    }
+
+    /// [승부수] 마지막 마피아의 처형은 치료·방탄을 모두 무시하고,
+    /// 다른 마피아가 살아있으면 발동하지 않는다.
+    #[test]
+    fn all_in_kills_unconditionally_when_last_mafia_remains() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 2, 1, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Mafia),
+            (3, Role::Doctor),
+            (4, Role::Soldier),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::AllIn);
+
+        // 동료 마피아가 살아있으면 발동하지 않는다 (치료에 막힌다).
+        game.mafia_targets.insert(1, 5);
+        game.doctor_targets.insert(3, 5);
+        game.resolve_night().unwrap();
+        assert!(game.get_player(5).unwrap().alive);
+
+        // 혼자 남으면 치료도 방탄도 무시한다.
+        game.get_player_mut(2).unwrap().alive = false;
+        game.phase = Phase::Night;
+        game.day_number = 2;
+        game.mafia_targets.insert(1, 4);
+        game.doctor_targets.insert(3, 4);
+        let result = game.resolve_night().unwrap();
+        assert!(!game.get_player(4).unwrap().alive, "{result:?}");
+        assert!(result.soldier_blocks.is_empty());
+        assert!(result.tier_ability_results[&1].contains("[승부수]"));
+    }
+
+    /// [퇴마] 마피아팀이 죽인 비마피아팀 희생자가 성불된다.
+    #[test]
+    fn exorcism_purifies_non_mafia_victims() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Citizen),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Exorcism);
+        game.mafia_targets.insert(1, 3);
+
+        let result = game.resolve_night().unwrap();
+        assert!(!game.get_player(3).unwrap().alive);
+        assert!(game.purified_dead_ids.contains(&3));
+        assert!(
+            result.tier_ability_results[&1].contains("[퇴마]"),
+            "{result:?}"
+        );
     }
 
     /// [확성]은 밤마다 보유자 전체에서 1회뿐이다. 먼저 쓰면 나머지는 그 밤에
