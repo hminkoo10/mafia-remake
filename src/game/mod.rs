@@ -68,6 +68,8 @@ pub struct MafiaGame {
     pub loudspeaker_used_days: HashSet<u32>,
     /// [은폐] 이번 밤 마피아팀 처형 실패가 조용한 밤으로 가려졌는지.
     pub concealed_kill_failure: bool,
+    /// [저격] 전날 밤 마피아팀 처형이 실패해 이번 밤 관통이 장전된 상태인지.
+    pub snipe_armed: bool,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -253,6 +255,7 @@ impl MafiaGame {
             cleanup_masked_ids: HashSet::new(),
             loudspeaker_used_days: HashSet::new(),
             concealed_kill_failure: false,
+            snipe_armed: false,
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -2319,6 +2322,56 @@ mod tests {
         let result = game.resolve_night().unwrap();
         assert!(!result.quiet_night);
         assert_eq!(result.soldier_blocks.len(), 1);
+    }
+
+    /// [저격] 전날 밤 처형이 실패하면 다음 밤은 치료·방탄을 모두 관통하고,
+    /// 성공한 밤 다음에는 발동하지 않는다.
+    #[test]
+    fn snipe_pierces_all_protection_after_a_failed_night() {
+        let mut game = MafiaGame::new(basic_players(), 1, 1, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Doctor),
+            (3, Role::Soldier),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Snipe);
+
+        // 1일차 밤: 치료에 막혀 실패 → 저격 장전.
+        game.mafia_targets.insert(1, 4);
+        game.doctor_targets.insert(2, 4);
+        game.resolve_night().unwrap();
+        assert!(game.get_player(4).unwrap().alive);
+        assert!(game.snipe_armed);
+
+        // 2일차 밤: 치료 중인 대상도 관통해 처형한다.
+        game.phase = Phase::Night;
+        game.day_number = 2;
+        game.mafia_targets.insert(1, 4);
+        game.doctor_targets.insert(2, 4);
+        let result = game.resolve_night().unwrap();
+        assert!(!game.get_player(4).unwrap().alive);
+        assert!(result.tier_ability_results[&1].contains("[저격]"));
+        // 성공했으니 장전 해제.
+        assert!(!game.snipe_armed);
+
+        // 3일차 밤: 군인 방탄도 저격이 장전됐을 때만 관통된다. 우선 실패로 장전.
+        game.phase = Phase::Night;
+        game.day_number = 3;
+        game.mafia_targets.insert(1, 5);
+        game.doctor_targets.insert(2, 5);
+        game.resolve_night().unwrap();
+        assert!(game.snipe_armed);
+        game.phase = Phase::Night;
+        game.day_number = 4;
+        game.mafia_targets.insert(1, 3);
+        let result = game.resolve_night().unwrap();
+        assert!(!game.get_player(3).unwrap().alive, "{result:?}");
+        assert!(result.soldier_blocks.is_empty());
     }
 
     /// [확성]은 밤마다 보유자 전체에서 1회뿐이다. 먼저 쓰면 나머지는 그 밤에

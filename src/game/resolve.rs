@@ -264,6 +264,10 @@ impl MafiaGame {
                 &mut lover_sacrifices,
             );
         }
+        // [저격] 다음 밤 장전: 이번 밤 마피아팀 처형 선언이 있었지만 아무도
+        // 죽이지 못했을 때만 장전된다 (성공하거나 선언이 없었으면 해제).
+        self.snipe_armed = (mafia_target.is_some() || godfather_target.is_some())
+            && killed_by_mafia_team_ids.is_empty();
         let protected_id = reported_protected_id(
             &protected_ids,
             mafia_target_id,
@@ -2126,23 +2130,27 @@ impl MafiaGame {
         }
         // [무법] 경찰을 노린 마피아팀 공격은 치료를 무시한다.
         // [야습] 첫날 밤에는 자기 자신에게 쓴 치료를 무시한다.
+        // [저격] 전날 밤 처형이 실패했다면 이번 밤은 모든 보호를 무시한다.
         let lawless_pierce =
             target.role == Role::Police && self.mafia_team_has_tier_ability(TierAbility::Lawless);
         let night_raid_pierce = self.day_number == 1
             && self.mafia_team_has_tier_ability(TierAbility::NightRaid)
             && self.protection_is_self_heal_only(target.user_id);
-        let pierce_protection = lawless_pierce || night_raid_pierce;
+        let snipe_pierce = self.snipe_armed && self.mafia_team_has_tier_ability(TierAbility::Snipe);
+        let pierce_protection = lawless_pierce || night_raid_pierce || snipe_pierce;
         if pierce_protection
             && (enhanced_protection_ids.contains(&target.user_id)
                 || protected_ids.contains(&target.user_id))
         {
             let (ability, reason) = if lawless_pierce {
                 (TierAbility::Lawless, "경찰 보호를 무시하고 처형했습니다")
-            } else {
+            } else if night_raid_pierce {
                 (
                     TierAbility::NightRaid,
                     "첫날 밤 자가 치료를 무시하고 처형했습니다",
                 )
+            } else {
+                (TierAbility::Snipe, "모든 보호를 무시하고 처형했습니다")
             };
             for holder_id in self.mafia_tier_ability_holders(ability) {
                 self.pending_tier_ability_notices.push((
@@ -2162,6 +2170,7 @@ impl MafiaGame {
             }
         }
         if allow_soldier_block
+            && !snipe_pierce
             && target.role == Role::Soldier
             && !self.soldier_bulletproof_used.contains(&target.user_id)
         {

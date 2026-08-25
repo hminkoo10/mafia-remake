@@ -392,6 +392,8 @@ pub enum TierAbility {
     Hypocrisy,
     /// 4티어 마피아 본대: 처형 실패가 문구 없는 '조용한 밤'이 된다
     Concealment,
+    /// 4티어 마피아 본대: 전날 밤 처형 실패 시 이번 밤 모든 보호 무시
+    Snipe,
 }
 
 impl TierAbility {
@@ -409,6 +411,7 @@ impl TierAbility {
             Self::Directive => "지령",
             Self::Hypocrisy => "위선",
             Self::Concealment => "은폐",
+            Self::Snipe => "저격",
         }
     }
 
@@ -447,6 +450,9 @@ impl TierAbility {
             Self::Concealment => {
                 "마피아팀의 처형이 실패하면 치료·방탄 문구가 나오지 않는 '조용한 밤'으로 진행됩니다."
             }
+            Self::Snipe => {
+                "전날 밤 마피아팀 처형이 실패했다면, 이번 밤 처형 대상의 치료·방탄 등 모든 보호를 무시합니다."
+            }
         }
     }
 }
@@ -463,6 +469,7 @@ pub const TIER4_MAFIA_ABILITIES: &[TierAbility] = &[
     TierAbility::Directive,
     TierAbility::Hypocrisy,
     TierAbility::Concealment,
+    TierAbility::Snipe,
 ];
 /// 보조 마피아(마피아 본대가 아닌 마피아팀)의 4티어 풀.
 pub const TIER4_MAFIA_SUPPORT_ABILITIES: &[TierAbility] = &[
