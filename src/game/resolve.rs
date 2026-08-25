@@ -417,6 +417,7 @@ impl MafiaGame {
             fraudster_contacts,
             soldier_watch_results,
             quiet_night: self.concealed_kill_failure,
+            night_raid_reveals: std::mem::take(&mut self.pending_night_raid_reveals),
             tier_ability_results,
             published_wills,
             spy_results,
@@ -2134,6 +2135,7 @@ impl MafiaGame {
         let lawless_pierce = target.role.is_investigation_role()
             && self.mafia_team_has_tier_ability(TierAbility::Lawless);
         let night_raid_pierce = self.day_number == 1
+            && target.role == Role::Doctor
             && self.mafia_team_has_tier_ability(TierAbility::NightRaid)
             && self.protection_is_self_heal_only(target.user_id);
         let snipe_pierce = self.snipe_armed && self.mafia_team_has_tier_ability(TierAbility::Snipe);
@@ -2160,6 +2162,11 @@ impl MafiaGame {
                     holder_id,
                     format!("[{}] {}님의 {reason}.", ability.value(), target.name),
                 ));
+            }
+            // [야습] 자가 치료 의사를 관통하면 의사의 정체가 모두에게 공개된다.
+            if ability == TierAbility::NightRaid {
+                self.publicly_revealed_ids.insert(target.user_id);
+                self.pending_night_raid_reveals.push(target.clone());
             }
         }
         if !pierce_protection {

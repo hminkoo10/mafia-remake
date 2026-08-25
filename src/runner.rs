@@ -1111,6 +1111,24 @@ pub async fn run_night(
         )
         .await?;
     }
+    if !result.night_raid_reveals.is_empty() {
+        send_game_embed(
+            ctx,
+            running,
+            result
+                .night_raid_reveals
+                .iter()
+                .map(|player| format!("[야습] {}님은 의사였습니다!", player.name))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            "야습",
+            serenity::Colour::RED,
+            vec![],
+            true,
+            true,
+        )
+        .await?;
+    }
     if !result.priest_revives.is_empty() {
         send_game_embed(
             ctx,

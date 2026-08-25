@@ -70,6 +70,8 @@ pub struct MafiaGame {
     pub concealed_kill_failure: bool,
     /// [저격] 전날 밤 마피아팀 처형이 실패해 이번 밤 관통이 장전된 상태인지.
     pub snipe_armed: bool,
+    /// [야습] 이번 밤 관통된 자가 치료 의사(아침에 전체 공개).
+    pub pending_night_raid_reveals: Vec<Player>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -256,6 +258,7 @@ impl MafiaGame {
             loudspeaker_used_days: HashSet::new(),
             concealed_kill_failure: false,
             snipe_armed: false,
+            pending_night_raid_reveals: Vec::new(),
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -2484,7 +2487,7 @@ mod tests {
         game.tier_abilities.clear();
         game.tier_abilities.insert(1, TierAbility::NightRaid);
 
-        // 의사 자가 치료 → 야습이 뚫는다.
+        // 의사 자가 치료 → 야습이 뚫고, 의사 정체가 전체 공개된다.
         game.submit_night_action(3, Some(3)).unwrap();
         game.submit_night_action(1, Some(3)).unwrap();
         let result = game.resolve_night().unwrap();
@@ -2496,6 +2499,15 @@ mod tests {
             "{:?}",
             result.killed_players
         );
+        assert!(
+            result
+                .night_raid_reveals
+                .iter()
+                .any(|player| player.user_id == 3),
+            "{:?}",
+            result.night_raid_reveals
+        );
+        assert!(game.publicly_revealed_ids.contains(&3));
     }
 
     /// [수습] 마피아팀이 죽인 시민팀의 직업이 '시민'으로 바뀌고 보유자가 원 직업을 안다.

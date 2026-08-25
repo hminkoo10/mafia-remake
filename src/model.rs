@@ -429,7 +429,9 @@ impl TierAbility {
             Self::Lawless => {
                 "마피아팀의 밤 공격이 경찰 계열(경찰·요원·자경단원·형사)을 노리면 보호를 무시하고 무조건 처형합니다."
             }
-            Self::NightRaid => "첫날 밤 마피아팀의 공격이 자기 자신에게 쓴 치료를 무시합니다.",
+            Self::NightRaid => {
+                "첫날 밤 공격 대상이 자신을 치료한 의사라면 치료를 무시하고 처형하며, 그 의사의 정체가 모두에게 공개됩니다."
+            }
             Self::Cleanup => {
                 "마피아팀이 죽인 대상의 직업을 알아내고, 시민팀이면 그 직업을 '시민'으로 바꿔 숨깁니다."
             }
@@ -588,6 +590,9 @@ pub struct NightResult {
     /// 공개 문구를 숨긴다.
     #[serde(default)]
     pub quiet_night: bool,
+    /// [야습] 관통된 자가 치료 의사 — 아침에 정체가 전체 공개된다.
+    #[serde(default)]
+    pub night_raid_reveals: Vec<Player>,
     /// 티어 능력(무법·야습·수습) 활약 알림.
     pub tier_ability_results: std::collections::HashMap<u64, String>,
     /// 밤에 사망한 유언 보유자의 (이름, 유언) — 아침에 전체 공개.
