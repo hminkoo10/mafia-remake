@@ -398,6 +398,9 @@ impl MafiaGame {
     }
 
     pub fn is_police_detected_mafia_team(&self, player: &Player) -> bool {
+        if self.is_hypocrite_active(player) {
+            return false;
+        }
         match player.role {
             Role::Godfather => false,
             _ => self.is_known_mafia_team(player),
@@ -685,6 +688,10 @@ impl MafiaGame {
     /// 소속으로 판정한다 — 마피아팀·교주팀 대상은 항상 "시민팀이 아닙니다"가 되고
     /// 알림도 가지 않는다. 변장 사기꾼만은 예외로 시민으로 판정되어 속인다.
     pub(crate) fn inspector_team_key(&self, player: &Player) -> &'static str {
+        if self.is_hypocrite_active(player) {
+            // [위선] 첫 밤 동안 의사(시민팀)로 판정된다.
+            return "citizen";
+        }
         if self.is_disguised_fraudster(player)
             && !self.fraudster_contacted.contains(&player.user_id)
         {
@@ -760,12 +767,23 @@ impl MafiaGame {
         } else if self.cleanup_masked_ids.contains(&player.user_id) {
             // [수습] 가려진 사망자는 어떤 조사에서도 시민으로 보인다.
             Role::Citizen
+        } else if self.is_hypocrite_active(player) {
+            // [위선] 첫 밤 동안 조사 판정이 의사로 나온다.
+            Role::Doctor
         } else if let Some((_, disguised_role)) = self.fraudster_disguises.get(&player.user_id) {
             // 사기꾼은 조사 판정이 변장한 시민 직업으로 나온다.
             *disguised_role
         } else {
             player.role
         }
+    }
+
+    /// [위선] 첫 번째 밤 동안 조사 판정이 의사로 나오는 상태인가.
+    pub(crate) fn is_hypocrite_active(&self, player: &Player) -> bool {
+        player.alive
+            && self.phase == Phase::Night
+            && self.day_number == 1
+            && self.tier_abilities.get(&player.user_id) == Some(&TierAbility::Hypocrisy)
     }
 
     /// 살아있고 아직 접선하지 않은 변장 사기꾼인가. 조사 판정을 속이는 기준.
@@ -816,7 +834,10 @@ impl MafiaGame {
     }
 
     fn team_key(&self, player: &Player) -> &'static str {
-        if self.is_cult_team(player) {
+        if self.is_hypocrite_active(player) {
+            // [위선] 첫 밤 동안 의사(시민팀)로 판정된다.
+            "citizen"
+        } else if self.is_cult_team(player) {
             "cult"
         } else if self.is_known_mafia_team(player) {
             "mafia"
@@ -2198,6 +2219,38 @@ mod tests {
         let result = game.resolve_night().unwrap();
         assert!(!result.tier_ability_results.contains_key(&1));
         assert!(!result.tier_ability_results.contains_key(&2));
+    }
+
+    /// [위선] 첫 밤 동안 조사가 의사로 판정하고, 둘째 밤부터는 원래대로다.
+    #[test]
+    fn hypocrisy_passes_first_night_investigations_as_doctor() {
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, vec![Role::Inspector]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Citizen),
+            (3, Role::Inspector),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Hypocrisy);
+
+        let mafia = game.get_player(1).unwrap().clone();
+        // 경찰 판정: 첫 밤에는 마피아팀이 아니라고 나온다.
+        assert!(!game.is_police_detected_mafia_team(&mafia));
+        // 형사 판정: 같은 시민팀으로 보여 직업이 '의사'로 공개된다.
+        let immediate = game.submit_night_action(3, Some(1)).unwrap();
+        assert!(
+            immediate.contains("[One님의 직업은 의사입니다.]"),
+            "{immediate}"
+        );
+
+        // 둘째 밤부터는 원래 판정으로 돌아온다.
+        game.day_number = 2;
+        assert!(game.is_police_detected_mafia_team(&mafia));
+        assert_eq!(game.visible_role(&mafia), Role::Mafia);
     }
 
     /// [확성]은 밤마다 보유자 전체에서 1회뿐이다. 먼저 쓰면 나머지는 그 밤에

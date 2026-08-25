@@ -388,6 +388,8 @@ pub enum TierAbility {
     /// 4티어 마피아팀·교주: 첫 낮에 지령 정보 (마피아·청부업자는 경찰 계열
     /// 한 명, 그 외 보조·교주는 미공개 시민팀 한 명의 직업)
     Directive,
+    /// 4티어 마피아 본대: 첫 밤 동안 조사 판정이 의사로 나온다
+    Hypocrisy,
 }
 
 impl TierAbility {
@@ -403,6 +405,7 @@ impl TierAbility {
             Self::Loudspeaker => "확성",
             Self::Wanted => "수배",
             Self::Directive => "지령",
+            Self::Hypocrisy => "위선",
         }
     }
 
@@ -437,6 +440,7 @@ impl TierAbility {
             Self::Directive => {
                 "첫 번째 낮이 될 때 지령을 받습니다. 마피아·청부업자는 경찰 계열 생존자 한 명이 누구인지, 그 외 보조 직업과 교주는 정체가 밝혀지지 않은 시민팀 한 명의 직업을 알아냅니다."
             }
+            Self::Hypocrisy => "첫 번째 밤 동안 시민팀의 조사에 의사 직업으로 판정됩니다.",
         }
     }
 }
@@ -451,6 +455,7 @@ pub const TIER4_MAFIA_ABILITIES: &[TierAbility] = &[
     TierAbility::Loudspeaker,
     TierAbility::Wanted,
     TierAbility::Directive,
+    TierAbility::Hypocrisy,
 ];
 /// 보조 마피아(마피아 본대가 아닌 마피아팀)의 4티어 풀.
 pub const TIER4_MAFIA_SUPPORT_ABILITIES: &[TierAbility] = &[
