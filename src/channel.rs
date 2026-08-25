@@ -5545,19 +5545,29 @@ pub async fn set_member_game_channel_chat(
     let current = if remembered.is_some() {
         remembered
     } else {
-        let Some(channel) = channel_id
+        match channel_id
             .to_channel(&ctx.http)
             .await
             .ok()
             .and_then(|channel| channel.guild())
-        else {
-            return;
-        };
-        channel
-            .permission_overwrites
-            .iter()
-            .find(|overwrite| overwrite.kind == kind)
-            .cloned()
+        {
+            Some(channel) => channel
+                .permission_overwrites
+                .iter()
+                .find(|overwrite| overwrite.kind == kind)
+                .cloned(),
+            None => {
+                // 게임 시작 직후(첫 밤)에는 채널 생성 러시로 이 조회가 실패할 수
+                // 있다. 여기서 포기하면 [확성] 등 멤버 권한이 조용히 안 열리므로
+                // 빈 오버라이트를 바탕으로 계속 진행한다.
+                eprintln!(
+                    "failed to fetch game channel overwrites; proceeding with empty base: channel_id={} user_id={}",
+                    channel_id.get(),
+                    player.user_id
+                );
+                None
+            }
+        }
     };
     {
         let mut running_write = running.write().await;

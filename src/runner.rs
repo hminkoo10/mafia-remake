@@ -618,8 +618,25 @@ pub async fn run_night(
             .cloned()
             .collect::<Vec<_>>()
     };
+    let anonymous_enabled = running.read().await.anonymous_enabled;
     for holder in loudspeakers {
         set_member_game_channel_chat(ctx, running, &holder, true).await;
+        // 사용법 안내 겸 권한이 열렸다는 확인. 익명 게임은 쓰는 위치가 다르다.
+        let where_to = if anonymous_enabled {
+            "개인 익명 채팅 채널"
+        } else {
+            "게임 채널"
+        };
+        let _ = send_player_secret(
+            ctx,
+            running,
+            &holder,
+            format!(
+                "[확성] 이번 밤 {where_to}에 메시지를 보낼 수 있습니다. 인당 게임 중 1회이며, 다른 확성 보유자가 먼저 보내면 이번 밤에는 쓸 수 없습니다."
+            ),
+            vec![],
+        )
+        .await;
     }
     unlock_pending_dead_chats(ctx, data, running).await;
     sync_private_role_chat_permissions(ctx, data, running).await;
