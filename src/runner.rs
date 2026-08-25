@@ -1194,6 +1194,7 @@ pub async fn run_night(
         .chain(&result.contractor_contacts)
         .chain(&result.fraudster_contacts)
         .chain(&result.witch_contacts)
+        .chain(&result.tier_ability_contacts)
     {
         let player = running.read().await.game.get_player(*user_id).cloned();
         if let Some(player) = player.filter(|player| player.alive) {

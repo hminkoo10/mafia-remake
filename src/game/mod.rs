@@ -2272,6 +2272,42 @@ mod tests {
         assert_eq!(game.winner(), Some(Winner::Cult));
     }
 
+    /// [밀정] 두 번째 낮이 되면 보유 보조가 자동으로 마피아와 접선한다.
+    #[test]
+    fn inside_man_auto_contacts_on_the_second_day() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Spy]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Spy),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(2, vec![TierAbility::InsideMan]);
+
+        // 첫 밤 결산: 아직 접선하지 않는다.
+        let result = game.resolve_night().unwrap();
+        assert!(result.tier_ability_contacts.is_empty());
+        assert!(!game.spy_contacted.contains(&2));
+
+        // 2일차 밤 결산(두 번째 낮): 자동 접선.
+        game.phase = Phase::Night;
+        game.day_number = 2;
+        let result = game.resolve_night().unwrap();
+        assert_eq!(result.tier_ability_contacts, vec![2]);
+        assert!(game.spy_contacted.contains(&2));
+        assert!(result.tier_ability_results[&2].contains("[밀정]"));
+    }
+
     /// [수배] 첫 낮이 될 때 접선하지 않은 마피아팀 명단이 보유자에게 오고,
     /// 이미 접선한 보조와 둘째 밤 이후는 제외된다.
     #[test]

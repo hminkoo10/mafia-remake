@@ -399,6 +399,7 @@ impl MafiaGame {
             self.resolve_fraudster_results(&blocked_actor_ids, &role_reveals);
         self.queue_wanted_notices();
         self.queue_directive_notices();
+        let tier_ability_contacts = self.resolve_inside_man_contacts();
         let soldier_watch_results = self.drain_soldier_watch_notices();
         let tier_ability_results = self.drain_tier_ability_notices();
         let result = NightResult {
@@ -419,6 +420,7 @@ impl MafiaGame {
             soldier_watch_results,
             quiet_night: self.concealed_kill_failure,
             night_raid_reveals: std::mem::take(&mut self.pending_night_raid_reveals),
+            tier_ability_contacts,
             tier_ability_results,
             published_wills,
             spy_results,
@@ -2212,6 +2214,36 @@ impl MafiaGame {
             killed_players,
             killed_by_mafia_team_ids,
         );
+    }
+
+    /// [밀정] 두 번째 낮이 될 때(2일차 밤 결산) 살아있는 보유자가 자동으로
+    /// 마피아와 접선한다. 반환: 새로 접선한 보유자 id (채널 접근 부여용).
+    fn resolve_inside_man_contacts(&mut self) -> Vec<u64> {
+        if self.day_number != 2 {
+            return Vec::new();
+        }
+        let holders = self
+            .players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && self.is_mafia_team(player)
+                    && !self.is_known_mafia_team(player)
+                    && !self.is_frog(player)
+                    && self.has_tier_ability(player.user_id, TierAbility::InsideMan)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut contacted = Vec::new();
+        for holder in holders {
+            self.contact_mafia_team_member(&holder);
+            self.pending_tier_ability_notices.push((
+                holder.user_id,
+                "[밀정] 마피아와 자동으로 접선했습니다.".to_string(),
+            ));
+            contacted.push(holder.user_id);
+        }
+        contacted
     }
 
     /// [퇴마] 마피아팀이 죽인 비마피아팀 희생자를 성불시킨다.

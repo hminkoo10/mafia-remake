@@ -402,6 +402,8 @@ pub enum TierAbility {
     Exorcism,
     /// 4티어 마피아팀·교주: 절반 이하 + 2번째 밤 생존 시 소속 팀 즉시 승리
     TimeLimit,
+    /// 4티어 마피아팀 보조: 두 번째 낮에 자동으로 마피아와 접선
+    InsideMan,
 }
 
 impl TierAbility {
@@ -424,6 +426,7 @@ impl TierAbility {
             Self::AllIn => "승부수",
             Self::Exorcism => "퇴마",
             Self::TimeLimit => "시한부",
+            Self::InsideMan => "밀정",
         }
     }
 
@@ -479,6 +482,7 @@ impl TierAbility {
             Self::TimeLimit => {
                 "생존자가 절반 이하로 줄어든 상태에서 2번째 밤 이후까지 살아남으면 자신이 속한 팀이 즉시 승리합니다. 포교당한 보유자는 교주팀 승리가 되고, 도주로 살아남은 상태에서는 발동하지 않습니다."
             }
+            Self::InsideMan => "두 번째 낮이 될 때 자동으로 마피아와 접선합니다.",
         }
     }
 }
@@ -508,6 +512,7 @@ pub const TIER4_MAFIA_SUPPORT_ABILITIES: &[TierAbility] = &[
     TierAbility::Escape,
     TierAbility::Directive,
     TierAbility::TimeLimit,
+    TierAbility::InsideMan,
 ];
 pub const TIER4_CITIZEN_ABILITIES: &[TierAbility] =
     &[TierAbility::LastWill, TierAbility::Loudspeaker];
@@ -623,6 +628,9 @@ pub struct NightResult {
     /// [야습] 관통된 자가 치료 의사 — 아침에 정체가 전체 공개된다.
     #[serde(default)]
     pub night_raid_reveals: Vec<Player>,
+    /// [밀정] 이번 밤 결산으로 마피아와 접선한 보유자 (채널 접근 부여용).
+    #[serde(default)]
+    pub tier_ability_contacts: Vec<u64>,
     /// 티어 능력(무법·야습·수습) 활약 알림.
     pub tier_ability_results: std::collections::HashMap<u64, String>,
     /// 밤에 사망한 유언 보유자의 (이름, 유언) — 아침에 전체 공개.
