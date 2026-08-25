@@ -366,13 +366,11 @@ impl MafiaGame {
             .collect::<HashSet<_>>();
         let (police_target, police_target_is_mafia) =
             self.current_police_result_excluding(&blocked_actor_ids);
-        let police_target_id = police_target.as_ref().map(|player| player.user_id);
         let thief_police_results = self.thief_police_results_excluding(&blocked_actor_ids);
         let detective_results = self.resolve_detective_results(
             &blocked_actor_ids,
             mafia_target_id,
             protected_id,
-            police_target_id,
             godfather_target_id,
         );
         // 파파라치 이슈용: 시민팀이 이번 밤 알아낸 "다른 플레이어의 정확한 직업" 목록.
@@ -783,7 +781,6 @@ impl MafiaGame {
         blocked_actor_ids: &HashSet<u64>,
         mafia_target_id: Option<u64>,
         protected_id: Option<u64>,
-        police_target_id: Option<u64>,
         godfather_target_id: Option<u64>,
     ) -> HashMap<u64, String> {
         let mut results = HashMap::new();
@@ -804,7 +801,6 @@ impl MafiaGame {
                 watched,
                 mafia_target_id,
                 protected_id,
-                police_target_id,
                 godfather_target_id,
             );
             if let Some(action_target_id) = action_target_id {
@@ -1295,7 +1291,6 @@ impl MafiaGame {
         watched: &Player,
         mafia_target_id: Option<u64>,
         protected_id: Option<u64>,
-        police_target_id: Option<u64>,
         godfather_target_id: Option<u64>,
     ) -> Option<u64> {
         match watched.role {
@@ -1308,11 +1303,9 @@ impl MafiaGame {
                 .copied(),
             Role::Gangster => self.gangster_targets.get(&watched.user_id).copied(),
             Role::Thief => self.resolved_thief_action_target(watched),
-            Role::Police => self
-                .police_targets
-                .contains_key(&watched.user_id)
-                .then_some(police_target_id)
-                .flatten(),
+            // 경찰이 같은 밤에 죽었어도 제출한 조사는 이동으로 보여야 하므로
+            // 전역 결과가 아니라 본인의 제출 기록을 직접 본다.
+            Role::Police => self.police_targets.get(&watched.user_id).copied(),
             Role::Inspector => self.inspector_targets.get(&watched.user_id).copied(),
             Role::Vigilante => self.vigilante_targets.get(&watched.user_id).copied(),
             Role::Hypnotist => self.hypnotist_targets.get(&watched.user_id).copied(),

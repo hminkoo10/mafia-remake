@@ -2983,6 +2983,19 @@ mod tests {
             result.detective_results.get(&2).map(String::as_str),
             Some("P3 님은 밤에 능력을 사용하지 않았습니다.")
         );
+
+        // 경찰이 조사를 제출한 뒤 같은 밤에 죽어도 이동은 그대로 보인다.
+        game.phase = Phase::Night;
+        game.day_number = 3;
+        game.submit_night_action(3, Some(6)).unwrap();
+        game.submit_night_action(2, Some(3)).unwrap();
+        game.submit_night_action(1, Some(3)).unwrap();
+        let result = game.resolve_night().unwrap();
+        assert!(!game.get_player(3).unwrap().alive);
+        assert_eq!(
+            result.detective_results.get(&2).map(String::as_str),
+            Some("P3 님은 밤에 P6 님에게 능력을 사용했습니다.")
+        );
     }
 
     /// [수배] 첫 낮이 될 때 접선하지 않은 마피아팀 명단이 보유자에게 오고,
