@@ -76,6 +76,8 @@ pub struct MafiaGame {
     pub poisoned_death_days: HashMap<u64, u32>,
     /// [미인계] 이번 밤 이미 알림을 보낸 (사용자, 보유자) 쌍.
     pub honeytrap_noticed: HashSet<(u64, u64)>,
+    /// [데뷔] 투표권이 한 표 깎인 플레이어.
+    pub debut_vote_penalty_ids: HashSet<u64>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -265,6 +267,7 @@ impl MafiaGame {
             pending_night_raid_reveals: Vec::new(),
             poisoned_death_days: HashMap::new(),
             honeytrap_noticed: HashSet::new(),
+            debut_vote_penalty_ids: HashSet::new(),
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -1423,10 +1426,16 @@ impl MafiaGame {
             return 0;
         }
         self.get_player(voter_id).map_or(1, |voter| {
-            if voter.alive && voter.role == Role::Politician {
+            let base = if voter.alive && voter.role == Role::Politician {
                 2
             } else {
                 1
+            };
+            // [데뷔] 투표권 한 표 박탈 (0표 밑으로는 내려가지 않는다).
+            if self.debut_vote_penalty_ids.contains(&voter_id) {
+                (base - 1).max(0)
+            } else {
+                base
             }
         })
     }
@@ -2504,6 +2513,49 @@ mod tests {
         let notice = &result.tier_ability_results[&2];
         assert!(notice.contains("P3님의 직업은 경찰입니다"), "{notice}");
         assert!(notice.contains("P4님의 직업은 의사입니다"), "{notice}");
+    }
+
+    /// [현혹]·[데뷔] 시민팀을 유혹하면 직업을 알아내고, 첫날엔 투표권도
+    /// 한 표 깎는다.
+    #[test]
+    fn allure_and_debut_trigger_on_citizen_seduction() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Madam]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Madam),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities
+            .insert(2, vec![TierAbility::Allure, TierAbility::Debut]);
+
+        let live_votes = HashMap::from([(2u64, Some(3u64))]);
+        game.apply_madam_seduction(&live_votes);
+
+        assert!(game.madam_seduced_ids.contains(&3));
+        assert!(game.debut_vote_penalty_ids.contains(&3));
+        assert_eq!(game.vote_weight(3), 0);
+        assert_eq!(game.vote_weight(4), 1);
+
+        // 알림은 다음 밤 결산에서 전달된다.
+        game.phase = Phase::Night;
+        let result = game.resolve_night().unwrap();
+        let notice = &result.tier_ability_results[&2];
+        assert!(
+            notice.contains("[현혹] 유혹한 P3님의 직업은 의사입니다."),
+            "{notice}"
+        );
+        assert!(notice.contains("[데뷔]"), "{notice}");
     }
 
     /// [수배] 첫 낮이 될 때 접선하지 않은 마피아팀 명단이 보유자에게 오고,

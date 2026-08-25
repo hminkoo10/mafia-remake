@@ -738,6 +738,29 @@ impl MafiaGame {
             }
             self.madam_seduction_release_days
                 .insert(target.user_id, self.day_number + 1);
+            if self.is_citizen_team(&target) {
+                // [현혹] 시민팀을 유혹하면 직업을 알아낸다.
+                if self.has_tier_ability(voter.user_id, TierAbility::Allure) {
+                    self.pending_tier_ability_notices.push((
+                        voter.user_id,
+                        format!(
+                            "[현혹] 유혹한 {}님의 직업은 {}입니다.",
+                            target.name,
+                            self.visible_role(&target).value()
+                        ),
+                    ));
+                }
+                // [데뷔] 첫날 시민팀 유혹 시 투표권 한 표 박탈.
+                if self.day_number == 1
+                    && self.has_tier_ability(voter.user_id, TierAbility::Debut)
+                    && self.debut_vote_penalty_ids.insert(target.user_id)
+                {
+                    self.pending_tier_ability_notices.push((
+                        voter.user_id,
+                        format!("[데뷔] {}님의 투표권을 한 표 박탈했습니다.", target.name),
+                    ));
+                }
+            }
             if self.is_mafia_team(&target) {
                 self.contact_mafia_team_member(&target);
                 if self.madam_contacted.insert(voter.user_id) {

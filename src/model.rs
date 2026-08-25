@@ -410,6 +410,10 @@ pub enum TierAbility {
     Assassin,
     /// 4티어 스파이·사기꾼: 시민팀 능력의 대상이 되면 그 사용자의 직업 파악
     Honeytrap,
+    /// 4티어 마담: 유혹한 시민팀 대상의 직업 파악
+    Allure,
+    /// 4티어 마담: 첫날 시민팀을 유혹하면 그 대상의 투표권 한 표 박탈
+    Debut,
 }
 
 impl TierAbility {
@@ -436,6 +440,8 @@ impl TierAbility {
             Self::Autopsy => "부검",
             Self::Assassin => "자객",
             Self::Honeytrap => "미인계",
+            Self::Allure => "현혹",
+            Self::Debut => "데뷔",
         }
     }
 
@@ -499,6 +505,8 @@ impl TierAbility {
             Self::Honeytrap => {
                 "시민팀 플레이어의 능력 대상이 되면 그 사용자의 직업을 알아냅니다. (요원 제외)"
             }
+            Self::Allure => "유혹한 대상이 시민팀이면 그 대상의 직업을 알아냅니다.",
+            Self::Debut => "첫날 시민팀을 유혹하면 그 대상의 투표권을 한 표 박탈합니다.",
         }
     }
 }
@@ -556,6 +564,7 @@ pub fn tier4_pool(role: Role) -> Vec<TierAbility> {
             TierAbility::Honeytrap,
         ]),
         Role::Fraudster => pool.push(TierAbility::Honeytrap),
+        Role::Madam => pool.extend([TierAbility::Allure, TierAbility::Debut]),
         _ => {}
     }
     pool
