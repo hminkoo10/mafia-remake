@@ -404,6 +404,12 @@ pub enum TierAbility {
     TimeLimit,
     /// 4티어 마피아팀 보조: 두 번째 낮에 자동으로 마피아와 접선
     InsideMan,
+    /// 4티어 스파이: 사망자가 생길 때마다 자동 조사
+    Autopsy,
+    /// 4티어 스파이: 마피아팀에 혼자 남으면 조사한 대상을 처형
+    Assassin,
+    /// 4티어 스파이·사기꾼: 시민팀 능력의 대상이 되면 그 사용자의 직업 파악
+    Honeytrap,
 }
 
 impl TierAbility {
@@ -427,6 +433,9 @@ impl TierAbility {
             Self::Exorcism => "퇴마",
             Self::TimeLimit => "시한부",
             Self::InsideMan => "밀정",
+            Self::Autopsy => "부검",
+            Self::Assassin => "자객",
+            Self::Honeytrap => "미인계",
         }
     }
 
@@ -483,6 +492,13 @@ impl TierAbility {
                 "생존자가 절반 이하로 줄어든 상태에서 2번째 밤 이후까지 살아남으면 자신이 속한 팀이 즉시 승리합니다. 포교당한 보유자는 교주팀 승리가 되고, 도주로 살아남은 상태에서는 발동하지 않습니다."
             }
             Self::InsideMan => "두 번째 낮이 될 때 자동으로 마피아와 접선합니다.",
+            Self::Autopsy => "사망한 플레이어가 생길 때마다 자동으로 조사해 그 직업을 알아냅니다.",
+            Self::Assassin => {
+                "마피아팀에 혼자 남았을 경우, 그 밤에 첩보로 조사한 대상을 처형합니다."
+            }
+            Self::Honeytrap => {
+                "시민팀 플레이어의 능력 대상이 되면 그 사용자의 직업을 알아냅니다. (요원 제외)"
+            }
         }
     }
 }
@@ -532,7 +548,17 @@ pub fn tier4_pool(role: Role) -> Vec<TierAbility> {
     if role == Role::Mafia {
         return TIER4_MAFIA_ABILITIES.to_vec();
     }
-    TIER4_MAFIA_SUPPORT_ABILITIES.to_vec()
+    let mut pool = TIER4_MAFIA_SUPPORT_ABILITIES.to_vec();
+    match role {
+        Role::Spy => pool.extend([
+            TierAbility::Autopsy,
+            TierAbility::Assassin,
+            TierAbility::Honeytrap,
+        ]),
+        Role::Fraudster => pool.push(TierAbility::Honeytrap),
+        _ => {}
+    }
+    pool
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

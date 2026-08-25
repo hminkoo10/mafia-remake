@@ -266,6 +266,20 @@ impl MafiaGame {
                 &mut lover_sacrifices,
             );
         }
+        // [자객] 마피아팀에 혼자 남은 스파이는 이번 밤 조사한 대상을 처형한다.
+        for target in self.assassin_execution_targets() {
+            self.resolve_mafia_team_attack(
+                Some(&target),
+                false,
+                true,
+                &protected_ids,
+                &enhanced_protection_ids,
+                &mut killed_players,
+                &mut killed_by_mafia_team_ids,
+                &mut soldier_blocks,
+                &mut lover_sacrifices,
+            );
+        }
         // [저격] 다음 밤 장전: 이번 밤 마피아팀 처형 선언이 있었지만 아무도
         // 죽이지 못했을 때만 장전된다 (성공하거나 선언이 없었으면 해제).
         self.snipe_armed = (mafia_target.is_some() || godfather_target.is_some())
@@ -397,6 +411,8 @@ impl MafiaGame {
         let paparazzi_results = self.resolve_paparazzi_issue(&role_reveals);
         let (fraudster_results, fraudster_contacts) =
             self.resolve_fraudster_results(&blocked_actor_ids, &role_reveals);
+        self.resolve_honeytrap_notices();
+        self.queue_autopsy_notices(&killed_players.clone());
         self.queue_wanted_notices();
         self.queue_directive_notices();
         let tier_ability_contacts = self.resolve_inside_man_contacts();
@@ -655,6 +671,7 @@ impl MafiaGame {
 
     fn clear_night_maps(&mut self) {
         self.concealed_kill_failure = false;
+        self.honeytrap_noticed.clear();
         self.mafia_targets.clear();
         self.mafia_display_targets.clear();
         self.doctor_targets.clear();
@@ -835,8 +852,10 @@ impl MafiaGame {
                 ),
             );
             rating_actor_ids.push(actor_id);
-            for holder in &holders {
+            for holder in holders.clone() {
                 role_reveals.push((0, actor_id, holder.user_id, queried_role));
+                // [미인계] 조회된 보유자는 공무원의 정체를 알게 된다.
+                self.note_honeytrap_use(actor_id, holder.user_id);
             }
         }
         for actor_id in rating_actor_ids {
@@ -2214,6 +2233,31 @@ impl MafiaGame {
             killed_players,
             killed_by_mafia_team_ids,
         );
+    }
+
+    /// [미인계] 이번 밤 시민팀 밤 행동 대상 맵을 훑어 보유자에게 알림을 쌓는다.
+    fn resolve_honeytrap_notices(&mut self) {
+        let mut pairs: Vec<(u64, u64)> = Vec::new();
+        for map in [
+            &self.police_targets,
+            &self.gangster_targets,
+            &self.detective_targets,
+            &self.doctor_targets,
+            &self.nurse_targets,
+            &self.nurse_prescription_targets,
+            &self.hypnotist_targets,
+            &self.reporter_targets,
+            &self.vigilante_targets,
+            &self.mercenary_targets,
+            &self.priest_targets,
+            &self.shaman_targets,
+            &self.terrorist_targets,
+        ] {
+            pairs.extend(map.iter().map(|(actor, target)| (*actor, *target)));
+        }
+        for (actor_id, target_id) in pairs {
+            self.note_honeytrap_use(actor_id, target_id);
+        }
     }
 
     /// [밀정] 두 번째 낮이 될 때(2일차 밤 결산) 살아있는 보유자가 자동으로

@@ -74,6 +74,8 @@ pub struct MafiaGame {
     pub pending_night_raid_reveals: Vec<Player>,
     /// [독살] 중독된 플레이어 → 사망하는 밤의 day_number.
     pub poisoned_death_days: HashMap<u64, u32>,
+    /// [미인계] 이번 밤 이미 알림을 보낸 (사용자, 보유자) 쌍.
+    pub honeytrap_noticed: HashSet<(u64, u64)>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -262,6 +264,7 @@ impl MafiaGame {
             snipe_armed: false,
             pending_night_raid_reveals: Vec::new(),
             poisoned_death_days: HashMap::new(),
+            honeytrap_noticed: HashSet::new(),
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -667,6 +670,104 @@ impl MafiaGame {
                 self.tier_abilities.insert(player.user_id, abilities);
             }
         }
+    }
+
+    /// [부검] 사망자가 생길 때마다 보유자(스파이)가 자동 조사한다.
+    pub(crate) fn queue_autopsy_notices(&mut self, dead: &[Player]) {
+        if dead.is_empty() {
+            return;
+        }
+        let holders = self
+            .players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && !self.is_frog(player)
+                    && self.has_tier_ability(player.user_id, TierAbility::Autopsy)
+            })
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        if holders.is_empty() {
+            return;
+        }
+        for victim in dead {
+            let Some(real) = self.get_player(victim.user_id) else {
+                continue;
+            };
+            let line = format!(
+                "[부검] {}님의 직업은 {}이었습니다.",
+                real.name,
+                real.role.value()
+            );
+            for holder_id in &holders {
+                if *holder_id == victim.user_id {
+                    continue;
+                }
+                self.pending_tier_ability_notices
+                    .push((*holder_id, line.clone()));
+            }
+        }
+    }
+
+    /// [자객] 마피아팀에 혼자 남은 스파이 보유자가 이번 밤 조사한 대상들.
+    pub(crate) fn assassin_execution_targets(&self) -> Vec<Player> {
+        let alive_team = self
+            .players
+            .iter()
+            .filter(|player| player.alive && self.is_mafia_team(player) && !self.is_frog(player))
+            .collect::<Vec<_>>();
+        if alive_team.len() != 1 {
+            return Vec::new();
+        }
+        let spy = alive_team[0];
+        if spy.role != Role::Spy || !self.has_tier_ability(spy.user_id, TierAbility::Assassin) {
+            return Vec::new();
+        }
+        self.spy_targets
+            .get(&spy.user_id)
+            .map(|targets| {
+                targets
+                    .iter()
+                    .filter_map(|target_id| self.get_player(*target_id).cloned())
+                    .filter(|target| target.alive)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// [미인계] 시민팀 능력이 보유자를 대상으로 하면 보유자가 사용자의 직업을
+    /// 알게 된다. 요원은 발동하지 않고, 같은 (사용자, 보유자) 쌍은 밤마다 한
+    /// 번만 알린다.
+    pub(crate) fn note_honeytrap_use(&mut self, actor_id: u64, target_id: u64) {
+        if actor_id == target_id {
+            return;
+        }
+        let Some(actor) = self.get_player(actor_id).cloned() else {
+            return;
+        };
+        let Some(target) = self.get_player(target_id).cloned() else {
+            return;
+        };
+        if !target.alive
+            || self.is_frog(&target)
+            || !self.has_tier_ability(target_id, TierAbility::Honeytrap)
+        {
+            return;
+        }
+        if !self.is_citizen_team(&actor) || actor.role == Role::Agent {
+            return;
+        }
+        if !self.honeytrap_noticed.insert((actor_id, target_id)) {
+            return;
+        }
+        self.pending_tier_ability_notices.push((
+            target_id,
+            format!(
+                "[미인계] 당신에게 능력을 사용한 {}님의 직업은 {}입니다.",
+                actor.name,
+                actor.role.value()
+            ),
+        ));
     }
 
     /// [승부수] 살아있는 마피아 본대가 보유자 한 명뿐인 상태인가.
@@ -2306,6 +2407,103 @@ mod tests {
         assert_eq!(result.tier_ability_contacts, vec![2]);
         assert!(game.spy_contacted.contains(&2));
         assert!(result.tier_ability_results[&2].contains("[밀정]"));
+    }
+
+    /// [부검] 사망자가 생기면 스파이 보유자가 실제 직업을 자동으로 안다.
+    #[test]
+    fn autopsy_reports_the_dead_players_real_role() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Spy]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Spy),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(2, vec![TierAbility::Autopsy]);
+        game.mafia_targets.insert(1, 3);
+
+        let result = game.resolve_night().unwrap();
+        assert!(
+            result.tier_ability_results[&2].contains("[부검] P3님의 직업은 의사이었습니다."),
+            "{result:?}"
+        );
+    }
+
+    /// [자객] 마피아팀에 혼자 남은 스파이는 첩보한 대상을 처형한다.
+    #[test]
+    fn assassin_kills_the_investigated_target_when_alone() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Spy]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Spy),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(2, vec![TierAbility::Assassin]);
+        game.spy_targets.entry(2).or_default().push(3);
+
+        // 마피아가 살아있으면 발동하지 않는다.
+        let result = game.resolve_night().unwrap();
+        assert!(game.get_player(3).unwrap().alive, "{result:?}");
+
+        // 혼자 남으면 조사 대상을 처형한다.
+        game.get_player_mut(1).unwrap().alive = false;
+        game.phase = Phase::Night;
+        game.day_number = 2;
+        game.spy_targets.entry(2).or_default().push(4);
+        game.resolve_night().unwrap();
+        assert!(!game.get_player(4).unwrap().alive);
+    }
+
+    /// [미인계] 시민팀 능력의 대상이 되면 사용자의 직업이 보유자에게 알려진다.
+    /// 요원과 마피아팀 사용자는 발동하지 않는다.
+    #[test]
+    fn honeytrap_reveals_the_citizen_ability_user() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 1, 1, vec![Role::Spy]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Spy),
+            (3, Role::Police),
+            (4, Role::Doctor),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(2, vec![TierAbility::Honeytrap]);
+        game.police_targets.insert(3, 2);
+        game.doctor_targets.insert(4, 2);
+
+        let result = game.resolve_night().unwrap();
+        let notice = &result.tier_ability_results[&2];
+        assert!(notice.contains("P3님의 직업은 경찰입니다"), "{notice}");
+        assert!(notice.contains("P4님의 직업은 의사입니다"), "{notice}");
     }
 
     /// [수배] 첫 낮이 될 때 접선하지 않은 마피아팀 명단이 보유자에게 오고,

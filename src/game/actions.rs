@@ -40,6 +40,8 @@ impl MafiaGame {
             .insert(actor_id, (target_id, self.day_number));
         self.hacker_proxy_targets.insert(actor_id, target_id);
         self.hacker_used_ids.insert(actor_id);
+        // [미인계] 해킹 대상이 보유자면 해커의 정체가 알려진다.
+        self.note_honeytrap_use(actor_id, target_id);
         self.mark_rating_action(actor_id);
         self.record_rating_event(actor_id, 2, "해킹 실행");
         Ok(format!("해킹 대상: {}", target.name))
@@ -68,6 +70,8 @@ impl MafiaGame {
             bail!("자경단원은 자기 자신을 조사할 수 없습니다.");
         }
         self.vigilante_investigation_used_ids.insert(actor_id);
+        // [미인계] 숙청 조사 대상이 보유자면 자경단원의 정체가 알려진다.
+        self.note_honeytrap_use(actor_id, target_id);
         self.mark_rating_action(actor_id);
         // 경찰 계열 공통 규칙: 조사 결과는 제출 즉시 나오고, 조사는 반복할 수 없다
         // (숙청 조사는 원래 게임당 1회). 변장 사기꾼에게 속은 알림은 밤 시작에 전달한다.
@@ -128,6 +132,9 @@ impl MafiaGame {
         let second = self.require_alive(second_target_id)?.clone();
         self.psychologist_used_days
             .insert(actor_id, self.day_number);
+        // [미인계] 관찰 대상이 보유자면 심리학자의 정체가 알려진다.
+        self.note_honeytrap_use(actor_id, first_target_id);
+        self.note_honeytrap_use(actor_id, second_target_id);
         self.mark_rating_action(actor_id);
         self.record_rating_event(actor_id, 2, "심리학자 관찰 실행");
         let relation = if self.team_key(&first) == self.team_key(&second) {

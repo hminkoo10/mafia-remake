@@ -323,6 +323,13 @@ impl MafiaGame {
                 }
             }
         }
+        // [부검] 처형·지목 반격 사망자도 자동 조사된다 (다음 밤 결산 때 전달).
+        let autopsy_dead = executed
+            .iter()
+            .cloned()
+            .chain(extra_killed.iter().cloned())
+            .collect::<Vec<_>>();
+        self.queue_autopsy_notices(&autopsy_dead);
         self.terrorist_execution_targets.clear();
         self.ensure_fanatic_reincarnation();
         self.advance_to_next_night();
