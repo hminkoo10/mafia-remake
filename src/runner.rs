@@ -1611,6 +1611,12 @@ pub fn night_targets(game: &MafiaGame, actor: &Player) -> Vec<Player> {
             .into_iter()
             .cloned()
             .collect(),
+        // [조문] 훔친 능력이 없는 도둑의 밤 대상은 성불 전 사망자다.
+        Role::Thief => game
+            .unpurified_dead_players()
+            .into_iter()
+            .cloned()
+            .collect(),
         Role::CultLeader => alive
             .into_iter()
             .filter(|player| player.user_id != actor.user_id && !game.is_cult_team(player))

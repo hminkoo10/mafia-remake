@@ -840,6 +840,50 @@ impl MafiaGame {
         Ok(format!("추종 대상: {}", selected.name))
     }
 
+    /// [조문] 밤에 성불하지 않은 사망자의 직업을 도벽한다.
+    fn submit_condolence_steal(
+        &mut self,
+        actor: &Player,
+        target_id: Option<u64>,
+    ) -> Result<String> {
+        let actor_id = actor.user_id;
+        if !self.has_tier_ability(actor_id, crate::model::TierAbility::Condolence) {
+            bail!("오늘 밤 사용할 수 있는 도벽 능력이 없습니다.");
+        }
+        let Some(target_id) = target_id else {
+            bail!("조문 대상을 선택해야 합니다.");
+        };
+        let Some(target) = self.get_player(target_id).cloned() else {
+            bail!("대상을 찾을 수 없습니다.");
+        };
+        if target.alive {
+            bail!("조문은 사망자에게만 사용할 수 있습니다.");
+        }
+        if self.purified_dead_ids.contains(&target_id) {
+            bail!("성불한 사망자는 조문할 수 없습니다.");
+        }
+        if self.thief_used_days.get(&actor_id) == Some(&self.day_number) {
+            bail!("오늘은 이미 도벽을 사용했습니다.");
+        }
+        self.thief_used_days.insert(actor_id, self.day_number);
+        self.thief_stolen_roles.insert(actor_id, target.role);
+        self.condolence_stolen_this_night.insert(actor_id);
+        self.record_rating_event(actor_id, 3, "조문 도벽 실행");
+        let mut lines = vec![format!(
+            "[조문] 사망한 {}님의 직업 능력을 도벽했습니다.",
+            target.name
+        )];
+        lines.push(format!(
+            "다음 밤까지 **{}** 능력을 사용할 수 있습니다.",
+            target.role.value()
+        ));
+        if self.is_mafia_team(&target) && self.thief_contacted.insert(actor_id) {
+            self.record_rating_event(actor_id, 2, "조문으로 마피아팀 접선");
+            lines.push("[교련] 마피아 직업을 훔쳐 마피아팀과 접선했습니다.".to_string());
+        }
+        Ok(lines.join("\n"))
+    }
+
     fn submit_stolen_night_action(
         &mut self,
         actor: &Player,
@@ -847,7 +891,7 @@ impl MafiaGame {
     ) -> Result<String> {
         let actor_id = actor.user_id;
         let Some(stolen_role) = self.thief_night_role(actor) else {
-            bail!("오늘 밤 사용할 수 있는 도벽 능력이 없습니다.");
+            return self.submit_condolence_steal(actor, target_id);
         };
         let prefix = format!("[도벽: {}] ", stolen_role.value());
         match stolen_role {

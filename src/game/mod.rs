@@ -78,6 +78,10 @@ pub struct MafiaGame {
     pub honeytrap_noticed: HashSet<(u64, u64)>,
     /// [데뷔] 투표권이 한 표 깎인 플레이어.
     pub debut_vote_penalty_ids: HashSet<u64>,
+    /// [후계자] 등 밤 결산에 채널 접근을 부여해야 하는 접선자 대기열.
+    pub pending_tier_ability_contacts: Vec<u64>,
+    /// [조문] 이번 밤에 도벽한 도둑 — 이번 밤 정리에서 훔친 직업을 지우지 않는다.
+    pub condolence_stolen_this_night: HashSet<u64>,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -268,6 +272,8 @@ impl MafiaGame {
             poisoned_death_days: HashMap::new(),
             honeytrap_noticed: HashSet::new(),
             debut_vote_penalty_ids: HashSet::new(),
+            pending_tier_ability_contacts: Vec::new(),
+            condolence_stolen_this_night: HashSet::new(),
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -771,6 +777,40 @@ impl MafiaGame {
                 actor.role.value()
             ),
         ));
+    }
+
+    /// [후계자] 마피아 본대가 전멸하면 보유 도둑이 마피아가 된다.
+    pub(crate) fn ensure_thief_succession(&mut self) -> Vec<u64> {
+        if self
+            .players
+            .iter()
+            .any(|player| player.alive && player.role == Role::Mafia)
+        {
+            return Vec::new();
+        }
+        let ids = self
+            .players
+            .iter()
+            .filter(|player| {
+                player.alive
+                    && player.role == Role::Thief
+                    && !self.is_frog(player)
+                    && self.has_tier_ability(player.user_id, TierAbility::Successor)
+            })
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>();
+        for id in &ids {
+            if let Some(player) = self.get_player_mut(*id) {
+                player.role = Role::Mafia;
+            }
+            self.thief_contacted.insert(*id);
+            self.pending_tier_ability_notices.push((
+                *id,
+                "[후계자] 마피아의 능력을 이어받아 마피아가 되었습니다.".to_string(),
+            ));
+            self.pending_tier_ability_contacts.push(*id);
+        }
+        ids
     }
 
     /// [승부수] 살아있는 마피아 본대가 보유자 한 명뿐인 상태인가.
@@ -2556,6 +2596,90 @@ mod tests {
             "{notice}"
         );
         assert!(notice.contains("[데뷔]"), "{notice}");
+    }
+
+    /// [후계자] 마피아 본대가 전멸하면 보유 도둑이 마피아가 된다.
+    #[test]
+    fn successor_thief_becomes_mafia_when_all_mafia_die() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Thief]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Thief),
+            (3, Role::Vigilante),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(2, vec![TierAbility::Successor]);
+        game.vigilante_targets.insert(3, 1);
+        game.vigilante_known_enemy_ids
+            .entry(3)
+            .or_default()
+            .insert(1);
+
+        let result = game.resolve_night().unwrap();
+        assert!(!game.get_player(1).unwrap().alive, "{result:?}");
+        assert_eq!(game.get_player(2).unwrap().role, Role::Mafia);
+        assert!(result.tier_ability_contacts.contains(&2));
+        assert!(result.tier_ability_results[&2].contains("[후계자]"));
+        // 마피아가 이어졌으니 시민 승리가 아니다.
+        assert_eq!(game.winner(), None);
+    }
+
+    /// [조문] 훔친 능력이 없는 도둑이 밤에 사망자의 직업을 도벽하고, 훔친
+    /// 능력은 다음 밤까지 유지된다.
+    #[test]
+    fn condolence_steals_from_the_dead_at_night() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Thief]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Thief),
+            (3, Role::Doctor),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(2, vec![TierAbility::Condolence]);
+        game.get_player_mut(3).unwrap().alive = false;
+
+        let thief = game.get_player(2).unwrap().clone();
+        assert!(
+            game.night_action_actors()
+                .iter()
+                .any(|actor| actor.user_id == 2)
+        );
+        // 산 사람은 조문할 수 없다.
+        assert!(game.submit_night_action(2, Some(4)).is_err());
+        let message = game.submit_night_action(2, Some(3)).unwrap();
+        assert!(message.contains("[조문]"), "{message}");
+        assert_eq!(game.thief_stolen_roles.get(&2), Some(&Role::Doctor));
+
+        // 이번 밤 결산을 지나도 훔친 능력이 남고, 다음 밤 의사 행동을 쓸 수 있다.
+        game.resolve_night().unwrap();
+        assert_eq!(game.thief_stolen_roles.get(&2), Some(&Role::Doctor));
+        assert_eq!(game.thief_night_role(&thief), Some(Role::Doctor));
+
+        // 그다음 밤 결산에서는 정리된다.
+        game.phase = Phase::Night;
+        game.day_number = 2;
+        game.resolve_night().unwrap();
+        assert!(game.thief_stolen_roles.get(&2).is_none());
     }
 
     /// [수배] 첫 낮이 될 때 접선하지 않은 마피아팀 명단이 보유자에게 오고,

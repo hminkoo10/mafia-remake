@@ -226,7 +226,12 @@ impl MafiaGame {
                 alive.len() > 1 && !self.inspector_used_ids.contains(&player.user_id)
             }
             Some(_) => alive.len() > 1,
-            None => false,
+            // [조문] 훔친 능력이 없어도 사망자 도벽은 할 수 있다.
+            None => {
+                self.has_tier_ability(player.user_id, crate::model::TierAbility::Condolence)
+                    && !unpurified_dead.is_empty()
+                    && self.thief_used_days.get(&player.user_id) != Some(&self.day_number)
+            }
         }
     }
 
@@ -266,7 +271,9 @@ impl MafiaGame {
             Some(Role::Gangster) => self.gangster_targets.contains_key(&actor.user_id),
             Some(Role::CultLeader) => self.cult_targets.contains_key(&actor.user_id),
             Some(Role::Fanatic) => self.fanatic_targets.contains_key(&actor.user_id),
-            _ => true,
+            Some(_) => true,
+            // [조문] 오늘 도벽을 이미 썼으면 제출 완료로 본다.
+            None => self.thief_used_days.get(&actor.user_id) == Some(&self.day_number),
         }
     }
 

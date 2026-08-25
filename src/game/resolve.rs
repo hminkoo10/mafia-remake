@@ -407,6 +407,7 @@ impl MafiaGame {
                 fanatic_inherits.push(id);
             }
         }
+        self.ensure_thief_succession();
 
         let paparazzi_results = self.resolve_paparazzi_issue(&role_reveals);
         let (fraudster_results, fraudster_contacts) =
@@ -415,7 +416,8 @@ impl MafiaGame {
         self.queue_autopsy_notices(&killed_players.clone());
         self.queue_wanted_notices();
         self.queue_directive_notices();
-        let tier_ability_contacts = self.resolve_inside_man_contacts();
+        let mut tier_ability_contacts = self.resolve_inside_man_contacts();
+        tier_ability_contacts.extend(std::mem::take(&mut self.pending_tier_ability_contacts));
         let soldier_watch_results = self.drain_soldier_watch_notices();
         let tier_ability_results = self.drain_tier_ability_notices();
         let result = NightResult {
@@ -703,7 +705,11 @@ impl MafiaGame {
         self.terrorist_action_submitted.clear();
         self.cult_targets.clear();
         self.fanatic_targets.clear();
-        self.thief_stolen_roles.clear();
+        {
+            // [조문] 이번 밤에 도벽한 직업은 다음 밤까지 살아있어야 한다.
+            let keep = std::mem::take(&mut self.condolence_stolen_this_night);
+            self.thief_stolen_roles.retain(|id, _| keep.contains(id));
+        }
         self.cult_bells_this_night = 0;
         self.day_votes.clear();
         self.confirm_votes.clear();

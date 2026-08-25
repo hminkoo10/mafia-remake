@@ -414,6 +414,10 @@ pub enum TierAbility {
     Allure,
     /// 4티어 마담: 첫날 시민팀을 유혹하면 그 대상의 투표권 한 표 박탈
     Debut,
+    /// 4티어 도둑: 마피아 본대가 전멸하면 본인이 마피아가 된다
+    Successor,
+    /// 4티어 도둑: 밤에 사망자의 직업을 도벽할 수 있다
+    Condolence,
 }
 
 impl TierAbility {
@@ -442,6 +446,8 @@ impl TierAbility {
             Self::Honeytrap => "미인계",
             Self::Allure => "현혹",
             Self::Debut => "데뷔",
+            Self::Successor => "후계자",
+            Self::Condolence => "조문",
         }
     }
 
@@ -507,6 +513,12 @@ impl TierAbility {
             }
             Self::Allure => "유혹한 대상이 시민팀이면 그 대상의 직업을 알아냅니다.",
             Self::Debut => "첫날 시민팀을 유혹하면 그 대상의 투표권을 한 표 박탈합니다.",
+            Self::Successor => {
+                "마피아가 모두 사망하면 마피아의 능력을 이어받아 본인이 마피아가 됩니다."
+            }
+            Self::Condolence => {
+                "밤에 성불하지 않은 사망자의 직업을 도벽할 수 있습니다. 훔친 능력은 다음 밤까지 사용할 수 있습니다."
+            }
         }
     }
 }
@@ -565,6 +577,7 @@ pub fn tier4_pool(role: Role) -> Vec<TierAbility> {
         ]),
         Role::Fraudster => pool.push(TierAbility::Honeytrap),
         Role::Madam => pool.extend([TierAbility::Allure, TierAbility::Debut]),
+        Role::Thief => pool.extend([TierAbility::Successor, TierAbility::Condolence]),
         _ => {}
     }
     pool

@@ -332,6 +332,7 @@ impl MafiaGame {
         self.queue_autopsy_notices(&autopsy_dead);
         self.terrorist_execution_targets.clear();
         self.ensure_fanatic_reincarnation();
+        self.ensure_thief_succession();
         self.advance_to_next_night();
         Ok(ConfirmVoteResult {
             executed,
