@@ -390,6 +390,8 @@ pub enum TierAbility {
     Directive,
     /// 4티어 마피아 본대: 첫 밤 동안 조사 판정이 의사로 나온다
     Hypocrisy,
+    /// 4티어 마피아 본대: 처형 실패가 문구 없는 '조용한 밤'이 된다
+    Concealment,
 }
 
 impl TierAbility {
@@ -406,6 +408,7 @@ impl TierAbility {
             Self::Wanted => "수배",
             Self::Directive => "지령",
             Self::Hypocrisy => "위선",
+            Self::Concealment => "은폐",
         }
     }
 
@@ -441,6 +444,9 @@ impl TierAbility {
                 "첫 번째 낮이 될 때 지령을 받습니다. 마피아·청부업자는 경찰 계열 생존자 한 명이 누구인지, 그 외 보조 직업과 교주는 정체가 밝혀지지 않은 시민팀 한 명의 직업을 알아냅니다."
             }
             Self::Hypocrisy => "첫 번째 밤 동안 시민팀의 조사에 의사 직업으로 판정됩니다.",
+            Self::Concealment => {
+                "마피아팀의 처형이 실패하면 치료·방탄 문구가 나오지 않는 '조용한 밤'으로 진행됩니다."
+            }
         }
     }
 }
@@ -456,6 +462,7 @@ pub const TIER4_MAFIA_ABILITIES: &[TierAbility] = &[
     TierAbility::Wanted,
     TierAbility::Directive,
     TierAbility::Hypocrisy,
+    TierAbility::Concealment,
 ];
 /// 보조 마피아(마피아 본대가 아닌 마피아팀)의 4티어 풀.
 pub const TIER4_MAFIA_SUPPORT_ABILITIES: &[TierAbility] = &[
@@ -570,6 +577,10 @@ pub struct NightResult {
     pub fraudster_contacts: Vec<u64>,
     /// [불침번] 군인이 막아낸 능력 알림.
     pub soldier_watch_results: std::collections::HashMap<u64, String>,
+    /// [은폐] 마피아팀 처형 실패가 조용한 밤으로 가려졌는지. 치료·방탄
+    /// 공개 문구를 숨긴다.
+    #[serde(default)]
+    pub quiet_night: bool,
     /// 티어 능력(무법·야습·수습) 활약 알림.
     pub tier_ability_results: std::collections::HashMap<u64, String>,
     /// 밤에 사망한 유언 보유자의 (이름, 유언) — 아침에 전체 공개.

@@ -932,7 +932,8 @@ pub async fn run_night(
         && result.lover_sacrifices.is_empty();
     apply_death_side_effects(ctx, data, running, &result.killed_players).await;
     if result.killed_players.is_empty() {
-        if doctor_saved {
+        // [은폐] 조용한 밤: 치료로 살아났다는 문구 대신 아무 일도 없던 것처럼 보인다.
+        if doctor_saved && !result.quiet_night {
             if let Some(saved_player) = &result.protected {
                 send_game_embed(
                     ctx,
@@ -1072,6 +1073,7 @@ pub async fn run_night(
     }
     if !result.killed_players.is_empty()
         && doctor_saved
+        && !result.quiet_night
         && let Some(saved_player) = &result.protected
     {
         send_game_embed(

@@ -412,6 +412,7 @@ impl MafiaGame {
             fraudster_results,
             fraudster_contacts,
             soldier_watch_results,
+            quiet_night: self.concealed_kill_failure,
             tier_ability_results,
             published_wills,
             spy_results,
@@ -645,6 +646,7 @@ impl MafiaGame {
     }
 
     fn clear_night_maps(&mut self) {
+        self.concealed_kill_failure = false;
         self.mafia_targets.clear();
         self.mafia_display_targets.clear();
         self.doctor_targets.clear();
@@ -2151,9 +2153,11 @@ impl MafiaGame {
         }
         if !pierce_protection {
             if enhanced_protection_ids.contains(&target.user_id) {
+                self.mark_concealed_kill_failure(&target);
                 return;
             }
             if !ignore_doctor && protected_ids.contains(&target.user_id) {
+                self.mark_concealed_kill_failure(&target);
                 return;
             }
         }
@@ -2162,6 +2166,10 @@ impl MafiaGame {
             && !self.soldier_bulletproof_used.contains(&target.user_id)
         {
             self.soldier_bulletproof_used.insert(target.user_id);
+            // [은폐] 방탄은 소모되지만 공개 문구와 정체 공개가 사라진다.
+            if self.mark_concealed_kill_failure(&target) {
+                return;
+            }
             self.publicly_revealed_ids.insert(target.user_id);
             soldier_blocks.push(target);
             return;
@@ -2172,6 +2180,27 @@ impl MafiaGame {
             killed_players,
             killed_by_mafia_team_ids,
         );
+    }
+
+    /// [은폐] 처형 실패를 조용한 밤으로 가린다. 보유자가 있으면 true를 돌려주고
+    /// 보유자들에게만 실패 사실을 알린다.
+    fn mark_concealed_kill_failure(&mut self, target: &Player) -> bool {
+        let holders = self.mafia_tier_ability_holders(TierAbility::Concealment);
+        if holders.is_empty() {
+            return false;
+        }
+        if !self.concealed_kill_failure {
+            self.concealed_kill_failure = true;
+        }
+        let line = format!(
+            "[은폐] {}님 처형 실패를 조용한 밤으로 가렸습니다.",
+            target.name
+        );
+        for holder_id in holders {
+            self.pending_tier_ability_notices
+                .push((holder_id, line.clone()));
+        }
+        true
     }
 
     fn kill_player(

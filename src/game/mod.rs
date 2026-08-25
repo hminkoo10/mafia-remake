@@ -66,6 +66,8 @@ pub struct MafiaGame {
     pub cleanup_masked_ids: HashSet<u64>,
     /// [확성]이 사용된 밤(day_number). 밤마다 보유자 전체가 1회만 쓸 수 있다.
     pub loudspeaker_used_days: HashSet<u32>,
+    /// [은폐] 이번 밤 마피아팀 처형 실패가 조용한 밤으로 가려졌는지.
+    pub concealed_kill_failure: bool,
     pub vigilante_known_enemy_ids: HashMap<u64, HashSet<u64>>,
     pub vigilante_investigation_used_ids: HashSet<u64>,
     pub vigilante_execution_used_ids: HashSet<u64>,
@@ -250,6 +252,7 @@ impl MafiaGame {
             pending_tier_ability_notices: Vec::new(),
             cleanup_masked_ids: HashSet::new(),
             loudspeaker_used_days: HashSet::new(),
+            concealed_kill_failure: false,
             vigilante_known_enemy_ids: HashMap::new(),
             vigilante_investigation_used_ids: HashSet::new(),
             vigilante_execution_used_ids: HashSet::new(),
@@ -2251,6 +2254,71 @@ mod tests {
         game.day_number = 2;
         assert!(game.is_police_detected_mafia_team(&mafia));
         assert_eq!(game.visible_role(&mafia), Role::Mafia);
+    }
+
+    /// [은폐] 처형 실패(치료·방탄)가 조용한 밤으로 가려지고, 군인 방탄은
+    /// 소모되지만 공개 문구·정체 공개가 사라진다.
+    #[test]
+    fn concealment_hides_failed_kills_as_a_quiet_night() {
+        // 치료 실패: quiet_night가 서고 보유자에게만 알림이 간다.
+        let mut game = MafiaGame::new(basic_players(), 1, 1, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Doctor),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Concealment);
+        game.mafia_targets.insert(1, 3);
+        game.doctor_targets.insert(2, 3);
+
+        let result = game.resolve_night().unwrap();
+        assert!(result.quiet_night);
+        assert!(game.get_player(3).unwrap().alive);
+        assert!(result.tier_ability_results[&1].contains("[은폐]"));
+
+        // 군인 방탄: 방탄은 소모되지만 공개 목록과 정체 공개가 비어 있다.
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Soldier),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, TierAbility::Concealment);
+        game.mafia_targets.insert(1, 2);
+
+        let result = game.resolve_night().unwrap();
+        assert!(result.quiet_night);
+        assert!(result.soldier_blocks.is_empty());
+        assert!(game.get_player(2).unwrap().alive);
+        assert!(game.soldier_bulletproof_used.contains(&2));
+        assert!(!game.publicly_revealed_ids.contains(&2));
+
+        // 보유자가 없으면 기존대로 공개된다.
+        let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Soldier),
+            (3, Role::Citizen),
+            (4, Role::Citizen),
+            (5, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.mafia_targets.insert(1, 2);
+        let result = game.resolve_night().unwrap();
+        assert!(!result.quiet_night);
+        assert_eq!(result.soldier_blocks.len(), 1);
     }
 
     /// [확성]은 밤마다 보유자 전체에서 1회뿐이다. 먼저 쓰면 나머지는 그 밤에
