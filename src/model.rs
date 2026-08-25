@@ -400,6 +400,8 @@ pub enum TierAbility {
     AllIn,
     /// 4티어 마피아 본대: 마피아팀이 아닌 희생자를 처형 후 성불
     Exorcism,
+    /// 4티어 마피아팀·교주: 절반 이하 + 2번째 밤 생존 시 소속 팀 즉시 승리
+    TimeLimit,
 }
 
 impl TierAbility {
@@ -421,6 +423,7 @@ impl TierAbility {
             Self::Poison => "독살",
             Self::AllIn => "승부수",
             Self::Exorcism => "퇴마",
+            Self::TimeLimit => "시한부",
         }
     }
 
@@ -473,6 +476,9 @@ impl TierAbility {
             Self::Exorcism => {
                 "마피아팀이 아닌 플레이어를 처형하면 그 희생자를 성불시켜 영매가 접촉할 수 없게 만듭니다."
             }
+            Self::TimeLimit => {
+                "생존자가 절반 이하로 줄어든 상태에서 2번째 밤 이후까지 살아남으면 자신이 속한 팀이 즉시 승리합니다. 포교당한 보유자는 교주팀 승리가 되고, 도주로 살아남은 상태에서는 발동하지 않습니다."
+            }
         }
     }
 }
@@ -493,6 +499,7 @@ pub const TIER4_MAFIA_ABILITIES: &[TierAbility] = &[
     TierAbility::Poison,
     TierAbility::AllIn,
     TierAbility::Exorcism,
+    TierAbility::TimeLimit,
 ];
 /// 보조 마피아(마피아 본대가 아닌 마피아팀)의 4티어 풀.
 pub const TIER4_MAFIA_SUPPORT_ABILITIES: &[TierAbility] = &[
@@ -500,6 +507,7 @@ pub const TIER4_MAFIA_SUPPORT_ABILITIES: &[TierAbility] = &[
     TierAbility::LastWill,
     TierAbility::Escape,
     TierAbility::Directive,
+    TierAbility::TimeLimit,
 ];
 pub const TIER4_CITIZEN_ABILITIES: &[TierAbility] =
     &[TierAbility::LastWill, TierAbility::Loudspeaker];
@@ -510,6 +518,7 @@ pub fn tier4_pool(role: Role) -> Vec<TierAbility> {
     if role == Role::CultLeader {
         let mut pool = TIER4_CITIZEN_ABILITIES.to_vec();
         pool.push(TierAbility::Directive);
+        pool.push(TierAbility::TimeLimit);
         return pool;
     }
     if !role.is_mafia_team() {

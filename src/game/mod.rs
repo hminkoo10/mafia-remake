@@ -992,6 +992,9 @@ impl MafiaGame {
         if let Some(winner) = self.prophet_winner() {
             return Some(winner);
         }
+        if let Some(winner) = self.time_limit_winner() {
+            return Some(winner);
+        }
         let alive = self.alive_players();
         let mafia_alive = alive
             .iter()
@@ -1023,6 +1026,32 @@ impl MafiaGame {
             return Some(Winner::Mafia);
         }
         None
+    }
+
+    /// [시한부] 생존자가 절반 이하 + 2번째 밤 이후에 살아있는 보유자가 있으면
+    /// 그 보유자의 팀이 즉시 승리한다. 도주로 살아남은 상태(사망 판정)나
+    /// 개구리 상태에서는 발동하지 않는다.
+    fn time_limit_winner(&self) -> Option<Winner> {
+        let reached_second_night =
+            self.day_number > 2 || (self.day_number == 2 && self.phase == Phase::Night);
+        if !reached_second_night {
+            return None;
+        }
+        let alive = self.alive_players();
+        if alive.len() * 2 > self.players.len() {
+            return None;
+        }
+        let holder = alive.iter().find(|player| {
+            self.has_tier_ability(player.user_id, TierAbility::TimeLimit)
+                && !self.is_frog(player)
+                && !self.escaped_on_day.contains_key(&player.user_id)
+                && (self.is_mafia_team(player) || self.is_cult_team(player))
+        })?;
+        if self.is_cult_team(holder) {
+            Some(Winner::Cult)
+        } else {
+            Some(Winner::Mafia)
+        }
     }
 
     pub fn winning_prophet(&self) -> Option<&Player> {
@@ -2193,6 +2222,54 @@ mod tests {
         for (role, counts) in &tier4_by_role {
             check(role.value(), counts, &tier4_pool(*role));
         }
+    }
+
+    /// [시한부] 절반 이하 + 2번째 밤 생존 시 보유자의 팀이 즉시 승리한다.
+    /// 포교된 보유자는 교주팀 승리가 된다.
+    #[test]
+    fn time_limit_wins_for_the_holders_team_at_half_survivors() {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 2, 0, 0, vec![Role::Spy]).unwrap();
+        for (id, role) in [
+            (1, Role::Mafia),
+            (2, Role::Mafia),
+            (3, Role::Spy),
+            (4, Role::CultLeader),
+            (5, Role::Citizen),
+            (6, Role::Citizen),
+            (7, Role::Citizen),
+            (8, Role::Citizen),
+        ] {
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities.insert(1, vec![TierAbility::TimeLimit]);
+
+        // 아직 첫 밤: 발동하지 않는다.
+        assert_eq!(game.winner(), None);
+
+        // 2번째 밤이지만 생존자가 절반보다 많으면 발동하지 않는다.
+        game.day_number = 2;
+        game.phase = Phase::Night;
+        for id in [5, 6, 7] {
+            game.get_player_mut(id).unwrap().alive = false;
+        }
+        assert_eq!(game.winner(), None);
+
+        // 절반(4명) 이하가 되면 마피아팀 승리.
+        game.get_player_mut(8).unwrap().alive = false;
+        assert_eq!(game.winner(), Some(Winner::Mafia));
+
+        // 보유자가 죽으면 발동하지 않는다.
+        game.get_player_mut(1).unwrap().alive = false;
+        assert_ne!(game.winner(), Some(Winner::Mafia));
+
+        // 포교된 보조 보유자는 교주팀 승리.
+        game.tier_abilities.insert(3, vec![TierAbility::TimeLimit]);
+        game.culted_ids.insert(3);
+        assert_eq!(game.winner(), Some(Winner::Cult));
     }
 
     /// [수배] 첫 낮이 될 때 접선하지 않은 마피아팀 명단이 보유자에게 오고,
