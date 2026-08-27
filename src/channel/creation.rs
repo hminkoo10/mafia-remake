@@ -46,13 +46,35 @@ pub async fn apply_slowmode_bypass_overwrites(
             slowmode_bypass_holder_ids(&running_read.game),
         )
     };
-    for user_id in holder_ids {
+    for user_id in &holder_ids {
         let overwrite = serenity::PermissionOverwrite {
             allow: serenity::Permissions::MANAGE_MESSAGES,
             deny: serenity::Permissions::empty(),
-            kind: serenity::PermissionOverwriteType::Member(serenity::UserId::new(user_id)),
+            kind: serenity::PermissionOverwriteType::Member(serenity::UserId::new(*user_id)),
         };
         apply_permission_if_changed(ctx, running, channel_id, overwrite).await;
+    }
+    // 익명 게임은 채팅이 개인 익명 입력 채널에서 이뤄지므로, 게임 채널
+    // 오버라이트만으로는 [달변]이 아무 효과가 없다. 보유자의 입력 채널
+    // 슬로우모드를 0으로 풀어준다.
+    let holder_input_channels = {
+        let running_read = running.read().await;
+        if !running_read.anonymous_enabled {
+            Vec::new()
+        } else {
+            holder_ids
+                .iter()
+                .filter_map(|user_id| {
+                    running_read
+                        .anonymous_input_channel_ids
+                        .get(user_id)
+                        .copied()
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+    for input_channel_id in holder_input_channels {
+        set_one_channel_slowmode(ctx, running, input_channel_id, 0).await;
     }
 }
 
