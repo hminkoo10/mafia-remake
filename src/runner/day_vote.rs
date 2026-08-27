@@ -55,6 +55,22 @@ pub async fn run_day(
     upsert_game_status(ctx, running).await;
     // 밤 동안의 [확성] 개인 허용을 원상 복구한 뒤 낮 채팅을 연다.
     restore_member_game_channel_chat(ctx, running).await;
+    // 마녀 저주(개구리) 차단을 낮 채팅이 열리기 전에 다시 확실히 건다.
+    // 위 복구가 저주 차단과 같은 멤버 오버라이트를 되돌릴 수 있고, 차단이
+    // 빠지면 개구리의 메시지가 잠깐 보였다가 지워지는 흐름이 된다.
+    let frogs = {
+        let running_read = running.read().await;
+        running_read
+            .game
+            .players
+            .iter()
+            .filter(|player| running_read.game.is_frog(player))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for player in &frogs {
+        deny_frog_game_channel_chat(ctx, running, player).await;
+    }
     set_game_channel_chat(ctx, data, running, true).await;
     set_channel_slowmode(ctx, running, config.chat_slowmode_seconds).await;
     sync_private_role_chat_permissions(ctx, data, running).await;
