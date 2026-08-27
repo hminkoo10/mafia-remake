@@ -341,6 +341,80 @@ fn agent_directive_ignores_uncontacted_mafia_specials() {
     );
 }
 
+/// 마녀 저주는 걸린 밤과 다음 낮 동안 유지되고, 다음 밤이 시작될 때
+/// (러너의 restore_frogs) 풀린다. 풀린 뒤에는 밤 행동도 정상으로 돌아온다.
+#[test]
+fn witch_curse_lifts_at_the_start_of_the_next_night() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 1, vec![Role::Witch]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Witch),
+        (3, Role::Police),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+
+    // 밤 시작 (러너 순서): 이전 밤 개구리가 없으니 복구 대상도 없다.
+    assert!(game.restore_frogs().is_empty());
+
+    // 경찰이 조사를 제출한 뒤 마녀 저주가 적용된다 (밤 중 타이머 이벤트).
+    game.submit_night_action(3, Some(4)).unwrap();
+    game.witch_targets.insert(2, 3);
+    let (cursed, _) = game.apply_witch_curses(&HashSet::new());
+    assert_eq!(
+        cursed
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>(),
+        vec![3]
+    );
+    let police = game.get_player(3).unwrap().clone();
+    assert!(game.is_frog(&police));
+    // 저주가 이미 제출한 밤 행동도 지운다.
+    assert!(game.police_targets.is_empty());
+
+    // 밤 결산을 지나 다음 낮 동안에도 저주는 유지된다.
+    game.resolve_night().unwrap();
+    assert!(game.is_frog(game.get_player(3).unwrap()));
+    // 개구리는 밤 행동 대상 목록에서 빠진다.
+    game.phase = Phase::Night;
+    game.day_number = 2;
+    assert!(
+        !game
+            .night_action_actors()
+            .iter()
+            .any(|actor| actor.user_id == 3)
+    );
+
+    // 다음 밤 시작: restore_frogs가 저주를 풀고 복구 목록으로 알려준다.
+    let restored = game.restore_frogs();
+    assert_eq!(
+        restored
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>(),
+        vec![3]
+    );
+    assert!(!game.is_frog(game.get_player(3).unwrap()));
+    assert!(game.frog_user_ids.is_empty());
+
+    // 풀린 뒤에는 밤 행동을 다시 쓸 수 있다.
+    assert!(
+        game.night_action_actors()
+            .iter()
+            .any(|actor| actor.user_id == 3)
+    );
+    game.submit_night_action(3, Some(5)).unwrap();
+}
+
 #[test]
 fn agent_directive_reports_frog_instead_of_original_role() {
     let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
