@@ -271,14 +271,11 @@ pub const PUBLIC_CITIZEN_SPECIAL_ROLES: &[Role] = &[
 pub const PUBLIC_NEUTRAL_SPECIAL_ROLES: &[Role] = &[Role::Joker];
 pub const PUBLIC_CULT_SPECIAL_ROLES: &[Role] = &[Role::CultLeader];
 
+/// 청부업자 추리 후보 직업. 마피아 보조(마녀·과학자·마담 등)는 한 판에 한
+/// 명뿐이고 그 한 명이 청부업자 본인이므로 후보에서 뺀다.
 pub const CONTRACTOR_GUESS_ROLES: &[Role] = &[
     Role::Mafia,
     Role::Doctor,
-    Role::Witch,
-    Role::Scientist,
-    Role::Madam,
-    Role::Thief,
-    Role::Fraudster,
     Role::Detective,
     Role::Shaman,
     Role::Priest,
@@ -655,15 +652,9 @@ pub fn is_contractor_guess_role(role: Role) -> bool {
 
 pub const fn contractor_guess_role_group(role: Role) -> ContractorGuessRoleGroup {
     match role {
-        Role::Mafia
-        | Role::Witch
-        | Role::Scientist
-        | Role::Madam
-        | Role::Thief
-        | Role::Fraudster
-        | Role::CultLeader
-        | Role::Fanatic
-        | Role::Joker => ContractorGuessRoleGroup::MafiaCultNeutral,
+        Role::Mafia | Role::CultLeader | Role::Fanatic | Role::Joker => {
+            ContractorGuessRoleGroup::MafiaCultNeutral
+        }
         _ => ContractorGuessRoleGroup::Citizen,
     }
 }
