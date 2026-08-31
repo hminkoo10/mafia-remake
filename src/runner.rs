@@ -19,7 +19,7 @@ use mafia_remake::config;
 use mafia_remake::game::{MafiaGame, majority_required};
 use mafia_remake::model::{
     ConfirmVoteResult, ContractorGuessRoleGroup, NightResult, Phase, Player, Role, VoteResult,
-    Winner, contractor_guessable_roles_for_group,
+    Winner, contractor_guessable_roles,
 };
 use mafia_remake::stats;
 use poise::serenity_prelude as serenity;

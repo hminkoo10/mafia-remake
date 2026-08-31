@@ -12,15 +12,18 @@ fn contractor_draft_replaces_role_when_target_changes_and_resolves_duplicates() 
 
     set_contractor_draft_target(&mut draft, 0, 30).unwrap();
 
-    // 1번 대상만 바뀌었으므로 2번 대상의 직업은 유지된다.
+    // 대상을 바꿔도 이미 고른 직업 추측은 유지된다.
     assert_eq!(draft.target_ids, [Some(30), Some(20)]);
-    assert_eq!(draft.guessed_roles, [None, Some(Role::Mafia)]);
+    assert_eq!(
+        draft.guessed_roles,
+        [Some(Role::Citizen), Some(Role::Mafia)]
+    );
 
     // 반대 슬롯과 같은 대상을 고르면 최근 선택이 이기고 반대 슬롯이 비워진다
     // (에러로 끊기면 확정이 안 되는 막다른 상태가 된다).
     set_contractor_draft_target(&mut draft, 1, 30).unwrap();
     assert_eq!(draft.target_ids, [None, Some(30)]);
-    assert_eq!(draft.guessed_roles, [None, None]);
+    assert_eq!(draft.guessed_roles, [None, Some(Role::Mafia)]);
 }
 
 #[test]

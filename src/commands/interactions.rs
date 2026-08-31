@@ -219,9 +219,7 @@ pub(crate) fn set_contractor_draft_target(
         draft.target_ids[1 - slot] = None;
         draft.guessed_roles[1 - slot] = None;
     }
-    if draft.target_ids[slot] != Some(target_id) {
-        draft.guessed_roles[slot] = None;
-    }
+    // 대상을 바꿔도 이미 고른 직업 추측은 유지한다 (다시 고르면 덮어쓴다).
     draft.target_ids[slot] = Some(target_id);
     Ok(())
 }
@@ -364,19 +362,9 @@ pub async fn handle_contractor_role(
                     .contractor_contract_drafts
                     .get_mut(&actor_id)
                     .expect("청부 초안이 생성되어야 합니다.");
-                if draft.role_group != contractor_guess_role_group(role) {
-                    Err(anyhow::anyhow!(
-                        "현재 직업 목록에서 선택할 수 없는 직업입니다."
-                    ))
-                } else if draft.target_ids[slot].is_none() {
-                    Err(anyhow::anyhow!(
-                        "먼저 {}번 청부 대상을 선택하세요.",
-                        slot + 1
-                    ))
-                } else {
-                    draft.guessed_roles[slot] = Some(role);
-                    Ok((targets, draft.clone()))
-                }
+                // 대상보다 직업을 먼저 골라도 된다.
+                draft.guessed_roles[slot] = Some(role);
+                Ok((targets, draft.clone()))
             }
             Err(error) => Err(error),
         }
@@ -404,27 +392,16 @@ pub async fn handle_contractor_group(
         send_component_private(ctx, component, "본인에게 온 선택지만 사용할 수 있습니다.").await?;
         return Ok(());
     }
-    let Some(role_group) = ContractorGuessRoleGroup::from_component_value(group_value) else {
-        send_component_private(ctx, component, "잘못된 청부 직업 목록입니다.").await?;
-        return Ok(());
-    };
+    // 직업 목록이 하나로 합쳐져 그룹 전환은 더 이상 없다. 옛 메시지의 버튼을
+    // 눌러도 죽지 않도록 화면만 현재 상태로 새로 그린다.
+    let _ = group_value;
     let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
         send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
         return Ok(());
     };
     let view = {
         let mut running_write = running.write().await;
-        match contractor_live_view(&mut running_write, actor_id) {
-            Ok((targets, _)) => {
-                let draft = running_write
-                    .contractor_contract_drafts
-                    .get_mut(&actor_id)
-                    .expect("청부 초안이 생성되어야 합니다.");
-                draft.role_group = role_group;
-                Ok((targets, draft.clone()))
-            }
-            Err(error) => Err(error),
-        }
+        contractor_live_view(&mut running_write, actor_id)
     };
     let (targets, draft) = match view {
         Ok(view) => view,

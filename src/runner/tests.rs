@@ -328,24 +328,19 @@ fn contractor_components_stay_within_discord_limits() {
         select_ids,
         [
             "contractor_target:1:42:0",
-            "contractor_target:1:42:1",
             "contractor_role:1:42:0",
+            "contractor_target:1:42:1",
             "contractor_role:1:42:1",
         ]
     );
 }
 
-/// 두 직업 목록 모두 셀렉트 상한 안에 들어와야 한다. 하나라도 넘으면 Discord가
-/// 메시지를 거부해 청부 화면 자체가 뜨지 않는다.
+/// 청부 직업 목록은 한 셀렉트(25개 상한)에 전부 들어와야 한다. 넘으면
+/// Discord가 메시지를 거부해 청부 화면 자체가 뜨지 않는다.
 #[test]
-fn every_contractor_role_group_fits_one_select() {
-    for group in [
-        ContractorGuessRoleGroup::Citizen,
-        ContractorGuessRoleGroup::MafiaCultNeutral,
-    ] {
-        let count = contractor_guessable_roles_for_group(group).count();
-        assert!(count > 0 && count <= 25, "{group:?} has {count} roles");
-    }
+fn contractor_role_list_fits_one_select() {
+    let count = contractor_guessable_roles().count();
+    assert!(count > 0 && count <= 25, "{count} roles");
 }
 
 /// 게임 결과에는 티어와 능력이 공개된다.
