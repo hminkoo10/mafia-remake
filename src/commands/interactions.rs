@@ -1269,6 +1269,7 @@ pub async fn handle_night_action(
         spy_bonus_targets,
         newly_contacted_mafia,
         cult_bells,
+        purified_target,
     ) = {
         let mut running_write = running.write().await;
         let was_known_mafia_team = running_write
@@ -1334,13 +1335,18 @@ pub async fn handle_night_action(
             }
             Some((role, night_targets(&running_write.game, actor)))
         });
-        let spy_bonus_targets = actor.and_then(|actor| {
+        let spy_bonus_targets = actor.as_ref().and_then(|actor| {
             if actor.role == Role::Spy && running_write.game.spy_can_use_bonus_action(actor_id) {
-                Some(night_targets(&running_write.game, &actor))
+                Some(night_targets(&running_write.game, actor))
             } else {
                 None
             }
         });
+        // [성불] 결과가 즉시 나오므로 사망자 채널 접근도 곧바로 정리한다.
+        let purified_target = actor
+            .as_ref()
+            .filter(|actor| effective_night_role(&running_write.game, actor) == Role::Shaman)
+            .and_then(|_| target_id);
         let done = running_write.game.should_finish_night_early();
         (
             message,
@@ -1350,10 +1356,14 @@ pub async fn handle_night_action(
             spy_bonus_targets,
             newly_contacted_mafia,
             cult_bells,
+            purified_target,
         )
     };
     if let Some(player) = &newly_contacted_mafia {
         grant_private_role_member_access(ctx, data, &running, Role::Mafia, player).await;
+    }
+    if let Some(purified_id) = purified_target {
+        apply_purification_side_effects(ctx, data, &running, &[purified_id]).await;
     }
     let response_message = message;
     if let Some((targets, status_text)) = mafia_action_view {

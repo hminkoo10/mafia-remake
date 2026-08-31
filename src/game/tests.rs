@@ -341,6 +341,47 @@ fn agent_directive_ignores_uncontacted_mafia_specials() {
     );
 }
 
+/// [성불] 결과가 제출 즉시 나오고 밤마다 한 번으로 고정되며, 결산은
+/// 채널 정리 목록만 만든다.
+#[test]
+fn shaman_purification_returns_the_result_immediately() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Shaman]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Shaman),
+        (3, Role::Doctor),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+    game.get_player_mut(3).unwrap().alive = false;
+    game.get_player_mut(4).unwrap().alive = false;
+
+    // 제출 즉시 직업이 공개되고 성불이 바로 적용된다.
+    let message = game.submit_night_action(2, Some(3)).unwrap();
+    assert!(
+        message.contains("[성불] P3 님의 직업은 **의사**"),
+        "{message}"
+    );
+    assert!(game.purified_dead_ids.contains(&3));
+
+    // 밤마다 한 번뿐이라 다른 사망자로 바꿀 수 없다.
+    let error = game.submit_night_action(2, Some(4)).unwrap_err();
+    assert!(error.to_string().contains("한 번뿐"), "{error}");
+
+    // 결산: 개인 메시지는 없고 채널 정리 목록만 남는다.
+    let result = game.resolve_night().unwrap();
+    assert!(result.shaman_results.is_empty());
+    assert_eq!(result.shaman_purifications, vec![3]);
+}
+
 /// 마녀 저주는 걸린 밤과 다음 낮 동안 유지되고, 다음 밤이 시작될 때
 /// (러너의 restore_frogs) 풀린다. 풀린 뒤에는 밤 행동도 정상으로 돌아온다.
 #[test]

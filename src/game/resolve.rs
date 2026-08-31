@@ -1562,37 +1562,25 @@ impl MafiaGame {
 
     fn resolve_shaman_results(
         &mut self,
-        blocked_actor_ids: &HashSet<u64>,
+        _blocked_actor_ids: &HashSet<u64>,
         role_reveals: &mut Vec<(u8, u64, u64, Role)>,
     ) -> (HashMap<u64, String>, Vec<u64>) {
-        let mut results = HashMap::new();
+        // [성불] 결과는 제출 즉시 영매에게 전달됐다. 여기서는 파파라치 공유용
+        // 정보와 사망자 채널 정리 목록만 만든다.
         let mut purifications = Vec::new();
         for (actor_id, target_id) in self.shaman_targets.clone() {
-            if blocked_actor_ids.contains(&actor_id) {
-                continue;
-            }
-            let Some(actor) = self.get_player(actor_id) else {
-                continue;
-            };
             let Some(target) = self.get_player(target_id).cloned() else {
                 continue;
             };
-            if !actor.alive || target.alive || self.purified_dead_ids.contains(&target.user_id) {
+            if target.alive {
                 continue;
             }
-            self.purified_dead_ids.insert(target.user_id);
             purifications.push(target.user_id);
-            role_reveals.push((3, actor_id, target.user_id, self.visible_role(&target)));
-            results.insert(
-                actor_id,
-                format!(
-                    "[성불] {} 님의 직업은 **{}** 입니다.\n대상은 사망자 채널에서 채팅할 수 없습니다.",
-                    target.name,
-                    self.visible_role(&target).value()
-                ),
-            );
+            if self.get_player(actor_id).is_some_and(|actor| actor.alive) {
+                role_reveals.push((3, actor_id, target.user_id, self.visible_role(&target)));
+            }
         }
-        (results, purifications)
+        (HashMap::new(), purifications)
     }
 
     fn resolve_reporter_results(

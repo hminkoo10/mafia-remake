@@ -327,15 +327,7 @@ impl MafiaGame {
                 Some("사립탐정은 자기 자신을 추적할 수 없습니다."),
                 "추적 대상",
             ),
-            Role::Shaman => self.submit_dead_target_action(
-                actor_id,
-                target_id,
-                "성불 대상을 선택해야 합니다.",
-                RoleActionMap::Shaman,
-                "영매는 사망한 참가자만 성불할 수 있습니다.",
-                "이미 성불한 사망자입니다.",
-                "성불 대상",
-            ),
+            Role::Shaman => self.submit_shaman_purification(actor_id, target_id, ""),
             Role::Priest => self.submit_priest_action(actor_id, target_id, ""),
             Role::Spy => self.submit_spy_action(actor_id, target_id, ""),
             Role::Terrorist => self.once_target_action(
@@ -671,6 +663,36 @@ impl MafiaGame {
         Ok(format!("{prefix}특종 대상: {}", selected.name))
     }
 
+    /// [성불] 결과가 제출 즉시 나온다 (경찰 계열과 같은 규칙). 대상을 바꿔
+    /// 가며 여러 사망자를 조사할 수 없도록 밤마다 한 번으로 고정한다.
+    fn submit_shaman_purification(
+        &mut self,
+        actor_id: u64,
+        target_id: Option<u64>,
+        prefix: &str,
+    ) -> Result<String> {
+        if self.shaman_targets.contains_key(&actor_id) {
+            bail!("성불은 밤마다 한 번뿐입니다. 이미 이번 밤 성불을 마쳤습니다.");
+        }
+        let Some(target_id) = target_id else {
+            bail!("성불 대상을 선택해야 합니다.");
+        };
+        let target = self.require_player(target_id)?.clone();
+        if target.alive {
+            bail!("성불은 사망자에게만 사용할 수 있습니다.");
+        }
+        if self.purified_dead_ids.contains(&target.user_id) {
+            bail!("이미 성불된 사망자입니다.");
+        }
+        self.shaman_targets.insert(actor_id, target_id);
+        self.purified_dead_ids.insert(target.user_id);
+        Ok(format!(
+            "{prefix}[성불] {} 님의 직업은 **{}** 입니다.\n대상은 사망자 채널에서 채팅할 수 없습니다.",
+            target.name,
+            self.visible_role(&target).value()
+        ))
+    }
+
     fn submit_dead_target_action(
         &mut self,
         actor_id: u64,
@@ -961,15 +983,7 @@ impl MafiaGame {
             ),
             Role::Spy => self.submit_spy_action(actor_id, target_id, &prefix),
             Role::Contractor => bail!("청부는 전용 선택 메뉴로 사용해야 합니다."),
-            Role::Shaman => self.submit_dead_target_action(
-                actor_id,
-                target_id,
-                "성불 대상을 선택해야 합니다.",
-                RoleActionMap::Shaman,
-                "성불은 사망자에게만 사용할 수 있습니다.",
-                "이미 성불된 사망자입니다.",
-                &format!("{prefix}성불 대상"),
-            ),
+            Role::Shaman => self.submit_shaman_purification(actor_id, target_id, &prefix),
             Role::Priest => self.submit_priest_action(actor_id, target_id, &prefix),
             Role::Witch => self.once_target_action(
                 actor_id,
