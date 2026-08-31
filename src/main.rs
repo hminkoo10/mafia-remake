@@ -2,7 +2,7 @@ use anyhow::{Context as AnyhowContext, Result};
 use chrono::{SecondsFormat, Utc};
 use dashmap::DashMap;
 use mafia_remake::game::MafiaGame;
-use mafia_remake::model::{ContractorGuessRoleGroup, Player, Role, Winner};
+use mafia_remake::model::{Player, Role, Winner};
 use mafia_remake::{config, stats};
 use poise::serenity_prelude as serenity;
 use serde_json::{Value, json};
@@ -123,9 +123,6 @@ pub(crate) enum PersonalChannelKind {
 pub(crate) struct ContractorContractDraft {
     pub(crate) target_ids: [Option<u64>; 2],
     pub(crate) guessed_roles: [Option<Role>; 2],
-    /// 직업 셀렉트에 보여줄 목록. 추측 가능한 직업이 27개라 Discord의 25개
-    /// 셀렉트 상한을 넘으므로 팀별로 나눠 보여준다.
-    pub(crate) role_group: ContractorGuessRoleGroup,
 }
 
 #[derive(Debug)]

@@ -24,10 +24,10 @@ use image::{ImageFormat, Rgb, RgbImage};
 use mafia_remake::config;
 use mafia_remake::game::{GameCounts, MafiaGame, majority_required};
 use mafia_remake::model::{
-    CITIZEN_SPECIAL_ROLES, ContractorGuessRoleGroup, MAFIA_SPECIAL_ROLES, NEUTRAL_SPECIAL_ROLES,
-    NightResult, PUBLIC_CITIZEN_SPECIAL_ROLES, PUBLIC_CULT_SPECIAL_ROLES,
-    PUBLIC_MAFIA_SPECIAL_ROLES, PUBLIC_NEUTRAL_SPECIAL_ROLES, Phase, Player, Role, VoteResult,
-    Winner, contractor_guess_role_group, is_contractor_guess_role,
+    CITIZEN_SPECIAL_ROLES, MAFIA_SPECIAL_ROLES, NEUTRAL_SPECIAL_ROLES, NightResult,
+    PUBLIC_CITIZEN_SPECIAL_ROLES, PUBLIC_CULT_SPECIAL_ROLES, PUBLIC_MAFIA_SPECIAL_ROLES,
+    PUBLIC_NEUTRAL_SPECIAL_ROLES, Phase, Player, Role, VoteResult, Winner,
+    is_contractor_guess_role,
 };
 use mafia_remake::stats;
 use poise::serenity_prelude as serenity;

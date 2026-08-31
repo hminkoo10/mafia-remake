@@ -18,8 +18,8 @@ use image::{ImageFormat, Rgb, RgbImage};
 use mafia_remake::config;
 use mafia_remake::game::{MafiaGame, majority_required};
 use mafia_remake::model::{
-    ConfirmVoteResult, ContractorGuessRoleGroup, NightResult, Phase, Player, Role, VoteResult,
-    Winner, contractor_guessable_roles,
+    ConfirmVoteResult, NightResult, Phase, Player, Role, VoteResult, Winner,
+    contractor_guessable_roles,
 };
 use mafia_remake::stats;
 use poise::serenity_prelude as serenity;

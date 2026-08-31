@@ -1631,9 +1631,6 @@ impl MafiaGame {
             RoleActionMap::Detective => {
                 self.detective_targets.insert(actor_id, target_id);
             }
-            RoleActionMap::Shaman => {
-                self.shaman_targets.insert(actor_id, target_id);
-            }
             RoleActionMap::Priest => {
                 self.priest_targets.insert(actor_id, target_id);
             }
@@ -1658,7 +1655,6 @@ enum RoleActionMap {
     ThiefPolice,
     Inspector,
     Detective,
-    Shaman,
     Priest,
     Witch,
     Terrorist,
