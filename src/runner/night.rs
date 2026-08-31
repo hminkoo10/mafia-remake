@@ -1336,6 +1336,12 @@ pub async fn announce_police_result(
             .alive_players()
             .into_iter()
             .filter(|player| player.role == Role::Police)
+            // 재안내는 그 밤 조사를 제출한 경찰에게만 간다. 도굴로 밤 중에
+            // 경찰이 된 플레이어가 죽은 경찰의 결과를 물려받으면 안 된다.
+            .filter(|player| {
+                result.police_actor_ids.is_empty()
+                    || result.police_actor_ids.contains(&player.user_id)
+            })
             .cloned()
             .collect::<Vec<_>>();
         if police_players.is_empty() {

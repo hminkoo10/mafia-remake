@@ -369,6 +369,15 @@ impl MafiaGame {
             .collect::<HashSet<_>>();
         let (police_target, police_target_is_mafia) =
             self.current_police_result_excluding(&blocked_actor_ids);
+        let police_actor_ids = self
+            .police_targets
+            .keys()
+            .copied()
+            .filter(|actor_id| {
+                self.get_player(*actor_id)
+                    .is_some_and(|actor| actor.role == Role::Police)
+            })
+            .collect::<Vec<_>>();
         let thief_police_results = self.thief_police_results_excluding(&blocked_actor_ids);
         let detective_results = self.resolve_detective_results(
             &blocked_actor_ids,
@@ -429,6 +438,7 @@ impl MafiaGame {
             mafia_target,
             police_target_is_mafia,
             police_target,
+            police_actor_ids,
             thief_police_results,
             killed_players,
             detective_results,

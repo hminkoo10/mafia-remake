@@ -681,6 +681,10 @@ pub struct NightResult {
     pub mafia_target: Option<Player>,
     pub police_target: Option<Player>,
     pub police_target_is_mafia: Option<bool>,
+    /// 이번 밤 실제로 조사를 제출한 경찰. 아침 결과 재안내는 이들에게만
+    /// 간다 (도굴된 경찰이 죽은 경찰의 결과를 물려받지 않도록).
+    #[serde(default)]
+    pub police_actor_ids: Vec<u64>,
     pub thief_police_results: std::collections::HashMap<u64, String>,
     pub killed_players: Vec<Player>,
     pub detective_results: std::collections::HashMap<u64, String>,

@@ -1163,6 +1163,45 @@ fn detective_sees_police_investigation_activity() {
     );
 }
 
+/// 도굴꾼이 퍼블 경찰을 도굴해 경찰이 돼도, 죽은 경찰이 조사했던 결과의
+/// 재안내 대상에는 들지 않는다 (수신자는 그 밤 조사를 제출한 경찰뿐).
+#[test]
+fn grave_robbed_police_does_not_inherit_the_dead_officers_result() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 1, vec![Role::Graverobber]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Police),
+        (3, Role::Graverobber),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+
+    // 경찰이 조사를 제출하고(즉시 결과는 본인에게), 같은 밤 마피아에게 죽는다.
+    game.submit_night_action(2, Some(5)).unwrap();
+    game.submit_night_action(1, Some(2)).unwrap();
+    let result = game.resolve_night().unwrap();
+
+    // 도굴꾼이 경찰을 이어받았다.
+    assert!(!game.get_player(2).unwrap().alive);
+    assert_eq!(game.get_player(3).unwrap().role, Role::Police);
+    // 조사 결과는 성립해 있지만, 재안내 수신자는 죽은 경찰(2)뿐이라
+    // 도굴꾼(3)에게는 전달되지 않는다.
+    assert_eq!(
+        result.police_target.as_ref().map(|player| player.user_id),
+        Some(5)
+    );
+    assert_eq!(result.police_actor_ids, vec![2]);
+    assert!(!result.police_actor_ids.contains(&3));
+}
+
 /// 경찰이 그 밤에 죽어도(예: 소생으로 부활 예정) 제출한 조사 표는
 /// 요약 집계에 그대로 남는다.
 #[test]
