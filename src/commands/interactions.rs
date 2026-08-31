@@ -212,8 +212,12 @@ pub(crate) fn set_contractor_draft_target(
     if slot >= 2 {
         bail!("잘못된 청부 선택입니다.");
     }
+    // 반대 슬롯과 같은 대상을 고르면(메시지 갱신 전의 잔상 옵션으로 가능)
+    // 최근 선택이 이기고 반대 슬롯을 비운다. 여기서 에러를 내면 응답 없이
+    // 끝나 "확정이 안 되는" 막다른 상태가 된다.
     if draft.target_ids[1 - slot] == Some(target_id) {
-        bail!("청부 대상 두 명은 서로 달라야 합니다.");
+        draft.target_ids[1 - slot] = None;
+        draft.guessed_roles[1 - slot] = None;
     }
     if draft.target_ids[slot] != Some(target_id) {
         draft.guessed_roles[slot] = None;
@@ -299,8 +303,12 @@ pub async fn handle_contractor_target(
                         .contractor_contract_drafts
                         .get_mut(&actor_id)
                         .expect("청부 초안이 생성되어야 합니다.");
-                    set_contractor_draft_target(draft, slot, target_id)?;
-                    Ok((targets, draft.clone()))
+                    // 에러를 `?`로 흘리면 인터랙션 응답 없이 끝나 "상호작용
+                    // 실패"만 뜬다. 반드시 사용자에게 보이는 경로로 처리한다.
+                    match set_contractor_draft_target(draft, slot, target_id) {
+                        Ok(()) => Ok((targets, draft.clone())),
+                        Err(error) => Err(error),
+                    }
                 }
             }
             Err(error) => Err(error),
