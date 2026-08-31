@@ -166,6 +166,9 @@ impl MafiaGame {
         }
 
         self.ensure_godfather_auto_contact();
+        // 파파라치 공유 판정용: 이번 밤 결산이 새로 공개하는 정보(기자 특종 등)와
+        // 이미 공개돼 있던 정보를 구분하기 위해 밤 시작 시점을 기억해 둔다.
+        let publicly_revealed_before_night = self.publicly_revealed_ids.clone();
         let godfather_attackers = self
             .godfather_targets
             .iter()
@@ -407,7 +410,8 @@ impl MafiaGame {
         }
         self.ensure_thief_succession();
 
-        let paparazzi_results = self.resolve_paparazzi_issue(&role_reveals);
+        let paparazzi_results =
+            self.resolve_paparazzi_issue(&role_reveals, &publicly_revealed_before_night);
         let (fraudster_results, fraudster_contacts) =
             self.resolve_fraudster_results(&blocked_actor_ids, &role_reveals);
         self.record_analysis_notices(&killed_players);
@@ -896,10 +900,16 @@ impl MafiaGame {
     fn resolve_paparazzi_issue(
         &mut self,
         role_reveals: &[(u8, u64, u64, Role)],
+        publicly_revealed_before_night: &HashSet<u64>,
     ) -> HashMap<u64, String> {
         let mut reveals = role_reveals.to_vec();
+        // 살아있는 대상 정보를 사망자 정보보다 먼저 공유한다. 사망자 직업은
+        // 공개 설정에 따라 이미 알려졌을 수 있어 하루 한 번뿐인 몫을 낭비하기 쉽다.
         reveals.sort_unstable_by_key(|(priority, actor_id, target_id, _)| {
-            (*priority, *actor_id, *target_id)
+            let target_dead = self
+                .get_player(*target_id)
+                .is_none_or(|target| !target.alive);
+            (target_dead, *priority, *actor_id, *target_id)
         });
         let Some((_, _, target_id, revealed_role)) =
             reveals.into_iter().find(|(_, actor_id, target_id, _)| {
@@ -907,6 +917,9 @@ impl MafiaGame {
                     && self
                         .get_player(*actor_id)
                         .is_some_and(|actor| self.is_citizen_team(actor))
+                    // 밤이 시작되기 전부터 이미 전체 공개됐던 대상은 공유 가치가
+                    // 없으므로 하루 한 번뿐인 몫을 쓰지 않는다.
+                    && !publicly_revealed_before_night.contains(target_id)
             })
         else {
             return HashMap::new();

@@ -2212,6 +2212,55 @@ fn reporter_scoop_triggers_the_paparazzi_issue() {
     );
 }
 
+/// 파파라치 공유는 살아있는 대상 정보를 사망자 정보(영매)보다 먼저 고른다.
+#[test]
+fn paparazzi_prefers_reveals_about_living_targets() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Shaman]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Shaman),
+        (3, Role::Reporter),
+        (4, Role::Paparazzi),
+        (5, Role::Doctor),
+        (6, Role::Prophet),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+    game.day_number = 2;
+    game.get_player_mut(5).unwrap().alive = false;
+
+    // 영매는 사망자 5를 성불하고, 기자는 생존자 6을 특종한다.
+    game.submit_night_action(2, Some(5)).unwrap();
+    game.reporter_targets.insert(3, 6);
+    let result = game.resolve_night().unwrap();
+
+    // 우선순위 숫자로는 영매(3) < 기자(4)지만, 생존 대상 정보가 먼저다.
+    assert_eq!(
+        result.paparazzi_results.get(&4).map(String::as_str),
+        Some("[P6님이 예언자 직업이라는 정보를 공유받았습니다.]")
+    );
+}
+
+/// 밤 시작 전부터 이미 전체 공개된 대상의 정보는 하루 한 번뿐인 공유
+/// 몫을 쓰지 않는다.
+#[test]
+fn paparazzi_skips_reveals_about_already_public_targets() {
+    let mut game = civil_servant_test_game();
+    game.publicly_revealed_ids.insert(3);
+
+    game.submit_civil_servant_query(2, Role::Doctor).unwrap();
+    let result = game.resolve_night().unwrap();
+
+    assert!(result.paparazzi_results.is_empty());
+    // 몫이 소모되지 않아 같은 날 다른 공유는 여전히 가능하다.
+    assert!(!game.paparazzi_shared_days.contains(&game.day_number));
+}
+
 /// 기자가 자신을 특종한 경우는 "다른 사람의 직업"이 아니므로 트리거가 아니다.
 #[test]
 fn reporter_self_scoop_does_not_trigger_the_issue() {
