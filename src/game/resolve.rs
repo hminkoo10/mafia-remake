@@ -379,12 +379,8 @@ impl MafiaGame {
             })
             .collect::<Vec<_>>();
         let thief_police_results = self.thief_police_results_excluding(&blocked_actor_ids);
-        let detective_results = self.resolve_detective_results(
-            &blocked_actor_ids,
-            mafia_target_id,
-            protected_id,
-            godfather_target_id,
-        );
+        // 사립탐정은 실시간 추적이라 밤 결산 결과가 없다.
+        let detective_results: HashMap<u64, String> = HashMap::new();
         // 파파라치 이슈용: 시민팀이 이번 밤 알아낸 "다른 플레이어의 정확한 직업" 목록.
         // (우선순위, 알아낸 사람, 대상, 직업) — 우선순위가 낮을수록 먼저 알아낸 것으로 본다.
         let mut role_reveals: Vec<(u8, u64, u64, Role)> = Vec::new();
@@ -687,6 +683,8 @@ impl MafiaGame {
     fn clear_night_maps(&mut self) {
         self.concealed_kill_failure = false;
         self.honeytrap_noticed.clear();
+        self.detective_live_last.clear();
+        self.pending_detective_live_notices.clear();
         self.mafia_targets.clear();
         self.mafia_display_targets.clear();
         self.doctor_targets.clear();
@@ -788,55 +786,6 @@ impl MafiaGame {
             }
         }
         (seduced, newly_contacted)
-    }
-
-    fn resolve_detective_results(
-        &self,
-        blocked_actor_ids: &HashSet<u64>,
-        mafia_target_id: Option<u64>,
-        protected_id: Option<u64>,
-        godfather_target_id: Option<u64>,
-    ) -> HashMap<u64, String> {
-        let mut results = HashMap::new();
-        for (actor_id, watched_id) in &self.detective_targets {
-            if blocked_actor_ids.contains(actor_id) {
-                continue;
-            }
-            let Some(actor) = self.get_player(*actor_id) else {
-                continue;
-            };
-            let Some(watched) = self.get_player(*watched_id) else {
-                continue;
-            };
-            if !actor.alive {
-                continue;
-            }
-            let action_target_id = self.resolved_action_target(
-                watched,
-                mafia_target_id,
-                protected_id,
-                godfather_target_id,
-            );
-            if let Some(action_target_id) = action_target_id {
-                let target_name = self
-                    .get_player(action_target_id)
-                    .map(|player| player.name.clone())
-                    .unwrap_or_else(|| action_target_id.to_string());
-                results.insert(
-                    *actor_id,
-                    format!(
-                        "{} 님은 밤에 {} 님에게 능력을 사용했습니다.",
-                        watched.name, target_name
-                    ),
-                );
-            } else {
-                results.insert(
-                    *actor_id,
-                    format!("{} 님은 밤에 능력을 사용하지 않았습니다.", watched.name),
-                );
-            }
-        }
-        results
     }
 
     /// 공무원 조회 결산. 지목한 직업의 생존 보유자를 알려주고, 없으면 없다고
@@ -1309,61 +1258,7 @@ impl MafiaGame {
         (results, target_notices)
     }
 
-    fn resolved_action_target(
-        &self,
-        watched: &Player,
-        mafia_target_id: Option<u64>,
-        protected_id: Option<u64>,
-        godfather_target_id: Option<u64>,
-    ) -> Option<u64> {
-        match watched.role {
-            Role::Mafia => mafia_target_id,
-            Role::Doctor => self.doctor_targets.get(&watched.user_id).copied(),
-            Role::Nurse => self
-                .nurse_targets
-                .get(&watched.user_id)
-                .or_else(|| self.nurse_prescription_targets.get(&watched.user_id))
-                .copied(),
-            Role::Gangster => self.gangster_targets.get(&watched.user_id).copied(),
-            Role::Thief => self.resolved_thief_action_target(watched),
-            // 경찰이 같은 밤에 죽었어도 제출한 조사는 이동으로 보여야 하므로
-            // 전역 결과가 아니라 본인의 제출 기록을 직접 본다.
-            Role::Police => self.police_targets.get(&watched.user_id).copied(),
-            Role::Inspector => self.inspector_targets.get(&watched.user_id).copied(),
-            Role::Vigilante => self.vigilante_targets.get(&watched.user_id).copied(),
-            Role::Hypnotist => self.hypnotist_targets.get(&watched.user_id).copied(),
-            Role::Mercenary => self.mercenary_targets.get(&watched.user_id).copied(),
-            Role::Reporter => self.reporter_targets.get(&watched.user_id).copied(),
-            Role::Detective => self.detective_targets.get(&watched.user_id).copied(),
-            Role::Shaman => self.shaman_targets.get(&watched.user_id).copied(),
-            Role::Priest => self.priest_targets.get(&watched.user_id).copied(),
-            Role::Spy => self
-                .spy_targets
-                .get(&watched.user_id)
-                .and_then(|targets| targets.last().copied()),
-            Role::Contractor => self
-                .contractor_contracts
-                .get(&watched.user_id)
-                .map(|contract| contract.0.0),
-            Role::Witch => self.witch_targets.get(&watched.user_id).copied(),
-            Role::Terrorist => self.terrorist_targets.get(&watched.user_id).copied(),
-            Role::Godfather => {
-                if self.godfather_contacted.contains(&watched.user_id) {
-                    godfather_target_id
-                } else {
-                    self.godfather_targets.get(&watched.user_id).copied()
-                }
-            }
-            Role::CultLeader => self.cult_targets.get(&watched.user_id).copied(),
-            Role::Fanatic => self.fanatic_targets.get(&watched.user_id).copied(),
-            _ => {
-                let _ = protected_id;
-                None
-            }
-        }
-    }
-
-    fn resolved_thief_action_target(&self, watched: &Player) -> Option<u64> {
+    pub(crate) fn resolved_thief_action_target(&self, watched: &Player) -> Option<u64> {
         match self.thief_night_role(watched) {
             Some(Role::Mafia) => self.mafia_targets.get(&watched.user_id).copied(),
             Some(Role::Doctor) => self.doctor_targets.get(&watched.user_id).copied(),

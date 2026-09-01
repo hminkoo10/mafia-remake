@@ -170,6 +170,20 @@ pub fn selected_values(component: &serenity::ComponentInteraction) -> Vec<String
     }
 }
 
+/// 실시간 추적 알림을 즉시 DM으로 전달한다 (밤 행동 제출 직후 호출).
+pub(crate) async fn deliver_detective_live_notices(
+    ctx: &serenity::Context,
+    running: &Arc<RwLock<RunningGame>>,
+) {
+    let notices = running.write().await.game.take_detective_live_notices();
+    for (detective_id, text) in notices {
+        let player = running.read().await.game.get_player(detective_id).cloned();
+        if let Some(player) = player {
+            let _ = send_player_secret(ctx, running, &player, text, vec![]).await;
+        }
+    }
+}
+
 pub(crate) fn contractor_live_view(
     running: &mut RunningGame,
     actor_id: u64,
@@ -505,6 +519,7 @@ pub async fn handle_contractor_submit(
     if let Some(player) = &newly_contacted_mafia {
         grant_private_role_member_access(ctx, data, &running, Role::Mafia, player).await;
     }
+    deliver_detective_live_notices(ctx, &running).await;
     if done {
         running.read().await.night_notify.notify_waiters();
     }
@@ -1365,6 +1380,7 @@ pub async fn handle_night_action(
     if let Some(purified_id) = purified_target {
         apply_purification_side_effects(ctx, data, &running, &[purified_id]).await;
     }
+    deliver_detective_live_notices(ctx, &running).await;
     let response_message = message;
     if let Some((targets, status_text)) = mafia_action_view {
         component

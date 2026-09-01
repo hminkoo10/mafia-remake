@@ -1165,17 +1165,18 @@ fn fixer_masks_victims_only_after_contact() {
     );
 }
 
-/// 사립탐정이 경찰을 추적하면 경찰의 조사 사용 여부와 대상이 보인다.
+/// 사립탐정 실시간 추적: 고른 순간 현재 손이 보이고, 대상이 손을
+/// 쓰거나 바꾸면 즉시 알림이 쌓이며, 같은 대상 재제출은 무시된다.
 #[test]
-fn detective_sees_police_investigation_activity() {
+fn detective_tracks_the_targets_hand_in_real_time() {
     let players = (1..=8)
         .map(|id| (id as u64, format!("P{id}")))
         .collect::<Vec<_>>();
-    let mut game = MafiaGame::new(players, 1, 0, 1, vec![Role::Detective]).unwrap();
+    let mut game = MafiaGame::new(players, 1, 1, 0, vec![Role::Detective]).unwrap();
     for (id, role) in [
         (1, Role::Mafia),
         (2, Role::Detective),
-        (3, Role::Police),
+        (3, Role::Doctor),
         (4, Role::Citizen),
         (5, Role::Citizen),
         (6, Role::Citizen),
@@ -1185,36 +1186,66 @@ fn detective_sees_police_investigation_activity() {
         game.get_player_mut(id).unwrap().role = role;
     }
 
-    // 경찰이 5번을 조사하고, 사탐이 경찰을 추적한다.
+    // 의사가 먼저 손을 썼다면, 사탐은 고른 순간 현재 손을 본다.
     game.submit_night_action(3, Some(5)).unwrap();
-    game.submit_night_action(2, Some(3)).unwrap();
-    let result = game.resolve_night().unwrap();
-    assert_eq!(
-        result.detective_results.get(&2).map(String::as_str),
-        Some("P3 님은 밤에 P5 님에게 능력을 사용했습니다.")
+    let message = game.submit_night_action(2, Some(3)).unwrap();
+    assert!(
+        message.contains("[추적] 현재 P5 님에게 능력을 사용 중"),
+        "{message}"
     );
 
-    // 다음 밤 경찰이 조사하지 않으면 미사용으로 나온다.
-    game.phase = Phase::Night;
-    game.day_number = 2;
-    game.submit_night_action(2, Some(3)).unwrap();
-    let result = game.resolve_night().unwrap();
-    assert_eq!(
-        result.detective_results.get(&2).map(String::as_str),
-        Some("P3 님은 밤에 능력을 사용하지 않았습니다.")
-    );
-
-    // 경찰이 조사를 제출한 뒤 같은 밤에 죽어도 이동은 그대로 보인다.
-    game.phase = Phase::Night;
-    game.day_number = 3;
+    // 의사가 손을 바꾸면 즉시 변경 알림이 쌓인다.
     game.submit_night_action(3, Some(6)).unwrap();
-    game.submit_night_action(2, Some(3)).unwrap();
-    game.submit_night_action(1, Some(3)).unwrap();
-    let result = game.resolve_night().unwrap();
-    assert!(!game.get_player(3).unwrap().alive);
+    let notices = game.take_detective_live_notices();
     assert_eq!(
-        result.detective_results.get(&2).map(String::as_str),
-        Some("P3 님은 밤에 P6 님에게 능력을 사용했습니다.")
+        notices,
+        vec![(2, "[추적] P3 님이 대상을 P6 님으로 바꿨습니다.".to_string())]
+    );
+
+    // 같은 대상 재제출은 알림이 없다.
+    game.submit_night_action(3, Some(6)).unwrap();
+    assert!(game.take_detective_live_notices().is_empty());
+
+    // 밤 결산에는 사탐 결과가 따로 없다.
+    let result = game.resolve_night().unwrap();
+    assert!(result.detective_results.is_empty());
+}
+
+/// 아직 손을 쓰지 않은 대상을 고르면 미사용 안내가 나오고, 첫 사용 시
+/// 즉시 알림이 온다.
+#[test]
+fn detective_gets_notified_on_the_targets_first_action() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 1, 0, vec![Role::Detective]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Detective),
+        (3, Role::Doctor),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+
+    let message = game.submit_night_action(2, Some(3)).unwrap();
+    assert!(
+        message.contains("아직 이번 밤 능력을 사용하지 않았습니다"),
+        "{message}"
+    );
+
+    game.submit_night_action(3, Some(5)).unwrap();
+    let notices = game.take_detective_live_notices();
+    assert_eq!(
+        notices,
+        vec![(
+            2,
+            "[추적] P3 님이 P5 님에게 능력을 사용했습니다.".to_string()
+        )]
     );
 }
 

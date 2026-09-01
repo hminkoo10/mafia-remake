@@ -245,6 +245,7 @@ impl MafiaGame {
             let result = self.submit_stolen_night_action(&actor, target_id);
             if result.is_ok() {
                 self.mark_rating_action(actor_id);
+                self.queue_detective_live_updates(actor_id);
             }
             return result;
         }
@@ -318,15 +319,7 @@ impl MafiaGame {
             Role::Hypnotist => self.submit_hypnotist_action(actor_id, target_id),
             Role::Mercenary => self.submit_mercenary_action(actor_id, target_id),
             Role::Reporter => self.submit_reporter_action(actor_id, target_id, ""),
-            Role::Detective => self.once_target_action(
-                actor_id,
-                target_id,
-                "추적 대상을 선택해야 합니다.",
-                "",
-                RoleActionMap::Detective,
-                Some("사립탐정은 자기 자신을 추적할 수 없습니다."),
-                "추적 대상",
-            ),
+            Role::Detective => self.submit_detective_tracking(actor_id, target_id, ""),
             Role::Shaman => self.submit_shaman_purification(actor_id, target_id, ""),
             Role::Priest => self.submit_priest_action(actor_id, target_id, ""),
             Role::Spy => self.submit_spy_action(actor_id, target_id, ""),
@@ -355,6 +348,7 @@ impl MafiaGame {
         };
         if result.is_ok() {
             self.mark_rating_action(actor_id);
+            self.queue_detective_live_updates(actor_id);
         }
         result
     }
@@ -661,6 +655,51 @@ impl MafiaGame {
         self.reporter_skip_submitted.remove(&actor_id);
         self.reporter_targets.insert(actor_id, proxy);
         Ok(format!("{prefix}특종 대상: {}", selected.name))
+    }
+
+    /// 실시간 추적 시작. 선택한 순간부터 대상의 현재 손 위치를 알려주고,
+    /// 이후 대상이 손을 바꾸면 즉시 알림이 온다.
+    fn submit_detective_tracking(
+        &mut self,
+        actor_id: u64,
+        target_id: Option<u64>,
+        prefix: &str,
+    ) -> Result<String> {
+        let result = self.once_target_action(
+            actor_id,
+            target_id,
+            "추적 대상을 선택해야 합니다.",
+            prefix,
+            RoleActionMap::Detective,
+            Some("사립탐정은 자기 자신을 추적할 수 없습니다."),
+            "추적 대상",
+        )?;
+        // 대상을 바꿨을 수 있으니 이전 추적 기록은 비운다.
+        self.detective_live_last
+            .retain(|(detective_id, _), _| *detective_id != actor_id);
+        let Some(watched_id) = target_id else {
+            return Ok(result);
+        };
+        let Some(watched) = self.get_player(watched_id).cloned() else {
+            return Ok(result);
+        };
+        let status = match self.live_action_target(&watched) {
+            Some(current_id) => {
+                self.detective_live_last
+                    .insert((actor_id, watched_id), current_id);
+                let name = self
+                    .get_player(current_id)
+                    .map(|player| player.name.clone())
+                    .unwrap_or_else(|| current_id.to_string());
+                format!("[추적] 현재 {} 님에게 능력을 사용 중입니다.", name)
+            }
+            None => "[추적] 아직 이번 밤 능력을 사용하지 않았습니다.".to_string(),
+        };
+        Ok(format!(
+            "{result}
+{status}
+대상이 손을 바꾸면 즉시 알려드립니다."
+        ))
     }
 
     /// [성불] 결과가 제출 즉시 나온다 (경찰 계열과 같은 규칙). 대상을 바꿔
@@ -972,15 +1011,7 @@ impl MafiaGame {
                 .submit_vigilante_night_action(actor_id, target_id)
                 .map(|message| format!("{prefix}{message}")),
             Role::Reporter => self.submit_reporter_action(actor_id, target_id, &prefix),
-            Role::Detective => self.once_target_action(
-                actor_id,
-                target_id,
-                "추적 대상을 선택해야 합니다.",
-                "",
-                RoleActionMap::Detective,
-                Some("자기 자신은 추적할 수 없습니다."),
-                &format!("{prefix}추적 대상"),
-            ),
+            Role::Detective => self.submit_detective_tracking(actor_id, target_id, &prefix),
             Role::Spy => self.submit_spy_action(actor_id, target_id, &prefix),
             Role::Contractor => bail!("청부는 전용 선택 메뉴로 사용해야 합니다."),
             Role::Shaman => self.submit_shaman_purification(actor_id, target_id, &prefix),
@@ -1066,6 +1097,7 @@ impl MafiaGame {
             ((first.user_id, first_role), (second.user_id, second_role)),
         );
         self.mark_rating_action(actor_id);
+        self.queue_detective_live_updates(actor_id);
         Ok(format!(
             "[청부] 암살 대상을 선택했습니다.\n- {}: {}\n- {}: {}",
             first.name,

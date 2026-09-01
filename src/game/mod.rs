@@ -78,6 +78,10 @@ pub struct MafiaGame {
     pub poisoned_death_days: HashMap<u64, u32>,
     /// [미인계] 이번 밤 이미 알림을 보낸 (사용자, 보유자) 쌍.
     pub honeytrap_noticed: HashSet<(u64, u64)>,
+    /// 사립탐정 실시간 추적: (사탐, 추적 대상) → 마지막으로 알린 손 위치.
+    pub detective_live_last: HashMap<(u64, u64), u64>,
+    /// 사립탐정에게 즉시 보낼 실시간 추적 알림 대기열.
+    pub pending_detective_live_notices: Vec<(u64, String)>,
     /// [데뷔] 투표권이 한 표 깎인 플레이어.
     pub debut_vote_penalty_ids: HashSet<u64>,
     /// [후계자] 등 밤 결산에 채널 접근을 부여해야 하는 접선자 대기열.
@@ -280,6 +284,8 @@ impl MafiaGame {
             pending_night_raid_reveals: Vec::new(),
             poisoned_death_days: HashMap::new(),
             honeytrap_noticed: HashSet::new(),
+            detective_live_last: HashMap::new(),
+            pending_detective_live_notices: Vec::new(),
             debut_vote_penalty_ids: HashSet::new(),
             pending_tier_ability_contacts: Vec::new(),
             condolence_stolen_this_night: HashSet::new(),
@@ -900,6 +906,107 @@ impl MafiaGame {
             self.pending_tier_ability_contacts.push(*id);
         }
         ids
+    }
+
+    /// 실시간 추적용: 이 플레이어가 지금 이번 밤 능력을 겨누고 있는 대상.
+    /// 마피아는 본인이 고른 표시 대상을 기준으로 한다.
+    pub(crate) fn live_action_target(&self, watched: &Player) -> Option<u64> {
+        match watched.role {
+            Role::Mafia => self.mafia_display_targets.get(&watched.user_id).copied(),
+            Role::Thief => self.resolved_thief_action_target(watched),
+            Role::Doctor => self.doctor_targets.get(&watched.user_id).copied(),
+            Role::Nurse => self
+                .nurse_targets
+                .get(&watched.user_id)
+                .or_else(|| self.nurse_prescription_targets.get(&watched.user_id))
+                .copied(),
+            Role::Gangster => self.gangster_targets.get(&watched.user_id).copied(),
+            Role::Police => self.police_targets.get(&watched.user_id).copied(),
+            Role::Inspector => self.inspector_targets.get(&watched.user_id).copied(),
+            Role::Vigilante => self.vigilante_targets.get(&watched.user_id).copied(),
+            Role::Hypnotist => self.hypnotist_targets.get(&watched.user_id).copied(),
+            Role::Mercenary => self.mercenary_targets.get(&watched.user_id).copied(),
+            Role::Reporter => self.reporter_targets.get(&watched.user_id).copied(),
+            Role::Detective => self.detective_targets.get(&watched.user_id).copied(),
+            Role::Shaman => self.shaman_targets.get(&watched.user_id).copied(),
+            Role::Priest => self.priest_targets.get(&watched.user_id).copied(),
+            Role::Spy => self
+                .spy_targets
+                .get(&watched.user_id)
+                .and_then(|targets| targets.last().copied()),
+            Role::Contractor => self
+                .contractor_contracts
+                .get(&watched.user_id)
+                .map(|contract| contract.0.0),
+            Role::Witch => self.witch_targets.get(&watched.user_id).copied(),
+            Role::Terrorist => self.terrorist_targets.get(&watched.user_id).copied(),
+            Role::Godfather => self.godfather_targets.get(&watched.user_id).copied(),
+            Role::CultLeader => self.cult_targets.get(&watched.user_id).copied(),
+            Role::Fanatic => self.fanatic_targets.get(&watched.user_id).copied(),
+            _ => None,
+        }
+    }
+
+    /// 실시간 추적: 방금 밤 행동을 낸 플레이어를 추적 중인 사탐들에게 알림을
+    /// 쌓는다. 같은 대상 재제출은 무시하고, 처음이면 사용 알림, 다르면 변경
+    /// 알림을 만든다.
+    pub(crate) fn queue_detective_live_updates(&mut self, actor_id: u64) {
+        if self.phase != Phase::Night {
+            return;
+        }
+        let Some(watched) = self.get_player(actor_id).cloned() else {
+            return;
+        };
+        let watchers = self
+            .detective_targets
+            .iter()
+            .filter(|(_, target_id)| **target_id == actor_id)
+            .map(|(detective_id, _)| *detective_id)
+            .filter(|detective_id| {
+                *detective_id != actor_id
+                    && self.get_player(*detective_id).is_some_and(|detective| {
+                        detective.alive
+                            && !self.is_frog(detective)
+                            && (detective.role == Role::Detective
+                                || self.thief_night_role(detective) == Some(Role::Detective))
+                    })
+            })
+            .collect::<Vec<_>>();
+        if watchers.is_empty() {
+            return;
+        }
+        let Some(current_id) = self.live_action_target(&watched) else {
+            return;
+        };
+        let Some(target_name) = self
+            .get_player(current_id)
+            .map(|player| player.name.clone())
+        else {
+            return;
+        };
+        for detective_id in watchers {
+            let previous = self
+                .detective_live_last
+                .insert((detective_id, actor_id), current_id);
+            let line = match previous {
+                Some(previous_id) if previous_id == current_id => continue,
+                Some(_) => format!(
+                    "[추적] {} 님이 대상을 {} 님으로 바꿨습니다.",
+                    watched.name, target_name
+                ),
+                None => format!(
+                    "[추적] {} 님이 {} 님에게 능력을 사용했습니다.",
+                    watched.name, target_name
+                ),
+            };
+            self.pending_detective_live_notices
+                .push((detective_id, line));
+        }
+    }
+
+    /// 실시간 추적 알림 대기열을 꺼낸다 (러너가 즉시 DM으로 전달).
+    pub fn take_detective_live_notices(&mut self) -> Vec<(u64, String)> {
+        std::mem::take(&mut self.pending_detective_live_notices)
     }
 
     /// [승부수] 살아있는 마피아 본대가 보유자 한 명뿐인 상태인가.
