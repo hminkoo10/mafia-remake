@@ -382,6 +382,61 @@ fn shaman_purification_returns_the_result_immediately() {
     assert_eq!(result.shaman_purifications, vec![3]);
 }
 
+/// 접선하지 않은 보조 마피아는 테러리스트 지목 반격에 죽지 않고,
+/// 접선한 보조는 기존대로 함께 죽는다.
+#[test]
+fn terrorist_blast_spares_uncontacted_mafia_supports() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Spy, Role::Terrorist]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Terrorist),
+        (3, Role::Spy),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+
+    // 테러리스트가 접선 전 스파이를 지목하고 밤에 살해당한다.
+    game.terrorist_targets.insert(2, 3);
+    game.mafia_targets.insert(1, 2);
+    let result = game.resolve_night().unwrap();
+    assert!(!game.get_player(2).unwrap().alive);
+    // 접선 전 스파이는 터지지 않는다.
+    assert!(game.get_player(3).unwrap().alive, "{result:?}");
+    assert!(result.terrorist_retaliations.is_empty());
+
+    // 접선한 스파이는 기존대로 반격 대상이다.
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Spy, Role::Terrorist]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Terrorist),
+        (3, Role::Spy),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+    game.spy_contacted.insert(3);
+    game.terrorist_targets.insert(2, 3);
+    game.mafia_targets.insert(1, 2);
+    let result = game.resolve_night().unwrap();
+    assert!(!game.get_player(3).unwrap().alive, "{result:?}");
+    assert_eq!(result.terrorist_retaliations.len(), 1);
+}
+
 /// 마녀 저주는 걸린 밤과 다음 낮 동안 유지되고, 다음 밤이 시작될 때
 /// (러너의 restore_frogs) 풀린다. 풀린 뒤에는 밤 행동도 정상으로 돌아온다.
 #[test]

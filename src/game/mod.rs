@@ -460,8 +460,17 @@ impl MafiaGame {
         if !target.alive {
             return None;
         }
-        (self.retaliation_team_key(terrorist) != self.retaliation_team_key(&target))
+        self.terrorist_blast_allowed(terrorist, &target)
             .then_some(target)
+    }
+
+    /// 지목 반격이 이 대상을 죽일 수 있는가. 접선하지 않은 보조 마피아는
+    /// 아직 시민처럼 보이므로 반격에 터지지 않는다.
+    fn terrorist_blast_allowed(&self, terrorist: &Player, target: &Player) -> bool {
+        if self.is_mafia_team(target) && !self.is_known_mafia_team(target) {
+            return false;
+        }
+        self.retaliation_team_key(terrorist) != self.retaliation_team_key(target)
     }
 
     pub fn begin_terrorist_final_defense(&mut self, actor_id: u64) -> Vec<Player> {
@@ -520,7 +529,7 @@ impl MafiaGame {
         if terrorist.role == Role::Terrorist {
             self.is_known_mafia_team(&target).then_some(target)
         } else {
-            (self.retaliation_team_key(terrorist) != self.retaliation_team_key(&target))
+            self.terrorist_blast_allowed(terrorist, &target)
                 .then_some(target)
         }
     }
