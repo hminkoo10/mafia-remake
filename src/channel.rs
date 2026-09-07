@@ -899,7 +899,14 @@ pub fn can_use_anonymous_shaman_chat(running: &RunningGame, player: &Player) -> 
 
 fn record_dead_chat_deaths(running: &mut RunningGame, dead_players: &[Player]) {
     let unlock_now = running.game.phase == Phase::Day;
-    let role_chat_visible_from_day = running.game.day_number.saturating_add(1);
+    // 역할 채팅 미러는 사망 다음 밤부터 보인다. 투표 처형은 엔진이 이미 다음
+    // 밤으로 넘어간 뒤(phase=Night, day+1) 처리되므로 이번 밤이 곷 그 "다음 밤"이다.
+    // 여기서 또 +1을 하면 처형자(대개 마피아)가 직후 밤을 통째로 놓친다.
+    let role_chat_visible_from_day = if running.game.phase == Phase::Night {
+        running.game.day_number
+    } else {
+        running.game.day_number.saturating_add(1)
+    };
     for player in dead_players {
         running
             .dead_role_chat_visible_from_days

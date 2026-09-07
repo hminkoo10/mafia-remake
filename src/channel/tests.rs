@@ -266,8 +266,11 @@ fn night_victim_cannot_receive_role_chat_from_death_night() {
     assert!(can_receive_role_chat_as_dead(&running, &dead_player));
 }
 
+/// 투표 처형자는 엔진이 이미 다음 밤으로 넘어간 뒤(phase=Night, day+1) 사망
+/// 처리되므로, 밤 사망자와 똑같이 "사망 다음 밤"인 바로 그 밤부터 역할 채팅을
+/// 받는다. (마피아는 대개 처형으로 죽어서 이 경로에 걸린다.)
 #[test]
-fn vote_victim_skips_first_role_chat_night() {
+fn vote_victim_receives_role_chat_from_the_following_night() {
     let mut running = dead_chat_test_running();
     running.game.day_number = 2;
     running.game.phase = Phase::Night;
@@ -283,7 +286,7 @@ fn vote_victim_skips_first_role_chat_night() {
     running.dead_chat_unlocked_ids.insert(dead_player.user_id);
 
     assert!(can_use_anonymous_dead_chat(&running, &dead_player));
-    assert!(!can_receive_role_chat_as_dead(&running, &dead_player));
+    assert!(can_receive_role_chat_as_dead(&running, &dead_player));
 
     running.game.day_number = 3;
     assert!(can_receive_role_chat_as_dead(&running, &dead_player));
