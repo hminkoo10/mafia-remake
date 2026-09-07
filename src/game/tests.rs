@@ -574,6 +574,9 @@ fn tier_abilities_follow_group_pools() {
         for player in &game.players {
             let tier = game.player_tiers[&player.user_id];
             assert!((2..=6).contains(&tier), "{tier}");
+            if player.role == Role::Mafia {
+                assert!(tier >= 3, "마피아 본대는 2티어가 나오면 안 된다");
+            }
             let abilities = game.player_tier_abilities(player.user_id);
             match tier {
                 2 => assert!(abilities.is_empty(), "{:?} {abilities:?}", player.role),
@@ -621,18 +624,41 @@ fn tier_abilities_follow_group_pools() {
 fn tier_probabilities_match_the_declared_distribution() {
     let mut counts = [0u32; 5];
     let mut total = 0u32;
+    let mut mafia_counts = [0u32; 4];
+    let mut mafia_total = 0u32;
     for _ in 0..2000 {
         let players = (1..=10)
             .map(|id| (id as u64, format!("P{id}")))
             .collect::<Vec<_>>();
         let mut game = MafiaGame::new(players, 2, 1, 1, Vec::new()).unwrap();
         game.assign_tier_abilities();
-        for tier in game.player_tiers.values() {
-            counts[(*tier - 2) as usize] += 1;
+        for player in &game.players {
+            let tier = game.player_tiers[&player.user_id];
+            if player.role == Role::Mafia {
+                // 마피아 본대는 무조건 3티어 이상.
+                assert!(tier >= 3, "{tier}");
+                mafia_counts[(tier - 3) as usize] += 1;
+                mafia_total += 1;
+                continue;
+            }
+            counts[(tier - 2) as usize] += 1;
             total += 1;
         }
     }
-    assert_eq!(total, 20_000);
+    assert_eq!(total, 16_000);
+    assert_eq!(mafia_total, 4_000);
+    let mafia_percent = |count: u32| count as f64 * 100.0 / mafia_total as f64;
+    for (index, expected) in [50.0, 25.0, 100.0 / 6.0, 100.0 / 12.0]
+        .into_iter()
+        .enumerate()
+    {
+        let share = mafia_percent(mafia_counts[index]);
+        assert!(
+            (share - expected).abs() <= 4.0,
+            "마피아 {}티어 {share:.2}% (기대 {expected:.1}%)",
+            index + 3
+        );
+    }
     let percent = |count: u32| count as f64 * 100.0 / total as f64;
     for (index, expected) in [40.0, 30.0, 15.0, 10.0, 5.0].into_iter().enumerate() {
         let share = percent(counts[index]);

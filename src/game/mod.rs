@@ -670,9 +670,9 @@ impl MafiaGame {
         }
     }
 
-    /// 개인 티어 배정: 2티어 50% / 3티어 35% / 4티어 15%. 같은 능력이 여러
-    /// 명에게 겹칠 수 있다. 4티어 풀은 소속에 따라 다르다 (마피아 본대 /
-    /// 보조 마피아 / 그 외).
+    /// 개인 티어 배정: 2티어 40% / 3티어 30% / 4티어 15% / 5티어 10% / 6티어 5%.
+    /// 마피아 본대는 무조건 3티어 이상. 4티어부터는 소속·역할 풀에서 티어별
+    /// 개수(1/2/3)만큼 받고, 같은 능력이 여러 명에게 겹칠 수 있다.
     /// 무작위성이 게임 로직 테스트를 흔들지 않도록 생성자가 아니라 실제 게임
     /// 시작(start_game)에서 호출한다.
     pub fn assign_tier_abilities(&mut self) {
@@ -680,17 +680,32 @@ impl MafiaGame {
         let order = self.players.clone();
         let mut rng = system_random::rng();
         for player in order {
-            let roll = rng.next_u64() % 100;
-            let tier: u8 = if roll < 40 {
-                2
-            } else if roll < 70 {
-                3
-            } else if roll < 85 {
-                4
-            } else if roll < 95 {
-                5
+            let tier: u8 = if player.role == Role::Mafia {
+                // 마피아 본대는 무조건 3티어 이상. 2티어 몫(40%)을 3~6티어에 비례 배분한다
+                // (3티어 50% / 4티어 25% / 5티어 16.7% / 6티어 8.3%).
+                let roll = rng.next_u64() % 60;
+                if roll < 30 {
+                    3
+                } else if roll < 45 {
+                    4
+                } else if roll < 55 {
+                    5
+                } else {
+                    6
+                }
             } else {
-                6
+                let roll = rng.next_u64() % 100;
+                if roll < 40 {
+                    2
+                } else if roll < 70 {
+                    3
+                } else if roll < 85 {
+                    4
+                } else if roll < 95 {
+                    5
+                } else {
+                    6
+                }
             };
             self.player_tiers.insert(player.user_id, tier);
             let abilities: Vec<TierAbility> = match tier {
