@@ -1203,7 +1203,7 @@ pub fn night_placeholder(role: Role) -> &'static str {
         Role::Hypnotist => "최면을 걸 대상을 선택하세요",
         Role::Mercenary => "처형할 대상을 선택하세요",
         Role::Reporter => "특종 대상 또는 사용 안함을 선택하세요",
-        Role::Detective => "추적할 대상을 선택하세요",
+        Role::Detective => "추적할 대상을 선택하세요 (밤마다 1회, 변경 불가)",
         Role::Shaman => "성불할 사망자를 선택하세요",
         Role::Priest => "소생할 사망자를 선택하세요",
         Role::Spy => "첩보할 대상을 선택하세요",

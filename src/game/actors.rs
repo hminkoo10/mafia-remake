@@ -119,7 +119,6 @@ impl MafiaGame {
                 | Role::Hypnotist
                 | Role::Mercenary
                 | Role::Reporter
-                | Role::Detective
                 | Role::Priest
                 | Role::Contractor
                 | Role::Witch

@@ -665,6 +665,11 @@ impl MafiaGame {
         target_id: Option<u64>,
         prefix: &str,
     ) -> Result<String> {
+        // 추적은 밤마다 한 번. 대상을 바꿔 가며 여러 명의 손을 보지 못하게 첫 선택으로
+        // 고정한다 (경찰 조사와 같은 규칙).
+        if self.detective_targets.contains_key(&actor_id) {
+            bail!("추적은 밤마다 한 번뿐입니다. 이미 이번 밤 추적 대상을 정했습니다.");
+        }
         let result = self.once_target_action(
             actor_id,
             target_id,

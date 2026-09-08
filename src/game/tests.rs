@@ -1264,6 +1264,11 @@ fn detective_gets_notified_on_the_targets_first_action() {
         "{message}"
     );
 
+    // 같은 밤에는 대상을 바꿀 수 없다 (밤마다 1회, 첫 선택으로 고정).
+    let err = game.submit_night_action(2, Some(4)).unwrap_err();
+    assert!(err.to_string().contains("한 번뿐"), "{err}");
+    assert_eq!(game.detective_targets.get(&2), Some(&3));
+
     game.submit_night_action(3, Some(5)).unwrap();
     let notices = game.take_detective_live_notices();
     assert_eq!(
