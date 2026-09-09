@@ -1622,10 +1622,9 @@ impl MafiaGame {
             if !actor.alive || actor.role != Role::Hypnotist {
                 continue;
             }
-            let Some(target) = self.get_player(target_id) else {
-                continue;
-            };
-            if !target.alive {
+            // 최면은 제출 즉시 걸린 것으로 본다. 대상이 이 밤에 죽어도 최면은 남아
+            // 다음 낮에 깨워 정보를 확인할 수 있다 (나중 밤에 죽은 대상과 같은 규칙).
+            if self.get_player(target_id).is_none() {
                 continue;
             }
             self.hypnotized_targets

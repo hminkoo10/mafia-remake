@@ -351,7 +351,9 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Gangster => "밤에 한 명의 다음 낮 투표권을 빼앗습니다.",
         Role::Prophet => "4번째 낮까지 생존하면 소속팀이 승리합니다.",
         Role::Psychologist => "낮에 두 명이 같은 팀인지 봅니다.",
-        Role::Hypnotist => "밤마다 최면을 누적하고 낮에 한꺼번에 깨워 비시민 직업을 확인합니다.",
+        Role::Hypnotist => {
+            "밤마다 최면을 누적하고 낮에 한꺼번에 깨워 비시민 직업을 확인합니다. 대상이 그 밤에 죽어도 최면은 유지됩니다."
+        }
         Role::Mercenary => "의뢰인이 밤에 사망한 뒤 밤마다 한 명을 처형할 수 있습니다.",
         Role::Graverobber => "첫날 사망자의 직업을 이어받습니다.",
         _ => "낮 토론과 투표로 승리를 노리세요.",

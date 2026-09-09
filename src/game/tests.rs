@@ -1280,6 +1280,105 @@ fn detective_gets_notified_on_the_targets_first_action() {
     );
 }
 
+/// 도굴꾼이 첫 밤에 최면술사를 이어받으면, 그 다음 밤 최면을 걸 수 있고
+/// 다음 낮이 시작되는 순간 최면 해제 버튼 대상에 든다.
+#[test]
+fn grave_robbed_hypnotist_gets_wake_action_on_the_next_day() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game =
+        MafiaGame::new(players, 1, 0, 0, vec![Role::Graverobber, Role::Hypnotist]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Hypnotist),
+        (3, Role::Graverobber),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+
+    // 첫 밤: 마피아가 최면술사를 죽이고 도굴꾼이 그 직업을 이어받는다.
+    game.submit_night_action(1, Some(2)).unwrap();
+    let _ = game.resolve_night().unwrap();
+    assert!(!game.get_player(2).unwrap().alive);
+    assert_eq!(game.get_player(3).unwrap().role, Role::Hypnotist);
+
+    // 첫 낮: 아직 최면 대상이 없으니 해제 버튼 대상이 아니다.
+    game.phase = Phase::Day;
+    assert!(game.hypnotist_day_actors().is_empty());
+
+    // 두 번째 밤: 도굴꾼 최면술사가 최면을 건다.
+    game.advance_to_next_night();
+    assert_eq!(game.day_number, 2);
+    assert!(
+        game.night_action_actors()
+            .iter()
+            .any(|actor| actor.user_id == 3)
+    );
+    game.submit_night_action(3, Some(5)).unwrap();
+    game.submit_night_action(1, Some(6)).unwrap();
+    let _ = game.resolve_night().unwrap();
+
+    // 두 번째 낮 시작: 바로 해제 버튼 대상이고, 해제하면 대상 정보가 나온다.
+    game.phase = Phase::Day;
+    assert_eq!(
+        game.hypnotist_day_actors()
+            .iter()
+            .map(|actor| actor.user_id)
+            .collect::<Vec<_>>(),
+        vec![3]
+    );
+    let message = game.submit_hypnotist_wake(3).unwrap();
+    assert!(message.contains("P5"), "{message}");
+}
+
+/// 최면은 제출 즉시 걸린 것으로 본다. 대상이 그 밤에 죽어도 최면은 남아,
+/// 최면술사는 다음 낮 시작 시 해제 버튼 대상에 들고 깨워서 정보를 확인한다.
+#[test]
+fn hypnosis_survives_the_targets_death_that_night() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Hypnotist]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Hypnotist),
+        (3, Role::Citizen),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+    game.tier_abilities.clear();
+
+    // 최면술사가 P5에게 최면을 걸고, 같은 밤 마피아가 P5를 죽인다.
+    game.submit_night_action(2, Some(5)).unwrap();
+    game.submit_night_action(1, Some(5)).unwrap();
+    let _ = game.resolve_night().unwrap();
+    assert!(!game.get_player(5).unwrap().alive);
+
+    // 다음 낮: 해제 버튼 대상이고, 깨우면 죽은 대상의 정보가 나온다.
+    game.phase = Phase::Day;
+    assert_eq!(
+        game.hypnotist_day_actors()
+            .iter()
+            .map(|actor| actor.user_id)
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+    let message = game.submit_hypnotist_wake(2).unwrap();
+    assert!(message.contains("P5"), "{message}");
+    assert!(message.contains("시민팀"), "{message}");
+}
+
 /// 도굴꾼이 퍼블 경찰을 도굴해 경찰이 돼도, 죽은 경찰이 조사했던 결과의
 /// 재안내 대상에는 들지 않는다 (수신자는 그 밤 조사를 제출한 경찰뿐).
 #[test]
