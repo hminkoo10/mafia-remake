@@ -1222,7 +1222,7 @@ fn detective_tracks_the_targets_hand_in_real_time() {
 
     // 의사가 손을 바꾸면 즉시 변경 알림이 쌓인다.
     game.submit_night_action(3, Some(6)).unwrap();
-    let notices = game.take_detective_live_notices();
+    let notices = game.take_live_notices();
     assert_eq!(
         notices,
         vec![(2, "[추적] P3 님이 대상을 P6 님으로 바꿨습니다.".to_string())]
@@ -1230,7 +1230,7 @@ fn detective_tracks_the_targets_hand_in_real_time() {
 
     // 같은 대상 재제출은 알림이 없다.
     game.submit_night_action(3, Some(6)).unwrap();
-    assert!(game.take_detective_live_notices().is_empty());
+    assert!(game.take_live_notices().is_empty());
 
     // 밤 결산에는 사탐 결과가 따로 없다.
     let result = game.resolve_night().unwrap();
@@ -1270,7 +1270,7 @@ fn detective_gets_notified_on_the_targets_first_action() {
     assert_eq!(game.detective_targets.get(&2), Some(&3));
 
     game.submit_night_action(3, Some(5)).unwrap();
-    let notices = game.take_detective_live_notices();
+    let notices = game.take_live_notices();
     assert_eq!(
         notices,
         vec![(
@@ -1312,7 +1312,7 @@ fn detective_tracking_a_mafia_sees_the_team_majority_target() {
 
     // 2가 P6을 고르면 1:1 동률이라 과반이 없다. 추적 중인 2의 손이 사라진다.
     game.submit_night_action(2, Some(6)).unwrap();
-    let notices = game.take_detective_live_notices();
+    let notices = game.take_live_notices();
     assert_eq!(notices.len(), 1, "{notices:?}");
     assert_eq!(notices[0].0, 3);
     assert!(
@@ -1323,7 +1323,7 @@ fn detective_tracking_a_mafia_sees_the_team_majority_target() {
 
     // 1이 P6으로 따라가면 과반이 P6이 되어 2의 손도 P6을 향한다.
     game.submit_night_action(1, Some(6)).unwrap();
-    let notices = game.take_detective_live_notices();
+    let notices = game.take_live_notices();
     assert_eq!(
         notices,
         vec![(
@@ -1334,7 +1334,7 @@ fn detective_tracking_a_mafia_sees_the_team_majority_target() {
 
     // 같은 과반 대상 재제출은 알림이 없다.
     game.submit_night_action(2, Some(6)).unwrap();
-    assert!(game.take_detective_live_notices().is_empty());
+    assert!(game.take_live_notices().is_empty());
 }
 
 /// 추적 대상 마피아가 가만히 있어도 다른 마피아의 제출로 팀 과반이 생기면
@@ -1365,7 +1365,7 @@ fn detective_tracking_a_mafia_is_updated_when_another_mafia_acts() {
     );
 
     game.submit_night_action(1, Some(5)).unwrap();
-    let notices = game.take_detective_live_notices();
+    let notices = game.take_live_notices();
     assert_eq!(
         notices,
         vec![(
@@ -1373,6 +1373,55 @@ fn detective_tracking_a_mafia_is_updated_when_another_mafia_acts() {
             "[추적] P2 님이 P5 님에게 능력을 사용했습니다.".to_string()
         )]
     );
+}
+
+/// [공갈] 제출 즉시 발동한다. 대상은 그 자리에서 통보를 받고 다음 낮 투표권을
+/// 잃으며, 건달은 같은 밤에 대상을 바꿀 수 없다. 건달이 그 밤에 죽어도 공갈은
+/// 유지되고, 밤 결산 결과는 따로 없다.
+#[test]
+fn gangster_threat_lands_immediately_and_cannot_be_changed() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Gangster]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Gangster),
+        (3, Role::Citizen),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+
+    let message = game.submit_night_action(2, Some(5)).unwrap();
+    assert!(
+        message.contains("P5 님의 다음 낮 지목 투표권을 빼앗았습니다"),
+        "{message}"
+    );
+    // 대상에게 즉시 통보가 쌓이고, 투표권 박탈도 그 자리에서 걸린다.
+    let notices = game.take_live_notices();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].0, 5);
+    assert!(notices[0].1.contains("공갈당했습니다"), "{}", notices[0].1);
+    assert_eq!(game.gangster_blocked_vote_days.get(&5), Some(&1));
+
+    // 같은 밤에는 대상을 바꿀 수 없다.
+    let err = game.submit_night_action(2, Some(6)).unwrap_err();
+    assert!(err.to_string().contains("한 번뿐"), "{err}");
+    assert_eq!(game.gangster_targets.get(&2), Some(&5));
+
+    // 건달이 그 밤에 죽어도 이미 발동한 공갈은 남는다. 밤 결산 결과는 따로 없다.
+    game.submit_night_action(1, Some(2)).unwrap();
+    let result = game.resolve_night().unwrap();
+    assert!(!game.get_player(2).unwrap().alive);
+    assert!(result.gangster_results.is_empty());
+    game.phase = Phase::Vote;
+    let vote = game.submit_day_vote(5, Some(1)).unwrap();
+    assert!(vote.contains("공갈당해"), "{vote}");
 }
 
 /// 도굴꾼이 첫 밤에 최면술사를 이어받으면, 그 다음 밤 최면을 걸 수 있고

@@ -792,6 +792,16 @@ async fn main() -> Result<()> {
                 tokio::spawn(async move {
                     while let Ok(update) = activity_update_rx.recv().await {
                         match update {
+                            activity::ActivityDiscordUpdate::DeliverLiveNotices { guild_id } => {
+                                let Some(running) = activity_update_games
+                                    .get(&guild_id)
+                                    .map(|entry| entry.clone())
+                                else {
+                                    continue;
+                                };
+                                commands::deliver_live_notices(&activity_update_ctx, &running)
+                                    .await;
+                            }
                             activity::ActivityDiscordUpdate::PrivateRoleStatus {
                                 guild_id,
                                 role,

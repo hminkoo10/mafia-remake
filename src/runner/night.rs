@@ -1210,7 +1210,7 @@ pub fn night_placeholder(role: Role) -> &'static str {
         Role::Witch => "저주할 대상을 선택하세요",
         Role::Godfather => "확정 처치할 대상을 선택하세요",
         Role::Terrorist => "지목할 대상을 선택하세요",
-        Role::Gangster => "공갈할 대상을 선택하세요",
+        Role::Gangster => "공갈할 대상을 선택하세요 (밤마다 1회, 변경 불가)",
         Role::Thief => "도벽으로 훔친 능력의 대상을 선택하세요",
         Role::CultLeader => "포교할 대상을 선택하세요",
         Role::Fanatic => "추종할 대상을 선택하세요",

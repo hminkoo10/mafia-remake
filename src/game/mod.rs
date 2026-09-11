@@ -80,8 +80,8 @@ pub struct MafiaGame {
     pub honeytrap_noticed: HashSet<(u64, u64)>,
     /// 사립탐정 실시간 추적: (사탐, 추적 대상) → 마지막으로 알린 손 위치.
     pub detective_live_last: HashMap<(u64, u64), u64>,
-    /// 사립탐정에게 즉시 보낼 실시간 추적 알림 대기열.
-    pub pending_detective_live_notices: Vec<(u64, String)>,
+    /// 제출 즉시 DM으로 보낼 비밀 알림 대기열 (사탐 실시간 추적 알림, 공갈 통보 등).
+    pub pending_live_notices: Vec<(u64, String)>,
     /// [데뷔] 투표권이 한 표 깎인 플레이어.
     pub debut_vote_penalty_ids: HashSet<u64>,
     /// [후계자] 등 밤 결산에 채널 접근을 부여해야 하는 접선자 대기열.
@@ -285,7 +285,7 @@ impl MafiaGame {
             poisoned_death_days: HashMap::new(),
             honeytrap_noticed: HashSet::new(),
             detective_live_last: HashMap::new(),
-            pending_detective_live_notices: Vec::new(),
+            pending_live_notices: Vec::new(),
             debut_vote_penalty_ids: HashSet::new(),
             pending_tier_ability_contacts: Vec::new(),
             condolence_stolen_this_night: HashSet::new(),
@@ -1049,14 +1049,13 @@ impl MafiaGame {
                 ),
                 _ => continue,
             };
-            self.pending_detective_live_notices
-                .push((detective_id, line));
+            self.pending_live_notices.push((detective_id, line));
         }
     }
 
-    /// 실시간 추적 알림 대기열을 꺼낸다 (러너가 즉시 DM으로 전달).
-    pub fn take_detective_live_notices(&mut self) -> Vec<(u64, String)> {
-        std::mem::take(&mut self.pending_detective_live_notices)
+    /// 즉시 전달할 비밀 알림 대기열을 꺼낸다 (러너가 바로 DM으로 보낸다).
+    pub fn take_live_notices(&mut self) -> Vec<(u64, String)> {
+        std::mem::take(&mut self.pending_live_notices)
     }
 
     /// [승부수] 살아있는 마피아 본대가 보유자 한 명뿐인 상태인가.

@@ -114,7 +114,6 @@ impl MafiaGame {
             Role::Mafia
                 | Role::Doctor
                 | Role::Nurse
-                | Role::Gangster
                 | Role::Vigilante
                 | Role::Hypnotist
                 | Role::Mercenary

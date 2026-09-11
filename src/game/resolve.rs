@@ -394,7 +394,8 @@ impl MafiaGame {
             self.resolve_shaman_results(&blocked_actor_ids, &mut role_reveals);
         self.apply_hypnotist_targets(&blocked_actor_ids);
         let (nurse_results, nurse_contacts) = self.resolve_nurse_results(&blocked_actor_ids);
-        let gangster_results = self.resolve_gangster_results(&blocked_actor_ids);
+        // [공갈] 제출 즉시 발동하고 대상에게도 그 자리에서 통보했으므로 밤 결산 결과는 없다.
+        let gangster_results: HashMap<u64, String> = HashMap::new();
         let (cult_results, cult_bells) = self.resolve_cult_results(&blocked_actor_ids);
         let (fanatic_results, fanatic_bells) = self.resolve_fanatic_results(&blocked_actor_ids);
         let mut fanatic_inherits = self.ensure_fanatic_reincarnation();
@@ -587,9 +588,6 @@ impl MafiaGame {
         for (lover, _) in &result.lover_sacrifices {
             self.record_rating_event(lover.user_id, 5, "연인 희생으로 상대 보호");
         }
-        for actor_id in result.gangster_results.keys() {
-            self.record_rating_event(*actor_id, 3, "공갈 성공");
-        }
         for actor_id in result.agent_results.keys() {
             self.record_rating_event(*actor_id, 3, "요원 지령으로 시민 직업 확인");
         }
@@ -684,7 +682,7 @@ impl MafiaGame {
         self.concealed_kill_failure = false;
         self.honeytrap_noticed.clear();
         self.detective_live_last.clear();
-        self.pending_detective_live_notices.clear();
+        self.pending_live_notices.clear();
         self.mafia_targets.clear();
         self.mafia_display_targets.clear();
         self.doctor_targets.clear();
@@ -1724,38 +1722,6 @@ impl MafiaGame {
                 .filter(|actor_id| !blocked_actor_ids.contains(actor_id))
                 .collect(),
         )
-    }
-
-    fn resolve_gangster_results(
-        &mut self,
-        blocked_actor_ids: &HashSet<u64>,
-    ) -> HashMap<u64, String> {
-        let mut results = HashMap::new();
-        for (actor_id, target_id) in self.gangster_targets.clone() {
-            if blocked_actor_ids.contains(&actor_id) {
-                continue;
-            }
-            let Some(actor) = self.get_player(actor_id) else {
-                continue;
-            };
-            let Some(target) = self.get_player(target_id).cloned() else {
-                continue;
-            };
-            if !actor.alive || !target.alive {
-                continue;
-            }
-            self.gangster_used_ids.insert(actor_id);
-            self.gangster_blocked_vote_days
-                .insert(target.user_id, self.day_number);
-            results.insert(
-                actor_id,
-                format!(
-                    "[공갈] {} 님의 다음 낮 지목 투표권을 빼앗았습니다.",
-                    target.name
-                ),
-            );
-        }
-        results
     }
 
     fn nurse_enhanced_heal_active(&self, blocked_actor_ids: &HashSet<u64>) -> bool {

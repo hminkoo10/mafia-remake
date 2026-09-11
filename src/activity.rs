@@ -65,6 +65,8 @@ pub enum ActivityDiscordUpdate {
         user_id: u64,
         role: Role,
     },
+    /// 제출 즉시 전달할 비밀 알림(사탐 추적, 공갈 통보 등)이 쌓였으니 봇이 바로 DM으로 보낸다.
+    DeliverLiveNotices { guild_id: serenity::GuildId },
 }
 
 #[derive(Clone)]
@@ -971,9 +973,18 @@ async fn action_handler(
         _ => Err(format!("알 수 없는 액션: {}", body.action)),
     };
 
+    // 제출 즉시 전달할 비밀 알림(사탐 추적, 공갈 통보 등)은 봇 쪽에서 DM으로 보낸다.
+    let has_live_notices = !running.game.pending_live_notices.is_empty();
     drop(running);
     if let Some(update) = discord_update {
         let _ = state.discord_updates.send(update);
+    }
+    if has_live_notices {
+        let _ = state
+            .discord_updates
+            .send(ActivityDiscordUpdate::DeliverLiveNotices {
+                guild_id: guild_key,
+            });
     }
 
     match result {

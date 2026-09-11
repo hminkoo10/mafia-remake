@@ -281,14 +281,11 @@ impl MafiaGame {
                 "보호 대상",
             ),
             Role::Nurse => self.submit_nurse_action(actor_id, target_id),
-            Role::Gangster => self.once_target_action(
+            Role::Gangster => self.submit_gangster_action(
                 actor_id,
                 target_id,
-                "공갈 대상을 선택해야 합니다.",
                 "",
-                RoleActionMap::Gangster,
-                Some("건달은 자기 자신을 공갈할 수 없습니다."),
-                "공갈 대상",
+                "건달은 자기 자신을 공갈할 수 없습니다.",
             ),
             Role::Police => {
                 // 조사 결과가 제출 즉시 나오므로, 대상 변경을 허용하면 한 밤에 여러 명을
@@ -556,6 +553,50 @@ impl MafiaGame {
             Some("용병은 자기 자신을 처형할 수 없습니다."),
             "처형 대상",
         )
+    }
+
+    /// [공갈] 제출 즉시 발동한다. 대상은 그 자리에서 다음 낮 지목 투표권을 잃고
+    /// 바로 통보를 받으며, 건달은 같은 밤에 대상을 바꿀 수 없다 (경찰 조사와 같은
+    /// 규칙). 건달이 그 밤에 죽거나 저주에 걸려도 이미 발동한 공갈은 남는다.
+    fn submit_gangster_action(
+        &mut self,
+        actor_id: u64,
+        target_id: Option<u64>,
+        prefix: &str,
+        self_error: &str,
+    ) -> Result<String> {
+        if self.gangster_targets.contains_key(&actor_id) {
+            bail!("공갈은 밤마다 한 번뿐입니다. 이미 이번 밤 공갈을 마쳤습니다.");
+        }
+        let result = self.once_target_action(
+            actor_id,
+            target_id,
+            "공갈 대상을 선택해야 합니다.",
+            "",
+            RoleActionMap::Gangster,
+            Some(self_error),
+            &format!("{prefix}공갈 대상"),
+        )?;
+        let Some(target) = self
+            .gangster_targets
+            .get(&actor_id)
+            .and_then(|target_id| self.get_player(*target_id))
+            .cloned()
+        else {
+            return Ok(result);
+        };
+        self.gangster_used_ids.insert(actor_id);
+        self.gangster_blocked_vote_days
+            .insert(target.user_id, self.day_number);
+        self.record_rating_event(actor_id, 3, "공갈 성공");
+        self.pending_live_notices.push((
+            target.user_id,
+            "[공갈] 건달에게 공갈당했습니다. 다음 낮 지목 투표에서 투표권이 없습니다.".to_string(),
+        ));
+        Ok(format!(
+            "{result}\n[공갈] {} 님의 다음 낮 지목 투표권을 빼앗았습니다. 대상에게도 지금 알렸습니다.",
+            target.name
+        ))
     }
 
     fn submit_hypnotist_action(&mut self, actor_id: u64, target_id: Option<u64>) -> Result<String> {
@@ -1046,14 +1087,11 @@ impl MafiaGame {
             Role::Fanatic => self
                 .submit_fanatic_action(actor_id, target_id)
                 .map(|message| format!("{prefix}{message}")),
-            Role::Gangster => self.once_target_action(
+            Role::Gangster => self.submit_gangster_action(
                 actor_id,
                 target_id,
-                "공갈 대상을 선택해야 합니다.",
-                "",
-                RoleActionMap::Gangster,
-                Some("자기 자신은 공갈할 수 없습니다."),
-                &format!("{prefix}공갈 대상"),
+                &prefix,
+                "자기 자신은 공갈할 수 없습니다.",
             ),
             _ => bail!("훔친 직업은 이번 밤에 사용할 수 있는 능력이 없습니다."),
         }

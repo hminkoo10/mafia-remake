@@ -348,7 +348,9 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Joker => "낮 처형으로 단독 승리합니다.",
         Role::Politician => "투표가 2표이며 처형 면역이 있습니다.",
         Role::Judge => "찬반투표 결과를 뒤집을 수 있습니다.",
-        Role::Gangster => "밤에 한 명의 다음 낮 투표권을 빼앗습니다.",
+        Role::Gangster => {
+            "밤에 한 명을 공갈해 다음 낮 지목 투표권을 빼앗습니다. 제출 즉시 발동해 대상에게 바로 알려지며, 대상은 바꿀 수 없습니다."
+        }
         Role::Prophet => "4번째 낮까지 생존하면 소속팀이 승리합니다.",
         Role::Psychologist => "낮에 두 명이 같은 팀인지 봅니다.",
         Role::Hypnotist => {
