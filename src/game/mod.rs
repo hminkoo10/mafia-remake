@@ -924,10 +924,12 @@ impl MafiaGame {
     }
 
     /// 실시간 추적용: 이 플레이어가 지금 이번 밤 능력을 겨누고 있는 대상.
-    /// 마피아는 본인이 고른 표시 대상을 기준으로 한다.
+    /// 마피아 본대는 개인의 손이 아니라 마피아팀이 과반으로 정한 처형 대상을
+    /// 기준으로 한다 (밤 결산의 처형 판정과 같은 집계). 과반이 없으면 아무도
+    /// 고르지 않은 것으로 본다.
     pub(crate) fn live_action_target(&self, watched: &Player) -> Option<u64> {
         match watched.role {
-            Role::Mafia => self.mafia_display_targets.get(&watched.user_id).copied(),
+            Role::Mafia => self.mafia_team_live_target(),
             Role::Thief => self.resolved_thief_action_target(watched),
             Role::Doctor => self.doctor_targets.get(&watched.user_id).copied(),
             Role::Nurse => self
@@ -962,23 +964,55 @@ impl MafiaGame {
         }
     }
 
+    /// 마피아 본대로서 밤 처형 지목에 참여하는 플레이어인가 (도벽으로 마피아를
+    /// 훔친 도둑 포함).
+    pub(crate) fn acts_as_mafia_main(&self, player: &Player) -> bool {
+        player.role == Role::Mafia
+            || (player.role == Role::Thief && self.thief_night_role(player) == Some(Role::Mafia))
+    }
+
+    /// 마피아팀이 지금 과반으로 정한 처형 대상. 밤 결산의 처형 판정과 같은
+    /// 집계를 쓰므로, 아무도 고르지 않았거나 과반이 없으면 None이다.
+    pub(crate) fn mafia_team_live_target(&self) -> Option<u64> {
+        self.majority_target(&self.mafia_targets)
+    }
+
     /// 실시간 추적: 방금 밤 행동을 낸 플레이어를 추적 중인 사탐들에게 알림을
     /// 쌓는다. 같은 대상 재제출은 무시하고, 처음이면 사용 알림, 다르면 변경
-    /// 알림을 만든다.
+    /// 알림, 손이 사라지면 철회 알림을 만든다. 마피아 본대의 손은 팀 과반
+    /// 대상이라, 본대 한 명이 제출하면 본대 전원을 추적 중인 사탐이 갱신된다.
     pub(crate) fn queue_detective_live_updates(&mut self, actor_id: u64) {
         if self.phase != Phase::Night {
             return;
         }
-        let Some(watched) = self.get_player(actor_id).cloned() else {
+        let Some(actor) = self.get_player(actor_id).cloned() else {
+            return;
+        };
+        let watched_ids = if self.acts_as_mafia_main(&actor) {
+            self.players
+                .iter()
+                .filter(|player| player.alive && self.acts_as_mafia_main(player))
+                .map(|player| player.user_id)
+                .collect::<Vec<_>>()
+        } else {
+            vec![actor_id]
+        };
+        for watched_id in watched_ids {
+            self.queue_detective_live_updates_for(watched_id);
+        }
+    }
+
+    fn queue_detective_live_updates_for(&mut self, watched_id: u64) {
+        let Some(watched) = self.get_player(watched_id).cloned() else {
             return;
         };
         let watchers = self
             .detective_targets
             .iter()
-            .filter(|(_, target_id)| **target_id == actor_id)
+            .filter(|(_, target_id)| **target_id == watched_id)
             .map(|(detective_id, _)| *detective_id)
             .filter(|detective_id| {
-                *detective_id != actor_id
+                *detective_id != watched_id
                     && self.get_player(*detective_id).is_some_and(|detective| {
                         detective.alive
                             && !self.is_frog(detective)
@@ -990,29 +1024,30 @@ impl MafiaGame {
         if watchers.is_empty() {
             return;
         }
-        let Some(current_id) = self.live_action_target(&watched) else {
-            return;
-        };
-        let Some(target_name) = self
-            .get_player(current_id)
-            .map(|player| player.name.clone())
-        else {
-            return;
-        };
+        let current_id = self.live_action_target(&watched);
+        let target_name =
+            current_id.and_then(|id| self.get_player(id).map(|player| player.name.clone()));
         for detective_id in watchers {
-            let previous = self
-                .detective_live_last
-                .insert((detective_id, actor_id), current_id);
-            let line = match previous {
-                Some(previous_id) if previous_id == current_id => continue,
-                Some(_) => format!(
+            let key = (detective_id, watched_id);
+            let previous_id = match current_id {
+                Some(current_id) => self.detective_live_last.insert(key, current_id),
+                None => self.detective_live_last.remove(&key),
+            };
+            let line = match (previous_id, current_id, target_name.as_deref()) {
+                (Some(previous_id), Some(current_id), _) if previous_id == current_id => continue,
+                (Some(_), Some(_), Some(name)) => format!(
                     "[추적] {} 님이 대상을 {} 님으로 바꿨습니다.",
-                    watched.name, target_name
+                    watched.name, name
                 ),
-                None => format!(
+                (None, Some(_), Some(name)) => format!(
                     "[추적] {} 님이 {} 님에게 능력을 사용했습니다.",
-                    watched.name, target_name
+                    watched.name, name
                 ),
+                (Some(_), None, _) => format!(
+                    "[추적] {} 님이 손을 거뒀습니다. 지금은 아무에게도 능력을 사용하지 않고 있습니다.",
+                    watched.name
+                ),
+                _ => continue,
             };
             self.pending_detective_live_notices
                 .push((detective_id, line));

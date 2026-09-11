@@ -1260,7 +1260,7 @@ impl MafiaGame {
 
     pub(crate) fn resolved_thief_action_target(&self, watched: &Player) -> Option<u64> {
         match self.thief_night_role(watched) {
-            Some(Role::Mafia) => self.mafia_targets.get(&watched.user_id).copied(),
+            Some(Role::Mafia) => self.mafia_team_live_target(),
             Some(Role::Doctor) => self.doctor_targets.get(&watched.user_id).copied(),
             Some(Role::Nurse) => self
                 .nurse_targets

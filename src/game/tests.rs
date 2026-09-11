@@ -1280,6 +1280,101 @@ fn detective_gets_notified_on_the_targets_first_action() {
     );
 }
 
+/// 마피아 본대를 추적하면 그 사람 개인의 손이 아니라 마피아팀이 과반으로 정한
+/// 처형 대상이 보인다 (처형 판정과 같은 집계). 과반이 깨지면 아무도 고르지 않은
+/// 상태로 알려 준다.
+#[test]
+fn detective_tracking_a_mafia_sees_the_team_majority_target() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 2, 0, 0, vec![Role::Detective]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Mafia),
+        (3, Role::Detective),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+
+    // 마피아 1만 P5를 골랐고 2는 아직이다. 2를 추적해도 팀 대상 P5가 보인다.
+    game.submit_night_action(1, Some(5)).unwrap();
+    let message = game.submit_night_action(3, Some(2)).unwrap();
+    assert!(
+        message.contains("[추적] 현재 P5 님에게 능력을 사용 중"),
+        "{message}"
+    );
+
+    // 2가 P6을 고르면 1:1 동률이라 과반이 없다. 추적 중인 2의 손이 사라진다.
+    game.submit_night_action(2, Some(6)).unwrap();
+    let notices = game.take_detective_live_notices();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_eq!(notices[0].0, 3);
+    assert!(
+        notices[0].1.contains("P2 님이 손을 거뒀습니다"),
+        "{}",
+        notices[0].1
+    );
+
+    // 1이 P6으로 따라가면 과반이 P6이 되어 2의 손도 P6을 향한다.
+    game.submit_night_action(1, Some(6)).unwrap();
+    let notices = game.take_detective_live_notices();
+    assert_eq!(
+        notices,
+        vec![(
+            3,
+            "[추적] P2 님이 P6 님에게 능력을 사용했습니다.".to_string()
+        )]
+    );
+
+    // 같은 과반 대상 재제출은 알림이 없다.
+    game.submit_night_action(2, Some(6)).unwrap();
+    assert!(game.take_detective_live_notices().is_empty());
+}
+
+/// 추적 대상 마피아가 가만히 있어도 다른 마피아의 제출로 팀 과반이 생기면
+/// 즉시 알림이 온다.
+#[test]
+fn detective_tracking_a_mafia_is_updated_when_another_mafia_acts() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 2, 0, 0, vec![Role::Detective]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Mafia),
+        (3, Role::Detective),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+
+    let message = game.submit_night_action(3, Some(2)).unwrap();
+    assert!(
+        message.contains("아직 이번 밤 능력을 사용하지 않았습니다"),
+        "{message}"
+    );
+
+    game.submit_night_action(1, Some(5)).unwrap();
+    let notices = game.take_detective_live_notices();
+    assert_eq!(
+        notices,
+        vec![(
+            3,
+            "[추적] P2 님이 P5 님에게 능력을 사용했습니다.".to_string()
+        )]
+    );
+}
+
 /// 도굴꾼이 첫 밤에 최면술사를 이어받으면, 그 다음 밤 최면을 걸 수 있고
 /// 다음 낮이 시작되는 순간 최면 해제 버튼 대상에 든다.
 #[test]
