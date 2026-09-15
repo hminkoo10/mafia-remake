@@ -225,7 +225,35 @@ fn public_role_count_does_not_count_inspector_as_two_people() {
     let text = public_role_count_text_from_counts(&role_counts, Some(5));
 
     assert!(text.contains("수사직 1명"));
-    assert!(text.contains("시민 3명"));
+    assert!(text.contains("시민 3명(중 특수 0명)"), "{text}");
+}
+
+/// 수사직 자리로 뽑힌 형사가 시민 특수로도 중복 집계돼 "시민 5명(중 특수 5명)"처럼
+/// 설정(특수 4명)보다 큰 수가 표시되던 문제.
+#[test]
+fn public_role_count_does_not_count_investigation_roles_as_citizen_specials() {
+    let role_counts = HashMap::from([
+        (Role::Mafia, 2),
+        (Role::Spy, 1),
+        (Role::Doctor, 1),
+        (Role::Inspector, 1),
+        (Role::Detective, 1),
+        (Role::Shaman, 1),
+        (Role::Politician, 1),
+        (Role::Judge, 1),
+        (Role::Citizen, 1),
+    ]);
+
+    let text = public_role_count_text_from_counts(&role_counts, Some(10));
+
+    assert_eq!(
+        text,
+        "마피아 3명(중 특수 1명), 의사 1명, 수사직 1명, 시민 5명(중 특수 4명)"
+    );
+
+    // 인원 미정(모집 중) 표기도 같은 규칙이다.
+    let text = public_role_count_text_from_counts(&role_counts, None);
+    assert!(text.contains("시민 변동(중 특수 4명)"), "{text}");
 }
 
 #[test]

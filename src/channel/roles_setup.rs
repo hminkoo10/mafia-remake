@@ -372,7 +372,14 @@ pub fn public_role_count_text_from_counts(
     let agent_total = role_counts.get(&Role::Agent).copied().unwrap_or(0);
     let vigilante_total = role_counts.get(&Role::Vigilante).copied().unwrap_or(0);
     let inspector_total = role_counts.get(&Role::Inspector).copied().unwrap_or(0);
-    let citizen_special = count_group(role_counts, PUBLIC_CITIZEN_SPECIAL_ROLES);
+    // 수사직(경찰·요원·자경단원·형사)은 아래에서 따로 세므로 시민 특수에서는 뺀다.
+    // 형사가 수사직 자리로 뽑히면 시민 특수로도 중복 집계돼 설정(특수 4명)보다 큰
+    // "시민 5명(중 특수 5명)" 같은 수가 표시되던 문제.
+    let citizen_special = PUBLIC_CITIZEN_SPECIAL_ROLES
+        .iter()
+        .filter(|role| !role.is_investigation_role())
+        .map(|role| role_counts.get(role).copied().unwrap_or(0))
+        .sum::<usize>();
     let neutral_special = count_group(role_counts, PUBLIC_NEUTRAL_SPECIAL_ROLES);
     let cult_total = count_group(role_counts, PUBLIC_CULT_SPECIAL_ROLES);
     let citizen_text = if let Some(total_players) = total_players {
