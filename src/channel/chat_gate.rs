@@ -238,12 +238,18 @@ pub async fn set_one_channel_slowmode(
         return;
     }
     if cached.is_none() {
-        let Some(channel) = channel_id
-            .to_channel(&ctx.http)
-            .await
-            .ok()
-            .and_then(|channel| channel.guild())
-        else {
+        let channel = match channel_id.to_channel(&ctx.http).await {
+            Ok(channel) => channel.guild(),
+            Err(error) => {
+                // 조용히 포기하면 [달변] 해제 같은 변경이 소리 없이 빠진다.
+                eprintln!(
+                    "failed to fetch channel for slowmode update: channel_id={} requested={slowmode} error={error:?}",
+                    channel_id.get()
+                );
+                None
+            }
+        };
+        let Some(channel) = channel else {
             return;
         };
         let current = channel.rate_limit_per_user.unwrap_or(0);

@@ -35,6 +35,9 @@ pub async fn setup_game_channels(
 /// 적용하지 않으므로, 게임 채널에 한해 보유자에게 그 권한을 준다. 이 멤버는 게임
 /// 채널의 메시지를 관리(삭제/고정)할 수도 있게 되는 부작용이 있다 — 친구 서버
 /// 전제의 절충이다. cleanup_game에서 오버라이트를 제거한다.
+///
+/// 캐시로 걸러지는 멱등 작업이라 게임 시작 시와 낮마다 다시 불러도 이미 적용된
+/// 경우에는 API 호출이 없다 (시작 직후 채널 조회·편집이 실패한 경우의 복구용).
 pub async fn apply_slowmode_bypass_overwrites(
     ctx: &serenity::Context,
     running: &Arc<RwLock<RunningGame>>,
@@ -295,6 +298,12 @@ pub async fn create_anonymous_chat_channels(
             running_write
                 .anonymous_input_channel_owners
                 .insert(input_channel.id, player.user_id);
+            // 생성 시 건 슬로우모드를 기억해 둔다. [달변] 해제 같은 이후 변경이 채널
+            // 재조회 없이 바로 편집되게 하기 위함이다 (생성 직후 조회는 실패할 수 있다).
+            running_write.channel_slowmode_cache.insert(
+                input_channel.id,
+                config.chat_slowmode_seconds.min(21600) as u16,
+            );
             remember_channel_permissions(&mut running_write, input_channel.id, &initial_overwrites);
         }
         let _ = send_channel_embed(
