@@ -25,6 +25,9 @@ impl MafiaGame {
         if actor.role != Role::Hacker {
             bail!("해커만 해킹을 사용할 수 있습니다.");
         }
+        if self.is_frog(&actor) {
+            bail!("개구리 상태에서는 능력을 사용할 수 없습니다.");
+        }
         if self.is_madam_seduced(&actor) {
             bail!("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.");
         }
@@ -58,6 +61,9 @@ impl MafiaGame {
         let actor = self.require_alive(actor_id)?.clone();
         if actor.role != Role::Vigilante {
             bail!("자경단원만 숙청 조사를 사용할 수 있습니다.");
+        }
+        if self.is_frog(&actor) {
+            bail!("개구리 상태에서는 능력을 사용할 수 없습니다.");
         }
         if self.is_madam_seduced(&actor) {
             bail!("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.");
@@ -116,6 +122,9 @@ impl MafiaGame {
         if actor.role != Role::Psychologist {
             bail!("심리학자만 관찰을 사용할 수 있습니다.");
         }
+        if self.is_frog(&actor) {
+            bail!("개구리 상태에서는 능력을 사용할 수 없습니다.");
+        }
         if self.is_madam_seduced(&actor) {
             bail!("마담에게 유혹당한 상태에서는 능력을 사용할 수 없습니다.");
         }
@@ -171,7 +180,7 @@ impl MafiaGame {
         }
         self.thief_used_days.insert(actor_id, self.day_number);
         // [불침번] 군인의 능력은 훔칠 수 없고, 군인이 도둑의 정체를 안다.
-        if target.role == Role::Soldier {
+        if self.soldier_on_watch(&target) {
             return Some((
                 format!(
                     "[도벽] {} 님이 불침번을 서고 있어 능력을 훔치지 못했습니다.",
@@ -844,7 +853,7 @@ impl MafiaGame {
         self.spy_targets.entry(actor_id).or_default().push(proxy);
         // [불침번] 군인을 첩보하면 정보를 얻지 못하고, 군인이 스파이의 정체를 안다.
         // 첩보 사용 자체는 소모된다.
-        if target.role == Role::Soldier {
+        if self.soldier_on_watch(&target) {
             let actor_name = self
                 .get_player(actor_id)
                 .map(|actor| actor.name.clone())

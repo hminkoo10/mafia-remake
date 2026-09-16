@@ -290,6 +290,7 @@ impl MafiaGame {
             .filter(|player| {
                 player.alive
                     && player.role == Role::Hacker
+                    && !self.is_frog(player)
                     && !self.is_madam_seduced(player)
                     && !self.hacker_used_ids.contains(&player.user_id)
             })
@@ -306,6 +307,7 @@ impl MafiaGame {
             .filter(|player| {
                 player.alive
                     && player.role == Role::Vigilante
+                    && !self.is_frog(player)
                     && !self.is_madam_seduced(player)
                     && !self
                         .vigilante_investigation_used_ids
@@ -412,6 +414,7 @@ impl MafiaGame {
             .filter(|player| {
                 player.alive
                     && player.role == Role::Psychologist
+                    && !self.is_frog(player)
                     && !self.is_madam_seduced(player)
                     && self.psychologist_used_days.get(&player.user_id) != Some(&self.day_number)
             })

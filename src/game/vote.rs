@@ -271,9 +271,9 @@ impl MafiaGame {
         }
         let tied = !decided_by_judge && !normal_approved && yes == no;
         let blocked_by_politician = approved
-            && target
-                .as_ref()
-                .is_some_and(|target| target.role == Role::Politician);
+            && target.as_ref().is_some_and(|target| {
+                target.role == Role::Politician && self.passive_ability_active(target)
+            });
         let mut executed = None;
         let mut extra_killed = Vec::new();
         if blocked_by_politician {

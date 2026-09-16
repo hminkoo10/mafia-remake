@@ -1424,6 +1424,135 @@ fn gangster_threat_lands_immediately_and_cannot_be_changed() {
     assert!(vote.contains("공갈당해"), "{vote}");
 }
 
+/// 저주(개구리) 상태의 군인은 방탄도 불침번도 없다. 마피아 공격에 그대로 죽고,
+/// 스파이의 첩보도 막지 못한다.
+#[test]
+fn frog_soldier_loses_bulletproof_and_night_watch() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Witch, Role::Soldier]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Witch),
+        (3, Role::Soldier),
+        (4, Role::Spy),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+    game.tier_abilities.clear();
+    game.frog_user_ids.insert(3);
+
+    // 불침번이 멈춰 스파이의 첩보가 막히지 않는다.
+    let message = game.submit_night_action(4, Some(3)).unwrap();
+    assert!(!message.contains("불침번"), "{message}");
+    assert!(game.pending_soldier_watch_notices.is_empty());
+
+    // 방탄도 멈춰 마피아 공격에 그대로 죽는다.
+    game.submit_night_action(1, Some(3)).unwrap();
+    let result = game.resolve_night().unwrap();
+    assert!(!game.get_player(3).unwrap().alive);
+    assert!(result.soldier_blocks.is_empty());
+}
+
+/// 저주(개구리) 상태의 정치인은 표가 1표로 줄고 처형 면역도 사라진다.
+#[test]
+fn frog_politician_votes_once_and_can_be_executed() {
+    let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+    game.get_player_mut(1).unwrap().role = Role::Politician;
+    game.frog_user_ids.insert(1);
+
+    game.phase = Phase::Vote;
+    game.submit_day_vote(1, Some(2)).unwrap();
+    game.submit_day_vote(3, Some(4)).unwrap();
+    let result = game.resolve_nomination_vote().unwrap();
+    assert_eq!(result.weighted_vote_counts.get(&Some(2)).copied(), Some(1));
+    assert_ne!(
+        result.executed.as_ref().map(|player| player.user_id),
+        Some(2)
+    );
+
+    game.phase = Phase::ConfirmVote;
+    game.submit_confirmation_vote(2, true).unwrap();
+    game.submit_confirmation_vote(3, true).unwrap();
+    game.submit_confirmation_vote(4, true).unwrap();
+    let result = game.resolve_confirmation_vote(1).unwrap();
+    assert_eq!(
+        result.executed.as_ref().map(|player| player.user_id),
+        Some(1),
+        "{result:?}"
+    );
+}
+
+/// 저주(개구리) 상태에서는 해커·자경단원·심리학자의 낮 능력도 쓸 수 없다.
+#[test]
+fn frog_players_cannot_use_day_abilities() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Witch]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Hacker),
+        (3, Role::Vigilante),
+        (4, Role::Psychologist),
+        (5, Role::Witch),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+    game.phase = Phase::Day;
+    for id in [2, 3, 4] {
+        game.frog_user_ids.insert(id);
+    }
+
+    assert!(game.hacker_day_actors().is_empty());
+    assert!(game.vigilante_day_actors().is_empty());
+    assert!(game.psychologist_day_actors().is_empty());
+    for err in [
+        game.submit_hacker_action(2, 6).unwrap_err(),
+        game.submit_vigilante_investigation(3, 6).unwrap_err(),
+        game.submit_psychologist_observation(4, 6, 7).unwrap_err(),
+    ] {
+        assert!(err.to_string().contains("개구리"), "{err}");
+    }
+}
+
+/// 연인의 희생은 상대 연인의 능력이라, 상대가 저주(개구리) 상태면 발동하지 않는다.
+#[test]
+fn frog_lover_does_not_sacrifice_for_the_partner() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Lover]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Citizen),
+        (3, Role::Lover),
+        (4, Role::Lover),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+    game.tier_abilities.clear();
+    game.frog_user_ids.insert(4);
+
+    game.submit_night_action(1, Some(3)).unwrap();
+    let result = game.resolve_night().unwrap();
+    assert!(!game.get_player(3).unwrap().alive, "{result:?}");
+    assert!(game.get_player(4).unwrap().alive);
+    assert!(result.lover_sacrifices.is_empty());
+}
+
 /// 도굴꾼이 첫 밤에 최면술사를 이어받으면, 그 다음 밤 최면을 걸 수 있고
 /// 다음 낮이 시작되는 순간 최면 해제 버튼 대상에 든다.
 #[test]

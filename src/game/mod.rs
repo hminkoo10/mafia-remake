@@ -562,6 +562,19 @@ impl MafiaGame {
         player.alive && self.frog_user_ids.contains(&player.user_id)
     }
 
+    /// 살아 있고 저주(개구리) 상태가 아닌 플레이어만 직업의 상시 능력(방탄·불침번·
+    /// 정치인 2표와 처형 면역·연인 희생·심판 결정 등)을 쓴다. 개구리인 동안은 고유
+    /// 능력이 모두 멈춘다. 사망 시 발동하는 능력(지목 반격·자해 부활)은 [망각술]이
+    /// 따로 다루므로 여기 해당하지 않는다.
+    pub(crate) fn passive_ability_active(&self, player: &Player) -> bool {
+        player.alive && !self.is_frog(player)
+    }
+
+    /// [불침번] 을 서고 있는 군인인가 (저주 상태면 불침번도 멈춘다).
+    pub(crate) fn soldier_on_watch(&self, player: &Player) -> bool {
+        player.role == Role::Soldier && self.passive_ability_active(player)
+    }
+
     fn hypnotist_can_act_at_night(&self, player: &Player) -> bool {
         player.alive
             && player.role == Role::Hypnotist
@@ -1488,7 +1501,7 @@ impl MafiaGame {
         let mut judges = self
             .players
             .iter()
-            .filter(|player| player.alive && player.role == Role::Judge)
+            .filter(|player| player.role == Role::Judge && self.passive_ability_active(player))
             .cloned()
             .collect::<Vec<_>>();
         if judges.is_empty() {
@@ -1504,8 +1517,8 @@ impl MafiaGame {
 
     fn revealed_judge_alive(&self) -> bool {
         self.players.iter().any(|player| {
-            player.alive
-                && player.role == Role::Judge
+            player.role == Role::Judge
+                && self.passive_ability_active(player)
                 && self.revealed_judge_ids.contains(&player.user_id)
         })
     }
@@ -1731,7 +1744,7 @@ impl MafiaGame {
             return 0;
         }
         self.get_player(voter_id).map_or(1, |voter| {
-            let base = if voter.alive && voter.role == Role::Politician {
+            let base = if voter.role == Role::Politician && self.passive_ability_active(voter) {
                 2
             } else {
                 1

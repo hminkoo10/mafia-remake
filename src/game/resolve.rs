@@ -744,6 +744,7 @@ impl MafiaGame {
             if !voter.alive
                 || !target.alive
                 || voter.role != Role::Madam
+                || self.is_frog(&voter)
                 || voter.user_id == target.user_id
             {
                 continue;
@@ -1326,7 +1327,7 @@ impl MafiaGame {
             let mut lines = Vec::new();
             for target_id in target_ids {
                 if let Some(target) = self.get_player(*target_id) {
-                    if target.role == Role::Soldier {
+                    if self.soldier_on_watch(target) {
                         lines.push(format!(
                             "[첩보] {} 님은 불침번을 서고 있어 정보를 알아내지 못했습니다.",
                             target.name
@@ -1385,7 +1386,7 @@ impl MafiaGame {
                 .filter_map(|(target, _)| {
                     target
                         .as_ref()
-                        .filter(|target| target.alive && target.role == Role::Soldier)
+                        .filter(|target| self.soldier_on_watch(target))
                         .map(|target| target.user_id)
                 })
                 .collect::<Vec<_>>();
@@ -1728,6 +1729,7 @@ impl MafiaGame {
         self.players.iter().any(|player| {
             player.alive
                 && player.role == Role::Nurse
+                && !self.is_frog(player)
                 && !blocked_actor_ids.contains(&player.user_id)
                 && self.nurse_contacted.contains(&player.user_id)
         })
@@ -1909,6 +1911,8 @@ impl MafiaGame {
                 player.role == Role::Agent
                     || self.thief_stolen_roles.get(&player.user_id) == Some(&Role::Agent)
             })
+            // 저주(개구리) 상태의 요원에게는 지령이 오지 않는다.
+            .filter(|player| !self.is_frog(player))
             .cloned()
             .collect::<Vec<_>>();
         let mut results = HashMap::new();
@@ -1957,7 +1961,9 @@ impl MafiaGame {
         let graverobber_ids = self
             .players
             .iter()
-            .filter(|player| player.alive && player.role == Role::Graverobber)
+            .filter(|player| {
+                player.role == Role::Graverobber && self.passive_ability_active(player)
+            })
             .map(|player| player.user_id)
             .collect::<Vec<_>>();
         for id in graverobber_ids {
@@ -1993,9 +1999,10 @@ impl MafiaGame {
         if alive_lovers.len() < 2 {
             return None;
         }
+        // 희생은 상대 연인의 능력이다. 상대가 저주(개구리) 상태면 발동하지 않는다.
         alive_lovers
             .into_iter()
-            .find(|lover| lover.user_id != target.user_id)
+            .find(|lover| lover.user_id != target.user_id && self.passive_ability_active(lover))
     }
 
     fn resolve_mafia_team_attack(
@@ -2135,6 +2142,7 @@ impl MafiaGame {
             && !snipe_pierce
             && !all_in_pierce
             && target.role == Role::Soldier
+            && self.passive_ability_active(&target)
             && !self.soldier_bulletproof_used.contains(&target.user_id)
         {
             self.soldier_bulletproof_used.insert(target.user_id);
