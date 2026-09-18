@@ -37,6 +37,11 @@ pub struct MafiaGame {
     pub gangster_blocked_vote_days: HashMap<u64, u32>,
     pub police_targets: HashMap<u64, u64>,
     pub thief_police_targets: HashMap<u64, u64>,
+    /// 경찰(·경찰 도벽) 조사 판정을 제출 시점에 고정한 것: 조사자 → (대상, 마피아팀 판정).
+    /// 결과는 제출 때 한 번만 전달하고, 밤 결산·아침 공개도 이 기록을 쓴다.
+    pub police_judgments: HashMap<u64, (u64, bool)>,
+    /// 형사 수사 판정을 제출 시점에 고정한 것: 형사 → (대상, 같은 팀이면 그때 본 직업).
+    pub inspector_judgments: HashMap<u64, (u64, Option<Role>)>,
     pub inspector_targets: HashMap<u64, u64>,
     pub inspector_used_ids: HashSet<u64>,
     /// 공무원 조회: actor → 이번 밤 조회할 직업
@@ -141,7 +146,6 @@ pub struct MafiaGame {
     pub agent_discovered_ids: HashSet<u64>,
     pub day_votes: HashMap<u64, Option<u64>>,
     pub confirm_votes: HashMap<u64, bool>,
-    pub police_result_announced: bool,
     pub spy_contacted: HashSet<u64>,
     /// 사기꾼 변장: fraudster → (사기 대상 시민, 변장 직업)
     pub fraudster_disguises: HashMap<u64, (u64, Role)>,
@@ -263,6 +267,8 @@ impl MafiaGame {
             gangster_blocked_vote_days: HashMap::new(),
             police_targets: HashMap::new(),
             thief_police_targets: HashMap::new(),
+            police_judgments: HashMap::new(),
+            inspector_judgments: HashMap::new(),
             inspector_targets: HashMap::new(),
             inspector_used_ids: HashSet::new(),
             civil_servant_targets: HashMap::new(),
@@ -337,7 +343,6 @@ impl MafiaGame {
             agent_discovered_ids: HashSet::new(),
             day_votes: HashMap::new(),
             confirm_votes: HashMap::new(),
-            police_result_announced: false,
             spy_contacted: HashSet::new(),
             fraudster_disguises: HashMap::new(),
             fraudster_contacted: HashSet::new(),

@@ -503,7 +503,6 @@ pub async fn run_night(
             "shaman": running_write.replay_text_results(&result.shaman_results),
             "priest": running_write.replay_text_results(&result.priest_results),
             "agent": running_write.replay_text_results(&result.agent_results),
-            "thief_police": running_write.replay_text_results(&result.thief_police_results),
             "reporter": running_write.replay_text_results(&result.reporter_results),
             "vigilante": running_write.replay_text_results(&result.vigilante_results),
             "mercenary": running_write.replay_text_results(&result.mercenary_results),
@@ -564,7 +563,6 @@ pub async fn run_night(
             &result.cult_results,
             &result.fanatic_results,
             &result.hacker_results,
-            &result.thief_police_results,
         ] {
             for (user_id, text) in map {
                 running_write
@@ -919,7 +917,6 @@ pub async fn run_night(
     }
     sync_cult_team_channel_access(ctx, data, running).await;
     sync_lover_chat_access(ctx, data, running).await;
-    announce_police_result(ctx, running, &result).await;
     let config = data.config.read().await.clone();
     announce_public_police_status(ctx, running, &config, police_can_act, &result).await?;
     announce_morning_mafia_count(ctx, running, &config).await?;
@@ -1300,7 +1297,6 @@ pub async fn send_private_result_maps(
         result.shaman_results.clone(),
         result.priest_results.clone(),
         result.agent_results.clone(),
-        result.thief_police_results.clone(),
         result.reporter_results.clone(),
         result.vigilante_results.clone(),
         result.mercenary_results.clone(),
@@ -1319,53 +1315,6 @@ pub async fn send_private_result_maps(
         }
     }
     let _ = running;
-}
-
-pub async fn announce_police_result(
-    ctx: &serenity::Context,
-    running: &Arc<RwLock<RunningGame>>,
-    result: &NightResult,
-) {
-    let (police_players, message) = {
-        let running_read = running.read().await;
-        if running_read.game.police_result_announced {
-            return;
-        }
-        let police_players = running_read
-            .game
-            .alive_players()
-            .into_iter()
-            .filter(|player| player.role == Role::Police)
-            // 재안내는 그 밤 조사를 제출한 경찰에게만 간다. 도굴로 밤 중에
-            // 경찰이 된 플레이어가 죽은 경찰의 결과를 물려받으면 안 된다.
-            .filter(|player| {
-                result.police_actor_ids.is_empty()
-                    || result.police_actor_ids.contains(&player.user_id)
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if police_players.is_empty() {
-            return;
-        }
-        let message = if let Some(target) = &result.police_target {
-            let result_text = if result.police_target_is_mafia.unwrap_or(false) {
-                "마피아입니다"
-            } else {
-                "마피아가 아닙니다"
-            };
-            format!("조사 결과: {} 님은 **{}**.", target.name, result_text)
-        } else {
-            "이번 밤 경찰 조사가 없었습니다.".to_string()
-        };
-        (police_players, message)
-    };
-    {
-        let mut running_write = running.write().await;
-        running_write.game.mark_police_result_announced();
-    }
-    for player in police_players {
-        let _ = send_player_secret(ctx, running, &player, message.clone(), vec![]).await;
-    }
 }
 
 pub async fn announce_public_police_status(

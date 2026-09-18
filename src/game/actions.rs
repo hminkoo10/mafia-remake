@@ -302,7 +302,7 @@ impl MafiaGame {
                 if self.police_targets.contains_key(&actor_id) {
                     bail!("경찰 조사는 밤마다 한 번뿐입니다. 이미 이번 밤 조사를 마쳤습니다.");
                 }
-                self.once_target_action(
+                let result = self.once_target_action(
                     actor_id,
                     target_id,
                     "조사 대상을 선택해야 합니다.",
@@ -310,7 +310,11 @@ impl MafiaGame {
                     RoleActionMap::Police,
                     Some("경찰은 자기 자신을 조사할 수 없습니다."),
                     "조사 대상",
-                )
+                )?;
+                if let Some(target_id) = self.police_targets.get(&actor_id).copied() {
+                    self.record_police_judgment(actor_id, target_id);
+                }
+                Ok(result)
             }
             Role::Inspector => self.submit_inspector_action(
                 actor_id,
@@ -450,6 +454,17 @@ impl MafiaGame {
     /// 형사 수사는 게임당 1회다. 밤 중에는 대상을 바꿀 수 있어야 하므로 소모는
     /// 밤이 끝날 때(`record_night_action_usage`) 처리하고, 여기서는 이미 쓴
     /// 형사만 막는다.
+    /// 경찰 계열 조사는 제출 즉시 결과가 나오므로 판정을 그 시점에 고정한다. 밤
+    /// 결산과 아침 공개는 이 기록을 쓰고 다시 계산하지 않는다 (밤 사이 접선·저주로
+    /// 판정이 바뀌어도 조사자가 이미 받은 결과와 어긋나지 않게).
+    fn record_police_judgment(&mut self, actor_id: u64, target_id: u64) {
+        let is_mafia = self
+            .get_player(target_id)
+            .is_some_and(|target| self.is_police_detected_mafia_team(target));
+        self.police_judgments
+            .insert(actor_id, (target_id, is_mafia));
+    }
+
     fn submit_inspector_action(
         &mut self,
         actor_id: u64,
@@ -472,26 +487,31 @@ impl MafiaGame {
             label,
         )?;
         self.inspector_used_ids.insert(actor_id);
-        let immediate = self
-            .inspector_targets
-            .get(&actor_id)
-            .copied()
-            .and_then(|resolved_target_id| {
-                let actor = self.get_player(actor_id)?;
-                let target = self.get_player(resolved_target_id)?;
-                Some(
-                    if self.inspector_team_key(actor) == self.inspector_team_key(target) {
-                        format!(
-                            "[{}님의 직업은 {}입니다.]",
-                            target.name,
-                            self.visible_role(target).value()
-                        )
-                    } else {
-                        format!("[{}님은 시민팀이 아닙니다.]", target.name)
-                    },
-                )
-            })
-            .unwrap_or_default();
+        // 판정은 제출 시점에 고정한다. 밤 결산(대상 통보·파파라치 공유·레이팅)은 이
+        // 기록을 쓰고 다시 계산하지 않는다.
+        let judgment =
+            self.inspector_targets
+                .get(&actor_id)
+                .copied()
+                .and_then(|resolved_target_id| {
+                    let actor = self.get_player(actor_id)?;
+                    let target = self.get_player(resolved_target_id)?;
+                    let seen_role = (self.inspector_team_key(actor)
+                        == self.inspector_team_key(target))
+                    .then(|| self.visible_role(target));
+                    Some((resolved_target_id, seen_role, target.name.clone()))
+                });
+        let immediate = match &judgment {
+            Some((_, Some(seen_role), target_name)) => {
+                format!("[{}님의 직업은 {}입니다.]", target_name, seen_role.value())
+            }
+            Some((_, None, target_name)) => format!("[{}님은 시민팀이 아닙니다.]", target_name),
+            None => String::new(),
+        };
+        if let Some((resolved_target_id, seen_role, _)) = judgment {
+            self.inspector_judgments
+                .insert(actor_id, (resolved_target_id, seen_role));
+        }
         Ok(format!(
             "{result}\n{immediate}\n[형사 수사는 1회용이며, 이번 밤에는 대상을 바꿀 수 없습니다.]"
         ))
@@ -1043,7 +1063,7 @@ impl MafiaGame {
                 if self.thief_police_targets.contains_key(&actor_id) {
                     bail!("경찰 조사는 밤마다 한 번뿐입니다. 이미 이번 밤 조사를 마쳤습니다.");
                 }
-                self.once_target_action(
+                let result = self.once_target_action(
                     actor_id,
                     target_id,
                     "조사 대상을 선택해야 합니다.",
@@ -1051,7 +1071,11 @@ impl MafiaGame {
                     RoleActionMap::ThiefPolice,
                     Some("자기 자신은 조사할 수 없습니다."),
                     &format!("{prefix}조사 대상"),
-                )
+                )?;
+                if let Some(target_id) = self.thief_police_targets.get(&actor_id).copied() {
+                    self.record_police_judgment(actor_id, target_id);
+                }
+                Ok(result)
             }
             Role::Inspector => self.submit_inspector_action(
                 actor_id,

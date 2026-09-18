@@ -1553,6 +1553,88 @@ fn frog_lover_does_not_sacrifice_for_the_partner() {
     assert!(result.lover_sacrifices.is_empty());
 }
 
+/// 경찰 조사 판정은 제출 시점에 고정된다. 접선 전 보조 마피아를 조사해
+/// "마피아팀이 아닙니다"를 받았으면, 그 보조가 같은 밤 접선해도 밤 결산·아침
+/// 공개 판정은 그대로 "아님"이다 (결과는 한 번만 전달되므로 어긋난 재안내도 없다).
+#[test]
+fn police_judgment_is_fixed_at_submission_time() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 1, vec![Role::Spy]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Police),
+        (3, Role::Spy),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+    game.tier_abilities.clear();
+
+    game.submit_night_action(2, Some(3)).unwrap();
+    let immediate = game.police_result_for_actor(2).unwrap();
+    assert!(immediate.contains("마피아팀이 아닙니다"), "{immediate}");
+
+    // 같은 밤, 스파이가 마피아를 첩보해 접선한다.
+    game.submit_night_action(3, Some(1)).unwrap();
+    assert!(game.is_known_mafia_team(game.get_player(3).unwrap()));
+    assert!(
+        game.police_result_for_actor(2)
+            .unwrap()
+            .contains("마피아팀이 아닙니다")
+    );
+
+    let result = game.resolve_night().unwrap();
+    assert_eq!(
+        result.police_target.as_ref().map(|player| player.user_id),
+        Some(3)
+    );
+    assert_eq!(result.police_target_is_mafia, Some(false));
+    // 첩보 결과도 제출 때 한 번만 나오므로 밤 결산 문구는 없다.
+    assert!(result.spy_results.is_empty());
+    assert_eq!(result.spy_contacts, vec![3]);
+}
+
+/// 형사 수사 판정도 제출 시점에 고정된다. 수사 뒤 대상이 저주(개구리)에 걸려도
+/// 밤 결산의 대상 통보·기록은 형사가 본 직업 그대로다.
+#[test]
+fn inspector_judgment_is_fixed_at_submission_time() {
+    let players = (1..=8)
+        .map(|id| (id as u64, format!("P{id}")))
+        .collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 1, 0, vec![Role::Inspector]).unwrap();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Inspector),
+        (3, Role::Doctor),
+        (4, Role::Citizen),
+        (5, Role::Citizen),
+        (6, Role::Citizen),
+        (7, Role::Citizen),
+        (8, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+    game.tier_abilities.clear();
+
+    let message = game.submit_night_action(2, Some(3)).unwrap();
+    assert!(message.contains("의사"), "{message}");
+
+    // 수사 뒤 대상이 저주에 걸린다.
+    game.frog_user_ids.insert(3);
+    let result = game.resolve_night().unwrap();
+    assert_eq!(
+        result.inspector_results.get(&2).map(String::as_str),
+        Some("[P3님의 직업은 의사입니다.]")
+    );
+    assert!(result.inspector_target_notices.contains_key(&3));
+}
+
 /// 도굴꾼이 첫 밤에 최면술사를 이어받으면, 그 다음 밤 최면을 걸 수 있고
 /// 다음 낮이 시작되는 순간 최면 해제 버튼 대상에 든다.
 #[test]
@@ -1673,22 +1755,23 @@ fn grave_robbed_police_does_not_inherit_the_dead_officers_result() {
         game.get_player_mut(id).unwrap().role = role;
     }
 
-    // 경찰이 조사를 제출하고(즉시 결과는 본인에게), 같은 밤 마피아에게 죽는다.
+    // 경찰이 조사를 제출하고(즉시 결과는 본인에게만), 같은 밤 마피아에게 죽는다.
     game.submit_night_action(2, Some(5)).unwrap();
+    assert!(game.police_result_for_actor(2).is_some());
+    assert!(game.police_result_for_actor(3).is_none());
     game.submit_night_action(1, Some(2)).unwrap();
     let result = game.resolve_night().unwrap();
 
     // 도굴꾼이 경찰을 이어받았다.
     assert!(!game.get_player(2).unwrap().alive);
     assert_eq!(game.get_player(3).unwrap().role, Role::Police);
-    // 조사 결과는 성립해 있지만, 재안내 수신자는 죽은 경찰(2)뿐이라
-    // 도굴꾼(3)에게는 전달되지 않는다.
+    // 조사 결과는 성립해 있지만(공개 판정용), 결과는 제출 때 한 번만 전달되고
+    // 아침 재안내가 없으므로 도굴꾼(3)이 물려받을 결과도 없다.
     assert_eq!(
         result.police_target.as_ref().map(|player| player.user_id),
         Some(5)
     );
-    assert_eq!(result.police_actor_ids, vec![2]);
-    assert!(!result.police_actor_ids.contains(&3));
+    assert!(game.police_result_for_actor(3).is_none());
 }
 
 /// 경찰이 그 밤에 죽어도(예: 소생으로 부활 예정) 제출한 조사 표는
@@ -3988,9 +4071,6 @@ fn stolen_police_result_is_independent_from_police_vote() {
     let result = game.resolve_night().unwrap();
 
     assert_eq!(result.police_target.unwrap().user_id, police_target_id);
-    let thief_result = result.thief_police_results.get(&thief_id).unwrap();
-    assert!(thief_result.contains(&thief_target_name));
-    assert!(!thief_result.contains(&police_target_name));
 }
 
 #[test]
@@ -4199,8 +4279,11 @@ fn police_does_not_detect_uncontacted_spy_as_mafia_team() {
 
     game.submit_night_action(police_id, Some(spy_id)).unwrap();
 
-    assert!(game.police_result_ready());
-    assert_eq!(game.current_police_result().1, Some(false));
+    assert!(game.police_targets.contains_key(&police_id));
+    assert_eq!(
+        game.current_police_result_excluding(&HashSet::new()).1,
+        Some(false)
+    );
     assert_eq!(
         game.resolve_night().unwrap().police_target_is_mafia,
         Some(false)
@@ -4239,8 +4322,11 @@ fn police_detects_contacted_spy_as_mafia_team() {
 
     game.submit_night_action(police_id, Some(spy_id)).unwrap();
 
-    assert!(game.police_result_ready());
-    assert_eq!(game.current_police_result().1, Some(true));
+    assert!(game.police_targets.contains_key(&police_id));
+    assert_eq!(
+        game.current_police_result_excluding(&HashSet::new()).1,
+        Some(true)
+    );
     assert_eq!(
         game.resolve_night().unwrap().police_target_is_mafia,
         Some(true)
@@ -4440,8 +4526,11 @@ fn police_does_not_detect_uncontacted_witch_as_mafia_team() {
 
     game.submit_night_action(police_id, Some(witch_id)).unwrap();
 
-    assert!(game.police_result_ready());
-    assert_eq!(game.current_police_result().1, Some(false));
+    assert!(game.police_targets.contains_key(&police_id));
+    assert_eq!(
+        game.current_police_result_excluding(&HashSet::new()).1,
+        Some(false)
+    );
     assert_eq!(
         game.resolve_night().unwrap().police_target_is_mafia,
         Some(false)
@@ -4480,8 +4569,11 @@ fn police_detects_contacted_witch_as_mafia_team() {
 
     game.submit_night_action(police_id, Some(witch_id)).unwrap();
 
-    assert!(game.police_result_ready());
-    assert_eq!(game.current_police_result().1, Some(true));
+    assert!(game.police_targets.contains_key(&police_id));
+    assert_eq!(
+        game.current_police_result_excluding(&HashSet::new()).1,
+        Some(true)
+    );
     assert_eq!(
         game.resolve_night().unwrap().police_target_is_mafia,
         Some(true)

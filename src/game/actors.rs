@@ -442,57 +442,36 @@ impl MafiaGame {
             .collect()
     }
 
-    fn police_action_actors(&mut self) -> Vec<Player> {
-        self.night_action_actors()
-            .into_iter()
-            .filter(|player| player.role == Role::Police)
-            .collect()
-    }
-
-    pub fn police_result_ready(&mut self) -> bool {
-        let actors = self.police_action_actors();
-        !actors.is_empty()
-            && actors
-                .iter()
-                .all(|actor| self.police_targets.contains_key(&actor.user_id))
-    }
-
-    pub fn current_police_result(&self) -> (Option<Player>, Option<bool>) {
-        self.current_police_result_excluding(&HashSet::new())
-    }
-
     pub(crate) fn current_police_result_excluding(
         &self,
         _blocked_actor_ids: &HashSet<u64>,
     ) -> (Option<Player>, Option<bool>) {
         // 경찰은 1인 역할이고 조사는 제출 즉시 성립한다. 과반 집계 없이 이번 밤
-        // 제출된 경찰 조사를 그대로 쓴다 (경찰·대상이 그 밤에 죽어도 유지).
-        let target_id = self
+        // 제출된 경찰 조사를 그대로 쓴다 (경찰·대상이 그 밤에 죽어도 유지). 판정은
+        // 제출 시점에 고정한 기록을 쓰고 다시 계산하지 않는다 (밤 사이 접선·저주로
+        // 바뀌어도 경찰이 이미 받은 결과와 어긋나지 않게).
+        let submitted = self
             .police_targets
             .iter()
             .find(|(actor_id, _)| {
                 self.get_player(**actor_id)
                     .is_some_and(|actor| actor.role == Role::Police)
             })
-            .map(|(_, target_id)| *target_id);
-        let target = target_id.and_then(|id| self.get_player(id).cloned());
-        let is_mafia = target
-            .as_ref()
-            .map(|player| self.is_police_detected_mafia_team(player));
+            .map(|(actor_id, target_id)| (*actor_id, *target_id));
+        let Some((actor_id, target_id)) = submitted else {
+            return (None, None);
+        };
+        let target = self.get_player(target_id).cloned();
+        let is_mafia = self
+            .police_judgments
+            .get(&actor_id)
+            .map(|(_, is_mafia)| *is_mafia)
+            .or_else(|| {
+                target
+                    .as_ref()
+                    .map(|player| self.is_police_detected_mafia_team(player))
+            });
         (target, is_mafia)
-    }
-
-    pub fn police_result_message(&self) -> String {
-        let (target, is_mafia) = self.current_police_result();
-        let Some(target) = target else {
-            return "이번 밤 경찰 조사가 없었습니다.".to_string();
-        };
-        let result_text = if is_mafia.unwrap_or(false) {
-            "마피아입니다"
-        } else {
-            "마피아가 아닙니다"
-        };
-        format!("조사 결과: {} 님은 **{}**.", target.name, result_text)
     }
 
     pub fn police_result_for_actor(&self, actor_id: u64) -> Option<String> {
@@ -520,7 +499,13 @@ impl MafiaGame {
         let target_id = *targets.get(&actor_id)?;
         // 대상이 그 밤에 죽었어도 이미 성립한 조사 결과는 그대로 전달한다.
         let target = self.get_player(target_id)?;
-        let result_text = if self.is_police_detected_mafia_team(target) {
+        // 제출 시점에 고정한 판정을 우선 쓴다 (없으면 지금 상태로 판정).
+        let is_mafia = self
+            .police_judgments
+            .get(&actor_id)
+            .map(|(_, is_mafia)| *is_mafia)
+            .unwrap_or_else(|| self.is_police_detected_mafia_team(target));
+        let result_text = if is_mafia {
             "마피아팀입니다"
         } else {
             "마피아팀이 아닙니다"
@@ -529,35 +514,6 @@ impl MafiaGame {
             "조사 결과: {} 님은 **{}**.",
             target.name, result_text
         ))
-    }
-
-    pub fn thief_police_results(&self) -> HashMap<u64, String> {
-        self.thief_police_results_excluding(&HashSet::new())
-    }
-
-    pub(crate) fn thief_police_results_excluding(
-        &self,
-        blocked_actor_ids: &HashSet<u64>,
-    ) -> HashMap<u64, String> {
-        self.thief_police_targets
-            .keys()
-            .filter_map(|actor_id| {
-                self.police_result_for_actor_excluding(*actor_id, blocked_actor_ids)
-                    .map(|message| (*actor_id, message))
-            })
-            .collect()
-    }
-
-    pub fn consume_ready_police_result(&mut self) -> Option<String> {
-        if self.police_result_announced || !self.police_result_ready() {
-            return None;
-        }
-        self.police_result_announced = true;
-        Some(self.police_result_message())
-    }
-
-    pub fn mark_police_result_announced(&mut self) {
-        self.police_result_announced = true;
     }
 
     pub fn all_day_votes_submitted(&self) -> bool {

@@ -369,16 +369,6 @@ impl MafiaGame {
             .collect::<HashSet<_>>();
         let (police_target, police_target_is_mafia) =
             self.current_police_result_excluding(&blocked_actor_ids);
-        let police_actor_ids = self
-            .police_targets
-            .keys()
-            .copied()
-            .filter(|actor_id| {
-                self.get_player(*actor_id)
-                    .is_some_and(|actor| actor.role == Role::Police)
-            })
-            .collect::<Vec<_>>();
-        let thief_police_results = self.thief_police_results_excluding(&blocked_actor_ids);
         // 사립탐정은 실시간 추적이라 밤 결산 결과가 없다.
         let detective_results: HashMap<u64, String> = HashMap::new();
         // 파파라치 이슈용: 시민팀이 이번 밤 알아낸 "다른 플레이어의 정확한 직업" 목록.
@@ -435,8 +425,6 @@ impl MafiaGame {
             mafia_target,
             police_target_is_mafia,
             police_target,
-            police_actor_ids,
-            thief_police_results,
             killed_players,
             detective_results,
             inspector_results,
@@ -692,6 +680,8 @@ impl MafiaGame {
         self.gangster_targets.clear();
         self.police_targets.clear();
         self.thief_police_targets.clear();
+        self.police_judgments.clear();
+        self.inspector_judgments.clear();
         self.inspector_targets.clear();
         self.civil_servant_targets.clear();
         self.vigilante_targets.clear();
@@ -722,7 +712,6 @@ impl MafiaGame {
         self.cult_bells_this_night = 0;
         self.day_votes.clear();
         self.confirm_votes.clear();
-        self.police_result_announced = false;
     }
 
     pub(super) fn apply_madam_seduction(
@@ -1234,8 +1223,15 @@ impl MafiaGame {
             }
             used_actor_ids.push(*actor_id);
             // 수사 대상이 이 밤에 죽어도 수사 자체는 이미 끝났으므로 결과는 전달한다.
-            // 다만 이미 죽은 대상에게는 형사의 정체를 알리지 않는다.
-            if self.inspector_team_key(actor) == self.inspector_team_key(target) {
+            // 다만 이미 죽은 대상에게는 형사의 정체를 알리지 않는다. 판정은 제출
+            // 시점에 고정한 기록을 쓴다 (밤 사이 접선·저주로 바뀌어도 형사가 이미
+            // 받은 결과와 같게).
+            let seen_role = match self.inspector_judgments.get(actor_id) {
+                Some((_, seen_role)) => *seen_role,
+                None => (self.inspector_team_key(actor) == self.inspector_team_key(target))
+                    .then(|| self.visible_role(target)),
+            };
+            if let Some(seen_role) = seen_role {
                 if target.alive {
                     target_notices.insert(
                         target.user_id,
@@ -1244,13 +1240,9 @@ impl MafiaGame {
                 }
                 results.insert(
                     *actor_id,
-                    format!(
-                        "[{}님의 직업은 {}입니다.]",
-                        target.name,
-                        self.visible_role(target).value()
-                    ),
+                    format!("[{}님의 직업은 {}입니다.]", target.name, seen_role.value()),
                 );
-                role_reveals.push((1, *actor_id, *target_id, self.visible_role(target)));
+                role_reveals.push((1, *actor_id, *target_id, seen_role));
             }
         }
         self.inspector_used_ids.extend(used_actor_ids);
@@ -1309,47 +1301,14 @@ impl MafiaGame {
         retaliations
     }
 
+    /// [첩보] 결과는 제출 즉시 한 번만 전달하므로 밤 결산 결과 문구는 없다. 이번 밤
+    /// 접선한 스파이 목록(채널 권한·레이팅용)만 넘긴다.
     fn resolve_spy_results(
         &self,
         blocked_actor_ids: &HashSet<u64>,
     ) -> (HashMap<u64, String>, Vec<u64>) {
-        let mut results = HashMap::new();
-        for (actor_id, target_ids) in &self.spy_targets {
-            if blocked_actor_ids.contains(actor_id) {
-                continue;
-            }
-            let Some(actor) = self.get_player(*actor_id) else {
-                continue;
-            };
-            if !actor.alive {
-                continue;
-            }
-            let mut lines = Vec::new();
-            for target_id in target_ids {
-                if let Some(target) = self.get_player(*target_id) {
-                    if self.soldier_on_watch(target) {
-                        lines.push(format!(
-                            "[첩보] {} 님은 불침번을 서고 있어 정보를 알아내지 못했습니다.",
-                            target.name
-                        ));
-                    } else {
-                        lines.push(format!(
-                            "[첩보] {} 님의 직업은 **{}** 입니다.",
-                            target.name,
-                            self.visible_role(target).value()
-                        ));
-                    }
-                }
-            }
-            if self.spy_contacts_this_night.contains(actor_id) {
-                lines.push("[접선] 마피아와 접선했습니다.".to_string());
-            }
-            if !lines.is_empty() {
-                results.insert(*actor_id, lines.join("\n"));
-            }
-        }
         (
-            results,
+            HashMap::new(),
             self.spy_contacts_this_night
                 .iter()
                 .copied()
