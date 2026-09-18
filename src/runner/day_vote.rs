@@ -73,9 +73,6 @@ pub async fn run_day(
     }
     set_game_channel_chat(ctx, data, running, true).await;
     set_channel_slowmode(ctx, running, config.chat_slowmode_seconds).await;
-    // [달변] 슬로우모드 무시를 낮마다 다시 보장한다. 이미 적용돼 있으면 캐시로
-    // 걸러져 API 호출이 없고, 게임 시작 직후 실패했던 경우만 여기서 복구된다.
-    apply_slowmode_bypass_overwrites(ctx, running).await;
     sync_private_role_chat_permissions(ctx, data, running).await;
     sync_lover_chat_access(ctx, data, running).await;
     sync_cult_team_channel_access(ctx, data, running).await;

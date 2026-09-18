@@ -129,7 +129,6 @@ pub async fn cleanup_game(
     // Block in-flight personal dead-chat creation before collecting channels to delete.
     running.write().await.game.phase = Phase::Ended;
     restore_channel_slowmode(ctx, running).await;
-    remove_slowmode_bypass_overwrites(ctx, running).await;
     restore_member_game_channel_chat(ctx, running).await;
     restore_game_channel_chat(ctx, running).await;
     restore_all_frog_game_channel_permissions(ctx, running).await;

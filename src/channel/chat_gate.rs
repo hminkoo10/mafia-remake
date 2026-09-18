@@ -241,7 +241,7 @@ pub async fn set_one_channel_slowmode(
         let channel = match channel_id.to_channel(&ctx.http).await {
             Ok(channel) => channel.guild(),
             Err(error) => {
-                // 조용히 포기하면 [달변] 해제 같은 변경이 소리 없이 빠진다.
+                // 조용히 포기하면 슬로우모드 변경이 소리 없이 빠진다.
                 eprintln!(
                     "failed to fetch channel for slowmode update: channel_id={} requested={slowmode} error={error:?}",
                     channel_id.get()

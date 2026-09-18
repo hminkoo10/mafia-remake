@@ -367,7 +367,6 @@ pub enum TierAbility {
     /// 3티어: 패배 시 레이팅 손실 10% 완화
     RatingShield,
     /// 3티어: 게임 채널 슬로우모드 무시
-    SlowmodeBypass,
     /// 4티어 마피아팀: 경찰을 공격하면 보호를 무시하고 처형
     Lawless,
     /// 4티어 마피아팀: 첫날 밤 공격이 자기 자신에게 쓴 치료를 무시
@@ -431,7 +430,6 @@ impl TierAbility {
     pub const fn value(self) -> &'static str {
         match self {
             Self::RatingShield => "가호",
-            Self::SlowmodeBypass => "달변",
             Self::Lawless => "무법",
             Self::NightRaid => "야습",
             Self::Cleanup => "수습",
@@ -465,7 +463,7 @@ impl TierAbility {
 
     pub const fn tier(self) -> u8 {
         match self {
-            Self::RatingShield | Self::SlowmodeBypass => 3,
+            Self::RatingShield => 3,
             _ => 4,
         }
     }
@@ -473,9 +471,6 @@ impl TierAbility {
     pub const fn description(self) -> &'static str {
         match self {
             Self::RatingShield => "패배해도 레이팅 손실이 10% 줄어듭니다.",
-            Self::SlowmodeBypass => {
-                "채팅 슬로우모드를 무시하고 연속으로 말할 수 있습니다. 익명 게임에서는 내 익명 채팅 채널의 슬로우모드가 풀립니다."
-            }
             Self::Lawless => {
                 "마피아팀의 밤 공격이 경찰 계열(경찰·요원·자경단원·형사)을 노리면 보호를 무시하고 무조건 처형합니다."
             }
@@ -548,8 +543,7 @@ impl TierAbility {
     }
 }
 
-pub const TIER3_ABILITIES: &[TierAbility] =
-    &[TierAbility::RatingShield, TierAbility::SlowmodeBypass];
+pub const TIER3_ABILITIES: &[TierAbility] = &[TierAbility::RatingShield];
 pub const TIER4_MAFIA_ABILITIES: &[TierAbility] = &[
     TierAbility::Lawless,
     TierAbility::NightRaid,
