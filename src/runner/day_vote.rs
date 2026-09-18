@@ -646,13 +646,26 @@ pub async fn run_vote(
         return Ok(());
     }
     let nominee = vote_result.executed.unwrap();
-    let terrorist_targets = {
+    // [묵비권] 보유자가 지목되면 최후변론 시간이 30초 늘어난다.
+    let (terrorist_targets, defense_seconds) = {
         let mut running_write = running.write().await;
         running_write.final_defense_user_id = Some(nominee.user_id);
-        running_write.phase_deadline = Some(Instant::now() + Duration::from_secs(20));
-        running_write
-            .game
-            .begin_terrorist_final_defense(nominee.user_id)
+        let defense_seconds = running_write.game.final_defense_seconds(nominee.user_id);
+        running_write.phase_deadline = Some(Instant::now() + Duration::from_secs(defense_seconds));
+        (
+            running_write
+                .game
+                .begin_terrorist_final_defense(nominee.user_id),
+            defense_seconds,
+        )
+    };
+    let extension_note = if defense_seconds > mafia_remake::model::FINAL_DEFENSE_SECONDS {
+        format!(
+            "\n[묵비권] 보유자라 반론 시간이 {}초 늘어납니다.",
+            mafia_remake::model::DEFENSE_EXTENSION_SECONDS
+        )
+    } else {
+        String::new()
     };
     sync_anonymous_general_chat_permissions(ctx, running).await;
     set_channel_slowmode(ctx, running, 0).await;
@@ -693,7 +706,7 @@ pub async fn run_vote(
         ctx,
         running,
         format!(
-            "{} 님의 최후변론 시간입니다. 20초 동안 지목된 사람만 말할 수 있습니다.\n이 시간 동안 슬로우모드는 해제됩니다.",
+            "{} 님의 최후변론 시간입니다. {defense_seconds}초 동안 지목된 사람만 말할 수 있습니다.\n이 시간 동안 슬로우모드는 해제됩니다.{extension_note}",
             nominee.name
         ),
         "최후변론",
@@ -703,7 +716,7 @@ pub async fn run_vote(
         true,
     )
     .await?;
-    tokio::time::sleep(Duration::from_secs(20)).await;
+    tokio::time::sleep(Duration::from_secs(defense_seconds)).await;
     if running.read().await.game.phase == Phase::Ended {
         return Ok(());
     }

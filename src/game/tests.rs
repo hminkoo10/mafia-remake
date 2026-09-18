@@ -1635,6 +1635,25 @@ fn inspector_judgment_is_fixed_at_submission_time() {
     assert!(result.inspector_target_notices.contains_key(&3));
 }
 
+/// [묵비권] 보유자가 지목되면 최후변론 시간이 30초 늘어난다. 저주(개구리) 상태면
+/// 능력이 멈춰 기본 시간이다.
+#[test]
+fn defense_extension_adds_thirty_seconds_for_the_nominee() {
+    let base = crate::model::FINAL_DEFENSE_SECONDS;
+    let bonus = crate::model::DEFENSE_EXTENSION_SECONDS;
+    let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+    game.tier_abilities.clear();
+    assert_eq!(game.final_defense_seconds(2), base);
+
+    game.tier_abilities
+        .insert(2, vec![TierAbility::DefenseExtension]);
+    assert_eq!(game.final_defense_seconds(2), base + bonus);
+    assert_eq!(game.final_defense_seconds(3), base);
+
+    game.frog_user_ids.insert(2);
+    assert_eq!(game.final_defense_seconds(2), base);
+}
+
 /// 도굴꾼이 첫 밤에 최면술사를 이어받으면, 그 다음 밤 최면을 걸 수 있고
 /// 다음 낮이 시작되는 순간 최면 해제 버튼 대상에 든다.
 #[test]

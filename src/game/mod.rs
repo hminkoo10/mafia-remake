@@ -580,6 +580,20 @@ impl MafiaGame {
         player.role == Role::Soldier && self.passive_ability_active(player)
     }
 
+    /// [묵비권] 지목된 사람의 최후변론 시간. 보유자면 기본 시간에 30초를 더한다
+    /// (저주 상태면 능력이 멈춰 기본 시간).
+    pub fn final_defense_seconds(&self, nominee_id: u64) -> u64 {
+        let extended = self.get_player(nominee_id).is_some_and(|nominee| {
+            self.passive_ability_active(nominee)
+                && self.has_tier_ability(nominee_id, TierAbility::DefenseExtension)
+        });
+        if extended {
+            crate::model::FINAL_DEFENSE_SECONDS + crate::model::DEFENSE_EXTENSION_SECONDS
+        } else {
+            crate::model::FINAL_DEFENSE_SECONDS
+        }
+    }
+
     fn hypnotist_can_act_at_night(&self, player: &Player) -> bool {
         player.alive
             && player.role == Role::Hypnotist
