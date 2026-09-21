@@ -398,6 +398,8 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         vote_notify: Arc::new(Notify::new()),
         confirm_notify: Arc::new(Notify::new()),
         day_notify: Arc::new(Notify::new()),
+        final_defense_notify: Arc::new(Notify::new()),
+        final_defense_ended: false,
         stats_recorded: false,
     };
     running_game.record_replay_event(

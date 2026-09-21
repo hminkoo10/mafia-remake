@@ -95,6 +95,8 @@ pub(crate) fn dead_chat_test_running() -> RunningGame {
         vote_notify: Arc::new(Notify::new()),
         confirm_notify: Arc::new(Notify::new()),
         day_notify: Arc::new(Notify::new()),
+        final_defense_notify: Arc::new(Notify::new()),
+        final_defense_ended: false,
         stats_recorded: false,
     }
 }

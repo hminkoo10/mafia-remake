@@ -650,6 +650,7 @@ pub async fn run_vote(
     let (terrorist_targets, defense_seconds) = {
         let mut running_write = running.write().await;
         running_write.final_defense_user_id = Some(nominee.user_id);
+        running_write.final_defense_ended = false;
         let defense_seconds = running_write.game.final_defense_seconds(nominee.user_id);
         running_write.phase_deadline = Some(Instant::now() + Duration::from_secs(defense_seconds));
         (
@@ -702,23 +703,71 @@ pub async fn run_vote(
         true,
     )
     .await?;
-    send_game_embed(
+    let (defense_deadline, defense_notify) = {
+        let running_read = running.read().await;
+        (
+            running_read
+                .phase_deadline
+                .unwrap_or_else(|| Instant::now() + Duration::from_secs(defense_seconds)),
+            running_read.final_defense_notify.clone(),
+        )
+    };
+    let mut defense_message = send_game_embed(
         ctx,
         running,
         format!(
-            "{} 님의 최후변론 시간입니다. {defense_seconds}초 동안 지목된 사람만 말할 수 있습니다.\n이 시간 동안 슬로우모드는 해제됩니다.{extension_note}",
+            "{} 님의 최후변론 시간입니다. {defense_seconds}초 동안 지목된 사람만 말할 수 있습니다.\n이 시간 동안 슬로우모드는 해제됩니다.{extension_note}\n지목된 사람은 `발언 종료` 버튼으로 발언을 일찍 마칠 수 있습니다.",
             nominee.name
         ),
         "최후변론",
         serenity::Colour::GOLD,
-        vec![],
+        final_defense_components(guild_id, nominee.user_id, false),
         false,
         true,
     )
     .await?;
-    tokio::time::sleep(Duration::from_secs(defense_seconds)).await;
+    // 시간이 다 되거나 대상자가 `발언 종료`를 누르면 끝난다.
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(defense_deadline)) => {
+                break;
+            }
+            _ = defense_notify.notified() => {
+                let running_read = running.read().await;
+                if running_read.game.phase == Phase::Ended || running_read.final_defense_ended {
+                    break;
+                }
+            }
+        }
+    }
+    let _ = defense_message
+        .edit(
+            &ctx.http,
+            serenity::EditMessage::new().components(final_defense_components(
+                guild_id,
+                nominee.user_id,
+                true,
+            )),
+        )
+        .await;
     if running.read().await.game.phase == Phase::Ended {
         return Ok(());
+    }
+    if running.read().await.final_defense_ended {
+        let _ = send_game_embed(
+            ctx,
+            running,
+            format!(
+                "{} 님이 발언을 마쳐 바로 찬반 투표로 넘어갑니다.",
+                nominee.name
+            ),
+            "발언 종료",
+            serenity::Colour::GOLD,
+            vec![],
+            false,
+            true,
+        )
+        .await;
     }
     {
         let mut running_write = running.write().await;

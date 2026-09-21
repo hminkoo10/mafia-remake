@@ -355,6 +355,21 @@ pub fn day_skip_components(
     ])]
 }
 
+/// 최후변론 대상자 전용 `발언 종료` 버튼. 대상자가 누르면 남은 시간을 기다리지
+/// 않고 바로 찬반 투표로 넘어간다 (다른 사람이 누르면 거부).
+pub fn final_defense_components(
+    guild_id: serenity::GuildId,
+    nominee_id: u64,
+    disabled: bool,
+) -> Vec<serenity::CreateActionRow> {
+    vec![serenity::CreateActionRow::Buttons(vec![
+        serenity::CreateButton::new(format!("enddefense:{}:{nominee_id}", guild_id.get()))
+            .label("발언 종료")
+            .style(serenity::ButtonStyle::Danger)
+            .disabled(disabled),
+    ])]
+}
+
 pub fn day_extension_components(
     guild_id: serenity::GuildId,
     disabled: bool,

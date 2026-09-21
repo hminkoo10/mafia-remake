@@ -12,6 +12,7 @@ pub async fn handle_component(
     match parts.as_slice() {
         ["join", guild] => handle_join(ctx, data, component, parse_guild(guild)?).await?,
         ["spectate", guild] => handle_spectate(ctx, data, component, parse_guild(guild)?).await?,
+        ["leave", guild] => handle_leave(ctx, data, component, parse_guild(guild)?).await?,
         ["startnow", guild] => {
             handle_recruitment_finish(ctx, data, component, parse_guild(guild)?, false).await?
         }
@@ -84,6 +85,9 @@ pub async fn handle_component(
             handle_confirm_vote(ctx, data, component, parse_guild(guild)?, *approve == "1").await?
         }
         ["skipday", guild] => handle_skip_day(ctx, data, component, parse_guild(guild)?).await?,
+        ["enddefense", guild, nominee] => {
+            handle_end_defense(ctx, data, component, parse_guild(guild)?, nominee.parse()?).await?
+        }
         ["extendday", guild] => {
             handle_day_extension(ctx, data, component, parse_guild(guild)?).await?
         }
@@ -904,6 +908,125 @@ pub async fn handle_spectate(
         false,
     )
     .await;
+    Ok(())
+}
+
+/// `나가기` 버튼: 모집 중 참가·관전 등록을 취소하고 부여한 역할을 회수한다.
+pub async fn handle_leave(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    guild_id: serenity::GuildId,
+) -> Result<()> {
+    let Some(recruitment) = data.recruitments.get(&guild_id).map(|entry| entry.clone()) else {
+        send_component_private(ctx, component, "참가자 모집이 종료되었습니다.").await?;
+        return Ok(());
+    };
+    let mut rec = recruitment.write().await;
+    if !rec.accepting {
+        send_component_private(ctx, component, "참가자 모집이 종료되었습니다.").await?;
+        return Ok(());
+    }
+    let user_id = component.user.id.get();
+    let (reply, role_to_remove) = if rec.joined_ids.remove(&user_id) {
+        rec.joined_names.remove(&user_id);
+        ("참가를 취소했습니다.", Some(rec.participant_role_id))
+    } else if rec.spectator_ids.remove(&user_id) {
+        rec.spectator_names.remove(&user_id);
+        ("관전 등록을 취소했습니다.", rec.spectator_role_id)
+    } else {
+        drop(rec);
+        send_component_private(ctx, component, "참가하거나 관전 등록한 상태가 아닙니다.").await?;
+        return Ok(());
+    };
+    let updated = rec.clone();
+    drop(rec);
+    if let (Some(member), Some(role_id)) = (component.member.clone(), role_to_remove) {
+        if member.roles.contains(&role_id) {
+            let _ = crate::http_pool::with_fallback(ctx, |http| {
+                let member = member.clone();
+                async move { member.remove_role(&http, role_id).await }
+            })
+            .await;
+        }
+    }
+    send_component_private(ctx, component, reply).await?;
+    update_recruitment_message(
+        ctx,
+        data,
+        component,
+        guild_id,
+        &updated,
+        RECRUITMENT_STATUS_OPEN,
+        false,
+    )
+    .await;
+    Ok(())
+}
+
+/// `발언 종료` 버튼: 최후변론 대상자가 발언을 일찍 마치면 남은 시간을 기다리지 않고
+/// 바로 찬반 투표로 넘어간다.
+pub async fn handle_end_defense(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    guild_id: serenity::GuildId,
+    nominee_id: u64,
+) -> Result<()> {
+    if component.user.id.get() != nominee_id {
+        send_component_private(ctx, component, "최후변론 대상자만 발언을 마칠 수 있습니다.")
+            .await?;
+        return Ok(());
+    }
+    let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
+        send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
+        return Ok(());
+    };
+    let (notify, nominee_name) = {
+        let mut running_write = running.write().await;
+        if running_write.game.phase != Phase::FinalDefense
+            || running_write.final_defense_user_id != Some(nominee_id)
+        {
+            drop(running_write);
+            send_component_private(ctx, component, "지금은 최후변론 시간이 아닙니다.").await?;
+            return Ok(());
+        }
+        if running_write.final_defense_ended {
+            drop(running_write);
+            send_component_private(ctx, component, "이미 발언을 마쳤습니다.").await?;
+            return Ok(());
+        }
+        running_write.final_defense_ended = true;
+        running_write.record_replay_event(
+            "final_defense_ended",
+            Some(nominee_id),
+            &[],
+            serde_json::json!({ "source": "button" }),
+        );
+        let nominee_name = running_write
+            .game
+            .get_player(nominee_id)
+            .map(|player| player.name.clone())
+            .unwrap_or_default();
+        (running_write.final_defense_notify.clone(), nominee_name)
+    };
+    notify.notify_waiters();
+    component
+        .create_response(
+            ctx,
+            serenity::CreateInteractionResponse::UpdateMessage(
+                serenity::CreateInteractionResponseMessage::new()
+                    .embed(make_embed(
+                        format!(
+                            "{nominee_name} 님이 발언을 마쳤습니다. 바로 찬반 투표로 넘어갑니다."
+                        ),
+                        "발언 종료",
+                        serenity::Colour::DARK_GREEN,
+                    ))
+                    .components(final_defense_components(guild_id, nominee_id, true)),
+            ),
+        )
+        .await?;
     Ok(())
 }
 

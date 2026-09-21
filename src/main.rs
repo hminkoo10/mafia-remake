@@ -198,6 +198,9 @@ struct RunningGame {
     vote_notify: Arc<Notify>,
     confirm_notify: Arc<Notify>,
     day_notify: Arc<Notify>,
+    /// 최후변론 대상자가 `발언 종료`를 누르면 깨어나 바로 찬반 투표로 넘어간다.
+    final_defense_notify: Arc<Notify>,
+    final_defense_ended: bool,
     stats_recorded: bool,
 }
 
