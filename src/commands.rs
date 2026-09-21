@@ -42,11 +42,13 @@ use tokio::task::JoinSet;
 
 mod anonymous_chat;
 mod boards;
+mod coins;
 mod config_cmds;
 mod guides;
 mod interactions;
 pub(crate) use self::anonymous_chat::*;
 pub(crate) use self::boards::*;
+pub(crate) use self::coins::*;
 pub(crate) use self::config_cmds::*;
 pub(crate) use self::guides::*;
 pub(crate) use self::interactions::*;
@@ -313,6 +315,20 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         game
     };
     let initial_roles = game.players.iter().map(|p| (p.user_id, p.role)).collect();
+    // [배팅] 판 시작 시점의 설정값을 보유 코인 안에서 확정한다.
+    let bets = {
+        let stats_read = ctx.data().stats.read().await;
+        game.players
+            .iter()
+            .map(|player| {
+                (
+                    player.user_id,
+                    stats::effective_bet(stats_read.users.get(&player.user_id.to_string())),
+                )
+            })
+            .filter(|(_, bet)| *bet > 0)
+            .collect::<HashMap<u64, i64>>()
+    };
     let stats_snapshot = {
         let mut stats_file = ctx.data().stats.write().await;
         stats::record_role_selection(
@@ -400,6 +416,10 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         day_notify: Arc::new(Notify::new()),
         final_defense_notify: Arc::new(Notify::new()),
         final_defense_ended: false,
+        bets,
+        star_votes: HashMap::new(),
+        star_vote_open: false,
+        star_vote_notify: Arc::new(Notify::new()),
         stats_recorded: false,
     };
     running_game.record_replay_event(
@@ -855,7 +875,7 @@ pub fn personal_stats_text(
         &entry.name
     };
     format!(
-        "{name}님의 전적\n전체 게임: **{}판**\n승리/패배: **{}승 {}패**\n승률: **{}**\n연승: **{}연승** (최고 {}연승)\n마피아팀 플레이: **{}회**\n게임시간: **{}**\n레이팅: **{}점** / **{}랭크** (최고 {}점, 반영 {}판)\n\n역할별 플레이\n{}",
+        "{name}님의 전적\n전체 게임: **{}판**\n승리/패배: **{}승 {}패**\n승률: **{}**\n연승: **{}연승** (최고 {}연승)\n마피아팀 플레이: **{}회**\n게임시간: **{}**\n레이팅: **{}점** / **{}랭크** (최고 {}점, 반영 {}판)\n코인: **{}** (배팅 설정 {}, 오늘 출석 {})\n스타플레이어: **{}회**\n내신 쿠폰: **{}포인트 교환**{}\n\n역할별 플레이\n{}",
         entry.games,
         entry.wins,
         entry.losses,
@@ -868,6 +888,16 @@ pub fn personal_stats_text(
         stats::rating_rank(stats_file, entry.rating, entry.rating_games),
         entry.rating_peak,
         entry.rating_games,
+        stats::coin_text(entry.coins),
+        stats::coin_text(entry.bet_amount),
+        if entry.last_attendance_date == stats::kst_today() {
+            "완료"
+        } else {
+            "아직"
+        },
+        entry.star_player_count,
+        entry.coupon_points_exchanged,
+        recent_coupon_text(entry),
         stats::role_stats_text(entry)
     )
 }

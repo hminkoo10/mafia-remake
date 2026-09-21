@@ -37,7 +37,7 @@ const WEB_SETTINGS_PATH: &str = "/web-settings";
 const WEB_SETTINGS_SESSION_TTL_SECONDS: u64 = 600;
 const MAX_GAME_PLAYERS: usize = 24;
 const WEB_LEADERBOARD_METRICS: &[&str] = &[
-    "rating", "wins", "streak", "winrate", "games", "mafia", "playtime",
+    "rating", "wins", "streak", "winrate", "games", "mafia", "playtime", "coins", "star",
 ];
 
 pub(crate) struct WebRoleGuide {
@@ -757,6 +757,36 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
         "낮 채팅 슬로우모드(초)",
         WebFieldKind::Int,
         Some(0),
+    ),
+    field(
+        "attendance_coins",
+        "출석 지급 코인(원)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "star_player_coins",
+        "스타플레이어 상금(원)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "coupon_coins_per_point",
+        "내신 쿠폰 1포인트당 코인(원)",
+        WebFieldKind::Int,
+        Some(1),
+    ),
+    field(
+        "coupon_api_url",
+        "내신 쿠폰 API 주소",
+        WebFieldKind::Text,
+        None,
+    ),
+    field(
+        "coupon_api_key",
+        "내신 쿠폰 API 키",
+        WebFieldKind::Text,
+        None,
     ),
     field(
         "default_mafia_count",

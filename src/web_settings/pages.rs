@@ -402,7 +402,7 @@ pub(crate) fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> St
         .iter()
         .map(|entry| {
             format!(
-                r#"<tr><td class="num">{}</td><td>{}</td><td class="num">{}점 · {}</td><td>{}승 {}패</td><td class="num">{}</td><td class="num">{}</td><td class="num">{}</td><td class="num">{}</td><td>{}</td></tr>"#,
+                r#"<tr><td class="num">{}</td><td>{}</td><td class="num">{}점 · {}</td><td>{}승 {}패</td><td class="num">{}</td><td class="num">{}</td><td class="num">{}</td><td class="num">{}</td><td>{}</td><td class="num">{}</td><td class="num">{}</td></tr>"#,
                 safe_text(entry.get("rank")),
                 safe_text(entry.get("name")),
                 safe_text(entry.get("rating")),
@@ -414,6 +414,8 @@ pub(crate) fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> St
                 safe_text(entry.get("games")),
                 safe_text(entry.get("mafia_team_games")),
                 safe_text(entry.get("playtime")),
+                safe_text(entry.get("coins_text")),
+                safe_text(entry.get("star_player_count")),
             )
         })
         .collect::<Vec<_>>()
@@ -424,7 +426,7 @@ pub(crate) fn render_leaderboard_table(leaderboard: &Value, compact: bool) -> St
         "<h2>전체 순위</h2>"
     };
     format!(
-        r#"<section class="panel">{title}<table><thead><tr><th class="num">순위</th><th>이름</th><th class="num">레이팅/랭크</th><th>승패</th><th class="num">승률</th><th class="num">연승</th><th class="num">판수</th><th class="num">마피아팀</th><th>게임시간</th></tr></thead><tbody>{rows}</tbody></table></section>"#
+        r#"<section class="panel">{title}<table><thead><tr><th class="num">순위</th><th>이름</th><th class="num">레이팅/랭크</th><th>승패</th><th class="num">승률</th><th class="num">연승</th><th class="num">판수</th><th class="num">마피아팀</th><th>게임시간</th><th class="num">코인</th><th class="num">스타</th></tr></thead><tbody>{rows}</tbody></table></section>"#
     )
 }
 
@@ -1047,6 +1049,11 @@ pub(crate) fn config_value(config: &BotConfig, name: &str) -> String {
         "discussion_seconds" => config.discussion_seconds.to_string(),
         "vote_seconds" => config.vote_seconds.to_string(),
         "chat_slowmode_seconds" => config.chat_slowmode_seconds.to_string(),
+        "attendance_coins" => config.attendance_coins.to_string(),
+        "star_player_coins" => config.star_player_coins.to_string(),
+        "coupon_coins_per_point" => config.coupon_coins_per_point.to_string(),
+        "coupon_api_url" => config.coupon_api_url.clone(),
+        "coupon_api_key" => config.coupon_api_key.clone(),
         "default_mafia_count" => config.default_mafia_count.to_string(),
         "default_doctor_count" => (config.default_doctor_count > 0).to_string(),
         "default_police_count" => (config.default_police_count > 0).to_string(),
@@ -1227,6 +1234,8 @@ pub(crate) fn set_text(
         "participant_role" => config.participant_role = value,
         "manager_role" => config.manager_role = value,
         "anonymous_name_mode" => config.anonymous_name_mode = value,
+        "coupon_api_url" => config.coupon_api_url = value,
+        "coupon_api_key" => config.coupon_api_key = value,
         _ => return Err("알 수 없는 설정 항목입니다.".to_string()),
     }
     Ok(())
@@ -1249,6 +1258,9 @@ pub(crate) fn set_int(
         "discussion_seconds" => config.discussion_seconds = value,
         "vote_seconds" => config.vote_seconds = value,
         "chat_slowmode_seconds" => config.chat_slowmode_seconds = value,
+        "attendance_coins" => config.attendance_coins = value as i64,
+        "star_player_coins" => config.star_player_coins = value as i64,
+        "coupon_coins_per_point" => config.coupon_coins_per_point = (value as i64).max(1),
         "default_mafia_count" => config.default_mafia_count = value as u32,
         "default_joker_count" => config.default_joker_count = value as u32,
         "citizen_special_count" => config.citizen_special_count = value as u32,

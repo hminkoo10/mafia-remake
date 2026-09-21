@@ -32,9 +32,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
 
+mod coins;
 mod day_vote;
 mod night;
 mod results;
+pub(crate) use self::coins::*;
 pub(crate) use self::day_vote::*;
 pub(crate) use self::night::*;
 pub(crate) use self::results::*;
@@ -83,6 +85,8 @@ async fn game_loop_inner(
         )
         .await?;
     }
+    // [배팅] 참가자 전원의 배팅액을 시작할 때 공개한다.
+    announce_bets(ctx, running).await;
     send_roles(ctx, running, &config).await;
     upsert_game_status(ctx, running).await;
     loop {

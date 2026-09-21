@@ -13,6 +13,8 @@ pub async fn handle_component(
         ["join", guild] => handle_join(ctx, data, component, parse_guild(guild)?).await?,
         ["spectate", guild] => handle_spectate(ctx, data, component, parse_guild(guild)?).await?,
         ["leave", guild] => handle_leave(ctx, data, component, parse_guild(guild)?).await?,
+        ["bet", guild] => handle_bet_open(ctx, data, component, parse_guild(guild)?).await?,
+        ["starvote", guild] => handle_star_vote(ctx, data, component, parse_guild(guild)?).await?,
         ["startnow", guild] => {
             handle_recruitment_finish(ctx, data, component, parse_guild(guild)?, false).await?
         }
@@ -122,6 +124,9 @@ pub async fn handle_modal(
     match parts.as_slice() {
         ["autostart", guild] => {
             handle_auto_start_submit(ctx, data, modal, parse_guild(guild)?).await?;
+        }
+        ["bet", guild] => {
+            handle_bet_submit(ctx, data, modal, parse_guild(guild)?).await?;
         }
         ["lastwill", guild, user] => {
             handle_last_will_submit(ctx, data, modal, parse_guild(guild)?, user.parse()?).await?;

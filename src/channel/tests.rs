@@ -97,6 +97,10 @@ pub(crate) fn dead_chat_test_running() -> RunningGame {
         day_notify: Arc::new(Notify::new()),
         final_defense_notify: Arc::new(Notify::new()),
         final_defense_ended: false,
+        bets: HashMap::new(),
+        star_votes: HashMap::new(),
+        star_vote_open: false,
+        star_vote_notify: Arc::new(Notify::new()),
         stats_recorded: false,
     }
 }
@@ -116,6 +120,11 @@ fn selection_test_config() -> config::BotConfig {
         discussion_seconds: 30,
         vote_seconds: 30,
         chat_slowmode_seconds: 0,
+        attendance_coins: 10_000,
+        star_player_coins: 1_000,
+        coupon_api_url: String::new(),
+        coupon_api_key: String::new(),
+        coupon_coins_per_point: 10_000,
         reveal_death_roles: false,
         reveal_public_police_status: true,
         reveal_morning_mafia_count: true,

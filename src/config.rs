@@ -23,6 +23,21 @@ pub struct BotConfig {
     pub vote_seconds: u64,
     #[serde(default = "default_chat_slowmode_seconds")]
     pub chat_slowmode_seconds: u64,
+    /// 출석 1회당 지급 코인(원).
+    #[serde(default = "default_attendance_coins")]
+    pub attendance_coins: i64,
+    /// 스타플레이어 상금(원). 동표면 나눠 받는다.
+    #[serde(default = "default_star_player_coins")]
+    pub star_player_coins: i64,
+    /// 내신 쿠폰 발급 API 주소.
+    #[serde(default = "default_coupon_api_url")]
+    pub coupon_api_url: String,
+    /// 내신 쿠폰 발급 API 키 (Bearer). 비어 있으면 쿠폰 교환을 막는다.
+    #[serde(default)]
+    pub coupon_api_key: String,
+    /// 내신 쿠폰 1포인트당 코인(원).
+    #[serde(default = "default_coupon_coins_per_point")]
+    pub coupon_coins_per_point: i64,
     #[serde(default)]
     pub reveal_death_roles: bool,
     #[serde(default = "default_true")]
@@ -184,6 +199,22 @@ impl BotConfig {
 
 const fn default_chat_slowmode_seconds() -> u64 {
     3
+}
+
+const fn default_attendance_coins() -> i64 {
+    crate::stats::DEFAULT_ATTENDANCE_COINS
+}
+
+const fn default_star_player_coins() -> i64 {
+    crate::stats::DEFAULT_STAR_PLAYER_COINS
+}
+
+fn default_coupon_api_url() -> String {
+    "http://dimigo.store/api/v1/coupons".to_string()
+}
+
+const fn default_coupon_coins_per_point() -> i64 {
+    crate::stats::DEFAULT_COUPON_COINS_PER_POINT
 }
 
 const fn default_neutral_special_count() -> u32 {

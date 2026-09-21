@@ -659,3 +659,212 @@ fn first_dead_losing_player_loses_less_rating() {
             .any(|reason| reason.contains("첫 사망 패배 완화"))
     );
 }
+
+// ---------------------------------------------------------------- 코인
+
+#[test]
+fn coin_text_groups_thousands() {
+    assert_eq!(coin_text(0), "0원");
+    assert_eq!(coin_text(1_234_567), "1,234,567원");
+    assert_eq!(signed_coin_text(-700), "-700원");
+    assert_eq!(signed_coin_text(1_400), "+1,400원");
+}
+
+#[test]
+fn attendance_pays_once_per_kst_day() {
+    let mut stats = StatsFile::default();
+    let first = claim_attendance(&mut stats, 1, "Alpha", 10_000, "2026-09-21");
+    assert_eq!(
+        first,
+        AttendanceOutcome::Claimed {
+            amount: 10_000,
+            balance: 10_000
+        }
+    );
+    let again = claim_attendance(&mut stats, 1, "Alpha", 10_000, "2026-09-21");
+    assert_eq!(again, AttendanceOutcome::AlreadyClaimed { balance: 10_000 });
+    let next_day = claim_attendance(&mut stats, 1, "Alpha", 10_000, "2026-09-22");
+    assert_eq!(
+        next_day,
+        AttendanceOutcome::Claimed {
+            amount: 10_000,
+            balance: 20_000
+        }
+    );
+}
+
+#[test]
+fn bet_setting_rejects_negative_and_over_balance() {
+    let mut stats = StatsFile::default();
+    claim_attendance(&mut stats, 1, "Alpha", 5_000, "2026-09-21");
+    assert!(set_bet_amount(&mut stats, 1, "Alpha", -1).is_err());
+    assert!(set_bet_amount(&mut stats, 1, "Alpha", 5_001).is_err());
+    assert_eq!(set_bet_amount(&mut stats, 1, "Alpha", 3_000), Ok(5_000));
+    assert_eq!(effective_bet(stats.users.get("1")), 3_000);
+    // 보유 코인이 줄면 설정값은 남되 실제 배팅은 보유 안으로 잘린다.
+    stats.users.get_mut("1").unwrap().coins = 1_000;
+    assert_eq!(effective_bet(stats.users.get("1")), 1_000);
+    assert_eq!(effective_bet(None), 0);
+}
+
+fn coin_test_game() -> MafiaGame {
+    let mut game = rating_test_game();
+    for (id, role) in [
+        (1, Role::Mafia),
+        (2, Role::Police),
+        (3, Role::Citizen),
+        (4, Role::Citizen),
+    ] {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+    game
+}
+
+#[test]
+fn bet_settlement_pays_winners_and_charges_losers_within_bounds() {
+    let game = coin_test_game();
+    let initial_roles = game
+        .players
+        .iter()
+        .map(|player| (player.user_id, player.role))
+        .collect::<HashMap<_, _>>();
+    let mut stats = StatsFile::default();
+    for player in &game.players {
+        claim_attendance(
+            &mut stats,
+            player.user_id,
+            &player.name,
+            10_000,
+            "2026-09-21",
+        );
+    }
+    let bets = HashMap::from([(1, 1_000), (2, 1_000), (3, 0)]);
+
+    let settlements = settle_bets(&mut stats, &game, &initial_roles, Winner::Citizen, &bets);
+
+    assert_eq!(settlements.len(), 2);
+    let mafia = settlements.iter().find(|item| item.user_id == 1).unwrap();
+    let police = settlements.iter().find(|item| item.user_id == 2).unwrap();
+    assert!(
+        !mafia.won && (-1_000..=-500).contains(&mafia.delta),
+        "{mafia:?}"
+    );
+    assert!(
+        police.won && (500..=4_000).contains(&police.delta),
+        "{police:?}"
+    );
+    assert_eq!(stats.users["1"].coins, 10_000 + mafia.delta);
+    assert_eq!(stats.users["2"].coins, 10_000 + police.delta);
+    assert_eq!(stats.users["3"].coins, 10_000);
+}
+
+#[test]
+fn bet_multiplier_favors_underdogs_and_stays_bounded() {
+    let game = coin_test_game();
+    let mafia = game.get_player(1).unwrap().clone();
+    let citizen = game.get_player(3).unwrap().clone();
+    let stats = StatsFile::default();
+
+    let (citizen_multiplier, _) = bet_win_multiplier(&stats, &game, &citizen, Role::Citizen);
+    let (mafia_multiplier, _) = bet_win_multiplier(&stats, &game, &mafia, Role::Mafia);
+    assert!(
+        (citizen_multiplier - 1.0).abs() < 1e-9,
+        "{citizen_multiplier}"
+    );
+    assert!((mafia_multiplier - 1.4).abs() < 1e-9, "{mafia_multiplier}");
+
+    // 강자(승률·레이팅 높음)는 배율이 낮아진다.
+    let mut strong = StatsFile::default();
+    strong.users.insert(
+        "3".to_string(),
+        PlayerStats {
+            games: 20,
+            wins: 18,
+            rating: 1_600,
+            ..Default::default()
+        },
+    );
+    let (strong_multiplier, _) = bet_win_multiplier(&strong, &game, &citizen, Role::Citizen);
+    assert!(
+        strong_multiplier < citizen_multiplier,
+        "{strong_multiplier}"
+    );
+
+    // 전체 승률이 낮은 직업은 배율이 오른다.
+    let mut hard = StatsFile::default();
+    hard.role_outcomes.insert(
+        Role::Citizen.value().to_string(),
+        RoleOutcome { games: 40, wins: 8 },
+    );
+    let (hard_multiplier, _) = bet_win_multiplier(&hard, &game, &citizen, Role::Citizen);
+    assert!(hard_multiplier > citizen_multiplier, "{hard_multiplier}");
+
+    for multiplier in [
+        citizen_multiplier,
+        mafia_multiplier,
+        strong_multiplier,
+        hard_multiplier,
+    ] {
+        assert!((0.5..=4.0).contains(&multiplier));
+    }
+}
+
+#[test]
+fn game_record_tracks_role_outcomes() {
+    let game = coin_test_game();
+    let initial_roles = game
+        .players
+        .iter()
+        .map(|player| (player.user_id, player.role))
+        .collect::<HashMap<_, _>>();
+    let mut stats = StatsFile::default();
+
+    record_game_stats(&mut stats, &game, &initial_roles, 600, Winner::Citizen);
+
+    let mafia = &stats.role_outcomes[Role::Mafia.value()];
+    assert_eq!((mafia.games, mafia.wins), (1, 0));
+    let police = &stats.role_outcomes[Role::Police.value()];
+    assert_eq!((police.games, police.wins), (1, 1));
+}
+
+#[test]
+fn star_player_prize_is_split_on_ties() {
+    // 2번 2표, 4번 2표, 3번 1표.
+    let votes = HashMap::from([(1, 2), (3, 2), (2, 4), (4, 3), (5, 4)]);
+    let winners = tally_star_votes(&votes);
+    assert_eq!(winners, vec![(2, 2), (4, 2)]);
+    assert!(tally_star_votes(&HashMap::new()).is_empty());
+
+    let mut stats = StatsFile::default();
+    let awards = award_star_players(
+        &mut stats,
+        &[(2, "Two".to_string(), 2), (4, "Four".to_string(), 2)],
+        1_000,
+    );
+    assert_eq!(
+        awards.iter().map(|award| award.prize).collect::<Vec<_>>(),
+        vec![500, 500]
+    );
+    assert_eq!(stats.users["2"].star_player_count, 1);
+    assert_eq!(stats.users["4"].coins, 500);
+}
+
+#[test]
+fn coupon_reservation_refund_and_record() {
+    let mut stats = StatsFile::default();
+    claim_attendance(&mut stats, 1, "Alpha", 25_000, "2026-09-21");
+    assert!(reserve_coins(&mut stats, 1, "Alpha", 30_000).is_err());
+    assert_eq!(reserve_coins(&mut stats, 1, "Alpha", 20_000), Ok(5_000));
+    assert_eq!(refund_coins(&mut stats, 1, "Alpha", 20_000), 25_000);
+    record_coupon(
+        &mut stats,
+        1,
+        "Alpha",
+        2,
+        vec!["EVENT-AB12CD34".to_string()],
+        "2026-09-21T10:00:00+09:00",
+    );
+    assert_eq!(stats.users["1"].coupon_points_exchanged, 2);
+    assert_eq!(stats.users["1"].coupons.len(), 1);
+    assert_eq!(stats.users["1"].coupons[0].codes, vec!["EVENT-AB12CD34"]);
+}

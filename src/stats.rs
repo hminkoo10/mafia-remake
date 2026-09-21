@@ -70,6 +70,17 @@ pub struct StatsFile {
     pub users: HashMap<String, PlayerStats>,
     #[serde(default)]
     pub role_selection_history: Vec<RoleSelectionHistoryItem>,
+    /// 직업별 누적 승패. 배팅 배당의 "직업 난이도" 계산에 쓴다.
+    #[serde(default)]
+    pub role_outcomes: HashMap<String, RoleOutcome>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoleOutcome {
+    #[serde(default)]
+    pub games: i64,
+    #[serde(default)]
+    pub wins: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +121,24 @@ pub struct PlayerStats {
     /// 중지된 판이 이력에 남지 않아 다음 판에 같은 팀이 거의 그대로 재현된다.
     #[serde(default)]
     pub aborted_assignments: Vec<AbortedAssignmentItem>,
+    /// 보유 코인(원). 출석·배팅 정산·스타플레이어 상금·쿠폰 교환으로만 변한다.
+    #[serde(default)]
+    pub coins: i64,
+    /// 스타플레이어로 뽑힌 횟수.
+    #[serde(default)]
+    pub star_player_count: i64,
+    /// 설정해 둔 배팅액(원). 바꾸기 전까지 유지되고, 판 시작 시 보유 코인 안에서 적용된다.
+    #[serde(default)]
+    pub bet_amount: i64,
+    /// 마지막 출석 날짜 (한국 시간 YYYY-MM-DD).
+    #[serde(default)]
+    pub last_attendance_date: String,
+    /// 내신 쿠폰으로 교환한 누적 포인트.
+    #[serde(default)]
+    pub coupon_points_exchanged: i64,
+    /// 최근 발급받은 쿠폰 기록.
+    #[serde(default)]
+    pub coupons: Vec<CouponRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +200,12 @@ impl Default for PlayerStats {
             rating_history: Vec::new(),
             roles: HashMap::new(),
             aborted_assignments: Vec::new(),
+            coins: 0,
+            star_player_count: 0,
+            bet_amount: 0,
+            last_attendance_date: String::new(),
+            coupon_points_exchanged: 0,
+            coupons: Vec::new(),
         }
     }
 }
@@ -263,6 +298,16 @@ pub fn record_game_stats(
             .unwrap_or(player.role);
         let won = player_won_game(game, player, winner);
         let team = rating_team_key(game, player).to_string();
+        {
+            let outcome = stats
+                .role_outcomes
+                .entry(role.value().to_string())
+                .or_default();
+            outcome.games += 1;
+            if won {
+                outcome.wins += 1;
+            }
+        }
         let rating_change = rating_changes
             .get(&player.user_id)
             .cloned()
@@ -1119,7 +1164,7 @@ pub fn leaderboard_text(stats: &StatsFile, metric: &str) -> String {
     let mut lines = vec![format!("기준: **{}**", leaderboard_metric_name(metric))];
     for (index, (_user_id, entry)) in entries.into_iter().enumerate() {
         lines.push(format!(
-            "{}. **{}** - {}승 {}패 / {}판 / 승률 {} / 현재 {}연승 / 최고 {}연승 / 마피아팀 {}회 / 게임시간 {} / 레이팅 {}점 ({})",
+            "{}. **{}** - {}승 {}패 / {}판 / 승률 {} / 현재 {}연승 / 최고 {}연승 / 마피아팀 {}회 / 게임시간 {} / 레이팅 {}점 ({}) / 코인 {} / 스타 {}회",
             index + 1,
             if entry.name.is_empty() {
                 "알 수 없음"
@@ -1135,7 +1180,9 @@ pub fn leaderboard_text(stats: &StatsFile, metric: &str) -> String {
             entry.mafia_team_games,
             play_duration_text(entry.play_seconds),
             entry.rating,
-            rating_rank(stats, entry.rating, entry.rating_games)
+            rating_rank(stats, entry.rating, entry.rating_games),
+            coin_text(entry.coins),
+            entry.star_player_count
         ));
     }
     lines.join("\n")
@@ -1237,6 +1284,8 @@ pub fn leaderboard_value(entry: &PlayerStats, metric: &str) -> f64 {
         "mafia" => entry.mafia_team_games as f64,
         "playtime" => entry.play_seconds as f64,
         "rating" => entry.rating as f64,
+        "coins" => entry.coins as f64,
+        "star" => entry.star_player_count as f64,
         _ => entry.wins as f64,
     }
 }
@@ -1249,6 +1298,8 @@ pub fn leaderboard_metric_name(metric: &str) -> &'static str {
         "mafia" => "마피아팀 플레이",
         "playtime" => "게임시간",
         "rating" => "레이팅",
+        "coins" => "코인",
+        "star" => "스타플레이어",
         _ => "승리수",
     }
 }
@@ -1285,6 +1336,9 @@ fn short_time_text(value: &str) -> String {
 const fn initial_rating() -> i64 {
     INITIAL_RATING
 }
+
+mod coins;
+pub use self::coins::*;
 
 #[cfg(test)]
 mod tests;

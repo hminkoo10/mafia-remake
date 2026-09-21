@@ -699,6 +699,7 @@ pub async fn announce_winner(
                 stats_game_snapshot(&running_write),
                 running_write.initial_roles.clone(),
                 elapsed_seconds,
+                running_write.bets.clone(),
             ))
         };
         (
@@ -723,12 +724,21 @@ pub async fn announce_winner(
     {
         eprintln!("failed to announce prophet victory: {error:?}");
     }
+    let mut bet_settlements = Vec::new();
     let mut rating_log = Vec::new();
     let mut rating_log_chunks = Vec::new();
     let mut rank_change_chunks = Vec::new();
-    if let Some((game_snapshot, initial_roles, elapsed_seconds)) = record_payload {
+    if let Some((game_snapshot, initial_roles, elapsed_seconds, bets)) = record_payload {
         let (recorded_rating_log, stats_snapshot) = {
             let mut stats_file = data.stats.write().await;
+            // [배팅] 이 판을 기록하기 전의 전적으로 배율을 정해 정산한다.
+            bet_settlements = stats::settle_bets(
+                &mut stats_file,
+                &game_snapshot,
+                &initial_roles,
+                winner,
+                &bets,
+            );
             let rating_log = stats::record_game_stats(
                 &mut stats_file,
                 &game_snapshot,
@@ -801,7 +811,10 @@ pub async fn announce_winner(
     .await
     {
         Ok(Some(image)) => match send_game_result_image(ctx, running, image).await {
-            Ok(_) => return Ok(true),
+            Ok(_) => {
+                announce_coin_results(ctx, data, running, &bet_settlements).await;
+                return Ok(true);
+            }
             Err(error) => eprintln!("failed to announce game result image: {error:?}"),
         },
         Ok(None) => eprintln!("failed to render game result image"),
@@ -868,5 +881,6 @@ pub async fn announce_winner(
             eprintln!("failed to announce rating log: {error:?}");
         }
     }
+    announce_coin_results(ctx, data, running, &bet_settlements).await;
     Ok(true)
 }

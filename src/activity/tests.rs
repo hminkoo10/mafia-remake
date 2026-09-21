@@ -81,6 +81,10 @@ fn activity_test_running(mut game: MafiaGame) -> RunningGame {
         day_notify: Arc::new(tokio::sync::Notify::new()),
         final_defense_notify: Arc::new(tokio::sync::Notify::new()),
         final_defense_ended: false,
+        bets: HashMap::new(),
+        star_votes: HashMap::new(),
+        star_vote_open: false,
+        star_vote_notify: Arc::new(tokio::sync::Notify::new()),
         stats_recorded: false,
     }
 }

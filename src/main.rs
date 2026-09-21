@@ -69,6 +69,10 @@ enum LeaderboardMetric {
     Playtime,
     #[name = "레이팅"]
     Rating,
+    #[name = "코인"]
+    Coins,
+    #[name = "스타플레이어"]
+    Star,
 }
 
 impl LeaderboardMetric {
@@ -81,6 +85,8 @@ impl LeaderboardMetric {
             Self::Mafia => "mafia",
             Self::Playtime => "playtime",
             Self::Rating => "rating",
+            Self::Coins => "coins",
+            Self::Star => "star",
         }
     }
 }
@@ -201,6 +207,12 @@ struct RunningGame {
     /// 최후변론 대상자가 `발언 종료`를 누르면 깨어나 바로 찬반 투표로 넘어간다.
     final_defense_notify: Arc<Notify>,
     final_defense_ended: bool,
+    /// 판 시작 시 확정한 배팅액 (user_id → 원). 보유 코인 안으로 잘라 둔다.
+    bets: HashMap<u64, i64>,
+    /// 스타플레이어 투표 (투표자 → 후보). 게임 종료 직후 10초 동안만 받는다.
+    star_votes: HashMap<u64, u64>,
+    star_vote_open: bool,
+    star_vote_notify: Arc<Notify>,
     stats_recorded: bool,
 }
 
@@ -586,6 +598,9 @@ fn bot_commands() -> Vec<poise::Command<Data, Error>> {
         commands::show_public_status(),
         commands::memo(),
         commands::show_my_info(),
+        commands::claim_attendance(),
+        commands::set_bet(),
+        commands::exchange_coupon(),
         commands::rating_log(),
         commands::show_rank_cutoffs(),
         commands::show_leaderboard(),

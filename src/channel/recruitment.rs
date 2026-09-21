@@ -66,7 +66,7 @@ pub fn recruitment_embed(
     };
     make_embed(
         format!(
-            "최대 {}초 동안 참가자를 모집합니다.\n참가 버튼을 누르면 게임 참가자로 등록되고, '{}' 역할이 부여됩니다.\n관전 버튼을 누르면 '{SPECTATOR_ROLE}' 역할이 부여되고 게임 채널을 읽을 수 있습니다.\n참가나 관전을 취소하려면 `나가기` 버튼을 누르세요.\n주최자는 `시작` 버튼으로 즉시 시작하거나 `취소` 버튼으로 모집을 취소할 수 있습니다.\n{auto_start_text}\n\n역할 구성: {}\n사망 시 직업 공개: {}\n경찰 조사 성공 여부 공개: {}\n아침 생존 마피아 수 공개: {}\n{}\n\n최대 참가 인원 **{}명**까지 **{}명** 더 참가 가능\n\n현재 참가자 **{}/{}명**\n{}\n\n현재 관전자 **{}명**\n{}\n\n{}",
+            "최대 {}초 동안 참가자를 모집합니다.\n참가 버튼을 누르면 게임 참가자로 등록되고, '{}' 역할이 부여됩니다.\n관전 버튼을 누르면 '{SPECTATOR_ROLE}' 역할이 부여되고 게임 채널을 읽을 수 있습니다.\n참가나 관전을 취소하려면 `나가기` 버튼을 누르세요.\n`배팅` 버튼으로 이번 판 배팅액을 정할 수 있습니다 (바꾸기 전까지 유지, 시작할 때 공개).\n주최자는 `시작` 버튼으로 즉시 시작하거나 `취소` 버튼으로 모집을 취소할 수 있습니다.\n{auto_start_text}\n\n역할 구성: {}\n사망 시 직업 공개: {}\n경찰 조사 성공 여부 공개: {}\n아침 생존 마피아 수 공개: {}\n{}\n\n최대 참가 인원 **{}명**까지 **{}명** 더 참가 가능\n\n현재 참가자 **{}/{}명**\n{}\n\n현재 관전자 **{}명**\n{}\n\n{}",
             recruitment.recruitment_seconds,
             config.participant_role,
             public_role_count_text_from_counts(&recruitment.role_counts, None),
@@ -119,6 +119,10 @@ pub fn recruitment_components(
             serenity::CreateButton::new(format!("leave:{guild_key}"))
                 .label("나가기")
                 .style(serenity::ButtonStyle::Secondary)
+                .disabled(disabled),
+            serenity::CreateButton::new(format!("bet:{guild_key}"))
+                .label("배팅")
+                .style(serenity::ButtonStyle::Primary)
                 .disabled(disabled),
         ]),
         // 주최자용: 시작 / 자동시작 / 취소

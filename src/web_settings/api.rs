@@ -1257,6 +1257,9 @@ pub(crate) async fn web_leaderboard_values(
                 "rating_peak": entry.rating_peak,
                 "rating_peak_rank": stats::rating_rank(&stats_read, entry.rating_peak, entry.rating_games),
                 "rating_games": entry.rating_games,
+                "coins": entry.coins,
+                "coins_text": stats::coin_text(entry.coins),
+                "star_player_count": entry.star_player_count,
                 "value": stats::leaderboard_value(&entry, metric),
             })
         })

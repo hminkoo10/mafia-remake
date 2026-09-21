@@ -159,6 +159,8 @@ pub fn leaderboard_metric_column(metric: &str) -> &'static str {
         "mafia" => "mafia",
         "playtime" => "time",
         "rating" => "rating",
+        "coins" => "coins",
+        "star" => "star",
         _ => "record",
     }
 }
@@ -171,7 +173,7 @@ pub fn render_leaderboard_image(stats_file: &stats::StatsFile, metric: &str) -> 
 
     // 랭크/레이팅(맨 오른쪽 칼럼)이 'SS 1368점'처럼 긴 값에서 이미지 오른쪽
     // 끝에 잘리지 않도록 캔버스를 넉넉히 잡는다.
-    const IMAGE_WIDTH: u32 = 1360;
+    const IMAGE_WIDTH: u32 = 1620;
     const TOP_PADDING: i32 = 40;
     const SIDE_PADDING: i32 = 48;
     const HEADER_HEIGHT: i32 = 150;
@@ -247,6 +249,8 @@ pub fn render_leaderboard_image(stats_file: &stats::StatsFile, metric: &str) -> 
         ("mafia", SIDE_PADDING + 850),
         ("time", SIDE_PADDING + 955),
         ("rating", SIDE_PADDING + 1085),
+        ("coins", SIDE_PADDING + 1250),
+        ("star", SIDE_PADDING + 1430),
     ]);
     let selected_column = leaderboard_metric_column(metric);
     let header_y = panel_top + 24;
@@ -260,6 +264,8 @@ pub fn render_leaderboard_image(stats_file: &stats::StatsFile, metric: &str) -> 
         ("mafia", "마피아"),
         ("time", "시간"),
         ("rating", "랭크/레이팅"),
+        ("coins", "코인"),
+        ("star", "스타"),
     ] {
         draw_lb_text(
             &mut image,
@@ -331,6 +337,8 @@ pub fn render_leaderboard_image(stats_file: &stats::StatsFile, metric: &str) -> 
                     entry.rating
                 ),
             ),
+            ("coins", stats::coin_text(entry.coins)),
+            ("star", format!("{}회", entry.star_player_count)),
         ];
         for (key, value) in values {
             draw_lb_text(
