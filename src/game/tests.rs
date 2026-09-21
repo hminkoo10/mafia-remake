@@ -23,8 +23,11 @@ fn indexes_players_by_id() {
     assert!(game.get_player(999).is_none());
 }
 
+/// 지난 판 마피아는 이번 판 마피아가 되기 어렵지만 불가능하지는 않다. 이력이
+/// 배정을 결정해 버리면 "저 사람은 마피아가 아니다"를 추리할 수 있으므로,
+/// 보정은 확률만 기울인다 (6인 2마피아 기준 기본 33% → 약 10% 안팎).
 #[test]
-fn balanced_assignment_avoids_consecutive_mafia_roles() {
+fn previous_mafia_are_less_likely_but_still_possible() {
     let players = (1..=6)
         .map(|user_id| (user_id, format!("P{user_id}")))
         .collect::<Vec<_>>();
@@ -53,62 +56,70 @@ fn balanced_assignment_avoids_consecutive_mafia_roles() {
         );
     }
 
-    let game = MafiaGame::new_with_counts_balanced(
-        players,
-        GameCounts {
-            mafia_count: 2,
+    let trials = 3_000;
+    let mut previous_mafia_again = 0;
+    for _ in 0..trials {
+        let game = MafiaGame::new_with_counts_balanced(
+            players.clone(),
+            GameCounts {
+                mafia_count: 2,
+                ..Default::default()
+            },
+            &history,
+        )
+        .unwrap();
+        if game.get_player(1).unwrap().role.is_mafia_team() {
+            previous_mafia_again += 1;
+        }
+    }
+    let rate = previous_mafia_again as f64 / trials as f64;
+    assert!(
+        (0.03..=0.25).contains(&rate),
+        "previous mafia became mafia again in {rate:.3} of games"
+    );
+}
+
+/// 누적 비율 보정은 가중치를 0.7~1.4배 안에서만 움직인다 (자주 받은 직업은 낮게,
+/// 드물었던 직업은 높게).
+#[test]
+fn assignment_history_scales_role_weights_within_bounds() {
+    for role in [Role::Doctor, Role::Inspector] {
+        let rarely = PlayerAssignmentHistory {
+            games: 12,
+            role_counts: HashMap::from([(role, 0)]),
             ..Default::default()
-        },
-        &history,
-    )
-    .unwrap();
-    let mafia_ids = game
-        .players
-        .iter()
-        .filter(|player| player.role.is_mafia_team())
-        .map(|player| player.user_id)
-        .collect::<HashSet<_>>();
+        };
+        let often = PlayerAssignmentHistory {
+            games: 12,
+            role_counts: HashMap::from([(role, 5)]),
+            ..Default::default()
+        };
 
-    assert!(!mafia_ids.contains(&1));
-    assert!(!mafia_ids.contains(&2));
+        let base = role_assignment_weight(&PlayerAssignmentHistory::default(), role, 8, 2, 1);
+        let rare_weight = role_assignment_weight(&rarely, role, 8, 2, 1);
+        let often_weight = role_assignment_weight(&often, role, 8, 2, 1);
+
+        assert!(often_weight < base && base < rare_weight, "{role:?}");
+        assert!(often_weight * 10 >= base * 7, "{role:?} {often_weight}");
+        assert!(rare_weight * 10 <= base * 15, "{role:?} {rare_weight}");
+    }
 }
 
+/// 지난 판 마피아팀은 마피아 가중치가 절반 안팎으로 줄 뿐 0이 되지 않는다.
 #[test]
-fn assignment_log_adjusts_role_probability_cost() {
-    let rarely_doctor = PlayerAssignmentHistory {
-        games: 12,
-        role_counts: HashMap::from([(Role::Doctor, 0)]),
-        ..Default::default()
+fn previous_mafia_keeps_a_reduced_mafia_weight() {
+    let base = role_assignment_weight(&PlayerAssignmentHistory::default(), Role::Mafia, 8, 2, 2);
+    let last_game_mafia = PlayerAssignmentHistory {
+        games: 1,
+        mafia_role_games: 1,
+        role_counts: HashMap::from([(Role::Mafia, 1)]),
+        recent_roles: vec![Role::Mafia],
     };
-    let often_doctor = PlayerAssignmentHistory {
-        games: 12,
-        role_counts: HashMap::from([(Role::Doctor, 5)]),
-        ..Default::default()
-    };
-
-    let rare_cost = role_assignment_cost(&rarely_doctor, Role::Doctor, 8, 2, 1);
-    let often_cost = role_assignment_cost(&often_doctor, Role::Doctor, 8, 2, 1);
-
-    assert!(often_cost - rare_cost > ROLE_ASSIGNMENT_RANDOM_JITTER as i64);
-}
-
-#[test]
-fn assignment_history_reduces_inspector_probability() {
-    let rarely_inspector = PlayerAssignmentHistory {
-        games: 12,
-        role_counts: HashMap::from([(Role::Inspector, 0)]),
-        ..Default::default()
-    };
-    let often_inspector = PlayerAssignmentHistory {
-        games: 12,
-        role_counts: HashMap::from([(Role::Inspector, 5)]),
-        ..Default::default()
-    };
-
-    let rare_cost = role_assignment_cost(&rarely_inspector, Role::Inspector, 8, 2, 1);
-    let often_cost = role_assignment_cost(&often_inspector, Role::Inspector, 8, 2, 1);
-
-    assert!(often_cost - rare_cost > ROLE_ASSIGNMENT_RANDOM_JITTER as i64);
+    let weight = role_assignment_weight(&last_game_mafia, Role::Mafia, 8, 2, 2);
+    assert!(
+        weight * 10 >= base * 3 && weight * 10 <= base * 6,
+        "{weight} vs {base}"
+    );
 }
 
 #[test]
@@ -132,15 +143,19 @@ fn base_inspector_count_is_assigned() {
     );
 }
 
+/// 오래 돌리면 팀·직업이 고르게 돌아가되, 강제 로테이션이 아니라 지난 판
+/// 마피아가 연달아 마피아가 되는 판도 가끔 나온다.
 #[test]
-fn balanced_assignment_evenly_rotates_teams_and_roles() {
+fn balanced_assignment_stays_fair_without_a_hard_rotation() {
     let players = (1..=8)
         .map(|user_id| (user_id, format!("P{user_id}")))
         .collect::<Vec<_>>();
     let mut history = HashMap::<u64, PlayerAssignmentHistory>::new();
     let mut previous_mafia_ids = HashSet::new();
+    let games = 400;
+    let mut repeat_games = 0;
 
-    for _ in 0..32 {
+    for _ in 0..games {
         let game = MafiaGame::new_with_counts_balanced(
             players.clone(),
             GameCounts {
@@ -158,8 +173,8 @@ fn balanced_assignment_evenly_rotates_teams_and_roles() {
             .filter(|player| player.role.is_mafia_team())
             .map(|player| player.user_id)
             .collect::<HashSet<_>>();
-        if !previous_mafia_ids.is_empty() {
-            assert!(mafia_ids.is_disjoint(&previous_mafia_ids));
+        if !mafia_ids.is_disjoint(&previous_mafia_ids) {
+            repeat_games += 1;
         }
 
         for player in &game.players {
@@ -175,17 +190,28 @@ fn balanced_assignment_evenly_rotates_teams_and_roles() {
         previous_mafia_ids = mafia_ids;
     }
 
-    for role in [Role::Mafia, Role::Doctor, Role::Police] {
-        let counts = (1..=8)
-            .map(|user_id| {
-                history[&user_id]
-                    .role_counts
-                    .get(&role)
-                    .copied()
-                    .unwrap_or(0)
-            })
-            .collect::<Vec<_>>();
-        assert!(counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 1);
+    // 연속 마피아 판: 보정 없이는 약 46%, 강제 로테이션이면 0%. 그 사이여야 한다.
+    assert!(
+        (games / 20..=games * 2 / 5).contains(&repeat_games),
+        "consecutive-mafia games: {repeat_games}/{games}"
+    );
+    // 장기 공정성: 마피아는 기대 100회, 의사·경찰은 기대 50회 근처에 모인다.
+    for (role, expected, slack) in [
+        (Role::Mafia, 100, 40),
+        (Role::Doctor, 50, 25),
+        (Role::Police, 50, 25),
+    ] {
+        for user_id in 1..=8 {
+            let count = history[&user_id]
+                .role_counts
+                .get(&role)
+                .copied()
+                .unwrap_or(0);
+            assert!(
+                (expected - slack..=expected + slack).contains(&count),
+                "P{user_id} got {role:?} {count} times over {games} games"
+            );
+        }
     }
 }
 

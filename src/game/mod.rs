@@ -1858,8 +1858,19 @@ enum RoleActionMap {
     Mercenary,
 }
 
-const ROLE_ASSIGNMENT_RANDOM_JITTER: u64 = 50_000;
+/// 직업 배정 가중치의 이력 배율. 보정은 확률을 기울이기만 하고 최종 선택은
+/// 난수라, 지난 판 마피아도 낮은 확률로 다시 마피아가 될 수 있다. 이력만으로
+/// "저 사람은 이번 판 마피아가 아니다"를 추리하지 못하게 하려는 값이므로 너무
+/// 낮추지 않는다 (8인 2마피아 기준 기본 25% → 지난 판 마피아 약 12%, 2판 전 약
+/// 18%, 3판 전 약 22%).
+const MAFIA_RECENCY_WEIGHTS: [f64; 3] = [0.5, 0.7, 0.85];
+/// 마피아팀이 아닌 직업의 최근 3판 같은 직업 배율.
+const ROLE_RECENCY_WEIGHTS: [f64; 3] = [0.5, 0.75, 0.9];
+const ASSIGNMENT_WEIGHT_SCALE: f64 = 1_000_000.0;
 
+/// 이력 가중치 추첨으로 직업을 배정한다. 마피아팀 슬롯을 먼저 뽑고, 다음으로
+/// 나머지 직업, 시민은 남는 사람이 받는다. 예전의 최소 비용 매칭은 이력이 조금만
+/// 달라도 결과가 사실상 정해져 마피아를 예측할 수 있었다.
 fn assign_roles_balanced(
     mut players: Vec<(u64, String)>,
     mut roles: Vec<Role>,
@@ -1881,65 +1892,104 @@ fn assign_roles_balanced(
             *counts.entry(role).or_default() += 1_usize;
             counts
         });
-    let empty_history = PlayerAssignmentHistory::default();
-    let mut costs = Vec::with_capacity(total_players);
-    for (user_id, _) in &players {
-        let history = assignment_history.get(user_id).unwrap_or(&empty_history);
-        let mut row = Vec::with_capacity(total_players);
-        for role in &roles {
-            let base_cost = role_assignment_cost(
-                history,
-                *role,
-                total_players,
-                mafia_slots,
-                role_slots.get(role).copied().unwrap_or(1),
-            );
-            let random_jitter = (rng.next_u64() % (ROLE_ASSIGNMENT_RANDOM_JITTER + 1)) as i64;
-            row.push(base_cost.saturating_add(random_jitter));
+    // 안정 정렬이라 같은 묶음 안에서는 섞인 순서가 유지된다.
+    roles.sort_by_key(|role| {
+        if role.is_mafia_team() {
+            0
+        } else if *role == Role::Citizen {
+            2
+        } else {
+            1
         }
-        costs.push(row);
-    }
-    let role_by_player = minimum_cost_assignment(&costs);
+    });
 
-    players
-        .into_iter()
-        .enumerate()
-        .map(|(index, (user_id, name))| Player::new(user_id, name, roles[role_by_player[index]]))
-        .collect()
+    let empty_history = PlayerAssignmentHistory::default();
+    let mut remaining = players;
+    let mut assigned = Vec::with_capacity(total_players);
+    for role in roles {
+        let index = if role == Role::Citizen || remaining.len() == 1 {
+            0
+        } else {
+            let weights = remaining
+                .iter()
+                .map(|(user_id, _)| {
+                    let history = assignment_history.get(user_id).unwrap_or(&empty_history);
+                    role_assignment_weight(
+                        history,
+                        role,
+                        total_players,
+                        mafia_slots,
+                        role_slots.get(&role).copied().unwrap_or(1),
+                    )
+                })
+                .collect::<Vec<_>>();
+            weighted_index(&mut rng, &weights)
+        };
+        let (user_id, name) = remaining.remove(index);
+        assigned.push(Player::new(user_id, name, role));
+    }
+    assigned
 }
 
-fn role_assignment_cost(
+fn weighted_index(rng: &mut impl RngCore, weights: &[u64]) -> usize {
+    let total = weights.iter().sum::<u64>();
+    if total == 0 {
+        return 0;
+    }
+    let mut pick = rng.next_u64() % total;
+    for (index, weight) in weights.iter().enumerate() {
+        if pick < *weight {
+            return index;
+        }
+        pick -= *weight;
+    }
+    weights.len() - 1
+}
+
+/// 이 플레이어가 이 직업을 받을 상대 가중치 (기본 1_000_000, 최소 1).
+/// - 마피아팀 직업: 최근 3판 마피아팀이었으면 각각 ×0.5 / ×0.7 / ×0.85, 누적
+///   마피아 비율이 기대보다 높으면 낮추고 낮으면 올린다.
+/// - 그 밖의 직업: 최근 3판 같은 직업이었으면 각각 ×0.5 / ×0.75 / ×0.9, 누적
+///   비율도 같은 방식으로 보정한다.
+/// - 시민: 보정 없음 (남는 사람이 받는다).
+fn role_assignment_weight(
     history: &PlayerAssignmentHistory,
     role: Role,
     total_players: usize,
     mafia_slots: usize,
     same_role_slots: usize,
-) -> i64 {
-    const MAFIA_RECENCY_COSTS: [i64; 3] = [80_000_000, 24_000_000, 6_000_000];
-    const ROLE_RECENCY_COSTS: [i64; 3] = [12_000_000, 4_000_000, 1_000_000];
-
-    let expected_role_rate = same_role_slots as i64 * 1_000 / total_players as i64;
-    let role_games = history.role_counts.get(&role).copied().unwrap_or(0);
-    let mut cost = smoothed_assignment_rate(role_games, history.games, expected_role_rate) * 2_000;
-
-    for (index, recent_role) in history.recent_roles.iter().take(3).enumerate() {
-        if *recent_role == role {
-            cost += ROLE_RECENCY_COSTS[index];
-        }
-    }
-
+) -> u64 {
+    let mut weight = 1.0_f64;
     if role.is_mafia_team() {
-        let expected_mafia_rate = mafia_slots as i64 * 1_000 / total_players as i64;
-        cost +=
-            smoothed_assignment_rate(history.mafia_role_games, history.games, expected_mafia_rate)
-                * 10_000;
         for (index, recent_role) in history.recent_roles.iter().take(3).enumerate() {
             if recent_role.is_mafia_team() {
-                cost += MAFIA_RECENCY_COSTS[index];
+                weight *= MAFIA_RECENCY_WEIGHTS[index];
             }
         }
+        let expected_rate = mafia_slots as i64 * 1_000 / total_players as i64;
+        weight *= rate_balance_weight(history.mafia_role_games, history.games, expected_rate);
+    } else if role != Role::Citizen {
+        for (index, recent_role) in history.recent_roles.iter().take(3).enumerate() {
+            if *recent_role == role {
+                weight *= ROLE_RECENCY_WEIGHTS[index];
+            }
+        }
+        let expected_rate = same_role_slots as i64 * 1_000 / total_players as i64;
+        let role_games = history.role_counts.get(&role).copied().unwrap_or(0);
+        weight *= rate_balance_weight(role_games, history.games, expected_rate);
     }
-    cost
+    ((weight * ASSIGNMENT_WEIGHT_SCALE) as u64).max(1)
+}
+
+/// 누적 비율 보정: 기대 비율 대비 실제 비율(사전 4판 평활)의 제곱근 역수. 비율은
+/// 0.5~2배로 잘라 배율이 약 0.7~1.4배 안에서만 움직인다.
+fn rate_balance_weight(count: i64, games: i64, expected_rate: i64) -> f64 {
+    if expected_rate <= 0 {
+        return 1.0;
+    }
+    let actual_rate = smoothed_assignment_rate(count, games, expected_rate);
+    let ratio = (actual_rate as f64 / expected_rate as f64).clamp(0.5, 2.0);
+    1.0 / ratio.sqrt()
 }
 
 fn smoothed_assignment_rate(count: i64, games: i64, expected_rate: i64) -> i64 {
@@ -1951,69 +2001,6 @@ fn smoothed_assignment_rate(count: i64, games: i64, expected_rate: i64) -> i64 {
         .saturating_add(expected_rate.saturating_mul(PRIOR_GAMES))
         / games.saturating_add(PRIOR_GAMES))
     .min(10_000)
-}
-
-fn minimum_cost_assignment(costs: &[Vec<i64>]) -> Vec<usize> {
-    let size = costs.len();
-    let mut row_potential = vec![0_i64; size + 1];
-    let mut column_potential = vec![0_i64; size + 1];
-    let mut matched_row = vec![0_usize; size + 1];
-    let mut previous_column = vec![0_usize; size + 1];
-
-    for row in 1..=size {
-        matched_row[0] = row;
-        let mut column = 0;
-        let mut minimum = vec![i64::MAX / 4; size + 1];
-        let mut used = vec![false; size + 1];
-        loop {
-            used[column] = true;
-            let current_row = matched_row[column];
-            let mut delta = i64::MAX / 4;
-            let mut next_column = 0;
-            for candidate_column in 1..=size {
-                if used[candidate_column] {
-                    continue;
-                }
-                let reduced_cost = costs[current_row - 1][candidate_column - 1]
-                    - row_potential[current_row]
-                    - column_potential[candidate_column];
-                if reduced_cost < minimum[candidate_column] {
-                    minimum[candidate_column] = reduced_cost;
-                    previous_column[candidate_column] = column;
-                }
-                if minimum[candidate_column] < delta {
-                    delta = minimum[candidate_column];
-                    next_column = candidate_column;
-                }
-            }
-            for candidate_column in 0..=size {
-                if used[candidate_column] {
-                    row_potential[matched_row[candidate_column]] += delta;
-                    column_potential[candidate_column] -= delta;
-                } else {
-                    minimum[candidate_column] -= delta;
-                }
-            }
-            column = next_column;
-            if matched_row[column] == 0 {
-                break;
-            }
-        }
-        loop {
-            let prior = previous_column[column];
-            matched_row[column] = matched_row[prior];
-            column = prior;
-            if column == 0 {
-                break;
-            }
-        }
-    }
-
-    let mut assignment = vec![0_usize; size];
-    for column in 1..=size {
-        assignment[matched_row[column] - 1] = column - 1;
-    }
-    assignment
 }
 
 fn validate_counts(players: &[(u64, String)], counts: &GameCounts) -> Result<()> {
