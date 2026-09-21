@@ -601,6 +601,7 @@ fn bot_commands() -> Vec<poise::Command<Data, Error>> {
         commands::claim_attendance(),
         commands::set_bet(),
         commands::exchange_coupon(),
+        commands::manage_coins(),
         commands::rating_log(),
         commands::show_rank_cutoffs(),
         commands::show_leaderboard(),

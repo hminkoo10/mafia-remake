@@ -321,3 +321,40 @@ pub fn record_coupon(
         entry.coupons.drain(..overflow);
     }
 }
+
+/// 관리자 코인 조정 결과 (조정 전/후 보유액).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoinAdjustment {
+    pub before: i64,
+    pub after: i64,
+}
+
+/// 관리자 지급/차감. 차감은 0원 아래로 내려가지 않는다 (보유액까지만 차감).
+pub fn adjust_coins(stats: &mut StatsFile, user_id: u64, name: &str, delta: i64) -> CoinAdjustment {
+    let entry = ensure_player_stats(stats, user_id, name);
+    let before = entry.coins;
+    entry.coins = entry.coins.saturating_add(delta).max(0);
+    CoinAdjustment {
+        before,
+        after: entry.coins,
+    }
+}
+
+/// 관리자 보유 코인 설정 (0원 이상).
+pub fn set_coins(
+    stats: &mut StatsFile,
+    user_id: u64,
+    name: &str,
+    amount: i64,
+) -> Result<CoinAdjustment, String> {
+    if amount < 0 {
+        return Err("코인은 0원 이상으로만 설정할 수 있습니다.".to_string());
+    }
+    let entry = ensure_player_stats(stats, user_id, name);
+    let before = entry.coins;
+    entry.coins = amount;
+    Ok(CoinAdjustment {
+        before,
+        after: amount,
+    })
+}

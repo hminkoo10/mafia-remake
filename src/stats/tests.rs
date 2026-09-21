@@ -868,3 +868,16 @@ fn coupon_reservation_refund_and_record() {
     assert_eq!(stats.users["1"].coupons.len(), 1);
     assert_eq!(stats.users["1"].coupons[0].codes, vec!["EVENT-AB12CD34"]);
 }
+
+#[test]
+fn admin_coin_adjustments_never_go_negative() {
+    let mut stats = StatsFile::default();
+    let give = adjust_coins(&mut stats, 1, "Alpha", 3_000);
+    assert_eq!((give.before, give.after), (0, 3_000));
+    let take = adjust_coins(&mut stats, 1, "Alpha", -5_000);
+    assert_eq!((take.before, take.after), (3_000, 0));
+    assert!(set_coins(&mut stats, 1, "Alpha", -1).is_err());
+    let set = set_coins(&mut stats, 1, "Alpha", 7_500).unwrap();
+    assert_eq!((set.before, set.after), (0, 7_500));
+    assert_eq!(stats.users["1"].coins, 7_500);
+}

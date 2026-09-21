@@ -471,3 +471,117 @@ pub async fn handle_star_vote(
     }
     Ok(())
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, poise::ChoiceParameter)]
+pub enum CoinAdminAction {
+    #[name = "지급"]
+    Give,
+    #[name = "차감"]
+    Take,
+    #[name = "설정"]
+    Set,
+    #[name = "조회"]
+    View,
+}
+
+/// 관리자: 유저 코인 지급·차감·설정·조회. 차감은 보유액까지만 되고 0원 아래로
+/// 내려가지 않는다. 조정 내역은 서버 로그에 남긴다.
+#[poise::command(
+    slash_command,
+    rename = "코인관리",
+    description_localized("ko", "관리자: 유저의 코인을 지급·차감·설정·조회합니다.")
+)]
+pub async fn manage_coins(
+    ctx: Context<'_>,
+    #[description = "동작"] 동작: CoinAdminAction,
+    #[description = "대상 유저"] 유저: serenity::User,
+    #[description = "금액(원). 조회는 생략"] 금액: Option<i64>,
+) -> Result<(), Error> {
+    if !require_manager(ctx).await? {
+        return Ok(());
+    }
+    let user_id = 유저.id.get();
+    let name = 유저.name.clone();
+    let admin_id = ctx.author().id.get();
+    let outcome: std::result::Result<String, String> = match 동작 {
+        CoinAdminAction::View => {
+            let stats_read = ctx.data().stats.read().await;
+            let entry = stats_read.users.get(&user_id.to_string());
+            let last_attendance = entry
+                .map(|entry| entry.last_attendance_date.as_str())
+                .filter(|date| !date.is_empty())
+                .unwrap_or("없음");
+            Ok(format!(
+                "{name} 님 코인: **{}**\n배팅 설정: {} / 스타플레이어: {}회 / 마지막 출석: {last_attendance} / 쿠폰 교환: {}포인트",
+                stats::coin_text(entry.map_or(0, |entry| entry.coins)),
+                stats::coin_text(entry.map_or(0, |entry| entry.bet_amount)),
+                entry.map_or(0, |entry| entry.star_player_count),
+                entry.map_or(0, |entry| entry.coupon_points_exchanged),
+            ))
+        }
+        CoinAdminAction::Give | CoinAdminAction::Take | CoinAdminAction::Set => match 금액 {
+            None => Err("금액을 입력하세요.".to_string()),
+            Some(amount) if amount < 0 => Err("금액은 0 이상으로 입력하세요.".to_string()),
+            Some(amount) => {
+                let applied = {
+                    let mut stats_file = ctx.data().stats.write().await;
+                    let change = match 동작 {
+                        CoinAdminAction::Give => {
+                            Ok(stats::adjust_coins(&mut stats_file, user_id, &name, amount))
+                        }
+                        CoinAdminAction::Take => Ok(stats::adjust_coins(
+                            &mut stats_file,
+                            user_id,
+                            &name,
+                            -amount,
+                        )),
+                        _ => stats::set_coins(&mut stats_file, user_id, &name, amount),
+                    };
+                    change.map(|change| (change, stats_file.clone()))
+                };
+                match applied {
+                    Ok((change, snapshot)) => {
+                        save_stats_snapshot(ctx.data(), snapshot).await;
+                        eprintln!(
+                            "coin admin: admin={admin_id} target={user_id} action={동작:?} amount={amount} before={} after={}",
+                            change.before, change.after
+                        );
+                        let verb = match 동작 {
+                            CoinAdminAction::Give => "지급",
+                            CoinAdminAction::Take => "차감",
+                            _ => "설정",
+                        };
+                        let clipped = if 동작 == CoinAdminAction::Take && amount > change.before {
+                            " (보유액까지만 차감)"
+                        } else {
+                            ""
+                        };
+                        Ok(format!(
+                            "{name} 님 코인 {verb}: {} → **{}** ({}){clipped}",
+                            stats::coin_text(change.before),
+                            stats::coin_text(change.after),
+                            stats::signed_coin_text(change.after - change.before)
+                        ))
+                    }
+                    Err(message) => Err(message),
+                }
+            }
+        },
+    };
+    match outcome {
+        Ok(message) => {
+            reply_embed(
+                ctx,
+                message,
+                "코인 관리",
+                serenity::Colour::DARK_GREEN,
+                false,
+            )
+            .await?;
+        }
+        Err(message) => {
+            reply_embed(ctx, message, "코인 관리", serenity::Colour::RED, true).await?;
+        }
+    }
+    Ok(())
+}
