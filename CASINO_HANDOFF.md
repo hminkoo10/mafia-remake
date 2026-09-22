@@ -1,0 +1,119 @@
+# 카지노 작업 인수인계 (2026-09-22 기준)
+
+다음 에이전트가 이어서 하기 위한 문서다. 현재 상태, 남은 작업의 정확한 명세, 환경·검증·배포 방법을 담았다.
+읽는 순서: 1 → 2 → 3(남은 작업) → 4(환경) → 5(검증) → 6(배포·규칙).
+
+---
+
+## 1. 현재 상태 (origin/main = `76ae2c9`)
+
+모두 커밋·푸시되어 있고 `cargo test`(205개) 통과, `casino-web` 빌드 통과.
+
+| 영역 | 상태 |
+|---|---|
+| Discord 연동 | `/카지노테이블생성 종류 이름`(관리자) `/카지노테이블닫기` `/카지노테이블목록` `/카지노입장 [테이블]` `/카지노상태`. 테이블마다 `#카지노-<이름>` 채널, 고정 상태 임베드(+ **테이블 입장** 버튼 → 12시간 개인 링크), 웹훅 채팅 양방향 중계(딜러 얼굴 아바타, 참가자 Discord 아바타), 핸드 결과 게시(손익·사이드베팅 메모). 실제 Discord 서버에서는 아직 눌러보지 않았다(코드·테스트만). |
+| 코인 연동 | 바이인 5,000~20,000, 퇴장·유휴 30분·테이블 닫기 시 코인 반환. 좌석 이름은 항상 Discord 표시 이름(서버 강제). |
+| 엔진 (`src/casino/`) | 홀덤(블라인드 50/100, 사이드팟, 30초 턴), 블랙잭 **에볼루션 규칙**(8덱, S17, 딜러 피크, 스플릿 1회, 에이스 스플릿 1장, 서렌더 없음, 인슈어런스 2:1·10초, 퍼펙트 페어 6/12/25, 21+3 5/10/30/40/100, 베팅 15초·전원 베팅 시 즉시 딜). 카드 공개 페이싱(홀 카드 한 장씩, 스트리트 pause, 쇼다운 순차 공개, 딜러 홀 카드 플립 후 한 장씩 드로우) — 연출 중 액션 거부(`REVEALING`), 테스트에서는 지연 0. 딜러 명단(소피아·미아·하나·리나, 초상 있는 딜러만 12판마다 교대 — 현재 소피아만 초상 있음). |
+| 웹 (`casino-web/`) | noir-casino 원본 화면 이식(원본 CSS `noir.css` 그대로, 추가는 `overrides.css`). 브랜드 **CASINO73**. 3D 딜 인/플립, 시간차 표시, 딜링 잠금, 결과 배너(다음 라운드까지 유지), 족보 이름·카드 강조, 내 자리 강조, 에볼루션식 칩 쌓기 베팅(메인·PP·21+3 자리, 되돌리기/지우기/다시 베팅/더블/확정, 마감 2초 전 자동 확정), 인슈어런스 프롬프트, 액션 말풍선, 칩 이동(베팅→팟, 팟→승자), 승자 글로우, 차례 링, 팟 강조, 딜러 숨결/딜링 움직임, 합성 효과음(토글), 딜러 클립 상태(idle/deal/flip, 파일 있으면 재생), 상세 규칙 다이얼로그(배당표). |
+| 문서 | `README.md` 카지노 절, `casino-web/public/dealers/README.md`(딜러 에셋 규격), `.env.example`. |
+| 인프라 | instance4(`168.138.39.183`, ubuntu, `/home/ubuntu/mafia_rust`)에 Cloudflare Origin 인증서(`*.milky.kr`) 적용, Activity 2053·설정 웹 8443 모두 Cloudflare 프록시 HTTPS로 정상. 서버 바이너리(`./mafia`, aarch64)는 **사용자가 직접 빌드**한다. 서버의 바이너리는 9/22 08:15 빌드라 카지노가 없다 → 최신 main으로 다시 빌드해 배포해야 한다. |
+
+정리할 것: `.claude/worktrees/agent-*` 는 중단된 하위 에이전트의 작업 트리다. `git worktree remove --force .claude/worktrees/<이름>` 으로 지워도 된다(내용은 미완성이라 버려도 됨). `.gitignore`에 이미 제외되어 있다.
+
+---
+
+## 2. 코드 지도
+
+```
+src/casino/cards.rs      덱·족보·best_hand(현재 족보+핵심 카드)·perfect_pairs·twenty_one_plus_three
+src/casino/table.rs      CasinoTable/Round/Seat/BjHand/HandResult/SeatResult, CasinoCommand, apply_command, tick,
+                         상수(TURN_MS, BET_WINDOW_MS, DEAL_CARD_MS…, SIDE_BET_*, INSURANCE_MS, DEALERS, DEALER_SHIFT_HANDS)
+src/casino/holdem.rs     start_poker/advance/settle_poker (reveal 스케줄 포함)
+src/casino/blackjack.rs  start/place_bet/deal/settle_side_bets/insurance_decision/resolve_insurance/settle/legal
+src/casino/view.rs       table_view(table, viewer, now): 비밀 카드 가림, reveal 시각, legal(can_bet/can_insure…), DealerView
+src/casino/tests.rs      엔진 테스트(덱을 위에서부터 지정: deck_from_top; 블랙잭 딜 순서 = 참가자1장씩→딜러1장, 반복)
+src/casino_hub.rs        테이블 저장소(casino.json), 세션(12h), 코인↔칩, tick_all(250ms), 웹훅/아바타 캐시
+src/casino_web.rs        /casino/api (state, command, ws) + SPA 서빙, dealer_avatar_png, `mafia --casino-dev`
+src/commands/casino_cmds.rs  슬래시 명령, 상태 임베드(+버튼), 결과 게시(render_hand_result), 웹훅 중계, 채널→테이블 채팅
+casino-web/src/App.tsx   화면 전체(원본 page.tsx 이식본). types.ts(API 타입), ui.tsx(Tabs/Dialog/Sheet/Slider/Toast),
+                         sounds.ts(효과음), noir.css(원본, 수정 금지), base.css, overrides.css(모든 추가 스타일)
+build.rs                 activity/, casino-web/ 를 npm으로 빌드해 바이너리에 내장 (MAFIA_SKIP_CASINO_BUILD로 생략)
+```
+
+---
+
+## 3. 남은 작업 (우선순위 순)
+
+### A. 승패 표기를 "딴 금액" 기준으로 (사용자 요청)
+지금 결과 배너는 순손익(net)만 보여서 메인은 이기고 사이드를 잃으면 패배처럼 보인다.
+- `SeatResult`에 `won: i64` 추가(`#[serde(default)]`): 이번 라운드에 **이긴 베팅의 이익 합**.
+  - 블랙잭: 핸드마다 `max(payout - bet, 0)` + 사이드베팅 적중 시 `stake * odds` + 인슈어런스 적중 시 `stake * 2`.
+  - 홀덤: `max(returned - wagered, 0)`.
+  - `Seat`에 `side_won: i64`(라운드마다 초기화)를 두고 `settle_side_bets`/`resolve_insurance`/`settle_blackjack`에서 누적.
+- 웹 배너·기록: 내 좌석 헤드라인 `이기셨습니다 +{won}`(금색) / `won == 0 && net < 0` → `패배 −{-net}`(빨강) / 그 외 `푸시`. 다른 참가자는 `{이름} 이김 +{won}`. 기존 net·label·notes 줄은 그 아래 작게.
+- Discord `render_hand_result`에도 `이김 +{won}` 표기.
+- 예: 메인 2,000 승 + 사이드 3,000 패 → `이기셨습니다 +2,000`(net −1,000은 작은 글씨). 사이드 3,000을 4:1로 이기고 메인 패 → `+12,000`(원금 3,000은 따로 돌아옴). 다 지면 패배.
+- 테스트 추가(덱 크래프팅 예시는 `blackjack_side_bets_are_settled_on_the_deal` 참고).
+
+### B. 8덱 슈 유지 + 빨간 컷 카드 + 셔플 연출 (사용자 요청)
+지금은 라운드마다 8덱을 새로 섞는다(`start_blackjack`의 `shuffled_deck(8)`). 에볼루션처럼 슈를 이어서 쓰고 컷 카드가 나오면 다음 라운드 전에 섞는다.
+- `CasinoTable`에 `shoe: Vec<String>`(남은 카드, `draw`가 pop하므로 끝이 위), `shoe_cut: usize`(바닥에서 몇 장 지점에 컷 카드), `shoe_total: usize`, `shuffled_at: i64` (모두 serde default).
+- 새 슈: `shuffled_deck(8)`(416장), 컷 카드는 위에서 70~80% 깊이(= `shoe_cut` 20~30%, `system_random` 사용).
+- `start_blackjack`: 명시 덱(테스트)이 오면 예전처럼 그대로 쓰고 슈는 건드리지 않는다. 아니면 슈가 비었거나 `shoe.len() <= shoe_cut`이면 새 슈를 만들고 `shuffled_at = now`, 딜러가 "컷 카드가 나왔어요. 새 슈를 섞습니다."(첫 슈는 "새 슈를 준비합니다."). `round.deck = std::mem::take(&mut table.shoe)`; 라운드가 끝나면(`settle_blackjack` 끝, `deal_blackjack`의 베팅 없음 경로) `table.shoe = std::mem::take(&mut round.deck)`. 덱이 도중에 바닥나면 패닉 대신 새 덱을 붙인다.
+- 홀덤은 지금처럼 핸드마다 1덱.
+- View: `TableView.shoe: { remaining, total, cut_at, shuffled_at, reshuffle_due }` + TS 타입.
+- 웹: 테이블 상단에 슈 게이지(딜된 만큼 채움, 컷 카드 위치에 빨간 세로선, `슈 {remaining}/{total}`, 셔플 예정이면 `다음 라운드 전 셔플`). `shuffled_at`이 서버 시각(`serverNow`) 기준 2.5초 이내면 카드 뒷면 8~10장이 부채꼴로 섞이는 오버레이(CSS keyframes, `새 슈를 섞는 중`) 2.2초. `overrides.css`에만 추가, `prefers-reduced-motion` 존중.
+- 테스트: 연속 두 라운드가 한 슈를 공유(남은 장수 감소), 컷 지점 이하면 다음 Start에서 재셔플(`shuffled_at` 갱신, 안내문에 "섞"), 명시 덱 테스트는 그대로 통과.
+
+### C. 딜러 손 딜링/카드 오픈 오버레이 애니메이션 (사용자: "사진만 있어 허전")
+영상 에셋이 없으므로 코드로 움직임을 만든다. 새 파일만 만들고 App.tsx에는 한 줄로 마운트.
+- `casino-web/src/components/DealerHands.tsx` + `dealer-hands.css`: `mood: "idle"|"deal"|"flip"`, `targets: [x%,y%][]`(좌석 위치 `SEAT_POS`), `center?`, `reducedMotion?`.
+  - 인라인 SVG 손·소매(피부 #e8c4a8, 검정 소매 #1b1b1b + 금테 #c8ab62, 치파오와 맞춤), 우측(약 84%,62%)에 카드 슈(짙은 목재 #2c1c12 + 금테) 상시 표시.
+  - deal: 900ms 주기로 오른손이 슈에서 뒷면 카드를 꺼내 `targets`를 순환하며 밀어주고 목적지 근처에서 사라짐(실제 카드는 앱이 그림). flip: 두 손이 `center`에서 카드를 600ms rotateY로 뒤집기(1.6초 반복). idle: 4초 주기 미세한 숨결. 무드 전환 250ms 크로스페이드.
+  - `.game-table` 안 `.table-shade` 바로 다음에 마운트, `position:absolute; inset:0; pointer-events:none; z-index:0`.
+- App.tsx: `mood`는 이미 `DealerBackdrop`에 넘기는 값(`revealing ? (complete/딜러 reveal ? "flip" : "deal") : "idle"`)을 그대로 쓴다.
+- 실제 딜러 영상 클립이 생기면 `casino-web/public/dealers/README.md` 규격대로 넣으면 자동 재생된다(이건 Codex/사용자 에셋 작업).
+
+### D. 실서버 Discord 확인 (배포 후)
+- `/카지노테이블생성` → 채널·고정 임베드·**테이블 입장** 버튼 → 개인 링크 → 웹 참여.
+- 웹 채팅 → 채널 웹훅(딜러 아바타/참가자 아바타), 채널 채팅 → 웹.
+- 핸드 결과 게시에 손익·사이드베팅 메모.
+
+---
+
+## 4. 환경·빌드·테스트 (이 Windows PC)
+
+cargo 명령 전에 항상:
+```bash
+export CARGO_TARGET_DIR="C:/temp/gcc-tmp/claude/mafia-target"
+export PATH="$HOME/.rustup/toolchains/1.96-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/gcc-ld:$PATH"
+export RUSTFLAGS="-C link-arg=-fuse-ld=lld"
+```
+- 테스트: `cargo test` (전부 통과해야 커밋). "file-system error deleting outdated file" 메시지는 무시.
+- 포맷: `cargo fmt` 뒤 반드시 `git checkout -- src/http_pool.rs` (fmt가 그 파일을 망가뜨림, 커밋 금지).
+- 웹: `cd casino-web && npm run build` (TS strict). 파이프로 grep하면 실패가 가려지니 `npm run build > log || { cat log; exit 1; }` 식으로 확인.
+- 웹 편집 시 파이썬 스크립트로 앵커 치환을 쓰면 편하다. 한글이 든 스크립트는 파일로 써서 실행(bash heredoc은 cp949로 깨짐). 같은 스크립트를 두 번 돌리면 앵커가 `new`의 접두어일 때 중복 삽입되니 주의(types.ts에서 실제로 발생했음).
+- 개발 모드(Discord 없이 웹만): `cargo build --bin mafia` 후
+  `CASINO_STATIC_DIR=<repo>/casino-web/dist CASINO_DEV_PORT=8811 <target>/debug/mafia.exe --casino-dev`
+  → 테스트 계정 3개(각 50,000코인)와 홀덤·블랙잭 테이블 링크를 출력. 다시 빌드하려면 먼저 서버를 종료해야 exe 교체가 된다(복사본 `mafia-dev.exe`로 띄우면 편함).
+- 브라우저 수동 검증 팁: 턴 타이머가 30초라 액션을 한 배치에서 연속으로 눌러야 한다(사이 대기가 길면 자동 폴드/스탠드). 결과 배너·연출은 서버 시각 기준(`serverNow = clock + offset`).
+
+---
+
+## 5. 검증 체크리스트 (남은 작업 반영 후)
+
+- [ ] `cargo test` 전부 통과, `npm run build` 통과, `cargo fmt` + http_pool.rs 복원.
+- [ ] 개발 모드 블랙잭: 칩 3자리 쌓기 → 확정 → 시간차 딜 → 액션 → 딜러 플립·드로우 연출 → 결과 배너에 `이기셨습니다 +N`/사이드 메모.
+- [ ] 슈 게이지 감소, 컷 카드 지점 이후 다음 라운드 전 셔플 애니메이션과 안내.
+- [ ] 홀덤 2인: 홀 카드 시간차, 딜링 잠금, 스트리트 오픈, 쇼다운 순차 공개, 승자 글로우·칩 이동.
+- [ ] 콘솔 오류 없음, 모바일(390px)에서 레이아웃 깨짐 없음.
+
+---
+
+## 6. 배포·규칙
+
+- 배포: 사용자가 aarch64로 빌드해 instance4의 `/home/ubuntu/mafia_rust/mafia`를 교체하고 tmux `mafia` 세션에서 재시작한다. 서버 `.env`는 이미 8443/https로 맞춰져 있고 인증서도 새것이다. `CASINO_BASE_URL`은 비워도 된다(설정 웹 호스트 + 2053으로 생성).
+- 커밋 규칙: 항목마다 따로 커밋, 커밋 후 항상 `git push origin main`, **Co-Authored-By 트레일러 금지**, 역할/능력 변경 시 웹 가이드와 Discord 설명 동기화(카지노 작업엔 해당 없음).
+- 절대 커밋하지 말 것: `cert.*`, `.env`, `casino.json`, `casino-dev*.json`, `.claude/worktrees/`(모두 .gitignore됨).
+- 위임 규칙: `~/.claude/CLAUDE.md`(OpenClaw) 참고 — 기능 구현은 `openclaw agent --message-file <경로>`(Codex), 단순 변환은 로컬 모델. 결과는 반드시 직접 테스트로 검증한다. 클로드 하위 에이전트(Agent 툴)는 사용자가 원치 않는다(클로드 토큰 소모).
+- 원본 디자인 원칙: `noir.css`는 손대지 않고 `overrides.css`에만 추가. 문구는 한국어, 브랜드는 CASINO73.
