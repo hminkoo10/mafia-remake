@@ -271,10 +271,19 @@ export default function Casino() {
   const kind = table.kind;
   const tableRules = table.rules;
   const maxBuyin = Math.max(tableRules.min_buy_in, Math.min(tableRules.max_buy_in, floorStep(balance, tableRules.buy_in_step)));
+  // 블랙잭 베팅: 최소~최대 사이, 단위에 맞고, 테이블 칩을 넘지 않아야 한다.
+  const maxWager = me ? Math.min(tableRules.max_bet, floorStep(me.stack, tableRules.bet_step)) : tableRules.max_bet;
+  const clampWager = (value: number) =>
+    Math.min(Math.max(maxWager, tableRules.min_bet), Math.max(tableRules.min_bet, floorStep(Number.isFinite(value) ? value : tableRules.min_bet, tableRules.bet_step)));
+  const validWager = wager >= tableRules.min_bet && wager <= maxWager && wager % tableRules.bet_step === 0;
 
   useEffect(() => {
     if (legal) setRaise(Math.min(legal.min_raise_to, legal.max_raise_to));
   }, [legal?.min_raise_to, legal?.max_raise_to, round?.id, round?.phase]);
+  useEffect(() => {
+    // 새 베팅 라운드마다 지난 베팅액을 유지하되 현재 칩 안으로 맞춘다.
+    if (table.legal.can_bet) setWager((value) => clampWager(value));
+  }, [table.legal.can_bet, round?.id, maxWager]);
   useEffect(() => {
     if (!muted && table.narration !== lastNarration.current && "speechSynthesis" in window) {
       speechSynthesis.cancel();
@@ -736,16 +745,42 @@ export default function Casino() {
                         {[100, 500, 1000, 2500, 5000].map((v) => (
                           <button
                             key={v}
-                            className={`chip chip-${v} ${wager === v ? "chosen" : ""}`}
-                            disabled={disabled || v > me.stack}
-                            onClick={() => setWager(v)}
-                            aria-label={`${fmt(v)} 칩 선택`}
+                            className={`chip chip-${v}`}
+                            disabled={disabled || wager + v > maxWager}
+                            onClick={() => setWager((value) => Math.min(maxWager, (validWager ? value : tableRules.min_bet - tableRules.min_bet) + v))}
+                            aria-label={`${fmt(v)} 칩 추가`}
+                            title={`${fmt(v)} 칩 추가`}
                           >
                             {v >= 1000 ? `${v / 1000}K` : v}
                           </button>
                         ))}
                       </div>
-                      <button className="gold-button" disabled={disabled || wager > me.stack || seconds <= 0} onClick={() => void act({ action: "bet", amount: wager })}>
+                      <div className="wager-control">
+                        <input
+                          type="number"
+                          aria-label="베팅 금액"
+                          min={tableRules.min_bet}
+                          max={maxWager}
+                          step={tableRules.bet_step}
+                          value={wager}
+                          disabled={disabled}
+                          onChange={(e) => setWager(Number(e.target.value))}
+                          onBlur={() => setWager((value) => clampWager(value))}
+                        />
+                        <Slider
+                          aria-label="베팅 금액"
+                          min={tableRules.min_bet}
+                          max={Math.max(tableRules.min_bet, maxWager)}
+                          step={tableRules.bet_step}
+                          value={[Math.min(Math.max(tableRules.min_bet, wager), Math.max(tableRules.min_bet, maxWager))]}
+                          disabled={disabled}
+                          onValueChange={(v) => setWager(v[0])}
+                        />
+                        <button type="button" className="text-button" disabled={disabled} onClick={() => setWager(tableRules.min_bet)}>
+                          초기화
+                        </button>
+                      </div>
+                      <button className="gold-button" disabled={disabled || !validWager || seconds <= 0} onClick={() => void act({ action: "bet", amount: wager })}>
                         {fmt(wager)} 베팅 <span className="button-timer">{seconds}s</span>
                       </button>
                     </div>
