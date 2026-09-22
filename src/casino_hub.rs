@@ -533,20 +533,50 @@ pub fn table_channel_name(name: &str) -> String {
     format!("카지노-{slug}")
 }
 
-/// 카지노 개인 링크의 기준 주소.
+/// 카지노 개인 링크의 기준 주소. CASINO_BASE_URL이 없으면 WEB_SETTINGS_BASE_URL의 호스트에
+/// Activity 포트를 붙여 만든다 (같은 서버·같은 도메인에서 돌기 때문).
 pub fn casino_base_url(web_host: &str, activity_port: u16, tls: bool) -> String {
     if let Ok(base_url) = std::env::var("CASINO_BASE_URL")
         && !base_url.trim().is_empty()
     {
         return base_url.trim_end_matches('/').to_string();
     }
+    let scheme = if tls { "https" } else { "http" };
+    if let Some(host) = std::env::var("WEB_SETTINGS_BASE_URL")
+        .ok()
+        .as_deref()
+        .and_then(public_host_of)
+    {
+        return format!("{scheme}://{host}:{activity_port}");
+    }
     let display_host = if matches!(web_host, "0.0.0.0" | "::") {
         "localhost"
     } else {
         web_host
     };
-    let scheme = if tls { "https" } else { "http" };
     format!("{scheme}://{display_host}:{activity_port}")
+}
+
+/// `https://example.com:8443/path` → `example.com`. localhost나 IP만 있으면 None.
+pub fn public_host_of(url: &str) -> Option<String> {
+    let without_scheme = url
+        .trim()
+        .strip_prefix("https://")
+        .or_else(|| url.trim().strip_prefix("http://"))?;
+    let authority = without_scheme.split('/').next()?;
+    let host = authority
+        .rsplit_once(':')
+        .map_or(authority, |(host, _)| host)
+        .trim_matches(|ch| ch == '[' || ch == ']');
+    if host.is_empty()
+        || host == "localhost"
+        || host
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ch == '.' || ch == ':')
+    {
+        return None;
+    }
+    Some(host.to_string())
 }
 
 pub fn personal_link(base_url: &str, token: &str, table_id: &str) -> String {
@@ -562,6 +592,26 @@ pub fn session_expired_message() -> &'static str {
 }
 
 pub type SharedHub = Arc<CasinoHub>;
+
+#[cfg(test)]
+mod tests {
+    use super::public_host_of;
+
+    #[test]
+    fn public_host_is_taken_from_the_settings_url() {
+        assert_eq!(
+            public_host_of("https://o4.example.kr:8443").as_deref(),
+            Some("o4.example.kr")
+        );
+        assert_eq!(
+            public_host_of("http://example.com/path").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(public_host_of("http://localhost:8800"), None);
+        assert_eq!(public_host_of("http://127.0.0.1:8800"), None);
+        assert_eq!(public_host_of("not a url"), None);
+    }
+}
 
 /// 웹 API 응답용 요약 (테이블 목록 + 내 정보).
 #[derive(Debug, Clone, Serialize)]

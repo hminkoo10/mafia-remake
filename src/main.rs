@@ -573,6 +573,32 @@ fn warn_cloudflare_https_port(base_url: Option<&str>) {
     }
 }
 
+/// 설정 웹이 평문 http로 노출되거나, 공개 주소의 포트가 실제 포트와 다르면 알려 준다.
+/// Cloudflare 프록시 뒤에서 https로 쓰려면 8443/2083/2087/2096 중 하나여야 한다 (8880은 http 전용).
+fn warn_settings_web_exposure(base_url: Option<&str>, web_port: u16) {
+    let Some(base_url) = base_url.map(str::trim) else {
+        return;
+    };
+    let tls_available = std::env::var("ACTIVITY_TLS_CERT")
+        .is_ok_and(|value| !value.trim().is_empty())
+        && std::env::var("ACTIVITY_TLS_KEY").is_ok_and(|value| !value.trim().is_empty());
+    if base_url.starts_with("http://") && tls_available {
+        eprintln!(
+            "WEB_SETTINGS_BASE_URL({base_url})이 평문 http입니다. Cloudflare 프록시 뒤에서 https로 쓰려면 \
+             WEB_SETTINGS_PORT를 8443(또는 2083/2087/2096)로 바꾸고 WEB_SETTINGS_BASE_URL을 \
+             https://호스트:8443 으로 설정하세요. 인증서는 ACTIVITY_TLS_CERT/KEY를 그대로 씁니다."
+        );
+    }
+    if let Some(port) = explicit_url_port(base_url)
+        && port != web_port
+    {
+        eprintln!(
+            "WEB_SETTINGS_BASE_URL의 포트({port})와 WEB_SETTINGS_PORT({web_port})가 다릅니다. \
+             프록시나 포트 포워딩이 없다면 링크가 열리지 않습니다."
+        );
+    }
+}
+
 fn explicit_url_port(url: &str) -> Option<u16> {
     let without_scheme = url
         .strip_prefix("https://")
@@ -699,6 +725,7 @@ async fn main() -> Result<()> {
         .context("WEB_SETTINGS_PORT는 1~65535 사이 숫자여야 합니다.")?;
     let web_settings_base_url = std::env::var("WEB_SETTINGS_BASE_URL").ok();
     warn_cloudflare_https_port(web_settings_base_url.as_deref());
+    warn_settings_web_exposure(web_settings_base_url.as_deref(), web_port);
     let web_base_url_https = web_settings_base_url
         .as_deref()
         .is_some_and(|url| url.trim_start().starts_with("https://"));
