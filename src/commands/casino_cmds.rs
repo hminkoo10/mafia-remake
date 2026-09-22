@@ -150,7 +150,7 @@ pub fn render_table_status(view: &TableView, base_url: &str) -> String {
             seats.join("\n")
         ));
     }
-    lines.push(format!("🎙️ 소피아: {}", view.narration));
+    lines.push(format!("🎙️ {}: {}", view.dealer.name, view.narration));
     lines.push(format!(
         "아래 **테이블 입장** 버튼을 누르거나 `/카지노입장 테이블:{}` 을 입력하면 개인 링크를 받습니다.\n{}",
         view.name,
@@ -789,7 +789,7 @@ async fn relay_chat_to_channel(
             continue;
         }
         let username = if message.dealer {
-            "소피아 (딜러)".to_string()
+            format!("{} (딜러)", message.name)
         } else {
             message.name.clone()
         };

@@ -57,6 +57,37 @@ const phases: Record<string, string> = {
 };
 const suits: Record<string, string> = { s: "♠", h: "♥", d: "♦", c: "♣" };
 const DEALER_IMAGE = `${import.meta.env.BASE_URL}dealer.png`;
+const dealerPortrait = (id: string) => (id === "sophia" ? DEALER_IMAGE : `${import.meta.env.BASE_URL}dealers/${id}.png`);
+const dealerLoop = (id: string) => `${import.meta.env.BASE_URL}dealers/${id}.webm`;
+
+/** 딜러 배경: 무음 루프 영상이 있으면 영상, 없으면 초상, 그것도 없으면 소피아. */
+function DealerBackdrop({ id, name }: { id: string; name: string }) {
+  const [videoFailed, setVideoFailed] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
+  useEffect(() => {
+    setVideoFailed(false);
+    setImageFailed(false);
+  }, [id]);
+  const poster = imageFailed ? DEALER_IMAGE : dealerPortrait(id);
+  if (!videoFailed) {
+    return (
+      <video
+        key={id}
+        className="dealer-backdrop"
+        autoPlay
+        muted
+        loop
+        playsInline
+        poster={poster}
+        onError={() => setVideoFailed(true)}
+        aria-label={`에메랄드 테이블의 AI 딜러 ${name}`}
+      >
+        <source src={dealerLoop(id)} type="video/webm" onError={() => setVideoFailed(true)} />
+      </video>
+    );
+  }
+  return <img key={`${id}-img`} className="dealer-backdrop" src={poster} onError={() => setImageFailed(true)} alt={`에메랄드 테이블의 AI 딜러 ${name}`} />;
+}
 const POLL_MS = 1200;
 const RECONNECT_MS = 2000;
 
@@ -125,6 +156,7 @@ const blankTable = (): TableView => ({
   messages: [],
   history: [],
   rules: defaultRules,
+  dealer: { id: "sophia", name: "소피아", tagline: "YOUR DEALER" },
 });
 
 const kindTitle = (kind: GameKind) => (kind === "holdem" ? "Texas Hold’em" : "Blackjack");
@@ -686,7 +718,7 @@ export default function Casino() {
         <div className="play-layout">
           <section className="table-column">
             <div className={`game-table ${kind} ${revealing ? "dealing" : ""} ${round && round.phase !== "complete" ? "in-play" : ""}`}>
-              <img className="dealer-backdrop" src={DEALER_IMAGE} alt="에메랄드 테이블의 AI 딜러 소피아" />
+              <DealerBackdrop id={table.dealer.id} name={table.dealer.name} />
               <div className="table-shade" />
               <div className="table-topline">
                 <span className="room-id">
@@ -698,7 +730,7 @@ export default function Casino() {
                 </span>
               </div>
               <div className="dealer-name">
-                SOPHIA <span>YOUR DEALER</span>
+                {table.dealer.id.toUpperCase()} <span>{table.dealer.tagline}</span>
               </div>
               <div className="board">
                 <div className="board-label">{kind === "holdem" ? "TEXAS HOLD’EM" : "BLACKJACK PAYS 3 TO 2"}</div>
@@ -933,7 +965,7 @@ export default function Casino() {
                     <div className="action-row dealing-row">
                       <div>
                         <span className="eyebrow">{round?.phase === "complete" ? "SHOWDOWN" : "DEALING"}</span>
-                        <p>{round?.phase === "complete" ? "카드를 확인하는 중이에요." : "소피아가 카드를 나누고 있어요."}</p>
+                        <p>{round?.phase === "complete" ? "카드를 확인하는 중이에요." : `${table.dealer.name}가 카드를 나누고 있어요.`}</p>
                       </div>
                     </div>
                   ) : me.sit_out && !isTurn ? (
@@ -1126,11 +1158,11 @@ export default function Casino() {
                 </div>
                 <div className="dealer-note" aria-live="polite">
                   <span className="dealer-avatar">
-                    <img src={DEALER_IMAGE} alt="" />
+                    <img src={dealerPortrait(table.dealer.id)} onError={(e) => ((e.currentTarget as HTMLImageElement).src = DEALER_IMAGE)} alt="" />
                   </span>
                   <div>
                     <strong>
-                      소피아 <span>AUTO</span>
+                      {table.dealer.name} <span>AUTO</span>
                     </strong>
                     <p>{table.narration}</p>
                   </div>
@@ -1170,7 +1202,7 @@ export default function Casino() {
                     <div className="chat-empty">
                       <AudioLines />
                       <p>
-                        소피아와 함께하는 테이블.
+                        {table.dealer.name}와 함께하는 테이블.
                         <br />
                         첫 인사를 건네보세요.
                       </p>

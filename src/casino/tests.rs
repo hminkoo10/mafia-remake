@@ -103,6 +103,39 @@ fn best_hand_reports_name_and_core_cards() {
 }
 
 #[test]
+fn dealer_rotation_only_uses_dealers_with_portraits() {
+    let mut table = blackjack_table();
+    sit(&mut table, 70, 0, 10_000, 0);
+    let first = table.dealer.clone();
+    assert_eq!(table.dealer_profile().name, "소피아");
+    for hand in 0..(DEALER_SHIFT_HANDS * 2) {
+        let now = hand as i64 * 100_000;
+        act(&mut table, 70, CasinoCommand::Start, now);
+        table.tick(now + BET_WINDOW_MS + 1).unwrap();
+        assert_eq!(table.round.as_ref().unwrap().phase, Phase::Complete);
+    }
+    let with_portrait = DEALERS.iter().filter(|dealer| dealer.has_portrait).count();
+    if with_portrait < 2 {
+        assert_eq!(table.dealer, first, "초상이 하나뿐이면 교대하지 않는다");
+    } else {
+        assert_ne!(
+            table.dealer, first,
+            "정해진 판 수 뒤에는 다른 딜러로 바뀐다"
+        );
+        assert!(dealer_profile(&table.dealer).has_portrait);
+    }
+    let dealer_names = DEALERS.iter().map(|dealer| dealer.name).collect::<Vec<_>>();
+    assert!(
+        table
+            .messages
+            .iter()
+            .filter(|message| message.dealer)
+            .all(|message| dealer_names.contains(&message.name.as_str())),
+        "딜러 안내는 항상 명단에 있는 딜러 이름으로 남는다"
+    );
+}
+
+#[test]
 fn blackjack_value_handles_soft_aces() {
     assert_eq!(blackjack_value(&cards(&["Ah", "6d"])), (17, true));
     assert_eq!(blackjack_value(&cards(&["Ah", "6d", "Tc"])), (17, false));

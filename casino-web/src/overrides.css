@@ -109,3 +109,6 @@
 .pot-pill{transition:transform .2s}
 .pot-pill.bump{transform:translateX(-50%) scale(1.18);box-shadow:0 0 18px #e4b74888}
 @media(prefers-reduced-motion:reduce){.dealer-backdrop,.game-table.dealing .dealer-backdrop,.seat-winner .player-avatar,.action-bubble{animation:none!important}.chip-flight{transition:none}}
+
+/* 딜러 배경 영상도 이미지와 같은 자리에 맞춘다 */
+video.dealer-backdrop{position:absolute;width:100%;height:100%;object-fit:cover;object-position:center 22%;z-index:-3;background:#0c241c}

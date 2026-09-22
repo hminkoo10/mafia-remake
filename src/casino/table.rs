@@ -30,6 +30,54 @@ pub const BJ_MIN_BET: i64 = 100;
 pub const BJ_MAX_BET: i64 = 5_000;
 pub const BJ_BET_STEP: i64 = 100;
 const MESSAGE_LIMIT: usize = 40;
+
+/// 딜러 프로필. 초상은 casino-web/public/dealers/<id>.png (dealer.png와 같은 1536x1024 구도),
+/// 있으면 dealers/<id>.webm(무음 루프)도 함께 쓴다. `has_portrait`가 true인 딜러만 교대에 들어간다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DealerProfile {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub tagline: &'static str,
+    pub has_portrait: bool,
+}
+
+pub const DEALERS: &[DealerProfile] = &[
+    DealerProfile {
+        id: "sophia",
+        name: "소피아",
+        tagline: "YOUR DEALER",
+        has_portrait: true,
+    },
+    DealerProfile {
+        id: "mia",
+        name: "미아",
+        tagline: "EVENING SHIFT",
+        has_portrait: false,
+    },
+    DealerProfile {
+        id: "hana",
+        name: "하나",
+        tagline: "NIGHT SHIFT",
+        has_portrait: false,
+    },
+    DealerProfile {
+        id: "lina",
+        name: "리나",
+        tagline: "LATE SHIFT",
+        has_portrait: false,
+    },
+];
+
+/// 이 판 수마다 딜러가 교대한다.
+pub const DEALER_SHIFT_HANDS: u32 = 12;
+
+pub fn dealer_profile(id: &str) -> DealerProfile {
+    DEALERS
+        .iter()
+        .copied()
+        .find(|dealer| dealer.id == id)
+        .unwrap_or(DEALERS[0])
+}
 const HISTORY_LIMIT: usize = 20;
 const CHAT_COOLDOWN_MS: i64 = 1_500;
 
@@ -371,6 +419,16 @@ pub struct CasinoTable {
     /// 사용자별 마지막 채팅 시각 (도배 방지).
     #[serde(default)]
     pub last_chat_at: std::collections::HashMap<u64, i64>,
+    /// 현재 딜러 id (DEALERS 참고).
+    #[serde(default = "default_dealer_id")]
+    pub dealer: String,
+    /// 현재 딜러가 진행한 판 수 (교대 계산용).
+    #[serde(default)]
+    pub dealer_hands: u32,
+}
+
+fn default_dealer_id() -> String {
+    DEALERS[0].id.to_string()
 }
 
 pub fn new_id() -> String {
@@ -427,7 +485,45 @@ impl CasinoTable {
             created_by,
             created_at: now,
             last_chat_at: std::collections::HashMap::new(),
+            dealer: default_dealer_id(),
+            dealer_hands: 0,
         }
+    }
+
+    /// 현재 딜러.
+    pub fn dealer_profile(&self) -> DealerProfile {
+        dealer_profile(&self.dealer)
+    }
+
+    /// 판이 시작될 때 부른다. 정해진 판 수를 채우면 초상이 있는 다음 딜러로 교대한다.
+    fn rotate_dealer_if_due(&mut self, now: i64) {
+        self.dealer_hands += 1;
+        if self.dealer_hands < DEALER_SHIFT_HANDS {
+            return;
+        }
+        let available = DEALERS
+            .iter()
+            .filter(|dealer| dealer.has_portrait)
+            .collect::<Vec<_>>();
+        if available.len() < 2 {
+            self.dealer_hands = 0;
+            return;
+        }
+        let position = available
+            .iter()
+            .position(|dealer| dealer.id == self.dealer)
+            .unwrap_or(0);
+        let next = available[(position + 1) % available.len()];
+        let leaving = self.dealer_profile().name;
+        self.say(
+            format!(
+                "{leaving}가 잠시 쉬러 갑니다. 이제 {}가 테이블을 맡을게요.",
+                next.name
+            ),
+            now,
+        );
+        self.dealer = next.id.to_string();
+        self.dealer_hands = 0;
     }
 
     /// 라운드가 진행 중인가 (완료 전).
@@ -477,11 +573,12 @@ impl CasinoTable {
         -1
     }
 
-    /// 딜러(소피아) 안내. 안내문을 갱신하고 채팅에도 남긴다.
+    /// 딜러 안내. 안내문을 갱신하고 채팅에도 남긴다 (이름은 현재 딜러).
     pub(super) fn say(&mut self, text: impl Into<String>, now: i64) {
         let text = text.into();
         self.narration = text.clone();
-        self.push_message("소피아".to_string(), text, now, true, None);
+        let dealer = self.dealer_profile().name.to_string();
+        self.push_message(dealer, text, now, true, None);
     }
 
     fn push_message(
@@ -720,7 +817,7 @@ impl CasinoTable {
                     .unwrap_or_else(|| actor_name.to_string());
                 self.push_message(name, text.to_string(), now, false, Some(actor));
                 self.last_chat_at.insert(actor, now);
-                if text.contains("소피아")
+                if text.contains(self.dealer_profile().name)
                     || text.contains("딜러")
                     || text.contains("규칙")
                     || text.contains("안녕")
@@ -797,6 +894,7 @@ impl CasinoTable {
                         if self.playing() {
                             return Err(CasinoError::invalid("이미 진행 중인 라운드입니다."));
                         }
+                        self.rotate_dealer_if_due(now);
                         let minimum = if self.kind == GameKind::Holdem {
                             1
                         } else {

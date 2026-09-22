@@ -76,6 +76,13 @@ pub struct LegalView {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct DealerView {
+    pub id: String,
+    pub name: String,
+    pub tagline: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct TableRules {
     pub small_blind: i64,
     pub big_blind: i64,
@@ -105,6 +112,8 @@ pub struct TableView {
     pub messages: Vec<ChatMessage>,
     pub history: Vec<HandResult>,
     pub rules: TableRules,
+    /// 현재 딜러 (이름·초상 id).
+    pub dealer: DealerView,
 }
 
 pub fn table_rules() -> TableRules {
@@ -293,5 +302,13 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
         messages: table.messages.clone(),
         history: table.history.clone(),
         rules: table_rules(),
+        dealer: {
+            let profile = table.dealer_profile();
+            DealerView {
+                id: profile.id.to_string(),
+                name: profile.name.to_string(),
+                tagline: profile.tagline.to_string(),
+            }
+        },
     }
 }

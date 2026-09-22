@@ -124,6 +124,12 @@ export interface HandResult {
   results: SeatResult[];
 }
 
+export interface DealerView {
+  id: string;
+  name: string;
+  tagline: string;
+}
+
 export interface TableView {
   id: string;
   kind: GameKind;
@@ -138,6 +144,7 @@ export interface TableView {
   messages: ChatMessage[];
   history: HandResult[];
   rules: TableRules;
+  dealer: DealerView;
 }
 
 export interface TableSummary {
