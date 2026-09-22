@@ -477,7 +477,8 @@ export default function Casino() {
     if (!last || bubbleSeen.current === last.id) return;
     bubbleSeen.current = last.id;
     const match = /^(.+?)님, (.+?)\.$/.exec(last.text);
-    if (!match) return;
+    // 액션 문구만 띄운다 (인사말 같은 긴 안내는 제외).
+    if (!match || match[2].length > 14 || !/(체크|콜|폴드|레이즈|올인|히트|스탠드|더블|스플릿|서렌더|베팅)/.test(match[2])) return;
     const seat = table.seats.find((s) => s?.name === match[1]);
     if (!seat) return;
     setBubble({ id: last.id, seat: seat.seat, text: match[2] });
