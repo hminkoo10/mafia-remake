@@ -111,6 +111,15 @@ pub struct TableRules {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ShoeView {
+    pub remaining: usize,
+    pub total: usize,
+    pub cut_at: usize,
+    pub shuffled_at: i64,
+    pub reshuffle_due: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct TableView {
     pub id: String,
     pub kind: GameKind,
@@ -127,6 +136,7 @@ pub struct TableView {
     pub rules: TableRules,
     /// 현재 딜러 (이름·초상 id).
     pub dealer: DealerView,
+    pub shoe: Option<ShoeView>,
 }
 
 pub fn table_rules() -> TableRules {
@@ -335,6 +345,18 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
         messages: table.messages.clone(),
         history: table.history.clone(),
         rules: table_rules(),
+        shoe: (table.kind == GameKind::Blackjack).then(|| {
+            let remaining = round
+                .filter(|round| round.uses_shoe && active)
+                .map_or(table.shoe.len(), |round| round.deck.len());
+            ShoeView {
+                remaining,
+                total: table.shoe_total,
+                cut_at: table.shoe_cut,
+                shuffled_at: table.shuffled_at,
+                reshuffle_due: table.shoe_total > 0 && remaining <= table.shoe_cut,
+            }
+        }),
         dealer: {
             let profile = table.dealer_profile();
             DealerView {

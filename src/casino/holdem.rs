@@ -127,6 +127,7 @@ pub(super) fn start_poker(
     let mut round = Round {
         id: new_id(),
         deck: deck.unwrap_or_else(|| shuffled_deck(1)),
+        uses_shoe: false,
         board: Vec::new(),
         dealer: Vec::new(),
         phase: Phase::Preflop,

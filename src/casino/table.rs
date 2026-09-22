@@ -281,6 +281,9 @@ impl Seat {
 pub struct Round {
     pub id: String,
     pub deck: Vec<String>,
+    /// 블랙잭의 실제 슈에서 가져온 덱. 재현용 명시 덱은 슈에 반환하지 않는다.
+    #[serde(default)]
+    pub uses_shoe: bool,
     pub board: Vec<String>,
     pub dealer: Vec<String>,
     pub phase: Phase,
@@ -476,6 +479,16 @@ pub struct CasinoTable {
     /// 현재 딜러가 진행한 판 수 (교대 계산용).
     #[serde(default)]
     pub dealer_hands: u32,
+    /// 블랙잭 슈 (라운드 진행 중에는 round.deck으로 이동).
+    #[serde(default)]
+    pub shoe: Vec<String>,
+    /// 슈 바닥 기준 컷 카드 위치.
+    #[serde(default)]
+    pub shoe_cut: usize,
+    #[serde(default)]
+    pub shoe_total: usize,
+    #[serde(default)]
+    pub shuffled_at: i64,
 }
 
 fn default_dealer_id() -> String {
@@ -538,6 +551,10 @@ impl CasinoTable {
             last_chat_at: std::collections::HashMap::new(),
             dealer: default_dealer_id(),
             dealer_hands: 0,
+            shoe: Vec::new(),
+            shoe_cut: 0,
+            shoe_total: 0,
+            shuffled_at: 0,
         }
     }
 

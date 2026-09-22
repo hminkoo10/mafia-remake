@@ -1,5 +1,23 @@
 /* 원본 globals.css(noir.css) 위에 얹는 추가 스타일. 원본 파일은 그대로 두고 여기서만 덧붙인다. */
 
+/* 슈 진행률과 빨간 컷 카드: 공개된 카드 수만 표시한다. */
+.shoe-status{position:absolute;left:24px;top:75px;z-index:2;width:190px;padding:9px 11px;border:1px solid #c8ab623b;border-radius:7px;background:#0b1712d9;color:#dfce9c}
+.shoe-status>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px}
+.shoe-status small{font-size:9px;color:#a8b69e}
+.shoe-status.cut-reached{border-color:#bd5555}
+.shoe-status.cut-reached small{color:#f09a91}
+.shoe-gauge{position:relative;height:5px;margin:9px 0 2px;border-radius:5px;background:#354137}
+.shoe-gauge>span{display:block;height:100%;background:linear-gradient(90deg,#8e7742,#e3c87d);border-radius:5px;transition:width .3s ease}
+.shoe-gauge>i{position:absolute;top:-4px;width:3px;height:13px;background:#eb5b5b;box-shadow:0 0 6px #e4565670;transform:translateX(-50%)}
+.shoe-shuffle{position:absolute;left:50%;top:48%;transform:translate(-50%,-50%);z-index:6;pointer-events:none;display:flex;align-items:center;flex-direction:column;width:260px;padding:20px;border:1px solid #c8ab62;border-radius:14px;background:#0b1712ed;box-shadow:0 15px 40px #0009;animation:shoe-overlay 2.2s both;color:#f0db9f}
+.shoe-shuffle strong{font-size:16px}.shoe-shuffle small{font-size:9px;letter-spacing:2px;margin-top:8px;color:#a9b69b}
+.shoe-fan{position:relative;width:190px;height:112px;perspective:600px}
+.shoe-fan>span{position:absolute;left:73px;top:12px;width:45px;height:65px;border:2px solid #dac18c;border-radius:5px;background:repeating-linear-gradient(45deg,#193a2b 0 4px,#285039 4px 6px);box-shadow:0 2px 7px #0009;transform-origin:50% 110%;animation:shoe-fan 2.2s ease-in-out both}
+@keyframes shoe-fan{0%,100%{transform:translateX(calc(var(--fan)*1px)) rotate(calc(var(--fan)*1deg))}25%,75%{transform:translateX(calc(var(--fan)*9px)) rotate(calc(var(--fan)*11deg))}50%{transform:translateX(calc(var(--fan)*-4px)) rotate(calc(var(--fan)*-5deg))}}
+@keyframes shoe-overlay{0%{opacity:0}12%,85%{opacity:1}100%{opacity:0}}
+@media(max-width:760px){.shoe-status{left:14px;top:69px;width:165px;padding:7px 9px}.shoe-status>div:first-child{font-size:10px}.shoe-status small{font-size:8px}.shoe-shuffle{width:225px}}
+@media(prefers-reduced-motion:reduce){.shoe-gauge>span{transition:none}.shoe-shuffle,.shoe-fan>span{animation:none}.shoe-fan>span{transform:translateX(calc(var(--fan)*9px)) rotate(calc(var(--fan)*11deg))}}
+
 .history-results{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:4px}
 .history-results li{display:flex;flex-direction:column;gap:2px;align-items:baseline;font-size:12px;color:#c9d3bb}
 .history-results b{color:#e6ce94;font-weight:600}

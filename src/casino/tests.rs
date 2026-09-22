@@ -406,6 +406,150 @@ fn blackjack_value_handles_soft_aces() {
     assert_eq!(card_value("7h"), 7);
 }
 
+fn prepared_shoe(remaining: usize) -> CasinoTable {
+    let mut table = blackjack_table();
+    sit(&mut table, 80, 0, 10_000, 0);
+    table.shoe = vec!["2c".to_string(); remaining - 8];
+    table.shoe.extend(deck_from_top(&[
+        "Th", "9s", "Kd", "8c", "Th", "9s", "Kd", "8c",
+    ]));
+    table.shoe_total = 416;
+    table.shoe_cut = 100;
+    table.shuffled_at = 500;
+    table
+}
+
+#[test]
+fn blackjack_shoe_survives_rounds_and_saved_state() {
+    let mut table = prepared_shoe(416);
+    for (now, remaining) in [(1_000, 412), (2_000, 408)] {
+        act(&mut table, 80, CasinoCommand::Start, now);
+        assert!(table.shoe.is_empty());
+        act(
+            &mut table,
+            80,
+            CasinoCommand::Bet {
+                amount: 100,
+                pairs: 0,
+                plus3: 0,
+            },
+            now + 100,
+        );
+        let view = table_view(&table, Some(80), now + 100);
+        assert_eq!(view.shoe.unwrap().remaining, remaining);
+        act(&mut table, 80, CasinoCommand::Stand, now + 200);
+        assert_eq!(table.shoe.len(), remaining);
+        assert!(table.round.as_ref().unwrap().deck.is_empty());
+        assert_eq!(table.shuffled_at, 500);
+        table = serde_json::from_value(serde_json::to_value(table).unwrap()).unwrap();
+    }
+    assert_eq!(table.shoe.len(), 408);
+    assert!(table_view(&holdem_table(), None, 0).shoe.is_none());
+}
+
+#[test]
+fn blackjack_cut_card_shuffles_only_on_next_start() {
+    let mut table = prepared_shoe(104);
+    act(&mut table, 80, CasinoCommand::Start, 1_000);
+    act(
+        &mut table,
+        80,
+        CasinoCommand::Bet {
+            amount: 100,
+            pairs: 0,
+            plus3: 0,
+        },
+        1_100,
+    );
+    assert!(table_view(&table, None, 1_100).shoe.unwrap().reshuffle_due);
+    assert_eq!(table.shuffled_at, 500);
+    act(&mut table, 80, CasinoCommand::Stand, 1_200);
+    assert_eq!(table.shoe.len(), 100);
+    act(&mut table, 80, CasinoCommand::Start, 2_000);
+    let shoe = table_view(&table, None, 2_000).shoe.unwrap();
+    assert_eq!(
+        (shoe.remaining, shoe.total, shoe.shuffled_at),
+        (416, 416, 2_000)
+    );
+    assert!((84..=124).contains(&shoe.cut_at));
+    assert!(!shoe.reshuffle_due);
+    assert!(table.narration.contains("섞"));
+}
+
+#[test]
+fn blackjack_empty_betting_and_explicit_decks_preserve_shoe() {
+    let mut table = prepared_shoe(416);
+    let original = table.shoe.clone();
+    act(&mut table, 80, CasinoCommand::Start, 1_000);
+    table.tick(1_000 + BET_WINDOW_MS).unwrap();
+    assert_eq!(table.shoe, original);
+    table
+        .start_with_deck(80, deck_from_top(&["Th", "9s", "Kd", "8c"]), 20_000)
+        .unwrap();
+    act(
+        &mut table,
+        80,
+        CasinoCommand::Bet {
+            amount: 100,
+            pairs: 0,
+            plus3: 0,
+        },
+        20_100,
+    );
+    act(&mut table, 80, CasinoCommand::Stand, 20_200);
+    assert_eq!(table.shoe, original);
+    assert_eq!(table.shuffled_at, 500);
+    // 새 필드가 없는 과거 저장 파일도 읽힌다.
+    let mut old = serde_json::to_value(&table).unwrap();
+    for field in ["shoe", "shoe_cut", "shoe_total", "shuffled_at"] {
+        old.as_object_mut().unwrap().remove(field);
+    }
+    old["round"].as_object_mut().unwrap().remove("uses_shoe");
+    let restored: CasinoTable = serde_json::from_value(old).unwrap();
+    assert!(restored.shoe.is_empty());
+    assert_eq!(restored.shoe_total, 0);
+}
+
+#[test]
+fn blackjack_depleted_live_shoe_recovers_without_replacing_test_decks() {
+    let mut table = prepared_shoe(416);
+    act(&mut table, 80, CasinoCommand::Start, 1_000);
+    act(
+        &mut table,
+        80,
+        CasinoCommand::Bet {
+            amount: 100,
+            pairs: 0,
+            plus3: 0,
+        },
+        1_100,
+    );
+    table.round.as_mut().unwrap().deck.clear();
+    act(&mut table, 80, CasinoCommand::Hit, 1_200);
+    assert_eq!(table.shuffled_at, 1_200);
+    assert_eq!(table_view(&table, None, 1_200).shoe.unwrap().remaining, 415);
+    let mut explicit = blackjack_table();
+    sit(&mut explicit, 80, 0, 10_000, 0);
+    explicit
+        .start_with_deck(80, deck_from_top(&["Th", "9s", "Kd", "8c"]), 0)
+        .unwrap();
+    act(
+        &mut explicit,
+        80,
+        CasinoCommand::Bet {
+            amount: 100,
+            pairs: 0,
+            plus3: 0,
+        },
+        100,
+    );
+    let error = explicit
+        .apply_command(80, "P80", &CasinoCommand::Hit, None, 200)
+        .unwrap_err();
+    assert_eq!(error.code, "ENGINE_STATE");
+    assert_eq!(explicit.shoe_total, 0);
+}
+
 #[test]
 fn shuffled_deck_has_every_card_once() {
     let deck = shuffled_deck(1);

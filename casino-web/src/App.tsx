@@ -172,6 +172,7 @@ const blankTable = (): TableView => ({
   history: [],
   rules: defaultRules,
   dealer: { id: "sophia", name: "소피아", tagline: "YOUR DEALER" },
+  shoe: null,
 });
 
 const kindTitle = (kind: GameKind) => (kind === "holdem" ? "Texas Hold’em" : "Blackjack");
@@ -446,6 +447,9 @@ export default function Casino() {
     name = data?.me.name ?? "플레이어";
   const kind = table.kind;
   const tableRules = table.rules;
+  const shoe = table.shoe;
+  const shoeAge = shoe ? serverNow - shoe.shuffled_at : -1;
+  const shuffling = !!shoe && shoe.total > 0 && shoeAge >= 0 && shoeAge < 2500;
   const maxBuyin = Math.max(tableRules.min_buy_in, Math.min(tableRules.max_buy_in, floorStep(balance, tableRules.buy_in_step)));
   // 블랙잭 베팅: 최소~최대 사이, 단위에 맞고, 테이블 칩을 넘지 않아야 한다.
   const maxWager = me ? Math.min(tableRules.max_bet, floorStep(me.stack, tableRules.bet_step)) : tableRules.max_bet;
@@ -816,6 +820,21 @@ export default function Casino() {
               <div className="dealer-name">
                 {table.dealer.id.toUpperCase()} <span>{table.dealer.tagline}</span>
               </div>
+              {kind === "blackjack" && shoe && (
+                <div className={`shoe-status ${shoe.reshuffle_due ? "cut-reached" : ""}`}>
+                  <div><span>슈 {shoe.remaining}/{shoe.total}</span><small>{shoe.reshuffle_due ? "다음 라운드 전 셔플" : shoe.total ? "8 DECKS" : "라운드 시작 시 준비"}</small></div>
+                  <div className="shoe-gauge" role="meter" aria-label="슈에서 딜된 카드" aria-valuemin={0} aria-valuemax={shoe.total || 416} aria-valuenow={Math.max(0, shoe.total - shoe.remaining)}>
+                    <span style={{ width: `${shoe.total ? 100 * (1 - shoe.remaining / shoe.total) : 0}%` }} />
+                    {shoe.total > 0 && <i title="빨간 컷 카드" style={{ left: `${100 * (1 - shoe.cut_at / shoe.total)}%` }} />}
+                  </div>
+                </div>
+              )}
+              {shuffling && (
+                <div key={`${table.id}-${shoe.shuffled_at}`} className="shoe-shuffle" role="status">
+                  <div className="shoe-fan" aria-hidden="true">{Array.from({ length: 9 }, (_, i) => <span key={i} style={{ "--fan": i - 4 } as React.CSSProperties} />)}</div>
+                  <strong>새 슈를 섞는 중</strong><small>8 DECKS · 416 CARDS</small>
+                </div>
+              )}
               <div className="board">
                 <div className="board-label">{kind === "holdem" ? "TEXAS HOLD’EM" : "BLACKJACK PAYS 3 TO 2"}</div>
                 {kind === "holdem" && round && (

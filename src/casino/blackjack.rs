@@ -1,4 +1,4 @@
-// casino/blackjack.rs — 6덱 블랙잭 (S17, 3:2, 딜러 피크, 더블·스플릿·서렌더)
+// casino/blackjack.rs — 8덱 슈 블랙잭 (S17, 3:2, 피크·인슈어런스·사이드베팅)
 
 use super::cards::{CasinoError, blackjack_value, card_value, draw, shuffled_deck};
 use super::cards::{perfect_pairs, twenty_one_plus_three};
@@ -8,7 +8,42 @@ use super::table::{
     SEAT_COUNT, SETTLE_PAUSE_MS, SIDE_BET_MAX, SIDE_BET_MIN, SeatResult, TURN_MS, format_chips,
     new_id, signed_chips,
 };
+use rand::Rng;
 use serde::Serialize;
+
+fn new_shoe(table: &mut CasinoTable, now: i64) -> Vec<String> {
+    let deck = shuffled_deck(8);
+    table.shoe_total = deck.len();
+    // 바닥에 20~30%를 남긴다 (위에서 70~80% 지점).
+    table.shoe_cut =
+        crate::system_random::rng().random_range((deck.len() + 4) / 5..=deck.len() * 3 / 10);
+    table.shuffled_at = now;
+    deck
+}
+
+fn return_shoe(table: &mut CasinoTable) {
+    if let Some(round) = table.round.as_mut().filter(|round| round.uses_shoe) {
+        table.shoe = std::mem::take(&mut round.deck);
+    }
+}
+
+/// 고갈된 저장 상태에서도 실제 게임을 끝낼 수 있게 슈 바닥에 새 카드를 보충한다.
+/// 명시 덱의 오류는 그대로 반환해 재현 테스트가 무작위 카드로 바뀌지 않게 한다.
+fn ensure_shoe_cards(table: &mut CasinoTable, needed: usize, now: i64) {
+    if !table
+        .round
+        .as_ref()
+        .is_some_and(|round| round.uses_shoe && round.deck.len() < needed)
+    {
+        return;
+    }
+    let mut deck = new_shoe(table, now);
+    let round = table.round.as_mut().expect("round exists");
+    table.shoe_total += round.deck.len();
+    deck.append(&mut round.deck);
+    round.deck = deck;
+    table.say("슈가 소진되어 새 슈를 섞습니다.", now);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BjAction {
@@ -53,11 +88,27 @@ pub(super) fn start_blackjack(
         seat.side_won = 0;
         seat.side_notes.clear();
     }
+    let uses_shoe = deck.is_none();
+    let mut shuffle_text = "";
+    let deck = if let Some(deck) = deck {
+        deck
+    } else {
+        if table.shoe.is_empty() || table.shoe.len() <= table.shoe_cut {
+            shuffle_text = if table.shoe_total == 0 {
+                "새 슈를 준비합니다. "
+            } else {
+                "컷 카드가 나왔어요. 새 슈를 섞습니다. "
+            };
+            table.shoe = new_shoe(table, now);
+        }
+        std::mem::take(&mut table.shoe)
+    };
     let (reveal_until, board_reveal_at, dealer_reveal_at, dealer_flip_at, showdown_reveal_at) =
         Round::schedule_defaults(now);
     table.round = Some(Round {
         id: new_id(),
-        deck: deck.unwrap_or_else(|| shuffled_deck(8)),
+        deck,
+        uses_shoe,
         board: Vec::new(),
         dealer: Vec::new(),
         phase: Phase::Betting,
@@ -74,7 +125,10 @@ pub(super) fn start_blackjack(
         dealer_flip_at,
         showdown_reveal_at,
     });
-    table.say("베팅을 받습니다. 15초 안에 칩을 놓아주세요.", now);
+    table.say(
+        format!("{shuffle_text}베팅을 받습니다. 15초 안에 칩을 놓아주세요."),
+        now,
+    );
     Ok(())
 }
 
@@ -156,12 +210,14 @@ pub(super) fn deal_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), Ca
         let round = table.round.as_mut().expect("round exists");
         round.phase = Phase::Complete;
         round.deadline = 0;
+        return_shoe(table);
         table.say(
             "베팅이 없어 라운드를 마쳤어요. 다음 라운드에 참여해 주세요.",
             now,
         );
         return Ok(());
     }
+    ensure_shoe_cards(table, (players.len() + 1) * 2, now);
     // 참가자 순서대로 한 장씩, 딜러는 마지막에. 카드마다 시간차를 둔다.
     let mut at = table.round.as_ref().expect("round exists").reveal_base(now);
     for _ in 0..2 {
@@ -429,10 +485,11 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
         });
     if any_live {
         loop {
-            let round = table.round.as_mut().expect("round exists");
-            if blackjack_value(&round.dealer).0 >= 17 {
+            if blackjack_value(&table.round.as_ref().expect("round exists").dealer).0 >= 17 {
                 break;
             }
+            ensure_shoe_cards(table, 1, now);
+            let round = table.round.as_mut().expect("round exists");
             let card = draw(&mut round.deck)?;
             let at = round.reveal_until - SETTLE_PAUSE_MS + DEALER_DRAW_MS;
             round.dealer.push(card);
@@ -553,6 +610,7 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
         payouts,
         results,
     });
+    return_shoe(table);
     Ok(())
 }
 
@@ -583,6 +641,12 @@ pub(super) fn blackjack_action(
         _ => {}
     }
     let hand_index = table.round.as_ref().expect("round exists").hand;
+    let needed = match action {
+        BjAction::Hit | BjAction::Double => 1,
+        BjAction::Split => 2,
+        _ => 0,
+    };
+    ensure_shoe_cards(table, needed, now);
     let name = {
         let CasinoTable { seats, round, .. } = table;
         let deck = &mut round.as_mut().expect("round exists").deck;

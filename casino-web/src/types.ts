@@ -157,6 +157,7 @@ export interface TableView {
   history: HandResult[];
   rules: TableRules;
   dealer: DealerView;
+  shoe: { remaining: number; total: number; cut_at: number; shuffled_at: number; reshuffle_due: boolean } | null;
 }
 
 export interface TableSummary {
