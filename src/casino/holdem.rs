@@ -361,6 +361,7 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
                 wagered: seat.total,
                 net: returned - seat.total,
                 label,
+                notes: Vec::new(),
             }
         })
         .collect::<Vec<_>>();

@@ -1,10 +1,12 @@
 // casino/blackjack.rs — 6덱 블랙잭 (S17, 3:2, 딜러 피크, 더블·스플릿·서렌더)
 
 use super::cards::{CasinoError, blackjack_value, card_value, draw, shuffled_deck};
+use super::cards::{perfect_pairs, twenty_one_plus_three};
 use super::table::{
     BET_WINDOW_MS, BJ_BET_STEP, BJ_MAX_BET, BJ_MIN_BET, BjHand, CasinoTable, DEAL_CARD_MS,
-    DEALER_DRAW_MS, GameKind, HandResult, HandStatus, Payout, Phase, Round, SEAT_COUNT,
-    SETTLE_PAUSE_MS, SeatResult, TURN_MS, format_chips, new_id, signed_chips,
+    DEALER_DRAW_MS, GameKind, HandResult, HandStatus, INSURANCE_MS, Payout, Phase, Round,
+    SEAT_COUNT, SETTLE_PAUSE_MS, SIDE_BET_MAX, SIDE_BET_MIN, SeatResult, TURN_MS, format_chips,
+    new_id, signed_chips,
 };
 use serde::Serialize;
 
@@ -43,12 +45,18 @@ pub(super) fn start_blackjack(
         seat.cards.clear();
         seat.total = 0;
         seat.bet = 0;
+        seat.side_pairs = 0;
+        seat.side_plus3 = 0;
+        seat.insurance = 0;
+        seat.insurance_decided = false;
+        seat.side_net = 0;
+        seat.side_notes.clear();
     }
     let (reveal_until, board_reveal_at, dealer_reveal_at, dealer_flip_at, showdown_reveal_at) =
         Round::schedule_defaults(now);
     table.round = Some(Round {
         id: new_id(),
-        deck: deck.unwrap_or_else(|| shuffled_deck(6)),
+        deck: deck.unwrap_or_else(|| shuffled_deck(8)),
         board: Vec::new(),
         dealer: Vec::new(),
         phase: Phase::Betting,
@@ -69,10 +77,16 @@ pub(super) fn start_blackjack(
     Ok(())
 }
 
+fn valid_side_bet(amount: i64) -> bool {
+    amount == 0 || (SIDE_BET_MIN..=SIDE_BET_MAX).contains(&amount) && amount % BJ_BET_STEP == 0
+}
+
 pub(super) fn place_bet(
     table: &mut CasinoTable,
     index: usize,
     amount: i64,
+    pairs: i64,
+    plus3: i64,
     now: i64,
 ) -> Result<(), CasinoError> {
     let betting = table
@@ -83,23 +97,44 @@ pub(super) fn place_bet(
     if !betting || seat.in_hand || seat.sit_out || seat.leaving {
         return Err(CasinoError::invalid("지금은 베팅할 수 없습니다."));
     }
-    if amount < BJ_MIN_BET
-        || amount > BJ_MAX_BET
-        || amount % BJ_BET_STEP != 0
-        || amount > seat.stack
-    {
+    if amount < BJ_MIN_BET || amount > BJ_MAX_BET || amount % BJ_BET_STEP != 0 {
         return Err(CasinoError::invalid(
             "100~5,000 사이, 100 단위로 베팅해 주세요.",
         ));
     }
-    seat.stack -= amount;
-    seat.total = amount;
+    if !valid_side_bet(pairs) || !valid_side_bet(plus3) {
+        return Err(CasinoError::invalid(
+            "사이드베팅은 100~2,500 사이, 100 단위입니다.",
+        ));
+    }
+    if amount + pairs + plus3 > seat.stack {
+        return Err(CasinoError::invalid("테이블 칩이 부족합니다."));
+    }
+    seat.stack -= amount + pairs + plus3;
+    seat.total = amount + pairs + plus3;
     seat.bet = amount;
+    seat.side_pairs = pairs;
+    seat.side_plus3 = plus3;
     seat.in_hand = true;
     seat.last_seen = now;
     seat.hands = vec![BjHand::new(Vec::new(), amount, false, false)];
     let name = seat.name.clone();
-    table.say(format!("{name}님, {} 칩 베팅.", format_chips(amount)), now);
+    let mut extra = Vec::new();
+    if pairs > 0 {
+        extra.push(format!("퍼펙트 페어 {}", format_chips(pairs)));
+    }
+    if plus3 > 0 {
+        extra.push(format!("21+3 {}", format_chips(plus3)));
+    }
+    let extra_text = if extra.is_empty() {
+        String::new()
+    } else {
+        format!(" (사이드 {})", extra.join(", "))
+    };
+    table.say(
+        format!("{name}님, {} 칩 베팅{extra_text}.", format_chips(amount)),
+        now,
+    );
     // 베팅할 수 있는 좌석이 모두 베팅했으면 베팅창을 기다리지 않고 바로 딜한다.
     let everyone_in = table
         .seats
@@ -161,11 +196,160 @@ pub(super) fn deal_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), Ca
             }
         }
     }
+    settle_side_bets(table, &players, now);
+    let up_card = table.round.as_ref().expect("round exists").dealer[0].clone();
+    if up_card.starts_with('A') {
+        // 에볼루션 규칙: 딜러 에이스면 먼저 인슈어런스를 받고, 그다음 블랙잭을 확인한다.
+        let round = table.round.as_mut().expect("round exists");
+        round.phase = Phase::Insurance;
+        round.turn = -1;
+        round.deadline = round.reveal_until + INSURANCE_MS;
+        table.say(
+            "딜러가 에이스를 보여요. 인슈어런스를 받으시겠어요? 베팅의 절반이고, 딜러가 블랙잭이면 2:1로 드려요.",
+            now,
+        );
+        return Ok(());
+    }
     let dealer_total = blackjack_value(&table.round.as_ref().expect("round exists").dealer).0;
     if dealer_total == 21 {
         return settle_blackjack(table, now);
     }
     table.say("카드를 나눠드렸어요. 21에 도전해 보세요.", now);
+    next_blackjack(table, now)
+}
+
+/// 딜 직후 사이드베팅(퍼펙트 페어·21+3)을 정산한다. 딴 칩은 바로 스택에 얹는다.
+fn settle_side_bets(table: &mut CasinoTable, players: &[usize], now: i64) {
+    let up_card = table.round.as_ref().expect("round exists").dealer[0].clone();
+    let mut lines = Vec::new();
+    for &index in players {
+        let Some(seat) = table.seats[index].as_mut() else {
+            continue;
+        };
+        let Some(hand) = seat.hands.first() else {
+            continue;
+        };
+        if hand.cards.len() < 2 {
+            continue;
+        }
+        let (first, second) = (hand.cards[0].clone(), hand.cards[1].clone());
+        if seat.side_pairs > 0 {
+            let stake = seat.side_pairs;
+            match perfect_pairs(&first, &second) {
+                Some((label, odds)) => {
+                    seat.stack += stake * (odds + 1);
+                    seat.side_net += stake * odds;
+                    seat.side_notes
+                        .push(format!("{label} {odds}:1 {}", signed_chips(stake * odds)));
+                    lines.push(format!("{}님 {label} {odds}:1!", seat.name));
+                }
+                None => {
+                    seat.side_net -= stake;
+                    seat.side_notes
+                        .push(format!("퍼펙트 페어 {}", signed_chips(-stake)));
+                }
+            }
+        }
+        if seat.side_plus3 > 0 {
+            let stake = seat.side_plus3;
+            match twenty_one_plus_three(&first, &second, &up_card) {
+                Some((label, odds)) => {
+                    seat.stack += stake * (odds + 1);
+                    seat.side_net += stake * odds;
+                    seat.side_notes.push(format!(
+                        "21+3 {label} {odds}:1 {}",
+                        signed_chips(stake * odds)
+                    ));
+                    lines.push(format!("{}님 21+3 {label} {odds}:1!", seat.name));
+                }
+                None => {
+                    seat.side_net -= stake;
+                    seat.side_notes
+                        .push(format!("21+3 {}", signed_chips(-stake)));
+                }
+            }
+        }
+    }
+    if !lines.is_empty() {
+        table.say(lines.join(" "), now);
+    }
+}
+
+/// 인슈어런스 받기/거절. 모두 정하면 바로 딜러 카드를 확인한다.
+pub(super) fn insurance_decision(
+    table: &mut CasinoTable,
+    index: usize,
+    accept: bool,
+    now: i64,
+) -> Result<(), CasinoError> {
+    let open = table
+        .round
+        .as_ref()
+        .is_some_and(|round| round.phase == Phase::Insurance);
+    let seat = table.seats[index].as_mut().expect("seat exists");
+    if !open || !seat.in_hand || seat.insurance_decided {
+        return Err(CasinoError::invalid(
+            "지금은 인슈어런스를 정할 수 없습니다.",
+        ));
+    }
+    let name = seat.name.clone();
+    if accept {
+        let cost = seat.hands.first().map_or(0, |hand| hand.bet) / 2;
+        if cost <= 0 || cost > seat.stack {
+            return Err(CasinoError::invalid("인슈어런스를 걸 칩이 부족합니다."));
+        }
+        seat.stack -= cost;
+        seat.total += cost;
+        seat.insurance = cost;
+    }
+    seat.insurance_decided = true;
+    seat.last_seen = now;
+    table.say(
+        format!(
+            "{name}님, 인슈어런스 {}.",
+            if accept { "받음" } else { "거절" }
+        ),
+        now,
+    );
+    let everyone = table
+        .seats
+        .iter()
+        .flatten()
+        .filter(|seat| seat.in_hand)
+        .all(|seat| seat.insurance_decided);
+    if everyone {
+        return resolve_insurance(table, now);
+    }
+    Ok(())
+}
+
+/// 인슈어런스 시간이 끝나면 딜러 카드를 확인한다. 블랙잭이면 바로 정산, 아니면 플레이로 넘어간다.
+pub(super) fn resolve_insurance(table: &mut CasinoTable, now: i64) -> Result<(), CasinoError> {
+    {
+        let round = table.round.as_mut().expect("round exists");
+        if round.phase != Phase::Insurance {
+            return Ok(());
+        }
+        round.phase = Phase::Playing;
+    }
+    for seat in table.seats.iter_mut().flatten() {
+        if seat.in_hand {
+            seat.insurance_decided = true;
+        }
+    }
+    let dealer_total = blackjack_value(&table.round.as_ref().expect("round exists").dealer).0;
+    if dealer_total == 21 {
+        table.say("딜러 블랙잭! 인슈어런스를 확인할게요.", now);
+        return settle_blackjack(table, now);
+    }
+    for seat in table.seats.iter_mut().flatten() {
+        if seat.in_hand && seat.insurance > 0 {
+            seat.side_net -= seat.insurance;
+            seat.side_notes
+                .push(format!("인슈어런스 {}", signed_chips(-seat.insurance)));
+        }
+    }
+    table.say("딜러는 블랙잭이 아니에요. 게임을 계속합니다.", now);
     next_blackjack(table, now)
 }
 
@@ -181,13 +365,15 @@ pub(super) fn blackjack_legal(table: &CasinoTable, index: i32) -> Option<BjLegal
     }
     let two_cards = hand.cards.len() == 2;
     Some(BjLegal {
+        // 에볼루션 규칙: 처음 두 장에서 더블(스플릿 뒤에도 가능, 에이스 스플릿은 불가),
+        // 스플릿은 한 번만(같은 값 두 장), 서렌더 없음.
         can_double: two_cards && seat.stack >= hand.bet && !hand.split_aces,
         can_split: two_cards
-            && !hand.split_aces
-            && seat.hands.len() < 4
+            && !hand.split
+            && seat.hands.len() < 2
             && seat.stack >= hand.bet
             && card_value(&hand.cards[0]) == card_value(&hand.cards[1]),
-        can_surrender: two_cards && !hand.split,
+        can_surrender: false,
     })
 }
 
@@ -266,8 +452,17 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
         if !seat.in_hand {
             continue;
         }
-        let mut wagered = 0;
-        let mut net = 0;
+        if seat.insurance > 0 && dealer_natural {
+            // 인슈어런스 2:1 (원금 포함 3배 반환).
+            seat.stack += seat.insurance * 3;
+            seat.side_net += seat.insurance * 2;
+            seat.side_notes.push(format!(
+                "인슈어런스 2:1 {}",
+                signed_chips(seat.insurance * 2)
+            ));
+        }
+        let mut wagered = seat.side_pairs + seat.side_plus3 + seat.insurance;
+        let mut net = seat.side_net;
         let mut labels = Vec::new();
         for hand in &mut seat.hands {
             let score = blackjack_value(&hand.cards).0;
@@ -310,6 +505,7 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
             wagered,
             net,
             label: labels.join(" / "),
+            notes: seat.side_notes.clone(),
         });
     }
     let (round_id, board) = {

@@ -1,7 +1,7 @@
 // 봇의 /casino/api 응답 타입 (src/casino/view.rs, src/casino_hub.rs, src/casino_web.rs 와 맞춘다)
 
 export type GameKind = "holdem" | "blackjack";
-export type Phase = "preflop" | "flop" | "turn" | "river" | "betting" | "playing" | "complete";
+export type Phase = "preflop" | "flop" | "turn" | "river" | "betting" | "insurance" | "playing" | "complete";
 export type HandStatus = "playing" | "stand" | "bust" | "surrender";
 
 export interface HandView {
@@ -31,6 +31,11 @@ export interface SeatView {
   cards: string[];
   cards_reveal_at: number[];
   hands: HandView[];
+  side_pairs: number;
+  side_plus3: number;
+  insurance: number;
+  insurance_decided: boolean;
+  side_notes: string[];
   hand_name: string | null;
   hand_cards: string[];
 }
@@ -72,6 +77,8 @@ export interface LegalView {
   blackjack: BjLegal | null;
   can_bet: boolean;
   can_start: boolean;
+  can_insure: boolean;
+  insurance_cost: number;
 }
 
 export interface TableRules {
@@ -83,6 +90,9 @@ export interface TableRules {
   min_bet: number;
   max_bet: number;
   bet_step: number;
+  side_bet_min: number;
+  side_bet_max: number;
+  insurance_ms: number;
   seat_count: number;
   turn_ms: number;
   bet_window_ms: number;
@@ -112,6 +122,7 @@ export interface SeatResult {
   wagered: number;
   net: number;
   label: string;
+  notes: string[];
 }
 
 export interface HandResult {
@@ -183,7 +194,8 @@ export type CasinoCommand =
   | { action: "check" }
   | { action: "call" }
   | { action: "raise"; amount: number }
-  | { action: "bet"; amount: number }
+  | { action: "bet"; amount: number; pairs?: number; plus3?: number }
+  | { action: "insure"; accept: boolean }
   | { action: "hit" }
   | { action: "stand" }
   | { action: "double" }

@@ -1,7 +1,8 @@
 // casino/table.rs — 테이블·좌석·라운드 상태, 명령 적용, 시간 초과 처리
 
 use super::blackjack::{
-    BjAction, blackjack_action, blackjack_legal, deal_blackjack, place_bet, start_blackjack,
+    BjAction, blackjack_action, blackjack_legal, deal_blackjack, insurance_decision, place_bet,
+    resolve_insurance, start_blackjack,
 };
 use super::cards::{CasinoError, blackjack_value};
 use super::holdem::{PokerAction, poker_action, poker_legal, start_poker};
@@ -29,6 +30,11 @@ pub const BUY_IN_STEP: i64 = 100;
 pub const BJ_MIN_BET: i64 = 100;
 pub const BJ_MAX_BET: i64 = 5_000;
 pub const BJ_BET_STEP: i64 = 100;
+/// 사이드베팅(퍼펙트 페어·21+3) 한도.
+pub const SIDE_BET_MIN: i64 = 100;
+pub const SIDE_BET_MAX: i64 = 2_500;
+/// 인슈어런스 결정 시간.
+pub const INSURANCE_MS: i64 = 10_000;
 const MESSAGE_LIMIT: usize = 40;
 
 /// 딜러 프로필. 초상은 casino-web/public/dealers/<id>.png (dealer.png와 같은 1536x1024 구도),
@@ -120,6 +126,8 @@ pub enum Phase {
     Turn,
     River,
     Betting,
+    /// 딜러가 에이스를 보일 때 인슈어런스를 받는 시간.
+    Insurance,
     Playing,
     Complete,
 }
@@ -132,6 +140,7 @@ impl Phase {
             Self::Turn => "턴",
             Self::River => "리버",
             Self::Betting => "베팅 접수",
+            Self::Insurance => "인슈어런스",
             Self::Playing => "플레이 중",
             Self::Complete => "라운드 종료",
         }
@@ -205,6 +214,22 @@ pub struct Seat {
     /// 홀덤 홀 카드가 화면에 나타나는 시각 (카드와 같은 순서).
     #[serde(default)]
     pub cards_reveal_at: Vec<i64>,
+    /// 블랙잭 사이드베팅: 퍼펙트 페어 / 21+3 에 건 칩.
+    #[serde(default)]
+    pub side_pairs: i64,
+    #[serde(default)]
+    pub side_plus3: i64,
+    /// 인슈어런스에 건 칩 (베팅의 절반).
+    #[serde(default)]
+    pub insurance: i64,
+    #[serde(default)]
+    pub insurance_decided: bool,
+    /// 사이드베팅·인슈어런스 순손익 합계 (이번 라운드).
+    #[serde(default)]
+    pub side_net: i64,
+    /// 사이드베팅·인슈어런스 결과 설명 (이번 라운드).
+    #[serde(default)]
+    pub side_notes: Vec<String>,
 }
 
 impl Seat {
@@ -215,6 +240,12 @@ impl Seat {
             stack,
             cards: Vec::new(),
             cards_reveal_at: Vec::new(),
+            side_pairs: 0,
+            side_plus3: 0,
+            insurance: 0,
+            insurance_decided: false,
+            side_net: 0,
+            side_notes: Vec::new(),
             bet: 0,
             total: 0,
             folded: false,
@@ -322,6 +353,9 @@ pub struct SeatResult {
     pub net: i64,
     /// 족보·결과 이름 ("원 페어", "폴드", "승리" 등).
     pub label: String,
+    /// 사이드베팅·인슈어런스 결과 ("퍼펙트 페어 12:1 +1,200" 등).
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -360,6 +394,16 @@ pub enum CasinoCommand {
     },
     Bet {
         amount: i64,
+        /// 퍼펙트 페어 사이드베팅 (0이면 없음).
+        #[serde(default)]
+        pairs: i64,
+        /// 21+3 사이드베팅 (0이면 없음).
+        #[serde(default)]
+        plus3: i64,
+    },
+    /// 인슈어런스 받기/거절 (딜러 에이스일 때만).
+    Insure {
+        accept: bool,
     },
     Hit,
     Stand,
@@ -640,16 +684,6 @@ impl CasinoTable {
         if !just_completed {
             return;
         }
-        let house_delta = if self.kind == GameKind::Blackjack {
-            self.seats
-                .iter()
-                .flatten()
-                .flat_map(|seat| seat.hands.iter())
-                .map(|hand| hand.bet - hand.payout.unwrap_or(hand.bet))
-                .sum()
-        } else {
-            0
-        };
         // 베팅 없이 끝난 블랙잭 라운드처럼 기록이 없으면 이벤트도 없다 (예전 기록을 다시 보내지 않게).
         let round_id = self.round.as_ref().map(|round| round.id.clone());
         let settled = self
@@ -658,6 +692,12 @@ impl CasinoTable {
             .filter(|result| Some(&result.id) == round_id.as_ref())
             .cloned();
         if let Some(result) = settled {
+            // 하우스 손익 = 플레이어 순손익의 반대 (사이드베팅·인슈어런스 포함).
+            let house_delta = if self.kind == GameKind::Blackjack {
+                -result.results.iter().map(|entry| entry.net).sum::<i64>()
+            } else {
+                0
+            };
             events.push(CasinoEvent::RoundSettled {
                 result,
                 house_delta,
@@ -684,6 +724,8 @@ impl CasinoTable {
                 let phase = round.phase;
                 if self.kind == GameKind::Blackjack && phase == Phase::Betting {
                     deal_blackjack(self, now)?;
+                } else if self.kind == GameKind::Blackjack && phase == Phase::Insurance {
+                    resolve_insurance(self, now)?;
                 } else if let Some(seat) = self.seat(turn) {
                     let actor = seat.user_id;
                     if self.kind == GameKind::Holdem {
@@ -911,13 +953,25 @@ impl CasinoTable {
                             GameKind::Blackjack => start_blackjack(self, now, None)?,
                         }
                     }
-                    CasinoCommand::Bet { amount } => {
+                    CasinoCommand::Bet {
+                        amount,
+                        pairs,
+                        plus3,
+                    } => {
                         if self.kind != GameKind::Blackjack {
                             return Err(CasinoError::invalid(
                                 "블랙잭 테이블에서만 베팅할 수 있습니다.",
                             ));
                         }
-                        place_bet(self, index, *amount, now)?;
+                        place_bet(self, index, *amount, *pairs, *plus3, now)?;
+                    }
+                    CasinoCommand::Insure { accept } => {
+                        if self.kind != GameKind::Blackjack {
+                            return Err(CasinoError::invalid(
+                                "블랙잭 테이블에서만 쓸 수 있습니다.",
+                            ));
+                        }
+                        insurance_decision(self, index, *accept, now)?;
                     }
                     CasinoCommand::Fold
                     | CasinoCommand::Check

@@ -302,3 +302,42 @@ pub fn best_hand(cards: &[String]) -> Option<BestHand> {
         cards: core_cards(&five_cards, category),
     })
 }
+
+fn is_red(suit: char) -> bool {
+    suit == 'h' || suit == 'd'
+}
+
+/// 퍼펙트 페어 사이드베팅: 처음 두 장이 같은 숫자면 (이름, 배당 n:1).
+/// 믹스 페어 6:1, 컬러 페어(같은 색) 12:1, 퍼펙트 페어(같은 무늬) 25:1.
+pub fn perfect_pairs(first: &str, second: &str) -> Option<(&'static str, i64)> {
+    if rank_value(first) != rank_value(second) {
+        return None;
+    }
+    let (a, b) = (suit_of(first), suit_of(second));
+    if a == b {
+        Some(("퍼펙트 페어", 25))
+    } else if is_red(a) == is_red(b) {
+        Some(("컬러 페어", 12))
+    } else {
+        Some(("믹스 페어", 6))
+    }
+}
+
+/// 21+3 사이드베팅: 내 두 장 + 딜러 앞면 카드로 만든 3장 포커 족보 (이름, 배당 n:1).
+/// 플러시 5:1, 스트레이트 10:1, 트리플 30:1, 스트레이트 플러시 40:1, 수티드 트립스 100:1.
+pub fn twenty_one_plus_three(first: &str, second: &str, up: &str) -> Option<(&'static str, i64)> {
+    let cards = [first, second, up];
+    let mut ranks = cards.map(rank_value);
+    ranks.sort_unstable();
+    let flush = cards.iter().all(|card| suit_of(card) == suit_of(first));
+    let trips = ranks[0] == ranks[2];
+    let straight = (ranks[0] + 1 == ranks[1] && ranks[1] + 1 == ranks[2]) || ranks == [2, 3, 14];
+    match (trips, straight, flush) {
+        (true, _, true) => Some(("수티드 트립스", 100)),
+        (_, true, true) => Some(("스트레이트 플러시", 40)),
+        (true, _, false) => Some(("트리플", 30)),
+        (_, true, false) => Some(("스트레이트", 10)),
+        (_, _, true) => Some(("플러시", 5)),
+        _ => None,
+    }
+}

@@ -145,6 +145,9 @@ const defaultRules: TableRules = {
   min_bet: 100,
   max_bet: 5000,
   bet_step: 100,
+  side_bet_min: 100,
+  side_bet_max: 2500,
+  insurance_ms: 10000,
   seat_count: 6,
   turn_ms: 30000,
   bet_window_ms: 15000,
@@ -160,7 +163,7 @@ const blankTable = (): TableView => ({
   narration: "열려 있는 테이블이 없어요. 관리자가 Discord에서 /카지노테이블생성 으로 열 수 있어요.",
   seats: Array(6).fill(null),
   round: null,
-  legal: { poker: null, blackjack: null, can_bet: false, can_start: false },
+  legal: { poker: null, blackjack: null, can_bet: false, can_start: false, can_insure: false, insurance_cost: 0 },
   messages: [],
   history: [],
   rules: defaultRules,
@@ -173,6 +176,12 @@ const kindStakes = (kind: GameKind, rules: TableRules) =>
   kind === "holdem" ? `${fmt(rules.small_blind)} / ${fmt(rules.big_blind)}` : `${fmt(rules.min_bet)} – ${fmt(rules.max_bet)}`;
 const floorStep = (value: number, step: number) => Math.floor(value / step) * step;
 const CHIP_DENOMS = [100, 500, 1000, 2500, 5000];
+type BetSpot = "main" | "pairs" | "plus3";
+interface Placement {
+  spot: BetSpot;
+  value: number;
+}
+const SPOT_LABEL: Record<BetSpot, string> = { main: "메인", pairs: "퍼펙트 페어", plus3: "21+3" };
 const chipLabel = (v: number) => (v >= 1000 ? `${v / 1000}K` : String(v));
 /** 금액을 큰 칩부터 쌓은 모양으로 나눈다 (표시용). */
 function chipsFor(amount: number): number[] {
@@ -287,8 +296,9 @@ export default function Casino() {
     [error, setError] = useState(token ? "" : "개인 링크가 아닙니다. Discord에서 /카지노입장 으로 링크를 받아 주세요.");
   const [wager, setWager] = useState(100),
     [chip, setChip] = useState(500),
-    [chipStack, setChipStack] = useState<number[]>([]),
-    [lastStack, setLastStack] = useState<number[]>([]),
+    [spot, setSpot] = useState<BetSpot>("main"),
+    [placements, setPlacements] = useState<Placement[]>([]),
+    [lastPlacements, setLastPlacements] = useState<Placement[]>([]),
     [raise, setRaise] = useState(200),
     [chat, setChat] = useState(""),
     [clock, setClock] = useState(0),
@@ -438,21 +448,35 @@ export default function Casino() {
   const clampWager = (value: number) =>
     Math.min(Math.max(maxWager, tableRules.min_bet), Math.max(tableRules.min_bet, floorStep(Number.isFinite(value) ? value : tableRules.min_bet, tableRules.bet_step)));
   const validWager = wager >= tableRules.min_bet && wager <= maxWager && wager % tableRules.bet_step === 0;
+  const chipsAt = (which: BetSpot, list: Placement[] = placements) => list.filter((p) => p.spot === which).map((p) => p.value);
+  const chipStack = chipsAt("main");
   const stackTotal = chipStack.reduce((sum, value) => sum + value, 0);
-  const canPlaceChip = (value: number) => stackTotal + value <= maxWager;
-  const placeChip = (value: number = chip) => {
-    if (!table.legal.can_bet || disabled || !canPlaceChip(value)) return;
-    sfx.chip();
-    setChipStack((stack) => [...stack, value]);
+  const pairsTotal = chipsAt("pairs").reduce((sum, value) => sum + value, 0);
+  const plus3Total = chipsAt("plus3").reduce((sum, value) => sum + value, 0);
+  const grandTotal = stackTotal + pairsTotal + plus3Total;
+  const seatChips = me?.stack ?? 0;
+  // 메인은 테이블 한도, 사이드는 사이드 한도, 전부 합쳐 보유 칩을 넘지 않아야 한다.
+  const canPlaceAt = (which: BetSpot, value: number) => {
+    if (grandTotal + value > seatChips) return false;
+    if (which === "main") return stackTotal + value <= tableRules.max_bet;
+    const current = which === "pairs" ? pairsTotal : plus3Total;
+    return current + value <= tableRules.side_bet_max;
   };
+  const canPlaceChip = (value: number) => canPlaceAt(spot, value);
+  const placeChip = (value: number = chip, which: BetSpot = spot) => {
+    if (!table.legal.can_bet || disabled || !canPlaceAt(which, value)) return;
+    sfx.chip();
+    setPlacements((list) => [...list, { spot: which, value }]);
+  };
+  const sidesValid = (pairsTotal === 0 || pairsTotal >= tableRules.side_bet_min) && (plus3Total === 0 || plus3Total >= tableRules.side_bet_min);
   const lockBet = async () => {
-    if (!table.legal.can_bet || stackTotal < tableRules.min_bet || stackTotal > maxWager) return false;
-    const stack = chipStack;
-    const ok = await act({ action: "bet", amount: stackTotal });
+    if (!table.legal.can_bet || stackTotal < tableRules.min_bet || stackTotal > maxWager || !sidesValid) return false;
+    const list = placements;
+    const ok = await act({ action: "bet", amount: stackTotal, pairs: pairsTotal, plus3: plus3Total });
     if (ok) {
       sfx.lock();
-      setLastStack(stack);
-      setChipStack([]);
+      setLastPlacements(list);
+      setPlacements([]);
     }
     return ok;
   };
@@ -466,7 +490,8 @@ export default function Casino() {
   }, [table.legal.can_bet, round?.id, maxWager]);
   useEffect(() => {
     // 새 라운드가 열리면 쌓던 칩을 비운다.
-    setChipStack([]);
+    setPlacements([]);
+    setSpot("main");
     autoBetRound.current = null;
   }, [round?.id]);
   useEffect(() => {
@@ -814,7 +839,9 @@ export default function Casino() {
                         : "카드를 나누는 중…"
                       : round.phase === "complete"
                       ? "라운드 종료 · 다음 핸드를 시작하세요"
-                      : round.phase === "betting"
+                      : round.phase === "insurance"
+                        ? `인슈어런스 접수 · ${seconds}초`
+                        : round.phase === "betting"
                         ? `베팅 마감까지 ${seconds}초`
                         : isTurn
                           ? "당신의 차례입니다"
@@ -868,15 +895,46 @@ export default function Casino() {
                     </span>
                     {kind === "blackjack" &&
                       (seat.mine && table.legal.can_bet ? (
-                        <ChipStack
-                          chips={chipStack}
-                          total={stackTotal}
-                          active
-                          hint={`${chipLabel(chip)} 놓기`}
-                          onClick={() => placeChip()}
-                        />
+                        <>
+                          <ChipStack
+                            chips={chipStack}
+                            total={stackTotal}
+                            active={spot === "main"}
+                            hint={`${chipLabel(chip)} 놓기`}
+                            onClick={() => {
+                              setSpot("main");
+                              placeChip(chip, "main");
+                            }}
+                          />
+                          <div className="side-spots">
+                            {(["pairs", "plus3"] as BetSpot[]).map((which) => (
+                              <ChipStack
+                                key={which}
+                                chips={chipsAt(which)}
+                                total={which === "pairs" ? pairsTotal : plus3Total}
+                                active={spot === which}
+                                hint={which === "pairs" ? "PP" : "21+3"}
+                                onClick={() => {
+                                  setSpot(which);
+                                  placeChip(chip, which);
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </>
                       ) : (
-                        (seat.bet > 0 || seat.total > 0) && <ChipStack chips={chipsFor(seat.total || seat.bet)} total={seat.total || seat.bet} />
+                        seat.bet > 0 && (
+                          <>
+                            <ChipStack chips={chipsFor(seat.bet)} total={seat.bet} />
+                            {(seat.side_pairs > 0 || seat.side_plus3 > 0 || seat.insurance > 0) && (
+                              <div className="side-spots">
+                                {seat.side_pairs > 0 && <ChipStack chips={chipsFor(seat.side_pairs)} total={seat.side_pairs} hint="PP" />}
+                                {seat.side_plus3 > 0 && <ChipStack chips={chipsFor(seat.side_plus3)} total={seat.side_plus3} hint="21+3" />}
+                                {seat.insurance > 0 && <ChipStack chips={chipsFor(seat.insurance)} total={seat.insurance} hint="INS" />}
+                              </div>
+                            )}
+                          </>
+                        )
                       ))}
                     <span className="player-name">
                       {seat.name}
@@ -937,7 +995,10 @@ export default function Casino() {
                             {r.seat === table.my_seat ? " (나)" : ""}
                           </span>
                           <b>{signed(r.net)}</b>
-                          <small>{r.label}</small>
+                          <small>
+                            {r.label}
+                            {r.notes.length > 0 ? ` · ${r.notes.join(" · ")}` : ""}
+                          </small>
                         </li>
                       ))}
                     </ul>
@@ -1061,6 +1122,32 @@ export default function Casino() {
                         </button>
                       </div>
                     </div>
+                  ) : kind === "blackjack" && round?.phase === "insurance" ? (
+                    <div className="action-row insurance-row">
+                      <div>
+                        <span className="eyebrow">INSURANCE</span>
+                        <p>
+                          {table.legal.can_insure
+                            ? `딜러가 에이스를 보입니다. 인슈어런스 ${fmt(table.legal.insurance_cost)}(베팅의 절반)을 걸면 딜러 블랙잭일 때 2:1로 받습니다.`
+                            : me.insurance_decided
+                              ? me.insurance > 0
+                                ? `인슈어런스 ${fmt(me.insurance)}을 걸었어요. 딜러 카드를 확인합니다.`
+                                : "인슈어런스를 거절했어요. 딜러 카드를 확인합니다."
+                              : "다른 플레이어의 인슈어런스 결정을 기다리는 중입니다."}{" "}
+                          <span className="button-timer">{seconds}s</span>
+                        </p>
+                      </div>
+                      {table.legal.can_insure && (
+                        <div className="action-buttons insurance-buttons">
+                          <button className="gold-button" disabled={disabled} onClick={() => void act({ action: "insure", accept: true })}>
+                            인슈어런스 받기
+                          </button>
+                          <button className="secondary-button" disabled={disabled} onClick={() => void act({ action: "insure", accept: false })}>
+                            거절
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   ) : kind === "blackjack" && bj ? (
                     <div className="blackjack-actions">
                       <button className="gold-button" disabled={disabled} onClick={() => void act({ action: "hit" })}>
@@ -1076,9 +1163,6 @@ export default function Casino() {
                       </button>
                       <button className="secondary-button" disabled={disabled || !bj.can_split} onClick={() => void act({ action: "split" })}>
                         스플릿
-                      </button>
-                      <button className="text-button" disabled={disabled || !bj.can_surrender} onClick={() => void act({ action: "surrender" })}>
-                        서렌더
                       </button>
                     </div>
                   ) : table.legal.can_bet ? (
@@ -1100,45 +1184,62 @@ export default function Casino() {
                           </button>
                         ))}
                       </div>
+                      <div className="spot-tabs">
+                        {(["main", "pairs", "plus3"] as BetSpot[]).map((which) => (
+                          <button
+                            key={which}
+                            type="button"
+                            className={`spot-tab ${spot === which ? "chosen" : ""}`}
+                            onClick={() => setSpot(which)}
+                          >
+                            {SPOT_LABEL[which]}
+                            <b>{fmt(which === "main" ? stackTotal : which === "pairs" ? pairsTotal : plus3Total)}</b>
+                          </button>
+                        ))}
+                      </div>
                       <div className="bet-tools">
                         <span className="bet-total">
-                          베팅 <strong>{fmt(stackTotal)}</strong>
+                          합계 <strong>{fmt(grandTotal)}</strong>
                           <small>
                             {" "}
-                            / 최대 {fmt(maxWager)}
+                            / 메인 최대 {fmt(maxWager)} · 사이드 최대 {fmt(tableRules.side_bet_max)}
                           </small>
                         </span>
-                        <button type="button" className="text-button" disabled={disabled || chipStack.length === 0} onClick={() => setChipStack((stack) => stack.slice(0, -1))}>
+                        <button type="button" className="text-button" disabled={disabled || placements.length === 0} onClick={() => setPlacements((list) => list.slice(0, -1))}>
                           되돌리기
                         </button>
-                        <button type="button" className="text-button" disabled={disabled || chipStack.length === 0} onClick={() => setChipStack([])}>
+                        <button type="button" className="text-button" disabled={disabled || placements.length === 0} onClick={() => setPlacements([])}>
                           지우기
                         </button>
                         <button
                           type="button"
                           className="text-button"
-                          disabled={disabled || chipStack.length > 0 || lastStack.length === 0 || lastStack.reduce((s, v) => s + v, 0) > maxWager}
-                          onClick={() => setChipStack(lastStack)}
+                          disabled={
+                            disabled || placements.length > 0 || lastPlacements.length === 0 || lastPlacements.reduce((s, p) => s + p.value, 0) > seatChips
+                          }
+                          onClick={() => setPlacements(lastPlacements)}
                         >
                           다시 베팅
                         </button>
                         <button
                           type="button"
                           className="text-button"
-                          disabled={disabled || chipStack.length === 0 || stackTotal * 2 > maxWager}
-                          onClick={() => setChipStack((stack) => [...stack, ...stack])}
+                          disabled={disabled || placements.length === 0 || grandTotal * 2 > seatChips || stackTotal * 2 > tableRules.max_bet}
+                          onClick={() => setPlacements((list) => [...list, ...list])}
                         >
                           더블
                         </button>
                         <button
                           className="gold-button"
-                          disabled={disabled || stackTotal < tableRules.min_bet || stackTotal > maxWager || seconds <= 0}
+                          disabled={disabled || stackTotal < tableRules.min_bet || stackTotal > maxWager || !sidesValid || seconds <= 0}
                           onClick={() => void lockBet()}
                         >
                           베팅 확정 <span className="button-timer">{seconds}s</span>
                         </button>
                       </div>
-                      <p className="bet-hint">칩을 누르면 내 자리 앞에 쌓입니다. 마감 2초 전에 쌓인 칩은 자동으로 확정됩니다.</p>
+                      <p className="bet-hint">
+                        칩을 고르고 자리(메인 · PP · 21+3)를 누르면 쌓입니다. 사이드베팅은 {fmt(tableRules.side_bet_min)}~{fmt(tableRules.side_bet_max)}. 마감 2초 전에 쌓인 칩은 자동으로 확정됩니다.
+                      </p>
                     </div>
                   ) : (
                     <div className="action-row">
@@ -1361,21 +1462,94 @@ export default function Casino() {
           <DialogDescription>CASINO73 HOUSE RULES · V1 · 마피아73 코인</DialogDescription>
           {kind === "holdem" ? (
             <div className="rules-copy">
-              <p>2–6인 노 리밋 홀덤. 스몰 블라인드 50 / 빅 블라인드 100. 레이크 없음.</p>
-              <p>개인 카드 2장과 공용 카드 5장으로 가장 강한 5장 조합을 만듭니다. 프리플롭 → 플롭 → 턴 → 리버 순서로 베팅합니다.</p>
-              <p>
-                레이즈 금액은 해당 라운드의 <b>총 베팅액</b>입니다. 최소 레이즈는 직전의 완전한 레이즈 폭을 따릅니다. 짧은 올인은 레이즈 권한을 자동으로 다시 열지
-                않습니다.
-              </p>
-              <p>올인 시 사이드팟을 각각 정산합니다. 무승부는 분배하고, 남는 1칩은 버튼 왼쪽부터 지급합니다.</p>
-              <p>제한시간 30초. 시간 초과 시 무료 체크 또는 폴드. 2회 연속 시간 초과 시 다음 핸드부터 자리 비움.</p>
+              <h3>기본</h3>
+              <ul>
+                <li>2~6인 노 리밋 텍사스 홀덤. 스몰 블라인드 50 / 빅 블라인드 100. 레이크(수수료) 없음.</li>
+                <li>바이인 5,000~20,000 칩. 나가면 남은 칩이 코인으로 돌아옵니다.</li>
+                <li>개인 카드 2장 + 공용 카드 5장 중 가장 강한 5장이 내 패입니다.</li>
+              </ul>
+              <h3>진행</h3>
+              <ul>
+                <li>프리플롭 → 플롭(3장) → 턴(1장) → 리버(1장). 각 단계마다 베팅.</li>
+                <li>프리플롭은 빅 블라인드 다음 사람부터, 그 뒤 단계는 버튼 다음 사람부터 행동합니다. 2인이면 버튼이 스몰 블라인드를 내고 프리플롭에 먼저 행동합니다.</li>
+                <li>레이즈 금액은 이번 단계의 <b>총 베팅액</b>입니다. 최소 레이즈 폭은 직전 레이즈 폭 이상(처음엔 빅 블라인드).</li>
+                <li>올인이 있으면 각자 낸 만큼만 걸린 사이드팟으로 나눠 정산합니다. 무승부는 팟을 나누고 남는 1칩은 버튼 왼쪽부터 받습니다.</li>
+                <li>남은 사람이 한 명이면 카드를 공개하지 않고 팟을 가져갑니다.</li>
+              </ul>
+              <h3>족보 (높은 순)</h3>
+              <table className="rules-table">
+                <tbody>
+                  <tr><th>로열 플러시</th><td>A K Q J 10 같은 무늬</td></tr>
+                  <tr><th>스트레이트 플러시</th><td>연속 5장 같은 무늬</td></tr>
+                  <tr><th>포 카드</th><td>같은 숫자 4장</td></tr>
+                  <tr><th>풀 하우스</th><td>트리플 + 페어</td></tr>
+                  <tr><th>플러시</th><td>같은 무늬 5장</td></tr>
+                  <tr><th>스트레이트</th><td>연속 5장 (A는 맨 위·맨 아래 모두 가능)</td></tr>
+                  <tr><th>트리플</th><td>같은 숫자 3장</td></tr>
+                  <tr><th>투 페어</th><td>페어 둘</td></tr>
+                  <tr><th>원 페어</th><td>같은 숫자 2장</td></tr>
+                  <tr><th>하이 카드</th><td>아무 조합도 없으면 가장 높은 카드</td></tr>
+                </tbody>
+              </table>
+              <h3>시간</h3>
+              <ul>
+                <li>차례마다 30초. 시간이 지나면 체크할 수 있으면 체크, 아니면 폴드.</li>
+                <li>2회 연속 시간 초과 → 다음 핸드부터 자리 비움(복귀 버튼으로 돌아옴). 30분 동안 아무 행동이 없으면 자동 퇴장.</li>
+              </ul>
             </div>
           ) : (
             <div className="rules-copy">
-              <p>6덱 · 매 라운드 새 셔플 · 딜러는 소프트 17 포함 17 이상에서 스탠드.</p>
-              <p>베팅 100–5,000, 100 단위. 블랙잭 3:2, 일반 승리 1:1, 무승부 원금 반환. 딜러 블랙잭은 플레이어 액션 전에 확인합니다.</p>
-              <p>첫 2장에서 더블 가능. 같은 값 카드 스플릿, 최대 4핸드. 스플릿 후 더블 가능. 에이스 스플릿은 1장만 추가, 재스플릿 불가. 스플릿 21은 일반 승리 배당.</p>
-              <p>첫 2장, 스플릿 전 서렌더 시 베팅 절반 반환. 보험·사이드베팅 없음. 베팅창 15초, 액션 30초. 시간 초과는 스탠드.</p>
+              <h3>기본 (에볼루션 라이브 블랙잭 규칙)</h3>
+              <ul>
+                <li>8덱, 매 라운드 새 셔플. 딜러는 소프트 17을 포함해 17 이상이면 스탠드.</li>
+                <li>메인 베팅 100~5,000 (100 단위). 바이인 5,000~20,000 칩.</li>
+                <li>딜러가 에이스를 보이면 먼저 인슈어런스를 받고, 그다음 딜러 블랙잭을 확인합니다. 10 계열을 보이면 바로 확인합니다. 딜러 블랙잭이면 그 자리에서 정산합니다.</li>
+              </ul>
+              <h3>배당</h3>
+              <table className="rules-table">
+                <tbody>
+                  <tr><th>블랙잭 (처음 두 장 21)</th><td>3:2 — 1,000 베팅이면 +1,500</td></tr>
+                  <tr><th>일반 승리</th><td>1:1 — 1,000 베팅이면 +1,000</td></tr>
+                  <tr><th>푸시 (같은 점수)</th><td>원금 반환</td></tr>
+                  <tr><th>딜러 블랙잭 vs 내 블랙잭</th><td>푸시</td></tr>
+                  <tr><th>버스트 (22 이상)</th><td>베팅을 잃음 (딜러가 뒤에 버스트해도 동일)</td></tr>
+                  <tr><th>스플릿 뒤 21</th><td>블랙잭이 아니라 일반 승리 1:1</td></tr>
+                </tbody>
+              </table>
+              <h3>액션</h3>
+              <ul>
+                <li><b>히트</b> 카드 한 장 더. <b>스탠드</b> 멈춤.</li>
+                <li><b>더블</b> 처음 두 장에서 베팅만큼 추가하고 딱 한 장만 받습니다. 스플릿 뒤에도 가능(에이스 스플릿은 불가).</li>
+                <li><b>스플릿</b> 같은 값 두 장(10·J·Q·K는 서로 같은 값)을 두 핸드로 나누고, 두 번째 핸드에 같은 베팅을 겁니다. 한 번만 가능(최대 2핸드). 에이스 스플릿은 핸드마다 한 장씩만 받습니다.</li>
+                <li>서렌더는 없습니다.</li>
+              </ul>
+              <h3>인슈어런스</h3>
+              <ul>
+                <li>딜러 앞면 카드가 에이스일 때, 메인 베팅의 절반을 걸 수 있습니다 (10초 안에 결정, 무응답은 거절).</li>
+                <li>딜러가 블랙잭이면 인슈어런스 2:1 — 500 베팅 · 인슈어런스 250이면 메인 −500, 인슈어런스 +500으로 본전.</li>
+                <li>딜러가 블랙잭이 아니면 인슈어런스를 잃고 게임을 계속합니다.</li>
+              </ul>
+              <h3>사이드베팅 (100~2,500, 딜 직후 정산)</h3>
+              <table className="rules-table">
+                <tbody>
+                  <tr><th colSpan={2}>퍼펙트 페어 — 내 처음 두 장이 같은 숫자</th></tr>
+                  <tr><th>믹스 페어</th><td>같은 숫자, 다른 색 — 6:1</td></tr>
+                  <tr><th>컬러 페어</th><td>같은 숫자, 같은 색, 다른 무늬 — 12:1</td></tr>
+                  <tr><th>퍼펙트 페어</th><td>같은 숫자, 같은 무늬 — 25:1</td></tr>
+                  <tr><th colSpan={2}>21+3 — 내 두 장 + 딜러 앞면 카드로 3장 족보</th></tr>
+                  <tr><th>플러시</th><td>같은 무늬 3장 — 5:1</td></tr>
+                  <tr><th>스트레이트</th><td>연속 3장 (A 2 3, Q K A 포함) — 10:1</td></tr>
+                  <tr><th>트리플</th><td>같은 숫자 3장 — 30:1</td></tr>
+                  <tr><th>스트레이트 플러시</th><td>연속 3장 같은 무늬 — 40:1</td></tr>
+                  <tr><th>수티드 트립스</th><td>같은 숫자·같은 무늬 3장 — 100:1</td></tr>
+                </tbody>
+              </table>
+              <p>예: 21+3에 100을 걸고 트리플이 나오면 +3,000. 사이드베팅은 메인 결과와 상관없이 딜 직후 정산됩니다.</p>
+              <h3>시간</h3>
+              <ul>
+                <li>베팅 15초 (베팅할 수 있는 사람이 모두 확정하면 바로 딜). 마감 2초 전에 쌓아 둔 칩은 자동 확정.</li>
+                <li>인슈어런스 10초, 액션 30초. 시간이 지나면 스탠드. 2회 연속 초과 → 자리 비움. 30분 무응답 → 자동 퇴장.</li>
+              </ul>
             </div>
           )}
           <div className="rules-foot">
@@ -1405,7 +1579,10 @@ export default function Casino() {
                         <li key={r.user_id} className={r.net >= 0 ? "won" : "lost"}>
                           <span>{r.name}</span>
                           <b>{signed(r.net)}</b>
-                          <small>{r.label}</small>
+                          <small>
+                            {r.label}
+                            {r.notes.length > 0 ? ` · ${r.notes.join(" · ")}` : ""}
+                          </small>
                         </li>
                       ))}
                     </ul>

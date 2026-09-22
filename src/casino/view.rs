@@ -5,8 +5,8 @@ use super::cards::{best_hand, blackjack_value};
 use super::holdem::PokerLegal;
 use super::table::{
     BET_WINDOW_MS, BJ_BET_STEP, BJ_MAX_BET, BJ_MIN_BET, BUY_IN_STEP, CasinoTable, ChatMessage,
-    GameKind, HOLDEM_BIG_BLIND, HOLDEM_SMALL_BLIND, HandResult, HandStatus, MAX_BUY_IN, MIN_BUY_IN,
-    Phase, SEAT_COUNT, TURN_MS,
+    GameKind, HOLDEM_BIG_BLIND, HOLDEM_SMALL_BLIND, HandResult, HandStatus, INSURANCE_MS,
+    MAX_BUY_IN, MIN_BUY_IN, Phase, SEAT_COUNT, SIDE_BET_MAX, SIDE_BET_MIN, TURN_MS,
 };
 use serde::Serialize;
 
@@ -41,6 +41,12 @@ pub struct SeatView {
     /// 홀 카드별 등장 시각.
     pub cards_reveal_at: Vec<i64>,
     pub hands: Vec<HandView>,
+    /// 블랙잭 사이드베팅·인슈어런스.
+    pub side_pairs: i64,
+    pub side_plus3: i64,
+    pub insurance: i64,
+    pub insurance_decided: bool,
+    pub side_notes: Vec<String>,
     /// 홀덤: 지금 만들어진 족보 이름 (내 좌석은 항상, 다른 좌석은 쇼다운에서만).
     pub hand_name: Option<String>,
     /// 그 족보를 이루는 카드 (강조 표시용, 보드 카드 포함).
@@ -73,6 +79,10 @@ pub struct LegalView {
     pub blackjack: Option<BjLegal>,
     pub can_bet: bool,
     pub can_start: bool,
+    /// 인슈어런스를 정할 수 있다 (딜러 에이스, 아직 미결정).
+    pub can_insure: bool,
+    /// 인슈어런스 비용 (베팅의 절반).
+    pub insurance_cost: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +102,9 @@ pub struct TableRules {
     pub min_bet: i64,
     pub max_bet: i64,
     pub bet_step: i64,
+    pub side_bet_min: i64,
+    pub side_bet_max: i64,
+    pub insurance_ms: i64,
     pub seat_count: usize,
     pub turn_ms: i64,
     pub bet_window_ms: i64,
@@ -126,6 +139,9 @@ pub fn table_rules() -> TableRules {
         min_bet: BJ_MIN_BET,
         max_bet: BJ_MAX_BET,
         bet_step: BJ_BET_STEP,
+        side_bet_min: SIDE_BET_MIN,
+        side_bet_max: SIDE_BET_MAX,
+        insurance_ms: INSURANCE_MS,
         seat_count: SEAT_COUNT,
         turn_ms: TURN_MS,
         bet_window_ms: BET_WINDOW_MS,
@@ -180,6 +196,15 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
                 in_hand: seat.in_hand,
                 sit_out: seat.sit_out,
                 leaving: seat.leaving,
+                side_pairs: seat.side_pairs,
+                side_plus3: seat.side_plus3,
+                insurance: seat.insurance,
+                insurance_decided: seat.insurance_decided,
+                side_notes: if reveal_done {
+                    seat.side_notes.clone()
+                } else {
+                    Vec::new()
+                },
                 hand_name,
                 hand_cards,
                 cards: seat
@@ -287,6 +312,14 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
         can_start: !active
             && my.is_some_and(|seat| !seat.sit_out && !seat.leaving && seat.stack >= minimum)
             && ready_count >= if table.kind == GameKind::Holdem { 2 } else { 1 },
+        can_insure: table.kind == GameKind::Blackjack
+            && round.is_some_and(|round| round.phase == Phase::Insurance)
+            && my.is_some_and(|seat| {
+                seat.in_hand
+                    && !seat.insurance_decided
+                    && seat.stack >= seat.hands.first().map_or(0, |hand| hand.bet) / 2
+            }),
+        insurance_cost: my.map_or(0, |seat| seat.hands.first().map_or(0, |hand| hand.bet) / 2),
     };
     TableView {
         id: table.id.clone(),

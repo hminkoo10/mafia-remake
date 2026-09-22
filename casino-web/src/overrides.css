@@ -116,3 +116,19 @@ video.dealer-backdrop{position:absolute;width:100%;height:100%;object-fit:cover;
 /* CASINO73 브랜드: 이름이 길어져 상단바 글자 크기·자간을 조정 */
 .brand>span{font-size:26px;letter-spacing:2px}
 @media(max-width:760px){.brand>span{font-size:20px;letter-spacing:1px}}
+
+/* 사이드베팅 자리(PP · 21+3), 인슈어런스, 규칙표 */
+.side-spots{position:absolute;left:calc(100% - 6px);top:54px;display:flex;gap:3px}
+.side-spots .chip-stack{position:static;transform:scale(.78);transform-origin:top left}
+.spot-tabs{display:flex;gap:6px;justify-content:center;flex-wrap:wrap}
+.spot-tab{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:96px;padding:6px 10px;border-radius:8px;border:1px solid #536143;background:#1f2b1c;color:#c6d0b4;font-size:12px}
+.spot-tab b{font-size:13px;color:#e6d4a4}
+.spot-tab.chosen{border-color:#dcc17a;background:#2f3a20;color:#f3e6c4}
+.insurance-row .eyebrow{color:#e0c58d}
+.insurance-buttons{grid-template-columns:1.4fr 1fr}
+.rules-copy h3{margin:16px 0 6px;font:14px Georgia,serif;color:#e5d4aa;letter-spacing:.5px}
+.rules-copy ul{margin:0;padding-left:18px;color:#bdcbb0;font-size:13px;line-height:1.8}
+.rules-table{width:100%;border-collapse:collapse;font-size:13px;margin:4px 0 8px}
+.rules-table th{text-align:left;padding:6px 8px;color:#e0d2a5;font-weight:600;border-bottom:1px solid #2f3d2b;white-space:nowrap;vertical-align:top}
+.rules-table td{padding:6px 8px;color:#bdcbb0;border-bottom:1px solid #2f3d2b}
+.rules-table th[colspan]{background:#22301f;color:#dec388;white-space:normal}

@@ -136,6 +136,173 @@ fn dealer_rotation_only_uses_dealers_with_portraits() {
 }
 
 #[test]
+fn side_bet_tables_follow_evolution_payouts() {
+    assert_eq!(perfect_pairs("8h", "8d"), Some(("컬러 페어", 12)));
+    assert_eq!(perfect_pairs("8h", "8s"), Some(("믹스 페어", 6)));
+    assert_eq!(perfect_pairs("8h", "8h"), Some(("퍼펙트 페어", 25)));
+    assert_eq!(perfect_pairs("8h", "9h"), None);
+    assert_eq!(
+        twenty_one_plus_three("8h", "8d", "8s"),
+        Some(("트리플", 30))
+    );
+    assert_eq!(
+        twenty_one_plus_three("8h", "8h", "8h"),
+        Some(("수티드 트립스", 100))
+    );
+    assert_eq!(
+        twenty_one_plus_three("5h", "6h", "7h"),
+        Some(("스트레이트 플러시", 40))
+    );
+    assert_eq!(
+        twenty_one_plus_three("5h", "6d", "7h"),
+        Some(("스트레이트", 10))
+    );
+    assert_eq!(
+        twenty_one_plus_three("Ah", "2d", "3c"),
+        Some(("스트레이트", 10))
+    );
+    assert_eq!(
+        twenty_one_plus_three("Qh", "Kd", "Ac"),
+        Some(("스트레이트", 10))
+    );
+    assert_eq!(twenty_one_plus_three("2h", "9h", "Kh"), Some(("플러시", 5)));
+    assert_eq!(twenty_one_plus_three("2h", "9d", "Kc"), None);
+}
+
+#[test]
+fn blackjack_side_bets_are_settled_on_the_deal() {
+    let mut table = blackjack_table();
+    sit(&mut table, 80, 0, 10_000, 0);
+    // 딜 순서: 내 첫 장, 딜러 첫 장, 내 둘째 장, 딜러 둘째 장, 그다음 딜러 드로우.
+    table
+        .start_with_deck(80, deck_from_top(&["8h", "8s", "8d", "5c", "Tc"]), 0)
+        .unwrap();
+    act(
+        &mut table,
+        80,
+        CasinoCommand::Bet {
+            amount: 500,
+            pairs: 100,
+            plus3: 100,
+        },
+        100,
+    );
+    // 컬러 페어 12:1 (+1,200), 21+3 트리플 30:1 (+3,000)이 딜 직후 스택에 얹힌다.
+    let seat = table.seat(0).unwrap();
+    assert_eq!(seat.stack, 10_000 - 700 + 1_300 + 3_100);
+    assert_eq!(seat.side_net, 4_200);
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Playing);
+    act(&mut table, 80, CasinoCommand::Stand, 200);
+    let result = &table.history[0].results[0];
+    assert_eq!(result.wagered, 700);
+    // 딜러 13 → Tc로 23 버스트: 메인 +500.
+    assert_eq!(result.net, 500 + 4_200);
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|note| note.contains("컬러 페어 12:1"))
+    );
+    assert!(result.notes.iter().any(|note| note.contains("트리플 30:1")));
+    assert_eq!(table.seat(0).unwrap().stack, 10_000 + 500 + 4_200);
+}
+
+#[test]
+fn insurance_pays_two_to_one_against_dealer_blackjack() {
+    let mut table = blackjack_table();
+    sit(&mut table, 81, 0, 10_000, 0);
+    table
+        .start_with_deck(81, deck_from_top(&["9h", "As", "7d", "Kc"]), 0)
+        .unwrap();
+    act(
+        &mut table,
+        81,
+        CasinoCommand::Bet {
+            amount: 500,
+            pairs: 0,
+            plus3: 0,
+        },
+        100,
+    );
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Insurance);
+    let stale = table.apply_command(81, "P81", &CasinoCommand::Hit, None, 150);
+    assert!(stale.is_err(), "인슈어런스 중에는 플레이 액션이 막힌다");
+    act(&mut table, 81, CasinoCommand::Insure { accept: true }, 200);
+    // 혼자라서 바로 확인: 딜러 블랙잭 → 메인 -500, 인슈어런스 +500 = 0.
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Complete);
+    let result = &table.history[0].results[0];
+    assert_eq!(result.wagered, 750);
+    assert_eq!(result.net, 0);
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|note| note.contains("인슈어런스 2:1"))
+    );
+    assert_eq!(table.seat(0).unwrap().stack, 10_000);
+}
+
+#[test]
+fn declined_or_timed_out_insurance_costs_nothing_and_play_continues() {
+    let mut table = blackjack_table();
+    sit(&mut table, 82, 0, 10_000, 0);
+    sit(&mut table, 83, 1, 10_000, 0);
+    // 82: 9h 7d, 83: 6c 5s, 딜러: As 5c (블랙잭 아님), 그다음 드로우 Tc.
+    table
+        .start_with_deck(
+            82,
+            deck_from_top(&["9h", "6c", "As", "7d", "5s", "5c", "Tc", "9d"]),
+            0,
+        )
+        .unwrap();
+    act(
+        &mut table,
+        82,
+        CasinoCommand::Bet {
+            amount: 500,
+            pairs: 0,
+            plus3: 0,
+        },
+        100,
+    );
+    act(
+        &mut table,
+        83,
+        CasinoCommand::Bet {
+            amount: 300,
+            pairs: 0,
+            plus3: 0,
+        },
+        200,
+    );
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Insurance);
+    act(&mut table, 82, CasinoCommand::Insure { accept: true }, 300);
+    // 83은 정하지 않는다 → 시간이 지나면 거절로 처리하고 플레이가 이어진다.
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Insurance);
+    table.tick(300 + INSURANCE_MS + 1).unwrap();
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Playing);
+    assert_eq!(table.seat(0).unwrap().insurance, 250);
+    assert_eq!(table.seat(1).unwrap().insurance, 0);
+    assert!(table.seat(1).unwrap().insurance_decided);
+    let stand_at = 300 + INSURANCE_MS + 2;
+    act(&mut table, 82, CasinoCommand::Stand, stand_at);
+    act(&mut table, 83, CasinoCommand::Stand, stand_at + 1);
+    // 딜러 16 → Tc로 26 버스트: 둘 다 메인 승리. 82는 인슈어런스 250을 잃는다.
+    let results = &table.history[0].results;
+    let first = results.iter().find(|entry| entry.seat == 0).unwrap();
+    let second = results.iter().find(|entry| entry.seat == 1).unwrap();
+    assert_eq!(first.net, 500 - 250);
+    assert_eq!(first.wagered, 750);
+    assert_eq!(second.net, 300);
+    assert!(
+        first
+            .notes
+            .iter()
+            .any(|note| note.contains("인슈어런스 -250"))
+    );
+}
+
+#[test]
 fn blackjack_value_handles_soft_aces() {
     assert_eq!(blackjack_value(&cards(&["Ah", "6d"])), (17, true));
     assert_eq!(blackjack_value(&cards(&["Ah", "6d", "Tc"])), (17, false));
@@ -387,7 +554,11 @@ fn deal_blackjack_with(
         act(
             table,
             *user,
-            CasinoCommand::Bet { amount: *amount },
+            CasinoCommand::Bet {
+                amount: *amount,
+                pairs: 0,
+                plus3: 0,
+            },
             now + 100,
         );
     }
@@ -457,7 +628,7 @@ fn blackjack_split_then_double_each_hand_settles_separately() {
         0,
     );
     let legal = table.blackjack_legal_for(0).unwrap();
-    assert!(legal.can_split && legal.can_double && legal.can_surrender);
+    assert!(legal.can_split && legal.can_double && !legal.can_surrender);
     act(&mut table, 50, CasinoCommand::Split, now + 100);
     let seat = table.seat(0).unwrap();
     assert_eq!(seat.hands.len(), 2);
@@ -492,10 +663,28 @@ fn blackjack_deals_immediately_once_everyone_has_bet() {
     sit(&mut table, 61, 0, 10_000, 0);
     sit(&mut table, 62, 1, 10_000, 0);
     act(&mut table, 61, CasinoCommand::Start, 0);
-    act(&mut table, 61, CasinoCommand::Bet { amount: 500 }, 100);
+    act(
+        &mut table,
+        61,
+        CasinoCommand::Bet {
+            amount: 500,
+            pairs: 0,
+            plus3: 0,
+        },
+        100,
+    );
     // 한 명이 아직 베팅 전이면 베팅창을 유지한다.
     assert_eq!(table.round.as_ref().unwrap().phase, Phase::Betting);
-    act(&mut table, 62, CasinoCommand::Bet { amount: 300 }, 200);
+    act(
+        &mut table,
+        62,
+        CasinoCommand::Bet {
+            amount: 300,
+            pairs: 0,
+            plus3: 0,
+        },
+        200,
+    );
     // 모두 베팅했으니 15초를 기다리지 않고 바로 카드를 나눈다.
     let round = table.round.as_ref().unwrap();
     assert_ne!(round.phase, Phase::Betting);
@@ -514,7 +703,16 @@ fn blackjack_waits_for_a_seat_that_can_still_bet() {
     sit(&mut table, 63, 0, 10_000, 0);
     sit(&mut table, 64, 1, 10_000, 0);
     act(&mut table, 63, CasinoCommand::Start, 0);
-    act(&mut table, 63, CasinoCommand::Bet { amount: 500 }, 100);
+    act(
+        &mut table,
+        63,
+        CasinoCommand::Bet {
+            amount: 500,
+            pairs: 0,
+            plus3: 0,
+        },
+        100,
+    );
     assert_eq!(table.round.as_ref().unwrap().phase, Phase::Betting);
     // 베팅창이 끝나야 딜한다. 베팅하지 않은 좌석은 이번 라운드를 쉰다.
     table.tick(BET_WINDOW_MS + 1).unwrap();
@@ -720,7 +918,16 @@ fn closing_a_table_returns_pending_bets_too() {
     let mut table = blackjack_table();
     sit(&mut table, 110, 0, 10_000, 0);
     act(&mut table, 110, CasinoCommand::Start, 0);
-    act(&mut table, 110, CasinoCommand::Bet { amount: 300 }, 100);
+    act(
+        &mut table,
+        110,
+        CasinoCommand::Bet {
+            amount: 300,
+            pairs: 0,
+            plus3: 0,
+        },
+        100,
+    );
     assert_eq!(table.seat(0).unwrap().stack, 9_700);
     let events = table.close();
     assert_eq!(
