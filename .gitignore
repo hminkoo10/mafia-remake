@@ -38,3 +38,6 @@ simulate_game.py
 .DS_Store
 Thumbs.db
 cert.*
+
+# Claude Code agent worktrees
+.claude/worktrees/
