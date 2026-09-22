@@ -14,7 +14,7 @@
   "chat_slowmode_seconds": 3,
   "attendance_coins": 10000,
   "star_player_coins": 1000,
-  "coupon_api_url": "http://dimigo.store/api/v1/coupons",
+  "coupon_api_url": "https://dimigo.store/api/v1/coupons",
   "coupon_api_key": "",
   "coupon_coins_per_point": 10000,
   "log_channel_id": 0,

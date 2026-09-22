@@ -158,18 +158,46 @@ pub async fn set_bet(
 }
 
 /// 쿠폰 발급 API 호출. 성공하면 발급된 코드 목록.
+///
+/// 리다이렉트는 따라가지 않는다 (http → https 301을 따라가면 POST가 GET으로 바뀌어
+/// API가 깨진다). Cloudflare 보안 확인 페이지(cf-mitigated: challenge)는 봇 쪽에서
+/// 통과할 수 없으므로 HTML을 그대로 보여주는 대신 원인을 알려준다.
 async fn request_coupons(api_url: &str, api_key: &str, points: i64) -> anyhow::Result<Vec<String>> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
+        .user_agent("mafia-remake-bot/1.0 (+https://github.com/hminkoo10/mafia-remake)")
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let response = client
         .post(api_url)
         .bearer_auth(api_key)
+        .header(reqwest::header::ACCEPT, "application/json")
         .json(&serde_json::json!({ "coupon_type": "one_time", "points": points }))
         .send()
         .await?;
     let status = response.status();
+    let challenged = response
+        .headers()
+        .get("cf-mitigated")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("challenge"));
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let text = response.text().await.unwrap_or_default();
+    if status.is_redirection() {
+        anyhow::bail!(
+            "쿠폰 API 주소가 {}(으)로 리다이렉트됩니다. 웹 설정의 쿠폰 API 주소를 https 주소로 바꾸세요.",
+            location.unwrap_or_else(|| "다른 주소".to_string())
+        );
+    }
+    if challenged || (!status.is_success() && text.contains("Just a moment")) {
+        anyhow::bail!(
+            "쿠폰 서버의 Cloudflare 보안 확인이 봇 요청을 차단했습니다 (HTTP {status}). dimigo.store 관리자가 Cloudflare에서 `/api/v1/coupons` 경로를 보안 확인(Managed Challenge)에서 제외해야 합니다."
+        );
+    }
     let body: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     let ok = body.get("ok").and_then(serde_json::Value::as_bool) == Some(true);
     if !status.is_success() || !ok {
@@ -178,7 +206,13 @@ async fn request_coupons(api_url: &str, api_key: &str, points: i64) -> anyhow::R
             .or_else(|| body.get("message"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
-            .unwrap_or_else(|| text.chars().take(200).collect());
+            .unwrap_or_else(|| {
+                if text.trim_start().starts_with('<') {
+                    "JSON이 아닌 HTML 응답".to_string()
+                } else {
+                    text.chars().take(200).collect()
+                }
+            });
         anyhow::bail!("HTTP {status}: {detail}");
     }
     let codes = body

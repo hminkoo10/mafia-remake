@@ -213,7 +213,7 @@ const fn default_star_player_coins() -> i64 {
 }
 
 fn default_coupon_api_url() -> String {
-    "http://dimigo.store/api/v1/coupons".to_string()
+    "https://dimigo.store/api/v1/coupons".to_string()
 }
 
 const fn default_coupon_coins_per_point() -> i64 {
