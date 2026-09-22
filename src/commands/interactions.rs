@@ -15,6 +15,7 @@ pub async fn handle_component(
         ["leave", guild] => handle_leave(ctx, data, component, parse_guild(guild)?).await?,
         ["bet", guild] => handle_bet_open(ctx, data, component, parse_guild(guild)?).await?,
         ["starvote", guild] => handle_star_vote(ctx, data, component, parse_guild(guild)?).await?,
+        ["casino_enter", table_id] => handle_casino_enter(ctx, data, component, table_id).await?,
         ["startnow", guild] => {
             handle_recruitment_finish(ctx, data, component, parse_guild(guild)?, false).await?
         }

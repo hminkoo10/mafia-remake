@@ -152,7 +152,7 @@ pub fn render_table_status(view: &TableView, base_url: &str) -> String {
     }
     lines.push(format!("🎙️ 소피아: {}", view.narration));
     lines.push(format!(
-        "참여하려면 Discord에서 `/카지노입장 테이블:{}` 을 입력해 개인 링크를 받으세요.\n{}",
+        "아래 **테이블 입장** 버튼을 누르거나 `/카지노입장 테이블:{}` 을 입력하면 개인 링크를 받습니다.\n{}",
         view.name,
         base_url.trim_end_matches('/')
     ));
@@ -514,15 +514,21 @@ pub async fn enter_casino(
         .await
         .map(|member| member.display_name().to_string())
         .unwrap_or_else(|| user.name.clone());
-    let token = hub.issue_session(user.id.get(), display_name.clone());
-    let link = personal_link(&casino_base_url(ctx.data()), &token, &table_id);
-    let coins = hub.coins_of(user.id.get()).await;
+    let table_name = match hub.table(&table_id) {
+        Some(table) => table.read().await.name.clone(),
+        None => table_id.clone(),
+    };
+    let message = personal_entry_text(
+        ctx.data(),
+        &table_id,
+        &table_name,
+        user.id.get(),
+        &display_name,
+    )
+    .await;
     reply_embed(
         ctx,
-        format!(
-            "아래 링크로 테이블에 들어가세요.\n{link}\n\n⚠️ 이 링크는 **{display_name}** 님 전용이고 12시간 동안 유효합니다. 다른 사람과 공유하지 마세요.\n보유 코인: **{}** (바이인은 5,000~20,000원, 퇴장하면 남은 칩이 코인으로 돌아옵니다)",
-            stats::coin_text(coins)
-        ),
+        message,
         "카지노 입장",
         serenity::Colour::DARK_GREEN,
         true,
@@ -590,6 +596,82 @@ pub async fn casino_status(ctx: Context<'_>) -> Result<(), Error> {
         true,
     )
     .await?;
+    Ok(())
+}
+
+/// 개인 링크 안내문 (슬래시 명령과 상태 임베드 버튼이 같이 쓴다).
+async fn personal_entry_text(
+    data: &Data,
+    table_id: &str,
+    table_name: &str,
+    user_id: u64,
+    display_name: &str,
+) -> String {
+    let hub = data.casino.clone();
+    let token = hub.issue_session(user_id, display_name.to_string());
+    let link = personal_link(&casino_base_url(data), &token, table_id);
+    let coins = hub.coins_of(user_id).await;
+    format!(
+        "**{table_name}** 테이블 링크입니다.\n{link}\n\n⚠️ 이 링크는 **{display_name}** 님 전용이고 12시간 동안 유효합니다. 다른 사람과 공유하지 마세요.\n보유 코인: **{}** (바이인은 5,000~20,000원, 퇴장하면 남은 칩이 코인으로 돌아옵니다)",
+        stats::coin_text(coins)
+    )
+}
+
+/// 상태 임베드의 버튼 custom_id.
+fn casino_enter_custom_id(table_id: &str) -> String {
+    format!("casino_enter:{table_id}")
+}
+
+/// 상태 임베드 아래 버튼: 테이블 입장 (개인 링크 발급).
+fn status_components(table_id: &str) -> Vec<serenity::CreateActionRow> {
+    vec![serenity::CreateActionRow::Buttons(vec![
+        serenity::CreateButton::new(casino_enter_custom_id(table_id))
+            .label("테이블 입장")
+            .emoji('🎰')
+            .style(serenity::ButtonStyle::Success),
+    ])]
+}
+
+/// "테이블 입장" 버튼: 누른 사람에게만 개인 링크를 보여준다.
+pub async fn handle_casino_enter(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    table_id: &str,
+) -> Result<()> {
+    let user = &component.user;
+    let display_name = component
+        .member
+        .as_ref()
+        .map(|member| member.display_name().to_string())
+        .unwrap_or_else(|| user.name.clone());
+    let table_name = match data.casino.table(table_id) {
+        Some(table) => Some(table.read().await.name.clone()),
+        None => None,
+    };
+    let (title, message, colour) = match table_name {
+        Some(name) => (
+            "카지노 입장",
+            personal_entry_text(data, table_id, &name, user.id.get(), &display_name).await,
+            serenity::Colour::DARK_GREEN,
+        ),
+        None => (
+            "카지노",
+            "이 테이블은 닫혔습니다. `/카지노테이블목록`으로 열려 있는 테이블을 확인하세요."
+                .to_string(),
+            serenity::Colour::RED,
+        ),
+    };
+    component
+        .create_response(
+            &ctx.http,
+            serenity::CreateInteractionResponse::Message(
+                serenity::CreateInteractionResponseMessage::new()
+                    .ephemeral(true)
+                    .embed(make_embed(message, title, colour)),
+            ),
+        )
+        .await?;
     Ok(())
 }
 
@@ -724,6 +806,7 @@ pub async fn refresh_table_status(ctx: &serenity::Context, data: &Data, table_id
     }
     let body = render_table_status(&view, &casino_base_url(data));
     let embed = make_embed(body, "카지노 테이블 현황", serenity::Colour::DARK_GREEN);
+    let components = status_components(table_id);
     let existing = hub
         .binding(table_id)
         .and_then(|binding| binding.status_message_id);
@@ -732,7 +815,9 @@ pub async fn refresh_table_status(ctx: &serenity::Context, data: &Data, table_id
             .edit_message(
                 &ctx.http,
                 serenity::MessageId::new(message_id),
-                serenity::EditMessage::new().embed(embed.clone()),
+                serenity::EditMessage::new()
+                    .embed(embed.clone())
+                    .components(components.clone()),
             )
             .await;
         if edited.is_ok() {
@@ -740,7 +825,12 @@ pub async fn refresh_table_status(ctx: &serenity::Context, data: &Data, table_id
         }
     }
     match channel_id
-        .send_message(&ctx.http, serenity::CreateMessage::new().embed(embed))
+        .send_message(
+            &ctx.http,
+            serenity::CreateMessage::new()
+                .embed(embed)
+                .components(components),
+        )
         .await
     {
         Ok(message) => {
