@@ -66,7 +66,30 @@ pub fn dealer_avatar_png() -> Option<&'static [u8]> {
 
 #[cfg(test)]
 mod tests {
-    use super::dealer_avatar_png;
+    use super::{cache_control, content_type_for, dealer_avatar_png};
+
+    #[test]
+    fn dealer_clips_have_video_mime_types() {
+        assert_eq!(content_type_for("/dealers/sophia-deal.webm"), "video/webm");
+        assert_eq!(content_type_for("/dealers/sophia-flip.mp4"), "video/mp4");
+    }
+
+    #[test]
+    fn replaceable_dealer_assets_are_not_cached_for_a_year() {
+        assert_eq!(
+            cache_control("/dealers/sophia-idle.webm"),
+            "public, max-age=300"
+        );
+        assert_eq!(
+            cache_control("/dealers/sophia-table.png"),
+            "public, max-age=300"
+        );
+        assert_eq!(
+            cache_control("/assets/index-hash.js"),
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(cache_control("/index.html"), "no-cache");
+    }
 
     #[test]
     fn dealer_avatar_is_a_png_cropped_from_the_embedded_image() {
@@ -158,9 +181,7 @@ async fn casino_asset(
         if let Some(response) = try_serve_asset(&state, &asset_path) {
             return response;
         }
-        if path.starts_with("assets/") {
-            return StatusCode::NOT_FOUND.into_response();
-        }
+        return StatusCode::NOT_FOUND.into_response();
     }
     // /casino/<토큰> 같은 SPA 경로는 index.html을 준다.
     serve_asset(&state, "/index.html")
@@ -215,6 +236,8 @@ fn content_type_for(path: &str) -> &'static str {
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("webp") => "image/webp",
+        Some("webm") => "video/webm",
+        Some("mp4") => "video/mp4",
         Some("ico") => "image/x-icon",
         Some("woff2") => "font/woff2",
         _ => "application/octet-stream",
@@ -224,6 +247,8 @@ fn content_type_for(path: &str) -> &'static str {
 fn cache_control(path: &str) -> &'static str {
     if path == "/index.html" {
         "no-cache"
+    } else if path.starts_with("/dealers/") {
+        "public, max-age=300"
     } else {
         "public, max-age=31536000, immutable"
     }
