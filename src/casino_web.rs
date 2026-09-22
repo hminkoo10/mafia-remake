@@ -64,6 +64,19 @@ pub fn dealer_avatar_png() -> Option<&'static [u8]> {
         .as_deref()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::dealer_avatar_png;
+
+    #[test]
+    fn dealer_avatar_is_a_png_cropped_from_the_embedded_image() {
+        let png = dealer_avatar_png().expect("dealer.png is embedded and decodable");
+        assert_eq!(&png[..4], &[0x89, b'P', b'N', b'G']);
+        let image = image::load_from_memory(png).expect("generated avatar decodes");
+        assert_eq!((image.width(), image.height()), (256, 256));
+    }
+}
+
 // ------------------------------------------------------------ 개발 모드
 
 /// `mafia --casino-dev`: Discord 연결 없이 카지노 웹만 띄운다 (UI 개발·점검용).
