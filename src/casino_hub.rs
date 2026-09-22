@@ -83,6 +83,8 @@ pub struct CasinoHub {
     pub updates: broadcast::Sender<CasinoUpdate>,
     /// 테이블 채널별 채팅 웹훅 (메모리 캐시; 재시작 후에는 채널의 웹훅 목록에서 다시 찾는다).
     pub webhooks: DashMap<u64, serenity::Webhook>,
+    /// 웹훅 채팅에 쓰는 참가자 아바타 URL 캐시 (user_id → url).
+    pub avatars: DashMap<u64, String>,
     save_lock: tokio::sync::Mutex<()>,
 }
 
@@ -112,6 +114,7 @@ impl CasinoHub {
             path,
             updates,
             webhooks: DashMap::new(),
+            avatars: DashMap::new(),
             save_lock: tokio::sync::Mutex::new(()),
         };
         match load_file(&hub.path) {

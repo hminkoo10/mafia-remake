@@ -40,6 +40,30 @@ pub fn casino_router(state: CasinoWebState) -> Router {
         .with_state(state)
 }
 
+// ------------------------------------------------------------ 딜러 아바타
+
+/// 딜러(소피아) 얼굴을 잘라 256x256 PNG로 만든 웹훅 아바타. 한 번만 만든다.
+pub fn dealer_avatar_png() -> Option<&'static [u8]> {
+    static AVATAR: std::sync::OnceLock<Option<Vec<u8>>> = std::sync::OnceLock::new();
+    AVATAR
+        .get_or_init(|| {
+            let asset = CASINO_ASSETS
+                .iter()
+                .find(|asset| asset.path == "/dealer.png")?;
+            let image = image::load_from_memory(asset.body).ok()?;
+            // 원본 dealer.png(1536x1024)에서 얼굴 부분 (웹 패널의 dealer-avatar와 같은 구도).
+            let face = image.crop_imm(540, 10, 450, 450).resize_exact(
+                256,
+                256,
+                image::imageops::FilterType::Lanczos3,
+            );
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            face.write_to(&mut bytes, image::ImageFormat::Png).ok()?;
+            Some(bytes.into_inner())
+        })
+        .as_deref()
+}
+
 // ------------------------------------------------------------ 개발 모드
 
 /// `mafia --casino-dev`: Discord 연결 없이 카지노 웹만 띄운다 (UI 개발·점검용).

@@ -695,31 +695,75 @@ async fn casino_webhook(
                 .into_iter()
                 .find(|webhook| webhook.name.as_deref() == Some("Mafia Casino"))
         });
-    let webhook = match existing {
+    // 웹훅의 기본 아바타는 딜러(소피아) 얼굴. 참가자 메시지는 보낼 때 avatar_url로 바꾼다.
+    let avatar = crate::casino_web::dealer_avatar_png()
+        .map(|png| serenity::CreateAttachment::bytes(png.to_vec(), "sophia.png"));
+    let mut webhook = match existing {
         Some(webhook) => webhook,
-        None => match crate::http_pool::with_fallback(ctx, |http| async move {
-            channel_id
-                .create_webhook(
-                    &http,
-                    serenity::CreateWebhook::new("Mafia Casino")
-                        .audit_log_reason("카지노 테이블 채팅 웹훅 생성"),
-                )
+        None => {
+            let avatar = avatar.clone();
+            match crate::http_pool::with_fallback(ctx, |http| {
+                let avatar = avatar.clone();
+                async move {
+                    let mut builder = serenity::CreateWebhook::new("Mafia Casino")
+                        .audit_log_reason("카지노 테이블 채팅 웹훅 생성");
+                    if let Some(avatar) = avatar.as_ref() {
+                        builder = builder.avatar(avatar);
+                    }
+                    channel_id.create_webhook(&http, builder).await
+                }
+            })
+            .await
+            {
+                Ok(webhook) => webhook,
+                Err(error) => {
+                    eprintln!(
+                        "failed to create casino webhook for channel {}: {error:?}",
+                        channel_id.get()
+                    );
+                    return None;
+                }
+            }
+        }
+    };
+    // 예전에 아바타 없이 만들어진 웹훅이면 딜러 얼굴을 붙인다.
+    if webhook.avatar.is_none() {
+        if let Some(avatar) = avatar.as_ref() {
+            if let Err(error) = webhook
+                .edit(&ctx.http, serenity::EditWebhook::new().avatar(avatar))
                 .await
-        })
-        .await
-        {
-            Ok(webhook) => webhook,
-            Err(error) => {
+            {
                 eprintln!(
-                    "failed to create casino webhook for channel {}: {error:?}",
+                    "failed to set casino webhook avatar for channel {}: {error:?}",
                     channel_id.get()
                 );
-                return None;
             }
-        },
-    };
+        }
+    }
     hub.webhooks.insert(channel_id.get(), webhook.clone());
     Some(webhook)
+}
+
+/// 참가자의 Discord 아바타 URL (서버 프로필 아바타 우선). 캐시한다.
+async fn player_avatar_url(
+    ctx: &serenity::Context,
+    hub: &CasinoHub,
+    guild_id: u64,
+    user_id: u64,
+) -> Option<String> {
+    if let Some(url) = hub.avatars.get(&user_id) {
+        return Some(url.clone());
+    }
+    let user = serenity::UserId::new(user_id);
+    let url = match serenity::GuildId::new(guild_id)
+        .member(&ctx.http, user)
+        .await
+    {
+        Ok(member) => Some(member.face()),
+        Err(_) => user.to_user(&ctx.http).await.ok().map(|user| user.face()),
+    }?;
+    hub.avatars.insert(user_id, url.clone());
+    Some(url)
 }
 
 /// 아직 채널로 보내지 않은 테이블 채팅을 웹훅으로 보낸다.
@@ -727,6 +771,7 @@ async fn relay_chat_to_channel(
     ctx: &serenity::Context,
     hub: &CasinoHub,
     table_id: &str,
+    guild_id: u64,
     channel_id: serenity::ChannelId,
 ) {
     let messages: Vec<ChatMessage> = hub.unrelayed_messages(table_id).await;
@@ -748,15 +793,23 @@ async fn relay_chat_to_channel(
         } else {
             message.name.clone()
         };
-        let execute = serenity::ExecuteWebhook::new()
+        let mut execute = serenity::ExecuteWebhook::new()
             .content(message.text.chars().take(1900).collect::<String>())
-            .username(username)
-            .allowed_mentions(
-                serenity::CreateAllowedMentions::new()
-                    .all_users(false)
-                    .all_roles(false)
-                    .everyone(false),
-            );
+            .username(username);
+        if !message.dealer {
+            if let Some(url) = match message.user_id {
+                Some(user_id) => player_avatar_url(ctx, hub, guild_id, user_id).await,
+                None => None,
+            } {
+                execute = execute.avatar_url(url);
+            }
+        }
+        let execute = execute.allowed_mentions(
+            serenity::CreateAllowedMentions::new()
+                .all_users(false)
+                .all_roles(false)
+                .everyone(false),
+        );
         if let Err(error) = webhook.execute(&ctx.http, false, execute).await {
             eprintln!(
                 "failed to relay casino chat to channel {}: {error:?}",
@@ -783,7 +836,7 @@ pub async fn refresh_table_status(ctx: &serenity::Context, data: &Data, table_id
         return;
     };
     let channel_id = serenity::ChannelId::new(binding.channel_id);
-    relay_chat_to_channel(ctx, &hub, table_id, channel_id).await;
+    relay_chat_to_channel(ctx, &hub, table_id, binding.guild_id, channel_id).await;
     if let Some(result) = view.history.first() {
         if binding.announced_result_id.as_deref() != Some(result.id.as_str()) {
             let _ = send_channel_embed(
