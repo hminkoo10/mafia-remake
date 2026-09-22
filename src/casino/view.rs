@@ -211,8 +211,12 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>) -> TableView {
         .filter(|seat| !seat.sit_out && !seat.leaving && seat.stack >= minimum)
         .count();
     let legal = LegalView {
-        poker: table.poker_legal_for(my_seat),
-        blackjack: table.blackjack_legal_for(my_seat),
+        poker: (table.kind == GameKind::Holdem)
+            .then(|| table.poker_legal_for(my_seat))
+            .flatten(),
+        blackjack: (table.kind == GameKind::Blackjack)
+            .then(|| table.blackjack_legal_for(my_seat))
+            .flatten(),
         can_bet: table.kind == GameKind::Blackjack
             && round.is_some_and(|round| round.phase == Phase::Betting)
             && my.is_some_and(|seat| !seat.in_hand && !seat.sit_out && !seat.leaving),

@@ -625,6 +625,10 @@ pub async fn handle_message_event(
     let Some(guild_id) = message.guild_id else {
         return Ok(());
     };
+    // 카지노 테이블 채널의 채팅은 테이블로 보낸다.
+    if handle_casino_channel_message(data, message).await {
+        return Ok(());
+    }
     let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
         return Ok(());
     };

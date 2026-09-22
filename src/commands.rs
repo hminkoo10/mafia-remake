@@ -42,12 +42,14 @@ use tokio::task::JoinSet;
 
 mod anonymous_chat;
 mod boards;
+mod casino_cmds;
 mod coins;
 mod config_cmds;
 mod guides;
 mod interactions;
 pub(crate) use self::anonymous_chat::*;
 pub(crate) use self::boards::*;
+pub(crate) use self::casino_cmds::*;
 pub(crate) use self::coins::*;
 pub(crate) use self::config_cmds::*;
 pub(crate) use self::guides::*;

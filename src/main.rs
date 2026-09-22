@@ -105,6 +105,8 @@ struct Data {
     web_sessions: Arc<DashMap<String, web_settings::WebSettingsSession>>,
     web_base_url: Arc<String>,
     bot_user_id: serenity::UserId,
+    casino: casino_hub::SharedHub,
+    casino_base_url: Arc<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -464,6 +466,8 @@ struct Recruitment {
 }
 
 mod activity;
+mod casino_hub;
+mod casino_web;
 mod channel;
 mod commands;
 mod embed;
@@ -606,6 +610,11 @@ fn bot_commands() -> Vec<poise::Command<Data, Error>> {
         commands::issue_coupons(),
         commands::redeem_coupon(),
         commands::list_coupons(),
+        commands::create_casino_table(),
+        commands::close_casino_table(),
+        commands::list_casino_tables(),
+        commands::enter_casino(),
+        commands::casino_status(),
         commands::rating_log(),
         commands::show_rank_cutoffs(),
         commands::show_leaderboard(),
@@ -663,6 +672,10 @@ mod main_tests {
 async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let workspace_root = embed::load_workspace_env()?;
+    // `mafia --casino-dev`: Discord 없이 카지노 웹만 띄운다 (UI 개발·점검용).
+    if std::env::args().any(|arg| arg == "--casino-dev") {
+        return casino_web::run_dev_server(&workspace_root).await;
+    }
     let token =
         std::env::var("DISCORD_TOKEN").context(".env 파일에 DISCORD_TOKEN을 설정하세요.")?;
     // 워커 봇 토큰이 있으면 길드 관리용 REST 호출을 여러 토큰으로 분산해 레이트리밋을 우회한다.
@@ -735,6 +748,21 @@ async fn main() -> Result<()> {
     let activity_static = std::env::var("ACTIVITY_STATIC_DIR").ok();
     let activity_tls_cert = std::env::var("ACTIVITY_TLS_CERT").ok();
     let activity_tls_key = std::env::var("ACTIVITY_TLS_KEY").ok();
+    // 카지노: 테이블 상태(casino.json)와 개인 링크 세션은 봇과 웹이 같이 쓴다.
+    let casino_hub: casino_hub::SharedHub = Arc::new(casino_hub::CasinoHub::load(
+        workspace_root.join("casino.json"),
+        stats_arc.clone(),
+        stats_path_arc.clone(),
+    ));
+    let casino_base_url = casino_hub::casino_base_url(
+        &web_host,
+        activity_port,
+        activity_tls_cert.is_some() && activity_tls_key.is_some(),
+    );
+    let casino_router = casino_web::casino_router(casino_web::CasinoWebState {
+        hub: casino_hub.clone(),
+        static_dir: std::env::var("CASINO_STATIC_DIR").ok(),
+    });
     let activity_state = activity::ActivityState::new(
         games.clone(),
         config_arc.clone(),
@@ -751,6 +779,7 @@ async fn main() -> Result<()> {
             activity_static,
             activity_tls_cert,
             activity_tls_key,
+            casino_router,
         )
         .await;
     });
@@ -773,6 +802,7 @@ async fn main() -> Result<()> {
     let stats_path_setup = stats_path_arc.clone();
     let completed_replays_path_setup = completed_replays_path_arc.clone();
     let activity_discord_update_setup = activity_discord_update_tx.clone();
+    let casino_setup = casino_hub.clone();
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -807,7 +837,12 @@ async fn main() -> Result<()> {
                     web_sessions: web_sessions_setup.clone(),
                     web_base_url: Arc::new(web_base_url.clone()),
                     bot_user_id: ready.user.id,
+                    casino: casino_setup.clone(),
+                    casino_base_url: Arc::new(casino_base_url.clone()),
                 };
+                // 카지노: 시간 초과 처리 루프와 Discord 채널 중계.
+                tokio::spawn(commands::run_casino_ticker(data.clone()));
+                tokio::spawn(commands::run_casino_relay(ctx.clone(), data.clone()));
                 let mut activity_update_rx = activity_discord_update_setup.subscribe();
                 let activity_update_ctx = ctx.clone();
                 let activity_update_games = games_setup.clone();

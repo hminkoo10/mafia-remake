@@ -6,6 +6,14 @@ RUN npm ci
 COPY activity/ ./
 RUN npm run build
 
+# ─── Stage 1b: 카지노 웹 빌드 ───────────────────────────────
+FROM node:20-alpine AS casino-frontend
+WORKDIR /app/casino-web
+COPY casino-web/package*.json ./
+RUN npm ci
+COPY casino-web/ ./
+RUN npm run build
+
 # ─── Stage 2: Rust 빌드 ──────────────────────────────────────
 FROM rust:1.88-slim AS builder
 WORKDIR /app
@@ -16,6 +24,7 @@ RUN apt-get update && apt-get install -y \
 
 COPY . .
 COPY --from=frontend /app/activity/dist ./activity/dist
+COPY --from=casino-frontend /app/casino-web/dist ./casino-web/dist
 
 # sccache/Windows 설정 무시, Linux 빌드용 jobs 수 조정
 ENV RUSTC_WRAPPER=""
@@ -34,8 +43,10 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder /app/target/release/mafia ./mafia
 COPY --from=builder /app/config.example.json ./config.example.json
 COPY --from=frontend /app/activity/dist ./activity/dist
+COPY --from=casino-frontend /app/casino-web/dist ./casino-web/dist
 
 ENV ACTIVITY_STATIC_DIR=/app/activity/dist
+ENV CASINO_STATIC_DIR=/app/casino-web/dist
 ENV ACTIVITY_PORT=2053
 ENV WEB_SETTINGS_PORT=8800
 ENV WEB_SETTINGS_HOST=0.0.0.0

@@ -18,6 +18,11 @@ target/
 C/
 activity/node_modules/
 activity/dist/
+casino-web/node_modules/
+casino-web/dist/
+casino.json
+casino-dev.json
+casino-dev-stats.json
 activity/.env
 activity/.env.local
 __pycache__/

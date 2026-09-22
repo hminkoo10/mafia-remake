@@ -5,64 +5,115 @@ use std::{
     process::Command,
 };
 
+/// A Vite frontend that build.rs compiles (when npm is available) and embeds into the binary.
+struct Frontend {
+    /// Directory name under the manifest dir (also used in env flag names).
+    dir: &'static str,
+    /// Env suffix: MAFIA_SKIP_<ENV>_BUILD / MAFIA_FORCE_<ENV>_BUILD.
+    env: &'static str,
+    /// Generated file name in OUT_DIR.
+    generated: &'static str,
+    /// Struct and static names written into the generated file.
+    struct_name: &'static str,
+    const_name: &'static str,
+    /// Human-readable label for messages.
+    label: &'static str,
+}
+
+const FRONTENDS: &[Frontend] = &[
+    Frontend {
+        dir: "activity",
+        env: "ACTIVITY",
+        generated: "activity_static.rs",
+        struct_name: "EmbeddedActivityAsset",
+        const_name: "ACTIVITY_ASSETS",
+        label: "Activity UI",
+    },
+    Frontend {
+        dir: "casino-web",
+        env: "CASINO",
+        generated: "casino_static.rs",
+        struct_name: "EmbeddedCasinoAsset",
+        const_name: "CASINO_ASSETS",
+        label: "Casino UI",
+    },
+];
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let activity_dir = manifest_dir.join("activity");
-    let dist_dir = activity_dir.join("dist");
-
-    println!("cargo:rerun-if-env-changed=MAFIA_SKIP_ACTIVITY_BUILD");
-    println!("cargo:rerun-if-env-changed=MAFIA_FORCE_ACTIVITY_BUILD");
-    println!("cargo:rerun-if-changed=activity/package.json");
-    println!("cargo:rerun-if-changed=activity/package-lock.json");
-    println!("cargo:rerun-if-changed=activity/index.html");
-    println!("cargo:rerun-if-changed=activity/src");
-    println!("cargo:rerun-if-changed=activity/dist");
-
-    if should_build_activity(&dist_dir) {
-        build_activity(&activity_dir, &dist_dir);
-    }
-
-    if !dist_dir.join("index.html").is_file() {
-        panic!(
-            "activity/dist/index.html missing. Run `cd activity && npm ci && npm run build`, \
-             or build with npm available so build.rs can embed the Activity UI."
-        );
-    }
-
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let generated = out_dir.join("activity_static.rs");
-    write_activity_static(&dist_dir, &generated).unwrap();
+
+    for frontend in FRONTENDS {
+        let frontend_dir = manifest_dir.join(frontend.dir);
+        let dist_dir = frontend_dir.join("dist");
+
+        println!(
+            "cargo:rerun-if-env-changed=MAFIA_SKIP_{}_BUILD",
+            frontend.env
+        );
+        println!(
+            "cargo:rerun-if-env-changed=MAFIA_FORCE_{}_BUILD",
+            frontend.env
+        );
+        for file in [
+            "package.json",
+            "package-lock.json",
+            "index.html",
+            "src",
+            "dist",
+        ] {
+            println!("cargo:rerun-if-changed={}/{file}", frontend.dir);
+        }
+
+        if should_build(frontend, &dist_dir) {
+            build_frontend(frontend, &frontend_dir, &dist_dir);
+        }
+
+        if !dist_dir.join("index.html").is_file() {
+            panic!(
+                "{}/dist/index.html missing. Run `cd {} && npm ci && npm run build`, \
+                 or build with npm available so build.rs can embed the {}.",
+                frontend.dir, frontend.dir, frontend.label
+            );
+        }
+
+        let generated = out_dir.join(frontend.generated);
+        write_static(frontend, &dist_dir, &generated).unwrap();
+    }
 }
 
-fn should_build_activity(dist_dir: &Path) -> bool {
-    if env::var_os("MAFIA_SKIP_ACTIVITY_BUILD").is_some() {
+fn should_build(frontend: &Frontend, dist_dir: &Path) -> bool {
+    if env::var_os(format!("MAFIA_SKIP_{}_BUILD", frontend.env)).is_some() {
         return false;
     }
-    env::var_os("MAFIA_FORCE_ACTIVITY_BUILD").is_some()
+    env::var_os(format!("MAFIA_FORCE_{}_BUILD", frontend.env)).is_some()
         || !dist_dir.join("index.html").is_file()
-        || activity_source_changed(dist_dir)
+        || source_changed(dist_dir)
 }
 
-fn build_activity(activity_dir: &Path, dist_dir: &Path) {
-    if !activity_dir.join("package.json").is_file() {
+fn build_frontend(frontend: &Frontend, frontend_dir: &Path, dist_dir: &Path) {
+    if !frontend_dir.join("package.json").is_file() {
         return;
     }
 
-    if !activity_dir.join("node_modules").is_dir() {
-        run_npm(activity_dir, &["ci"]);
+    if !frontend_dir.join("node_modules").is_dir() {
+        run_npm(frontend_dir, &["ci"]);
     }
-    run_npm(activity_dir, &["run", "build"]);
+    run_npm(frontend_dir, &["run", "build"]);
 
     if !dist_dir.join("index.html").is_file() {
-        panic!("Activity UI build finished but activity/dist/index.html was not created.");
+        panic!(
+            "{} build finished but {}/dist/index.html was not created.",
+            frontend.label, frontend.dir
+        );
     }
 }
 
-fn run_npm(activity_dir: &Path, args: &[&str]) {
+fn run_npm(frontend_dir: &Path, args: &[&str]) {
     let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
     let status = Command::new(npm)
         .args(args)
-        .current_dir(activity_dir)
+        .current_dir(frontend_dir)
         .status()
         .unwrap_or_else(|err| panic!("failed to run `{npm} {}`: {err}", args.join(" ")));
 
@@ -71,8 +122,8 @@ fn run_npm(activity_dir: &Path, args: &[&str]) {
     }
 }
 
-fn activity_source_changed(dist_dir: &Path) -> bool {
-    let Some(activity_dir) = dist_dir.parent() else {
+fn source_changed(dist_dir: &Path) -> bool {
+    let Some(frontend_dir) = dist_dir.parent() else {
         return false;
     };
     let Ok(dist_modified) = fs::metadata(dist_dir.join("index.html")).and_then(|m| m.modified())
@@ -80,19 +131,14 @@ fn activity_source_changed(dist_dir: &Path) -> bool {
         return true;
     };
 
-    let mut newer = false;
-    for path in [
-        activity_dir.join("package.json"),
-        activity_dir.join("package-lock.json"),
-        activity_dir.join("index.html"),
-        activity_dir.join("src"),
-    ] {
-        if path_newer_than(&path, dist_modified) {
-            newer = true;
-            break;
-        }
-    }
-    newer
+    [
+        frontend_dir.join("package.json"),
+        frontend_dir.join("package-lock.json"),
+        frontend_dir.join("index.html"),
+        frontend_dir.join("src"),
+    ]
+    .iter()
+    .any(|path| path_newer_than(path, dist_modified))
 }
 
 fn path_newer_than(path: &Path, time: std::time::SystemTime) -> bool {
@@ -114,7 +160,7 @@ fn path_newer_than(path: &Path, time: std::time::SystemTime) -> bool {
         .any(|entry| path_newer_than(&entry.path(), time))
 }
 
-fn write_activity_static(dist_dir: &Path, generated: &Path) -> io::Result<()> {
+fn write_static(frontend: &Frontend, dist_dir: &Path, generated: &Path) -> io::Result<()> {
     let mut entries = Vec::new();
     collect_files(dist_dir, dist_dir, &mut entries)?;
     entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -122,16 +168,19 @@ fn write_activity_static(dist_dir: &Path, generated: &Path) -> io::Result<()> {
     let mut file = fs::File::create(generated)?;
     writeln!(
         file,
-        "pub struct EmbeddedActivityAsset {{ pub path: &'static str, pub content_type: &'static str, pub body: &'static [u8] }}"
+        "pub struct {} {{ pub path: &'static str, pub content_type: &'static str, pub body: &'static [u8] }}",
+        frontend.struct_name
     )?;
     writeln!(
         file,
-        "pub static ACTIVITY_ASSETS: &[EmbeddedActivityAsset] = &["
+        "pub static {}: &[{}] = &[",
+        frontend.const_name, frontend.struct_name
     )?;
     for (url_path, fs_path) in entries {
         writeln!(
             file,
-            "    EmbeddedActivityAsset {{ path: {:?}, content_type: {:?}, body: include_bytes!({:?}) }},",
+            "    {} {{ path: {:?}, content_type: {:?}, body: include_bytes!({:?}) }},",
+            frontend.struct_name,
             url_path,
             content_type(&url_path),
             fs_path.to_string_lossy()
@@ -174,6 +223,7 @@ fn content_type(path: &str) -> &'static str {
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("webp") => "image/webp",
         Some("ico") => "image/x-icon",
+        Some("woff2") => "font/woff2",
         Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
     }

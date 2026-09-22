@@ -208,7 +208,7 @@ pub struct ActionResponse {
 // 라우터
 // ─────────────────────────────────────────────
 
-pub fn activity_router(state: ActivityState, static_dir: Option<String>) -> Router {
+pub fn activity_router(state: ActivityState, static_dir: Option<String>, casino: Router) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
@@ -224,6 +224,7 @@ pub fn activity_router(state: ActivityState, static_dir: Option<String>) -> Rout
 
     let mut router = Router::new()
         .nest("/activity/api", api)
+        .merge(casino)
         .fallback(embedded_activity_asset)
         .layer(cors);
 
@@ -288,8 +289,9 @@ pub async fn run_activity_server(
     static_dir: Option<String>,
     tls_cert: Option<String>,
     tls_key: Option<String>,
+    casino: Router,
 ) {
-    let router = activity_router(state, static_dir);
+    let router = activity_router(state, static_dir, casino);
     let addr: std::net::SocketAddr = match format!("{host}:{port}").parse() {
         Ok(a) => a,
         Err(e) => {

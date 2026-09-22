@@ -209,6 +209,9 @@ pub struct ChatMessage {
     /// 보낸 사람의 Discord ID (딜러 안내는 None).
     #[serde(default)]
     pub user_id: Option<u64>,
+    /// Discord 채널에서 들어온 메시지 (채널로 다시 중계하지 않는다).
+    #[serde(default)]
+    pub from_discord: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -431,6 +434,7 @@ impl CasinoTable {
             at,
             dealer,
             user_id,
+            from_discord: false,
         });
         let overflow = self.messages.len().saturating_sub(MESSAGE_LIMIT);
         if overflow > 0 {
@@ -445,6 +449,9 @@ impl CasinoTable {
             return;
         }
         self.push_message(name.to_string(), text, now, false, Some(user_id));
+        if let Some(last) = self.messages.last_mut() {
+            last.from_discord = true;
+        }
     }
 
     pub(super) fn remember(&mut self, result: HandResult) {
