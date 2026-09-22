@@ -131,7 +131,8 @@ export default function Casino() {
     [profile, setProfile] = useState(false);
   const [muted, setMuted] = useState(true),
     [join, setJoin] = useState<number | null>(null),
-    [buyin, setBuyin] = useState(10000);
+    [buyin, setBuyin] = useState(10000),
+    [dismissedResult, setDismissedResult] = useState<string | null>(null);
   const [pending, setPending] = useState(false),
     [connected, setConnected] = useState(false),
     [expired, setExpired] = useState(!token),
@@ -359,6 +360,10 @@ export default function Casino() {
     }
   };
   const cards = kind === "holdem" ? (round?.board ?? []) : (round?.dealer ?? []);
+  // 라운드가 끝나면 결과를 테이블 위에 띄운다. 다음 라운드가 시작되거나 닫을 때까지 남는다.
+  const latestResult = table.history[0] ?? null;
+  const showResult =
+    round !== null && round.phase === "complete" && latestResult !== null && latestResult.id === round.id && dismissedResult !== latestResult.id;
   const seatedElsewhere = tables.find((t) => t.id === data?.me.seated_table && t.id !== table.id) ?? null;
 
   return (
@@ -567,6 +572,39 @@ export default function Casino() {
                 ),
               )}
               <span className="felt-mark">N O I R</span>
+              {showResult && latestResult && (
+                <div className="result-banner" role="status" aria-live="polite">
+                  <div className="result-head">
+                    <span className="eyebrow">{kind === "holdem" ? "HAND RESULT" : "ROUND RESULT"}</span>
+                    <button type="button" aria-label="결과 닫기" onClick={() => setDismissedResult(latestResult.id)}>
+                      ✕
+                    </button>
+                  </div>
+                  {kind === "blackjack" && round?.dealer_total !== null && round?.dealer_total !== undefined && (
+                    <p className="result-dealer">딜러 {round.dealer_total > 21 ? "버스트" : round.dealer_total}</p>
+                  )}
+                  {latestResult.results.length > 0 ? (
+                    <ul>
+                      {latestResult.results.map((r) => (
+                        <li
+                          key={`${r.seat}-${r.user_id}`}
+                          className={`${r.net > 0 ? "won" : r.net < 0 ? "lost" : "even"} ${r.seat === table.my_seat ? "me" : ""}`}
+                        >
+                          <span className="result-name">
+                            {r.name}
+                            {r.seat === table.my_seat ? " (나)" : ""}
+                          </span>
+                          <b>{signed(r.net)}</b>
+                          <small>{r.label}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="result-dealer">{latestResult.summary}</p>
+                  )}
+                  <p className="result-note">{me ? "라운드 시작을 누르면 다음 핸드가 시작됩니다." : "다음 핸드를 기다리는 중입니다."}</p>
+                </div>
+              )}
             </div>
             <div className={`action-dock ${me ? "seated-dock" : ""}`}>
               {!me ? (
