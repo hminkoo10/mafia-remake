@@ -358,3 +358,198 @@ pub fn set_coins(
         after: amount,
     })
 }
+
+/// 관리자가 발급한 코인 쿠폰. 코드 하나는 한 사람이 한 번만 쓴다.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoinCoupon {
+    pub code: String,
+    pub coins: i64,
+    pub issued_by: u64,
+    pub issued_at: String,
+    /// 만료일 (한국 시간 YYYY-MM-DD, 그날까지 사용 가능). 없으면 무기한.
+    #[serde(default)]
+    pub expires_on: Option<String>,
+    #[serde(default)]
+    pub redeemed_by: Option<u64>,
+    #[serde(default)]
+    pub redeemed_at: Option<String>,
+}
+
+impl CoinCoupon {
+    pub fn is_redeemed(&self) -> bool {
+        self.redeemed_by.is_some()
+    }
+
+    /// 오늘(YYYY-MM-DD) 기준 만료됐는가. 만료일 당일까지는 유효하다.
+    pub fn is_expired(&self, today: &str) -> bool {
+        self.expires_on
+            .as_deref()
+            .is_some_and(|expires_on| today > expires_on)
+    }
+}
+
+pub const MAX_COUPONS_PER_ISSUE: i64 = 100;
+const COUPON_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+/// 쿠폰 코드 정규화: 공백 제거, 대문자.
+pub fn normalize_coupon_code(raw: &str) -> String {
+    raw.trim().to_ascii_uppercase()
+}
+
+fn valid_custom_code(code: &str) -> bool {
+    (3..=32).contains(&code.len())
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'-')
+        && !code.starts_with('-')
+        && !code.ends_with('-')
+}
+
+/// 만료일 입력 검증 (YYYY-MM-DD). 오늘보다 앞선 날짜는 거부한다.
+pub fn parse_coupon_expiry(raw: &str, today: &str) -> Result<String, String> {
+    let value = raw.trim();
+    if chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err() {
+        return Err("만료일은 YYYY-MM-DD 형식으로 입력하세요 (예: 2026-12-31).".to_string());
+    }
+    if value < today {
+        return Err(format!("만료일({value})이 이미 지났습니다."));
+    }
+    Ok(value.to_string())
+}
+
+fn random_coupon_code(rng: &mut impl rand::RngCore) -> String {
+    let mut code = String::from("MAFIA-");
+    for index in 0..8 {
+        if index == 4 {
+            code.push('-');
+        }
+        let pick = (rng.next_u64() % COUPON_CODE_ALPHABET.len() as u64) as usize;
+        code.push(COUPON_CODE_ALPHABET[pick] as char);
+    }
+    code
+}
+
+/// 쿠폰 발급. `custom_code`가 있으면 그 코드를 쓰고(개수가 2 이상이면 -1, -2 …
+/// 접미), 없으면 MAFIA-XXXX-XXXX 무작위 코드를 만든다. 이미 있는 코드와 겹치면
+/// 아무것도 발급하지 않고 거부한다.
+pub fn issue_coupons(
+    stats: &mut StatsFile,
+    coins: i64,
+    count: i64,
+    custom_code: Option<&str>,
+    expires_on: Option<String>,
+    issued_by: u64,
+    issued_at: &str,
+    rng: &mut impl rand::RngCore,
+) -> Result<Vec<String>, String> {
+    if coins < 1 {
+        return Err("쿠폰 코인은 1원 이상이어야 합니다.".to_string());
+    }
+    if !(1..=MAX_COUPONS_PER_ISSUE).contains(&count) {
+        return Err(format!("개수는 1~{MAX_COUPONS_PER_ISSUE} 사이여야 합니다."));
+    }
+    let codes = match custom_code
+        .map(normalize_coupon_code)
+        .filter(|code| !code.is_empty())
+    {
+        Some(base) => {
+            if !valid_custom_code(&base) {
+                return Err(
+                    "쿠폰 텍스트는 영문·숫자·하이픈 3~32자여야 합니다 (예: EVENT2026).".to_string(),
+                );
+            }
+            if count == 1 {
+                vec![base]
+            } else {
+                (1..=count).map(|index| format!("{base}-{index}")).collect()
+            }
+        }
+        None => {
+            let mut codes = Vec::with_capacity(count as usize);
+            while codes.len() < count as usize {
+                let code = random_coupon_code(rng);
+                if !stats.coin_coupons.contains_key(&code) && !codes.contains(&code) {
+                    codes.push(code);
+                }
+            }
+            codes
+        }
+    };
+    let taken = codes
+        .iter()
+        .filter(|code| stats.coin_coupons.contains_key(*code))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !taken.is_empty() {
+        return Err(format!("이미 있는 쿠폰 코드입니다: {}", taken.join(", ")));
+    }
+    for code in &codes {
+        stats.coin_coupons.insert(
+            code.clone(),
+            CoinCoupon {
+                code: code.clone(),
+                coins,
+                issued_by,
+                issued_at: issued_at.to_string(),
+                expires_on: expires_on.clone(),
+                redeemed_by: None,
+                redeemed_at: None,
+            },
+        );
+    }
+    Ok(codes)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CouponRedemption {
+    pub code: String,
+    pub coins: i64,
+    pub balance: i64,
+}
+
+/// 쿠폰 사용: 존재·미사용·미만료를 확인하고 코인을 지급한 뒤 사용 처리한다.
+pub fn redeem_coupon(
+    stats: &mut StatsFile,
+    user_id: u64,
+    name: &str,
+    raw_code: &str,
+    today: &str,
+    redeemed_at: &str,
+) -> Result<CouponRedemption, String> {
+    let code = normalize_coupon_code(raw_code);
+    let coins = {
+        let Some(coupon) = stats.coin_coupons.get_mut(&code) else {
+            return Err("존재하지 않는 쿠폰 코드입니다.".to_string());
+        };
+        if coupon.is_redeemed() {
+            return Err("이미 사용된 쿠폰입니다.".to_string());
+        }
+        if coupon.is_expired(today) {
+            return Err(format!(
+                "만료된 쿠폰입니다 (만료일 {}).",
+                coupon.expires_on.as_deref().unwrap_or("")
+            ));
+        }
+        coupon.redeemed_by = Some(user_id);
+        coupon.redeemed_at = Some(redeemed_at.to_string());
+        coupon.coins
+    };
+    let entry = ensure_player_stats(stats, user_id, name);
+    entry.coins = entry.coins.saturating_add(coins);
+    Ok(CouponRedemption {
+        code,
+        coins,
+        balance: entry.coins,
+    })
+}
+
+/// 아직 쓰지 않았고 만료되지 않은 쿠폰 (코드 순).
+pub fn active_coupons<'a>(stats: &'a StatsFile, today: &str) -> Vec<&'a CoinCoupon> {
+    let mut coupons = stats
+        .coin_coupons
+        .values()
+        .filter(|coupon| !coupon.is_redeemed() && !coupon.is_expired(today))
+        .collect::<Vec<_>>();
+    coupons.sort_by(|left, right| left.code.cmp(&right.code));
+    coupons
+}

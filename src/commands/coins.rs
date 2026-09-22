@@ -664,3 +664,204 @@ pub async fn manage_coins(
     }
     Ok(())
 }
+
+#[poise::command(
+    slash_command,
+    rename = "쿠폰발급",
+    description_localized(
+        "ko",
+        "관리자: 코인 쿠폰을 발급합니다. 코드는 1회용이며 만료일은 선택입니다 (기본 무기한)."
+    )
+)]
+pub async fn issue_coupons(
+    ctx: Context<'_>,
+    #[description = "쿠폰 하나로 받을 코인(원)"] 코인: i64,
+    #[description = "발급 개수 (1~100)"] 개수: i64,
+    #[description = "쿠폰 코드 텍스트 (비우면 무작위 코드, 2개 이상이면 -1, -2 접미)"]
+    쿠폰텍스트: Option<String>,
+    #[description = "만료일 YYYY-MM-DD (비우면 무기한, 그날까지 사용 가능)"] 만료일: Option<String>,
+) -> Result<(), Error> {
+    if !require_manager(ctx).await? {
+        return Ok(());
+    }
+    let today = stats::kst_today();
+    let expires_on = match 만료일
+        .as_deref()
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+    {
+        Some(raw) => match stats::parse_coupon_expiry(raw, &today) {
+            Ok(value) => Some(value),
+            Err(message) => {
+                reply_embed(ctx, message, "쿠폰 발급", serenity::Colour::RED, true).await?;
+                return Ok(());
+            }
+        },
+        None => None,
+    };
+    let issued_at = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    let admin_id = ctx.author().id.get();
+    let issued = {
+        let mut stats_file = ctx.data().stats.write().await;
+        let mut rng = mafia_remake::system_random::rng();
+        stats::issue_coupons(
+            &mut stats_file,
+            코인,
+            개수,
+            쿠폰텍스트.as_deref(),
+            expires_on.clone(),
+            admin_id,
+            &issued_at,
+            &mut rng,
+        )
+        .map(|codes| (codes, stats_file.clone()))
+    };
+    let (codes, snapshot) = match issued {
+        Ok(issued) => issued,
+        Err(message) => {
+            reply_embed(ctx, message, "쿠폰 발급", serenity::Colour::RED, true).await?;
+            return Ok(());
+        }
+    };
+    save_stats_snapshot(ctx.data(), snapshot).await;
+    let expiry_text = expires_on
+        .as_deref()
+        .map_or("무기한".to_string(), |date| format!("{date}까지"));
+    let code_block = format!("```\n{}\n```", codes.join("\n"));
+    let log_channel_id = ctx.data().config.read().await.log_channel_id;
+    send_admin_log(
+        ctx.http(),
+        log_channel_id,
+        "쿠폰 발급",
+        format!(
+            "{} 님이 {} 쿠폰 {}장을 발급했습니다 ({expiry_text}).\n{code_block}",
+            ctx.author().name,
+            stats::coin_text(코인),
+            codes.len()
+        ),
+    )
+    .await;
+    reply_embed(
+        ctx,
+        format!(
+            "**{}** 쿠폰 {}장을 발급했습니다 ({expiry_text}). 코드는 각각 한 사람이 한 번만 쓸 수 있습니다.\n`/쿠폰사용 코드`로 사용합니다.\n{code_block}",
+            stats::coin_text(코인),
+            codes.len()
+        ),
+        "쿠폰 발급",
+        serenity::Colour::DARK_GREEN,
+        true,
+    )
+    .await?;
+    Ok(())
+}
+
+#[poise::command(
+    slash_command,
+    rename = "쿠폰사용",
+    description_localized("ko", "코인 쿠폰 코드를 사용해 코인을 받습니다.")
+)]
+pub async fn redeem_coupon(
+    ctx: Context<'_>,
+    #[description = "쿠폰 코드"] 코드: String,
+) -> Result<(), Error> {
+    let user = ctx.author();
+    let today = stats::kst_today();
+    let redeemed_at = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+    let result = {
+        let mut stats_file = ctx.data().stats.write().await;
+        stats::redeem_coupon(
+            &mut stats_file,
+            user.id.get(),
+            &user.name,
+            &코드,
+            &today,
+            &redeemed_at,
+        )
+        .map(|redemption| (redemption, stats_file.clone()))
+    };
+    match result {
+        Ok((redemption, snapshot)) => {
+            save_stats_snapshot(ctx.data(), snapshot).await;
+            let log_channel_id = ctx.data().config.read().await.log_channel_id;
+            send_admin_log(
+                ctx.http(),
+                log_channel_id,
+                "쿠폰 사용",
+                format!(
+                    "{} 님(`{}`)이 쿠폰 `{}`을 사용해 {}을 받았습니다 (보유 {}).",
+                    user.name,
+                    user.id.get(),
+                    redemption.code,
+                    stats::coin_text(redemption.coins),
+                    stats::coin_text(redemption.balance)
+                ),
+            )
+            .await;
+            reply_embed(
+                ctx,
+                format!(
+                    "쿠폰 `{}` 사용 완료! **{}**을 받았습니다.\n보유 코인: **{}**",
+                    redemption.code,
+                    stats::coin_text(redemption.coins),
+                    stats::coin_text(redemption.balance)
+                ),
+                "쿠폰 사용",
+                serenity::Colour::DARK_GREEN,
+                true,
+            )
+            .await?;
+        }
+        Err(message) => {
+            reply_embed(ctx, message, "쿠폰 사용", serenity::Colour::RED, true).await?;
+        }
+    }
+    Ok(())
+}
+
+#[poise::command(
+    slash_command,
+    rename = "쿠폰목록",
+    description_localized("ko", "관리자: 아직 사용되지 않은 코인 쿠폰을 확인합니다.")
+)]
+pub async fn list_coupons(ctx: Context<'_>) -> Result<(), Error> {
+    if !require_manager(ctx).await? {
+        return Ok(());
+    }
+    let today = stats::kst_today();
+    let (lines, total) = {
+        let stats_read = ctx.data().stats.read().await;
+        let coupons = stats::active_coupons(&stats_read, &today);
+        let lines = coupons
+            .iter()
+            .take(50)
+            .map(|coupon| {
+                format!(
+                    "`{}` {} ({})",
+                    coupon.code,
+                    stats::coin_text(coupon.coins),
+                    coupon
+                        .expires_on
+                        .as_deref()
+                        .map_or("무기한".to_string(), |date| format!("{date}까지"))
+                )
+            })
+            .collect::<Vec<_>>();
+        (lines, coupons.len())
+    };
+    let message = if lines.is_empty() {
+        "사용 가능한 쿠폰이 없습니다.".to_string()
+    } else {
+        format!(
+            "사용 가능한 쿠폰 {total}장{}\n{}",
+            if total > 50 {
+                " (50장까지 표시)"
+            } else {
+                ""
+            },
+            lines.join("\n")
+        )
+    };
+    reply_embed(ctx, message, "쿠폰 목록", serenity::Colour::GOLD, true).await?;
+    Ok(())
+}

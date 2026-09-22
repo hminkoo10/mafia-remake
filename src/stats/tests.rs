@@ -881,3 +881,156 @@ fn admin_coin_adjustments_never_go_negative() {
     assert_eq!((set.before, set.after), (0, 7_500));
     assert_eq!(stats.users["1"].coins, 7_500);
 }
+
+fn coupon_rng() -> impl rand::RngCore {
+    crate::system_random::rng()
+}
+
+#[test]
+fn coupon_issue_uses_custom_code_with_suffixes_and_rejects_duplicates() {
+    let mut stats = StatsFile::default();
+    let single = issue_coupons(
+        &mut stats,
+        5_000,
+        1,
+        Some(" event2026 "),
+        None,
+        9,
+        "2026-09-22T10:00:00+09:00",
+        &mut coupon_rng(),
+    )
+    .unwrap();
+    assert_eq!(single, vec!["EVENT2026"]);
+    let many = issue_coupons(
+        &mut stats,
+        1_000,
+        3,
+        Some("GIFT"),
+        Some("2026-12-31".to_string()),
+        9,
+        "2026-09-22T10:00:00+09:00",
+        &mut coupon_rng(),
+    )
+    .unwrap();
+    assert_eq!(many, vec!["GIFT-1", "GIFT-2", "GIFT-3"]);
+    assert_eq!(
+        stats.coin_coupons["GIFT-2"].expires_on.as_deref(),
+        Some("2026-12-31")
+    );
+    // 겹치는 코드는 통째로 거부한다.
+    let duplicate = issue_coupons(
+        &mut stats,
+        1_000,
+        2,
+        Some("GIFT"),
+        None,
+        9,
+        "2026-09-22T10:00:00+09:00",
+        &mut coupon_rng(),
+    );
+    assert!(duplicate.is_err());
+    assert_eq!(stats.coin_coupons.len(), 4);
+    // 잘못된 텍스트·개수·코인.
+    assert!(
+        issue_coupons(
+            &mut stats,
+            1_000,
+            1,
+            Some("한글코드"),
+            None,
+            9,
+            "",
+            &mut coupon_rng()
+        )
+        .is_err()
+    );
+    assert!(issue_coupons(&mut stats, 1_000, 0, None, None, 9, "", &mut coupon_rng()).is_err());
+    assert!(issue_coupons(&mut stats, 0, 1, None, None, 9, "", &mut coupon_rng()).is_err());
+}
+
+#[test]
+fn coupon_issue_generates_unique_random_codes() {
+    let mut stats = StatsFile::default();
+    let codes = issue_coupons(
+        &mut stats,
+        2_000,
+        20,
+        None,
+        None,
+        9,
+        "2026-09-22T10:00:00+09:00",
+        &mut coupon_rng(),
+    )
+    .unwrap();
+    assert_eq!(codes.len(), 20);
+    let unique = codes.iter().collect::<std::collections::HashSet<_>>();
+    assert_eq!(unique.len(), 20);
+    for code in &codes {
+        assert!(code.starts_with("MAFIA-") && code.len() == 15, "{code}");
+    }
+}
+
+#[test]
+fn coupon_redeem_is_single_use_and_checks_expiry() {
+    let mut stats = StatsFile::default();
+    issue_coupons(
+        &mut stats,
+        5_000,
+        1,
+        Some("WELCOME"),
+        Some("2026-09-30".to_string()),
+        9,
+        "2026-09-22T10:00:00+09:00",
+        &mut coupon_rng(),
+    )
+    .unwrap();
+    issue_coupons(
+        &mut stats,
+        3_000,
+        1,
+        Some("OLD"),
+        Some("2026-09-01".to_string()),
+        9,
+        "2026-08-01T10:00:00+09:00",
+        &mut coupon_rng(),
+    )
+    .unwrap();
+
+    let redeemed = redeem_coupon(
+        &mut stats,
+        1,
+        "Alpha",
+        " welcome ",
+        "2026-09-30",
+        "2026-09-30T12:00:00+09:00",
+    )
+    .unwrap();
+    assert_eq!((redeemed.coins, redeemed.balance), (5_000, 5_000));
+    assert_eq!(stats.users["1"].coins, 5_000);
+    assert_eq!(stats.coin_coupons["WELCOME"].redeemed_by, Some(1));
+
+    assert!(redeem_coupon(&mut stats, 2, "Beta", "WELCOME", "2026-09-30", "").is_err());
+    assert!(redeem_coupon(&mut stats, 2, "Beta", "OLD", "2026-09-22", "").is_err());
+    assert!(redeem_coupon(&mut stats, 2, "Beta", "NOPE", "2026-09-22", "").is_err());
+    assert!(stats.users.get("2").is_none_or(|entry| entry.coins == 0));
+
+    assert_eq!(active_coupons(&stats, "2026-09-22").len(), 0);
+    issue_coupons(
+        &mut stats,
+        1_000,
+        2,
+        Some("LIVE"),
+        None,
+        9,
+        "",
+        &mut coupon_rng(),
+    )
+    .unwrap();
+    assert_eq!(active_coupons(&stats, "2026-09-22").len(), 2);
+    assert!(parse_coupon_expiry("2026-13-01", "2026-09-22").is_err());
+    assert!(parse_coupon_expiry("2026-09-21", "2026-09-22").is_err());
+    assert_eq!(
+        parse_coupon_expiry(" 2026-09-22 ", "2026-09-22"),
+        Ok("2026-09-22".to_string())
+    );
+}

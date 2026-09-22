@@ -73,6 +73,9 @@ pub struct StatsFile {
     /// 직업별 누적 승패. 배팅 배당의 "직업 난이도" 계산에 쓴다.
     #[serde(default)]
     pub role_outcomes: HashMap<String, RoleOutcome>,
+    /// 관리자가 발급한 코인 쿠폰 (코드 → 쿠폰). 코드는 1회용이다.
+    #[serde(default)]
+    pub coin_coupons: HashMap<String, CoinCoupon>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
