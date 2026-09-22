@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { CasinoApiError, fetchState, readLink, sendCommand, wsUrl } from "./api";
 import { setSoundEnabled, sfx, soundEnabled } from "./sounds";
+import { DealerHands } from "./components/DealerHands";
 import type { CasinoCommand, GameKind, SeatResult, StateResponse, TableRules, TableView } from "./types";
 import {
   Dialog,
@@ -446,6 +447,7 @@ export default function Casino() {
   const balance = data?.me.coins ?? 0,
     name = data?.me.name ?? "플레이어";
   const kind = table.kind;
+  const dealerMood: DealerMood = revealing ? (round?.phase === "complete" || (kind === "blackjack" && round?.reveal) ? "flip" : "deal") : "idle";
   const tableRules = table.rules;
   const shoe = table.shoe;
   const shoeAge = shoe ? serverNow - shoe.shuffled_at : -1;
@@ -805,9 +807,10 @@ export default function Casino() {
               <DealerBackdrop
                 id={table.dealer.id}
                 name={table.dealer.name}
-                mood={revealing ? (round?.phase === "complete" || (kind === "blackjack" && round?.reveal) ? "flip" : "deal") : "idle"}
+                mood={dealerMood}
               />
               <div className="table-shade" />
+              <DealerHands mood={dealerMood} targets={SEAT_POS.filter((_, i) => table.seats[i]?.in_hand)} />
               <div className="table-topline">
                 <span className="room-id">
                   {noTable ? "NO TABLE" : table.name}
