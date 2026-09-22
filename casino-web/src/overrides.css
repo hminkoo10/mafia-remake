@@ -86,3 +86,26 @@
 .chip-stack b{font-size:11px;color:#f0ddb1;background:#09221bce;border:1px solid #91815477;border-radius:10px;padding:1px 7px;white-space:nowrap}
 @keyframes spot-pulse{0%,100%{box-shadow:0 0 0 0 #dcc17a00}50%{box-shadow:0 0 0 6px #dcc17a33}}
 @media(max-width:760px){.chip-stack{left:calc(100% - 10px)}.chip-pile{width:34px;height:38px}.chip-coin{width:28px;height:28px;font-size:8px}.betting-controls.evo .chip{width:42px;height:42px}}
+
+/* 테이블 연출: 딜러 숨결, 딜링 중 움직임, 말풍선, 칩 이동, 승자 강조, 차례 링, 팟 강조 */
+.dealer-backdrop{animation:dealer-idle 9s ease-in-out infinite;transform-origin:50% 30%}
+.game-table.dealing .dealer-backdrop{animation:dealer-dealing 1.1s ease-in-out infinite}
+@keyframes dealer-idle{0%,100%{transform:scale(1) translateY(0)}50%{transform:scale(1.025) translateY(3px)}}
+@keyframes dealer-dealing{0%,100%{transform:scale(1.03) translate(0,2px)}50%{transform:scale(1.035) translate(-3px,5px)}}
+.table-shade{transition:background .6s}
+.game-table.in-play .table-shade{background:linear-gradient(180deg,#0007,transparent 35%,#04211740 53%,#09251f55 65%,#08291ff2)}
+.action-bubble{position:absolute;transform:translate(-50%,-100%);z-index:4;padding:5px 11px;border-radius:12px;background:#f3ead0;color:#1c2924;font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 6px 16px #0008;animation:bubble-pop 1.7s ease-out forwards;pointer-events:none}
+.action-bubble:after{content:"";position:absolute;left:50%;bottom:-6px;width:10px;height:10px;background:#f3ead0;transform:translateX(-50%) rotate(45deg)}
+@keyframes bubble-pop{0%{opacity:0;transform:translate(-50%,-80%) scale(.7)}12%{opacity:1;transform:translate(-50%,-100%) scale(1.05)}20%{transform:translate(-50%,-100%) scale(1)}80%{opacity:1}100%{opacity:0;transform:translate(-50%,-120%)}}
+.chip-flight{position:absolute;z-index:6;display:flex;flex-direction:column;align-items:center;gap:2px;transform:translate(-50%,-50%);transition:left .75s cubic-bezier(.3,.7,.3,1),top .75s cubic-bezier(.3,.7,.3,1);pointer-events:none;filter:drop-shadow(0 8px 10px #0009)}
+.chip-flight .chip-pile{width:40px;height:44px;position:relative}
+.chip-flight b{font-size:11px;color:#f0ddb1;background:#09221bce;border:1px solid #91815477;border-radius:10px;padding:1px 7px;white-space:nowrap}
+.seat-winner .player-avatar{border-color:#f2d16b;box-shadow:0 0 0 4px #f2d16b33,0 0 34px #f2d16b99;animation:winner-glow 1.2s ease-in-out infinite}
+.seat-winner>strong{color:#f5e3b0;text-shadow:0 0 10px #f2d16b99}
+@keyframes winner-glow{0%,100%{box-shadow:0 0 0 4px #f2d16b33,0 0 22px #f2d16b77}50%{box-shadow:0 0 0 6px #f2d16b55,0 0 40px #f2d16bcc}}
+.turn-ring{position:absolute;inset:-5px;width:calc(100% + 10px);height:calc(100% + 10px);transform:rotate(-90deg);pointer-events:none}
+.turn-ring circle{fill:none;stroke:#ffffff22;stroke-width:3}
+.turn-ring .turn-ring-progress{stroke:#dcb956;stroke-dasharray:132;transition:stroke-dashoffset .25s linear;stroke-linecap:round}
+.pot-pill{transition:transform .2s}
+.pot-pill.bump{transform:translateX(-50%) scale(1.18);box-shadow:0 0 18px #e4b74888}
+@media(prefers-reduced-motion:reduce){.dealer-backdrop,.game-table.dealing .dealer-backdrop,.seat-winner .player-avatar,.action-bubble{animation:none!important}.chip-flight{transition:none}}

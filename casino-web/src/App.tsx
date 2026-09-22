@@ -181,6 +181,45 @@ function ChipStack({
     </button>
   );
 }
+/** 좌석의 테이블 위 위치 (noir.css의 .seat-N과 같은 값, % 단위). */
+const SEAT_POS: Array<[number, number]> = [
+  [12, 63],
+  [22, 82],
+  [40, 89],
+  [60, 89],
+  [78, 82],
+  [88, 63],
+];
+const POT_POS: [number, number] = [50, 50];
+interface Flight {
+  id: number;
+  from: [number, number];
+  to: [number, number];
+  amount: number;
+}
+/** 칩 더미가 테이블 위를 날아가는 연출 (베팅 → 팟, 팟 → 승자). */
+function ChipFlight({ flight, onDone }: { flight: Flight; onDone: (id: number) => void }) {
+  const [pos, setPos] = useState(flight.from);
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => requestAnimationFrame(() => setPos(flight.to)));
+    const timer = window.setTimeout(() => onDone(flight.id), 900);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+    };
+  }, [flight.id]);
+  const chips = chipsFor(flight.amount).slice(-6);
+  return (
+    <div className="chip-flight" style={{ left: `${pos[0]}%`, top: `${pos[1]}%` }} aria-hidden="true">
+      <span className="chip-pile">
+        {chips.map((value, index) => (
+          <i key={index} className={`chip-coin chip-${value}`} style={{ bottom: index * 3 }} />
+        ))}
+      </span>
+      <b>{fmt(flight.amount)}</b>
+    </div>
+  );
+}
 /** 등장 시각이 아직 안 된 카드는 화면에서 뺀다 (서버가 준 reveal_at 기준). */
 const dealt = (cards: string[], times: number[] | undefined, now: number) =>
   cards.filter((_, index) => (times?.[index] ?? 0) <= now);
@@ -196,7 +235,11 @@ export default function Casino() {
   const [muted, setMuted] = useState(true),
     [join, setJoin] = useState<number | null>(null),
     [buyin, setBuyin] = useState(10000),
-    [dismissedResult, setDismissedResult] = useState<string | null>(null);
+    [dismissedResult, setDismissedResult] = useState<string | null>(null),
+    [bubble, setBubble] = useState<{ id: string; seat: number; text: string } | null>(null),
+    [flights, setFlights] = useState<Flight[]>([]),
+    [winners, setWinners] = useState<number[]>([]),
+    [potBump, setPotBump] = useState(false);
   const [pending, setPending] = useState(false),
     [connected, setConnected] = useState(false),
     [expired, setExpired] = useState(!token),
@@ -216,6 +259,10 @@ export default function Casino() {
     socketRef = useRef<WebSocket | null>(null),
     socketOpenRef = useRef(false),
     autoBetRound = useRef<string | null>(null),
+    bubbleSeen = useRef<string | null>(null),
+    prevBets = useRef<{ round: string | null; bets: number[]; pot: number }>({ round: null, bets: [], pot: 0 }),
+    winnersShown = useRef<string | null>(null),
+    flightId = useRef(1),
     lastNarration = useRef("");
   const chatBottom = useRef<HTMLDivElement>(null);
 
@@ -383,6 +430,58 @@ export default function Casino() {
     autoBetRound.current = round.id;
     void lockBet();
   }, [seconds, table.legal.can_bet, round?.id, stackTotal]);
+  // 액션 말풍선: 딜러 안내 "이름님, 콜." 을 좌석 위에 잠깐 띄운다.
+  useEffect(() => {
+    const last = [...table.messages].reverse().find((m) => m.dealer);
+    if (!last || bubbleSeen.current === last.id) return;
+    bubbleSeen.current = last.id;
+    const match = /^(.+?)님, (.+?)\.$/.exec(last.text);
+    if (!match) return;
+    const seat = table.seats.find((s) => s?.name === match[1]);
+    if (!seat) return;
+    setBubble({ id: last.id, seat: seat.seat, text: match[2] });
+    const timer = window.setTimeout(() => setBubble((current) => (current?.id === last.id ? null : current)), 1700);
+    return () => window.clearTimeout(timer);
+  }, [table.messages.length, table.id]);
+  // 칩 이동: 스트리트가 넘어가 베팅이 팟으로 모일 때, 그리고 결과가 나와 팟이 승자에게 갈 때.
+  useEffect(() => {
+    const bets = table.seats.map((s) => s?.bet ?? 0);
+    const previous = prevBets.current;
+    const pot = round?.pot ?? 0;
+    if (round && previous.round === round.id && round.phase !== "complete") {
+      const moved: Flight[] = [];
+      previous.bets.forEach((bet, index) => {
+        if (bet > 0 && bets[index] === 0) {
+          moved.push({ id: flightId.current++, from: SEAT_POS[index], to: POT_POS, amount: bet });
+        }
+      });
+      if (moved.length) setFlights((current) => [...current, ...moved]);
+    }
+    if (round && pot !== previous.pot && previous.round === round.id) {
+      setPotBump(true);
+      window.setTimeout(() => setPotBump(false), 450);
+    }
+    prevBets.current = { round: round?.id ?? null, bets, pot };
+  }, [table.seats, round?.id, round?.phase, round?.pot]);
+  useEffect(() => {
+    // 결과가 뜨면 팟이 승자에게 날아가고 승자 좌석이 빛난다.
+    if (!showResult || !latestResult || winnersShown.current === latestResult.id) {
+      if (!showResult) setWinners([]);
+      return;
+    }
+    winnersShown.current = latestResult.id;
+    const won = latestResult.results.filter((r) => r.net > 0);
+    setWinners(won.map((r) => r.seat));
+    if (won.length) {
+      const flightsToWinners = won.map((r) => ({
+        id: flightId.current++,
+        from: kind === "holdem" ? POT_POS : ([50, 30] as [number, number]),
+        to: SEAT_POS[r.seat] ?? POT_POS,
+        amount: r.net + r.wagered,
+      }));
+      setFlights((current) => [...current, ...flightsToWinners]);
+    }
+  }, [showResult, latestResult?.id]);
   useEffect(() => {
     if (!muted && table.narration !== lastNarration.current && "speechSynthesis" in window) {
       speechSynthesis.cancel();
@@ -586,7 +685,7 @@ export default function Casino() {
         )}
         <div className="play-layout">
           <section className="table-column">
-            <div className={`game-table ${kind}`}>
+            <div className={`game-table ${kind} ${revealing ? "dealing" : ""} ${round && round.phase !== "complete" ? "in-play" : ""}`}>
               <img className="dealer-backdrop" src={DEALER_IMAGE} alt="에메랄드 테이블의 AI 딜러 소피아" />
               <div className="table-shade" />
               <div className="table-topline">
@@ -604,7 +703,7 @@ export default function Casino() {
               <div className="board">
                 <div className="board-label">{kind === "holdem" ? "TEXAS HOLD’EM" : "BLACKJACK PAYS 3 TO 2"}</div>
                 {kind === "holdem" && round && (
-                  <div className="pot-pill">
+                  <div className={`pot-pill ${potBump ? "bump" : ""}`}>
                     POT <b>{fmt(round.pot)}</b>
                   </div>
                 )}
@@ -644,7 +743,7 @@ export default function Casino() {
                     key={i}
                     className={`seat occupied seat-${i} ${seat.mine ? "mine" : ""} ${round?.turn === i ? "active-seat" : ""} ${
                       seat.folded ? "folded" : ""
-                    }`}
+                    } ${winners.includes(i) ? "seat-winner" : ""}`}
                   >
                     <div className="seat-cards">
                       {kind === "holdem" ? (
@@ -665,6 +764,20 @@ export default function Casino() {
                     <span className="player-avatar">
                       {seat.name.slice(0, 1)}
                       {kind === "holdem" && table.button === i && <i>D</i>}
+                      {round && round.turn === i && round.phase !== "complete" && !revealing && (
+                        <svg className="turn-ring" viewBox="0 0 48 48" aria-hidden="true">
+                          <circle cx="24" cy="24" r="21" />
+                          <circle
+                            cx="24"
+                            cy="24"
+                            r="21"
+                            className="turn-ring-progress"
+                            style={{
+                              strokeDashoffset: 132 * (1 - Math.max(0, Math.min(1, (round.deadline - serverNow) / tableRules.turn_ms))),
+                            }}
+                          />
+                        </svg>
+                      )}
                     </span>
                     {kind === "blackjack" &&
                       (seat.mine && table.legal.can_bet ? (
@@ -706,6 +819,14 @@ export default function Casino() {
                 ),
               )}
               <span className="felt-mark">N O I R</span>
+              {bubble && SEAT_POS[bubble.seat] && (
+                <div key={bubble.id} className="action-bubble" style={{ left: `${SEAT_POS[bubble.seat][0]}%`, top: `${SEAT_POS[bubble.seat][1] - 16}%` }}>
+                  {bubble.text}
+                </div>
+              )}
+              {flights.map((flight) => (
+                <ChipFlight key={flight.id} flight={flight} onDone={(id) => setFlights((current) => current.filter((f) => f.id !== id))} />
+              ))}
               {showResult && latestResult && (
                 <div className="result-banner" role="status" aria-live="polite">
                   <div className="result-head">
