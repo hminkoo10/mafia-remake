@@ -282,6 +282,30 @@ async fn client_config_handler(State(state): State<ActivityState>) -> impl IntoR
     Json(serde_json::json!({ "client_id": state.client_id }))
 }
 
+/// Cloudflare Origin 인증서는 Cloudflare 프록시 뒤에서만 유효하다. 직접 접속하면 브라우저가
+/// "안전하지 않음"으로 표시하므로 시작할 때 알려 준다.
+fn warn_if_cloudflare_origin_cert(cert_path: &str) {
+    let Ok(pem) = std::fs::read(cert_path) else {
+        return;
+    };
+    let mut reader = &pem[..];
+    let is_cloudflare_origin = rustls_pemfile::certs(&mut reader)
+        .filter_map(Result::ok)
+        .any(|cert| {
+            cert.as_ref()
+                .windows(b"CloudFlare Origin".len())
+                .any(|window| window == b"CloudFlare Origin")
+        });
+    if is_cloudflare_origin {
+        eprintln!(
+            "경고: ACTIVITY_TLS_CERT({cert_path})가 Cloudflare Origin 인증서입니다. 브라우저는 이 \
+             인증서를 신뢰하지 않아서 Cloudflare 프록시(DNS 주황 구름)를 거치지 않고 직접 접속하면 \
+             '안전하지 않음' 경고가 뜹니다. 도메인을 프록시 모드로 바꾸거나(2053 포트 지원), 직접 \
+             접속용으로는 Let's Encrypt 같은 공인 인증서(fullchain.pem + privkey.pem)를 쓰세요."
+        );
+    }
+}
+
 pub async fn run_activity_server(
     state: ActivityState,
     host: String,
@@ -301,6 +325,7 @@ pub async fn run_activity_server(
     };
 
     if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
+        warn_if_cloudflare_origin_cert(&cert);
         let config = match axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key).await {
             Ok(c) => c,
             Err(e) => {
