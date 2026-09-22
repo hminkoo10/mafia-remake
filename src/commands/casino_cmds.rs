@@ -175,8 +175,13 @@ fn render_hand_result(result: &HandResult, kind: GameKind) -> String {
         ));
     }
     for entry in &result.results {
+        let notes = if entry.notes.is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", entry.notes.join(" · "))
+        };
         lines.push(format!(
-            "**{}** {} · {}",
+            "**{}** {} · {}{notes}",
             entry.name,
             signed_chips(entry.net),
             entry.label
