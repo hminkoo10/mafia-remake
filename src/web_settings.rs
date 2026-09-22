@@ -789,6 +789,12 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
         None,
     ),
     field(
+        "log_channel_id",
+        "관리자 로그 채널 ID (0이면 사용 안 함)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
         "default_mafia_count",
         "기본 마피아 수",
         WebFieldKind::Int,

@@ -503,3 +503,31 @@ mod tests {
         assert!(failure.log_detail().contains("cannot message user"));
     }
 }
+
+/// 관리자 로그 채널(설정 log_channel_id)에 기록을 남긴다. 0이면 아무것도 하지 않고,
+/// 전송 실패는 서버 로그로만 남긴다.
+pub async fn send_admin_log(
+    http: &serenity::Http,
+    log_channel_id: u64,
+    title: &str,
+    message: impl Into<String>,
+) {
+    if log_channel_id == 0 {
+        return;
+    }
+    let message = message.into();
+    if let Err(error) = send_channel_embed(
+        http,
+        serenity::ChannelId::new(log_channel_id),
+        message.clone(),
+        title,
+        serenity::Colour::DARK_GREY,
+        vec![],
+    )
+    .await
+    {
+        eprintln!(
+            "failed to send admin log: channel_id={log_channel_id} title={title:?} error={error:?} message={message:?}"
+        );
+    }
+}

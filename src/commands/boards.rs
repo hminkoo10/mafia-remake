@@ -427,6 +427,17 @@ pub async fn reset_leaderboard(ctx: Context<'_>) -> Result<(), Error> {
     };
     let stats_path = ctx.data().stats_path.clone();
     tokio::task::spawn_blocking(move || stats::save_stats(&*stats_path, &stats_snapshot)).await??;
+    let log_channel_id = ctx.data().config.read().await.log_channel_id;
+    send_admin_log(
+        ctx.http(),
+        log_channel_id,
+        "리더보드 초기화",
+        format!(
+            "{} 님이 리더보드와 개인 전적(코인 포함)을 초기화했습니다.",
+            ctx.author().name
+        ),
+    )
+    .await;
     reply_embed_with_channel_fallback(
         ctx,
         "리더보드와 개인 전적을 초기화했습니다.",

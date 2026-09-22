@@ -17,6 +17,7 @@
   "coupon_api_url": "http://dimigo.store/api/v1/coupons",
   "coupon_api_key": "",
   "coupon_coins_per_point": 10000,
+  "log_channel_id": 0,
   "reveal_death_roles": false,
   "reveal_public_police_status": false,
   "reveal_morning_mafia_count": false,

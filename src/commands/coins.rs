@@ -275,6 +275,20 @@ pub async fn exchange_coupon(
         Ok(codes) => {
             let issued_at =
                 chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+            let log_channel_id = ctx.data().config.read().await.log_channel_id;
+            send_admin_log(
+                ctx.http(),
+                log_channel_id,
+                "내신 쿠폰 발급",
+                format!(
+                    "{} 님(`{user_id}`)이 {포인트}포인트 쿠폰 {}장을 발급했습니다 (코인 {} 차감, 남은 코인 {}).",
+                    user.name,
+                    codes.len(),
+                    stats::coin_text(cost),
+                    stats::coin_text(balance)
+                ),
+            )
+            .await;
             let snapshot = {
                 let mut stats_file = ctx.data().stats.write().await;
                 stats::record_coupon(
@@ -308,6 +322,18 @@ pub async fn exchange_coupon(
         }
         Err(error) => {
             eprintln!("coupon issue failed: user_id={user_id} points={포인트} error={error:?}");
+            let log_channel_id = ctx.data().config.read().await.log_channel_id;
+            send_admin_log(
+                ctx.http(),
+                log_channel_id,
+                "내신 쿠폰 발급 실패",
+                format!(
+                    "{} 님(`{user_id}`) {포인트}포인트 쿠폰 발급 실패, 코인 {} 환불. 원인: {error}",
+                    user.name,
+                    stats::coin_text(cost)
+                ),
+            )
+            .await;
             let snapshot = {
                 let mut stats_file = ctx.data().stats.write().await;
                 stats::refund_coins(&mut stats_file, user_id, &user.name, cost);
@@ -546,6 +572,25 @@ pub async fn manage_coins(
                             "coin admin: admin={admin_id} target={user_id} action={동작:?} amount={amount} before={} after={}",
                             change.before, change.after
                         );
+                        let action_name = match 동작 {
+                            CoinAdminAction::Give => "지급",
+                            CoinAdminAction::Take => "차감",
+                            _ => "설정",
+                        };
+                        let log_channel_id = ctx.data().config.read().await.log_channel_id;
+                        send_admin_log(
+                            ctx.http(),
+                            log_channel_id,
+                            "코인 관리",
+                            format!(
+                                "{} 님이 {name} 님(`{user_id}`) 코인 {action_name} {}: {} → {}",
+                                ctx.author().name,
+                                stats::coin_text(amount),
+                                stats::coin_text(change.before),
+                                stats::coin_text(change.after)
+                            ),
+                        )
+                        .await;
                         let verb = match 동작 {
                             CoinAdminAction::Give => "지급",
                             CoinAdminAction::Take => "차감",

@@ -516,6 +516,20 @@ pub async fn add_to_blacklist(
     }
     config::save_config(&*ctx.data().config_path, &config_write)?;
     drop(config_write);
+    if changed {
+        let log_channel_id = ctx.data().config.read().await.log_channel_id;
+        send_admin_log(
+            ctx.http(),
+            log_channel_id,
+            "블랙리스트",
+            format!(
+                "{} 님이 {} 님(`{id}`)을 블랙리스트에 추가했습니다.",
+                ctx.author().name,
+                유저.name
+            ),
+        )
+        .await;
+    }
     reply_embed(
         ctx,
         if changed {
@@ -555,6 +569,20 @@ pub async fn remove_from_blacklist(
     let changed = config_write.blacklist_user_ids.len() != before;
     config::save_config(&*ctx.data().config_path, &config_write)?;
     drop(config_write);
+    if changed {
+        let log_channel_id = ctx.data().config.read().await.log_channel_id;
+        send_admin_log(
+            ctx.http(),
+            log_channel_id,
+            "블랙리스트",
+            format!(
+                "{} 님이 {} 님(`{id}`)을 블랙리스트에서 해제했습니다.",
+                ctx.author().name,
+                유저.name
+            ),
+        )
+        .await;
+    }
     reply_embed(
         ctx,
         if changed {
@@ -597,5 +625,54 @@ pub async fn show_blacklist(ctx: Context<'_>) -> Result<(), Error> {
     };
     drop(config_read);
     reply_embed(ctx, text, "블랙리스트", serenity::Colour::GOLD, true).await?;
+    Ok(())
+}
+
+#[poise::command(
+    slash_command,
+    rename = "마피아로그채널",
+    description_localized(
+        "ko",
+        "관리자: 코인 관리·쿠폰 발급·블랙리스트·초기화 기록을 보낼 로그 채널을 설정합니다."
+    )
+)]
+pub async fn set_log_channel(
+    ctx: Context<'_>,
+    #[description = "로그 채널 (비우면 해제)"] 채널: Option<serenity::ChannelId>,
+) -> Result<(), Error> {
+    if !require_manager(ctx).await? {
+        return Ok(());
+    }
+    let channel_id = 채널.map_or(0, |channel| channel.get());
+    {
+        let mut config_write = ctx.data().config.write().await;
+        config_write.log_channel_id = channel_id;
+        config::save_config(&*ctx.data().config_path, &config_write)?;
+    }
+    let message = if channel_id == 0 {
+        "로그 채널을 해제했습니다.".to_string()
+    } else {
+        format!(
+            "로그 채널을 <#{channel_id}>로 설정했습니다. 코인 관리, 쿠폰 발급, 블랙리스트 변경, 리더보드 초기화 기록이 여기로 갑니다."
+        )
+    };
+    send_admin_log(
+        ctx.http(),
+        channel_id,
+        "로그 채널",
+        format!(
+            "{} 님이 이 채널을 마피아 봇 로그 채널로 설정했습니다.",
+            ctx.author().name
+        ),
+    )
+    .await;
+    reply_embed(
+        ctx,
+        message,
+        "로그 채널",
+        serenity::Colour::DARK_GREEN,
+        false,
+    )
+    .await?;
     Ok(())
 }

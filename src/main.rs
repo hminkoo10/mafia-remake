@@ -588,6 +588,7 @@ fn bot_commands() -> Vec<poise::Command<Data, Error>> {
         commands::add_to_blacklist(),
         commands::remove_from_blacklist(),
         commands::show_blacklist(),
+        commands::set_log_channel(),
         commands::configure_game(),
         commands::web_configure_game(),
         commands::configure_player_limit(),

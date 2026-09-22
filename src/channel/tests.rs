@@ -125,6 +125,7 @@ fn selection_test_config() -> config::BotConfig {
         coupon_api_url: String::new(),
         coupon_api_key: String::new(),
         coupon_coins_per_point: 10_000,
+        log_channel_id: 0,
         reveal_death_roles: false,
         reveal_public_police_status: true,
         reveal_morning_mafia_count: true,
