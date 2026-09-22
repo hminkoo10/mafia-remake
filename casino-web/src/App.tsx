@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
   AudioLines,
+  Bell,
+  BellOff,
   Check,
   CircleHelp,
   Club,
@@ -24,6 +26,7 @@ import {
   WifiOff,
 } from "lucide-react";
 import { CasinoApiError, fetchState, readLink, sendCommand, wsUrl } from "./api";
+import { setSoundEnabled, sfx, soundEnabled } from "./sounds";
 import type { CasinoCommand, GameKind, StateResponse, TableRules, TableView } from "./types";
 import {
   Dialog,
@@ -271,7 +274,8 @@ export default function Casino() {
     [bubble, setBubble] = useState<{ id: string; seat: number; text: string } | null>(null),
     [flights, setFlights] = useState<Flight[]>([]),
     [winners, setWinners] = useState<number[]>([]),
-    [potBump, setPotBump] = useState(false);
+    [potBump, setPotBump] = useState(false),
+    [sound, setSound] = useState(soundEnabled);
   const [pending, setPending] = useState(false),
     [connected, setConnected] = useState(false),
     [expired, setExpired] = useState(!token),
@@ -295,6 +299,9 @@ export default function Casino() {
     prevBets = useRef<{ round: string | null; bets: number[]; pot: number }>({ round: null, bets: [], pot: 0 }),
     winnersShown = useRef<string | null>(null),
     flightId = useRef(1),
+    dealtCount = useRef(0),
+    wasMyTurn = useRef(false),
+    resultSounded = useRef<string | null>(null),
     lastNarration = useRef("");
   const chatBottom = useRef<HTMLDivElement>(null);
 
@@ -430,6 +437,7 @@ export default function Casino() {
   const canPlaceChip = (value: number) => stackTotal + value <= maxWager;
   const placeChip = (value: number = chip) => {
     if (!table.legal.can_bet || disabled || !canPlaceChip(value)) return;
+    sfx.chip();
     setChipStack((stack) => [...stack, value]);
   };
   const lockBet = async () => {
@@ -437,6 +445,7 @@ export default function Casino() {
     const stack = chipStack;
     const ok = await act({ action: "bet", amount: stackTotal });
     if (ok) {
+      sfx.lock();
       setLastStack(stack);
       setChipStack([]);
     }
@@ -611,6 +620,31 @@ export default function Casino() {
       setFlights((current) => [...current, ...flightsToWinners]);
     }
   }, [showResult, latestResult?.id]);
+  // 효과음: 카드가 놓일 때, 내 차례가 올 때, 결과가 나올 때.
+  const visibleCards =
+    cards.length +
+    table.seats.reduce((sum, seat) => {
+      if (!seat) return sum;
+      if (kind === "holdem") return sum + dealt(seat.cards, seat.cards_reveal_at, serverNow).length;
+      return sum + seat.hands.reduce((inner, hand) => inner + dealt(hand.cards, hand.reveal_at, serverNow).length, 0);
+    }, 0);
+  useEffect(() => {
+    if (visibleCards > dealtCount.current && round && round.phase !== "complete") sfx.deal();
+    dealtCount.current = visibleCards;
+  }, [visibleCards, round?.id]);
+  useEffect(() => {
+    const mine = isTurn && !revealing;
+    if (mine && !wasMyTurn.current) sfx.turn();
+    wasMyTurn.current = mine;
+  }, [isTurn, revealing]);
+  useEffect(() => {
+    if (!showResult || !latestResult || resultSounded.current === latestResult.id) return;
+    resultSounded.current = latestResult.id;
+    const mine = latestResult.results.find((r) => r.seat === table.my_seat);
+    if (!mine) return;
+    if (mine.net > 0) sfx.win();
+    else if (mine.net < 0) sfx.lose();
+  }, [showResult, latestResult?.id]);
   const seatedElsewhere = tables.find((t) => t.id === data?.me.seated_table && t.id !== table.id) ?? null;
 
   return (
@@ -688,6 +722,17 @@ export default function Casino() {
             </button>
             <button className="icon-button" aria-label="핸드 기록 열기" onClick={() => setHistory(true)}>
               <History size={18} />
+            </button>
+            <button
+              className="icon-button"
+              aria-label={sound ? "효과음 끄기" : "효과음 켜기"}
+              onClick={() => {
+                setSoundEnabled(!sound);
+                setSound(!sound);
+                if (!sound) sfx.chip();
+              }}
+            >
+              {sound ? <Bell size={18} /> : <BellOff size={18} />}
             </button>
             <button
               className="icon-button"
