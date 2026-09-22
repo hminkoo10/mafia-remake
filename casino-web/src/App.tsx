@@ -45,6 +45,7 @@ import {
 } from "./ui";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
+const signed = (n: number) => `${n < 0 ? "−" : "+"}${fmt(Math.abs(n))}`;
 const phases: Record<string, string> = {
   preflop: "프리플롭",
   flop: "플롭",
@@ -961,6 +962,17 @@ export default function Casino() {
                     <time>{new Date(h.at).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</time>
                   </div>
                   <p>{h.summary}</p>
+                  {h.results.length > 0 && (
+                    <ul className="history-results">
+                      {h.results.map((r) => (
+                        <li key={r.user_id} className={r.net >= 0 ? "won" : "lost"}>
+                          <span>{r.name}</span>
+                          <b>{signed(r.net)}</b>
+                          <small>{r.label}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   <div className="history-cards">
                     {h.board.map((c, k) => (
                       <PlayingCard key={k} card={c} small />

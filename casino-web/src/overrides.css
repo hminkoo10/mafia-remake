@@ -1,0 +1,7 @@
+/* 원본 globals.css(noir.css) 위에 얹는 추가 스타일. 원본 파일은 그대로 두고 여기서만 덧붙인다. */
+
+.history-results{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:4px}
+.history-results li{display:flex;gap:8px;align-items:baseline;font-size:12px;color:#c9d3bb}
+.history-results b{color:#e6ce94;font-weight:600}
+.history-results li.lost b{color:#e08a82}
+.history-results small{color:#8fa383;font-size:11px}

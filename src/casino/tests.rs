@@ -156,6 +156,23 @@ fn holdem_three_players_play_a_full_hand_to_showdown() {
     assert_eq!(result.payouts[0].name, "P10");
     assert_eq!(result.payouts[0].amount, 300);
     assert_eq!(result.payouts[0].label, "트리플");
+    // 손익: 승자는 팟에서 자기 몫을 뺀 만큼 따고, 나머지는 건 만큼 잃는다.
+    let net: i64 = result.results.iter().map(|entry| entry.net).sum();
+    assert_eq!(net, 0, "손익 합은 0이어야 한다: {:?}", result.results);
+    let winner = result
+        .results
+        .iter()
+        .find(|entry| entry.name == "P10")
+        .unwrap();
+    assert_eq!(winner.net, 300 - winner.wagered);
+    assert_eq!(winner.label, "트리플");
+    assert!(
+        result
+            .results
+            .iter()
+            .filter(|entry| entry.name != "P10")
+            .all(|entry| entry.net == -entry.wagered)
+    );
     assert!(matches!(
         events.as_slice(),
         [CasinoEvent::RoundSettled { house_delta: 0, .. }]

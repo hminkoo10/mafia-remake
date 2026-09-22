@@ -3,7 +3,9 @@
 
 use super::*;
 use crate::casino_hub::{CasinoHub, TableBinding, personal_link, table_channel_name};
-use mafia_remake::casino::{CasinoEvent, ChatMessage, GameKind, Phase, TableView};
+use mafia_remake::casino::{
+    CasinoEvent, ChatMessage, GameKind, HandResult, Phase, TableView, blackjack_value, signed_chips,
+};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -155,6 +157,38 @@ pub fn render_table_status(view: &TableView, base_url: &str) -> String {
         base_url.trim_end_matches('/')
     ));
     lines.join("\n\n")
+}
+
+/// 핸드/라운드 결과 본문: 참가자별 손익(순증감)과 보드/딜러 카드.
+fn render_hand_result(result: &HandResult, kind: GameKind) -> String {
+    let mut lines = Vec::new();
+    if kind == GameKind::Blackjack && !result.board.is_empty() {
+        let (total, _) = blackjack_value(&result.board);
+        let total_text = if total > 21 {
+            "버스트".to_string()
+        } else {
+            total.to_string()
+        };
+        lines.push(format!(
+            "딜러: {} ({total_text})",
+            cards_text(&result.board)
+        ));
+    }
+    for entry in &result.results {
+        lines.push(format!(
+            "**{}** {} · {}",
+            entry.name,
+            signed_chips(entry.net),
+            entry.label
+        ));
+    }
+    if result.results.is_empty() {
+        lines.push(result.summary.clone());
+    }
+    if kind == GameKind::Holdem && !result.board.is_empty() {
+        lines.push(format!("보드: {}", cards_text(&result.board)));
+    }
+    lines.join("\n")
 }
 
 fn format_number(value: i64) -> String {
@@ -670,15 +704,10 @@ pub async fn refresh_table_status(ctx: &serenity::Context, data: &Data, table_id
     relay_chat_to_channel(ctx, &hub, table_id, channel_id).await;
     if let Some(result) = view.history.first() {
         if binding.announced_result_id.as_deref() != Some(result.id.as_str()) {
-            let board = if result.board.is_empty() {
-                String::new()
-            } else {
-                format!("\n{}", cards_text(&result.board))
-            };
             let _ = send_channel_embed(
                 &ctx.http,
                 channel_id,
-                format!("{}{board}", result.summary),
+                render_hand_result(result, view.kind),
                 if view.kind == GameKind::Holdem {
                     "핸드 결과"
                 } else {

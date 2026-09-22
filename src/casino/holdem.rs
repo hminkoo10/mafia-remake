@@ -3,7 +3,7 @@
 use super::cards::{CasinoError, PokerRank, draw, poker_rank, shuffled_deck};
 use super::table::{
     CasinoTable, GameKind, HOLDEM_BIG_BLIND, HOLDEM_SMALL_BLIND, HandResult, Payout, Phase, Round,
-    SEAT_COUNT, Seat, TURN_MS, format_chips, new_id,
+    SEAT_COUNT, Seat, SeatResult, TURN_MS, format_chips, new_id, signed_chips,
 };
 use serde::Serialize;
 
@@ -172,7 +172,10 @@ fn award(
         .find(|(user_id, _)| *user_id == seat.user_id)
     {
         payout.amount += value;
-        payout.label = label.to_string();
+        // 미매칭 베팅 반환은 이미 붙은 족보 이름을 덮어쓰지 않는다.
+        if label != "미매칭 베팅 반환" {
+            payout.label = label.to_string();
+        }
     } else {
         awards.push((
             seat.user_id,
@@ -294,18 +297,52 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
         round.deadline = 0;
         round.id.clone()
     };
+    // 참가한 모든 좌석의 순손익. 진 사람도 족보(쇼다운) 또는 "폴드"로 남긴다.
+    let results = participants
+        .iter()
+        .map(|&index| {
+            let seat = seat_at(table, index);
+            let award = awards
+                .iter()
+                .find(|(user_id, _)| *user_id == seat.user_id)
+                .map(|(_, payout)| payout);
+            let returned = award.map_or(0, |payout| payout.amount);
+            let label = award
+                .map(|payout| payout.label.clone())
+                .or_else(|| {
+                    if !live(seat) {
+                        Some("폴드".to_string())
+                    } else if reveal {
+                        let mut cards = seat.cards.clone();
+                        cards.extend(board.iter().cloned());
+                        poker_rank(&cards).ok().map(|rank| rank.name)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "패배".to_string());
+            SeatResult {
+                user_id: seat.user_id,
+                name: seat.name.clone(),
+                seat: index,
+                wagered: seat.total,
+                net: returned - seat.total,
+                label,
+            }
+        })
+        .collect::<Vec<_>>();
     let payouts = awards
         .into_iter()
         .map(|(_, payout)| payout)
         .collect::<Vec<_>>();
-    let summary = payouts
+    let summary = results
         .iter()
-        .map(|payout| {
+        .map(|result| {
             format!(
-                "{} +{} ({})",
-                payout.name,
-                format_chips(payout.amount),
-                payout.label
+                "{} {} ({})",
+                result.name,
+                signed_chips(result.net),
+                result.label
             )
         })
         .collect::<Vec<_>>()
@@ -322,6 +359,7 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
         summary,
         board,
         payouts,
+        results,
     });
     Ok(())
 }

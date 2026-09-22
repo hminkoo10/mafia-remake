@@ -221,6 +221,20 @@ pub struct Payout {
     pub label: String,
 }
 
+/// 라운드에서 좌석별 손익 (건 칩 대비 순증감).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeatResult {
+    pub user_id: u64,
+    pub name: String,
+    pub seat: usize,
+    /// 이번 라운드에 건 칩.
+    pub wagered: i64,
+    /// 순손익 (+면 딴 것, -면 잃은 것).
+    pub net: i64,
+    /// 족보·결과 이름 ("원 페어", "폴드", "승리" 등).
+    pub label: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HandResult {
     pub id: String,
@@ -229,6 +243,9 @@ pub struct HandResult {
     pub summary: String,
     pub board: Vec<String>,
     pub payouts: Vec<Payout>,
+    /// 참가한 모든 좌석의 손익 (승자뿐 아니라 잃은 사람도 포함).
+    #[serde(default)]
+    pub results: Vec<SeatResult>,
 }
 
 /// 명령. JSON은 `{"action":"raise","amount":300}` 꼴이다.
@@ -333,6 +350,15 @@ pub fn format_chips(amount: i64) -> String {
         format!("-{grouped}")
     } else {
         grouped
+    }
+}
+
+/// 부호를 항상 붙인 칩 표기 (+1,200 / -300 / +0).
+pub fn signed_chips(amount: i64) -> String {
+    if amount < 0 {
+        format_chips(amount)
+    } else {
+        format!("+{}", format_chips(amount))
     }
 }
 

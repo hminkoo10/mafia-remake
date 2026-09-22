@@ -98,6 +98,15 @@ export interface Payout {
   label: string;
 }
 
+export interface SeatResult {
+  user_id: number;
+  name: string;
+  seat: number;
+  wagered: number;
+  net: number;
+  label: string;
+}
+
 export interface HandResult {
   id: string;
   game: GameKind;
@@ -105,6 +114,7 @@ export interface HandResult {
   summary: string;
   board: string[];
   payouts: Payout[];
+  results: SeatResult[];
 }
 
 export interface TableView {

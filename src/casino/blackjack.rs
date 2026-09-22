@@ -3,7 +3,8 @@
 use super::cards::{CasinoError, blackjack_value, card_value, draw, shuffled_deck};
 use super::table::{
     BET_WINDOW_MS, BJ_BET_STEP, BJ_MAX_BET, BJ_MIN_BET, BjHand, CasinoTable, GameKind, HandResult,
-    HandStatus, Payout, Phase, Round, SEAT_COUNT, TURN_MS, format_chips, new_id,
+    HandStatus, Payout, Phase, Round, SEAT_COUNT, SeatResult, TURN_MS, format_chips, new_id,
+    signed_chips,
 };
 use serde::Serialize;
 
@@ -237,11 +238,18 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
     };
     let dealer_natural = dealer_cards == 2 && dealer == 21;
     let mut payouts = Vec::new();
+    let mut results = Vec::new();
     let mut pot = 0;
-    for seat in table.seats.iter_mut().flatten() {
+    for (index, slot) in table.seats.iter_mut().enumerate() {
+        let Some(seat) = slot.as_mut() else {
+            continue;
+        };
         if !seat.in_hand {
             continue;
         }
+        let mut wagered = 0;
+        let mut net = 0;
+        let mut labels = Vec::new();
         for hand in &mut seat.hands {
             let score = blackjack_value(&hand.cards).0;
             let (payout, label) = if hand.status == HandStatus::Surrender {
@@ -267,12 +275,23 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
             hand.result = Some(label.to_string());
             seat.stack += payout;
             pot += hand.bet;
+            wagered += hand.bet;
+            net += payout - hand.bet;
+            labels.push(label.to_string());
             payouts.push(Payout {
                 name: seat.name.clone(),
                 amount: payout - hand.bet,
                 label: label.to_string(),
             });
         }
+        results.push(SeatResult {
+            user_id: seat.user_id,
+            name: seat.name.clone(),
+            seat: index,
+            wagered,
+            net,
+            label: labels.join(" / "),
+        });
     }
     let (round_id, board) = {
         let round = table.round.as_mut().expect("round exists");
@@ -289,15 +308,14 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
     };
     let summary = format!(
         "딜러 {dealer_text} · {}",
-        payouts
+        results
             .iter()
-            .map(|payout| {
+            .map(|result| {
                 format!(
-                    "{} {} {}{}",
-                    payout.name,
-                    payout.label,
-                    if payout.amount >= 0 { "+" } else { "" },
-                    payout.amount
+                    "{} {} ({})",
+                    result.name,
+                    signed_chips(result.net),
+                    result.label
                 )
             })
             .collect::<Vec<_>>()
@@ -311,6 +329,7 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
         summary,
         board,
         payouts,
+        results,
     });
     Ok(())
 }
