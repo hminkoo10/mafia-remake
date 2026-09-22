@@ -5,3 +5,8 @@
 .history-results b{color:#e6ce94;font-weight:600}
 .history-results li.lost b{color:#e08a82}
 .history-results small{color:#8fa383;font-size:11px}
+
+/* 족보 강조: 족보를 이루는 카드는 노란 테두리, 좌석/독에는 족보 이름 */
+.playing-card.lit{border-color:#f2d16b;box-shadow:0 0 0 2px #f2d16b,0 0 14px #f2d16b99}
+.hand-name{font-size:10px;color:#f2d16b;background:#2a2410e6;border:1px solid #b89b5b;border-radius:8px;padding:2px 7px;white-space:nowrap}
+.eyebrow .hand-now{margin-left:8px;color:#f2d16b;font-size:11px;letter-spacing:0;font-weight:600}

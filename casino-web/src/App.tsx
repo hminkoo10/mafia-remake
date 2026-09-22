@@ -60,12 +60,12 @@ const DEALER_IMAGE = `${import.meta.env.BASE_URL}dealer.png`;
 const POLL_MS = 1200;
 const RECONNECT_MS = 2000;
 
-function PlayingCard({ card, small = false }: { card?: string; small?: boolean }) {
+function PlayingCard({ card, small = false, lit = false }: { card?: string; small?: boolean; lit?: boolean }) {
   return (
     <span
       className={`playing-card ${small ? "small" : ""} ${!card ? "empty" : card === "??" ? "back" : ""} ${
         card && /[hd]$/.test(card) ? "red" : ""
-      }`}
+      } ${lit ? "lit" : ""}`}
       aria-label={!card ? "카드 대기" : card === "??" ? "비공개 카드" : `${card[0] === "T" ? "10" : card[0]} ${suits[card[1]]}`}
     >
       {!card ? (
@@ -489,7 +489,11 @@ export default function Casino() {
                 )}
                 <div className="community-cards">
                   {Array.from({ length: Math.max(kind === "holdem" ? 5 : 2, cards.length) }, (_, i) => (
-                    <PlayingCard key={`${round?.id}-${i}-${cards[i] ?? ""}`} card={cards[i]} />
+                    <PlayingCard
+                      key={`${round?.id}-${i}-${cards[i] ?? ""}`}
+                      card={cards[i]}
+                      lit={!!cards[i] && (me?.hand_cards.includes(cards[i]) ?? false)}
+                    />
                   ))}
                 </div>
                 {kind === "blackjack" && round && round.dealer_total !== null && round.dealer.length !== 0 && (
@@ -519,7 +523,7 @@ export default function Casino() {
                   >
                     <div className="seat-cards">
                       {kind === "holdem" ? (
-                        seat.cards.map((card, k) => <PlayingCard key={k} card={card} small />)
+                        seat.cards.map((card, k) => <PlayingCard key={k} card={card} small lit={seat.hand_cards.includes(card)} />)
                       ) : seat.hands.some((h) => h.cards.length > 0) ? (
                         <span className="hand-score">
                           {seat.hands.map((h, k) => (
@@ -540,6 +544,7 @@ export default function Casino() {
                       {seat.mine && <b>나</b>}
                     </span>
                     <strong>{fmt(seat.stack)}</strong>
+                    {seat.hand_name && <span className="hand-name">{seat.hand_name}</span>}
                     {seat.leaving ? (
                       <em>퇴장 대기</em>
                     ) : seat.sit_out ? (
@@ -591,11 +596,14 @@ export default function Casino() {
                 <>
                   <div className="my-hand-row">
                     <div className="my-hand-info">
-                      <span className="eyebrow">{kind === "holdem" ? "YOUR HAND" : "YOUR HANDS"}</span>
+                      <span className="eyebrow">
+                        {kind === "holdem" ? "YOUR HAND" : "YOUR HANDS"}
+                        {kind === "holdem" && me.hand_name && <b className="hand-now">{me.hand_name}</b>}
+                      </span>
                       <div className="my-cards">
                         {kind === "holdem" ? (
                           me.cards.length ? (
-                            me.cards.map((c, i) => <PlayingCard key={i} card={c} small />)
+                            me.cards.map((c, i) => <PlayingCard key={i} card={c} small lit={me.hand_cards.includes(c)} />)
                           ) : (
                             <span>다음 핸드 대기</span>
                           )

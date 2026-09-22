@@ -77,6 +77,32 @@ fn poker_rank_orders_categories_and_names() {
 }
 
 #[test]
+fn best_hand_reports_name_and_core_cards() {
+    let pair = best_hand(&cards(&["Ah", "Ad"])).unwrap();
+    assert_eq!(pair.name, "원 페어");
+    assert_eq!(pair.cards.len(), 2);
+    let high = best_hand(&cards(&["7d", "Ah"])).unwrap();
+    assert_eq!(high.name, "하이 카드");
+    assert_eq!(high.cards, cards(&["Ah"]));
+    let trips = best_hand(&cards(&["9h", "9d", "9c", "2s", "Kd", "4h", "7c"])).unwrap();
+    assert_eq!(trips.name, "트리플");
+    let mut core = trips.cards.clone();
+    core.sort();
+    let mut expected = cards(&["9h", "9d", "9c"]);
+    expected.sort();
+    assert_eq!(core, expected);
+    let straight = best_hand(&cards(&["5h", "6d", "7c", "8s", "9d", "Kh", "2c"])).unwrap();
+    assert_eq!(straight.name, "스트레이트");
+    assert_eq!(straight.cards.len(), 5);
+    assert!(!straight.cards.contains(&"Kh".to_string()));
+    let two_pair = best_hand(&cards(&["Qh", "Qd", "3c", "3s", "Ad"])).unwrap();
+    assert_eq!(two_pair.name, "투 페어");
+    assert_eq!(two_pair.cards.len(), 4);
+    assert!(!two_pair.cards.contains(&"Ad".to_string()));
+    assert!(best_hand(&cards(&["Ah"])).is_none());
+}
+
+#[test]
 fn blackjack_value_handles_soft_aces() {
     assert_eq!(blackjack_value(&cards(&["Ah", "6d"])), (17, true));
     assert_eq!(blackjack_value(&cards(&["Ah", "6d", "Tc"])), (17, false));

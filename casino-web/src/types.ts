@@ -29,6 +29,8 @@ export interface SeatView {
   leaving: boolean;
   cards: string[];
   hands: HandView[];
+  hand_name: string | null;
+  hand_cards: string[];
 }
 
 export interface RoundView {

@@ -203,3 +203,102 @@ pub fn poker_rank(cards: &[String]) -> Result<PokerRank, CasinoError> {
     }
     Ok(best)
 }
+
+/// 지금 손에 든 카드(2~7장)로 만든 최선의 족보와, 그 족보를 이루는 핵심 카드.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BestHand {
+    pub name: String,
+    pub score: i64,
+    /// 족보를 이루는 카드. 페어면 그 두 장, 스트레이트/플러시/풀 하우스면 다섯 장,
+    /// 하이 카드면 가장 높은 한 장.
+    pub cards: Vec<String>,
+}
+
+const SCORE_BASE: i64 = 15 * 15 * 15 * 15 * 15;
+
+/// 5장 조합에서 족보를 이루는 카드만 고른다 (키커 제외).
+fn core_cards(five: &[&str], category: i64) -> Vec<String> {
+    let mut groups: Vec<(i64, Vec<&str>)> = Vec::new();
+    for card in five {
+        let rank = rank_value(card);
+        if let Some(group) = groups.iter_mut().find(|(value, _)| *value == rank) {
+            group.1.push(card);
+        } else {
+            groups.push((rank, vec![card]));
+        }
+    }
+    groups.sort_by(|left, right| right.1.len().cmp(&left.1.len()).then(right.0.cmp(&left.0)));
+    let pick = |wanted: usize| -> Vec<String> {
+        groups
+            .iter()
+            .filter(|(_, cards)| cards.len() == wanted)
+            .flat_map(|(_, cards)| cards.iter().map(|card| card.to_string()))
+            .collect()
+    };
+    match category {
+        0 => groups
+            .iter()
+            .max_by_key(|(rank, _)| *rank)
+            .map(|(_, cards)| vec![cards[0].to_string()])
+            .unwrap_or_default(),
+        1 | 2 => pick(2),
+        3 => pick(3),
+        7 => pick(4),
+        _ => five.iter().map(|card| card.to_string()).collect(),
+    }
+}
+
+/// 2~7장으로 현재 족보를 판정한다. 2~4장(프리플롭)은 페어/하이 카드만 본다.
+pub fn best_hand(cards: &[String]) -> Option<BestHand> {
+    let n = cards.len();
+    if n < 2 {
+        return None;
+    }
+    if n < 5 {
+        let mut sorted = cards.to_vec();
+        sorted.sort_by_key(|card| std::cmp::Reverse(rank_value(card)));
+        for i in 0..sorted.len() {
+            for j in i + 1..sorted.len() {
+                if rank_value(&sorted[i]) == rank_value(&sorted[j]) {
+                    return Some(BestHand {
+                        name: HAND_NAMES[1].to_string(),
+                        score: SCORE_BASE + rank_value(&sorted[i]),
+                        cards: vec![sorted[i].clone(), sorted[j].clone()],
+                    });
+                }
+            }
+        }
+        return Some(BestHand {
+            name: HAND_NAMES[0].to_string(),
+            score: rank_value(&sorted[0]),
+            cards: vec![sorted[0].clone()],
+        });
+    }
+    let refs = cards.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut best: Option<(PokerRank, Vec<&str>)> = None;
+    for a in 0..n - 4 {
+        for b in a + 1..n - 3 {
+            for c in b + 1..n - 2 {
+                for d in c + 1..n - 1 {
+                    for e in d + 1..n {
+                        let five_cards = [refs[a], refs[b], refs[c], refs[d], refs[e]];
+                        let rank = five(&five_cards);
+                        if best
+                            .as_ref()
+                            .is_none_or(|(current, _)| rank.score > current.score)
+                        {
+                            best = Some((rank, five_cards.to_vec()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let (rank, five_cards) = best?;
+    let category = rank.score / SCORE_BASE;
+    Some(BestHand {
+        name: rank.name,
+        score: rank.score,
+        cards: core_cards(&five_cards, category),
+    })
+}

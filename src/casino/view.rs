@@ -1,7 +1,7 @@
 // casino/view.rs — 플레이어별로 공개 가능한 상태만 담은 투영 (비공개 카드는 "??")
 
 use super::blackjack::BjLegal;
-use super::cards::blackjack_value;
+use super::cards::{best_hand, blackjack_value};
 use super::holdem::PokerLegal;
 use super::table::{
     BET_WINDOW_MS, BJ_BET_STEP, BJ_MAX_BET, BJ_MIN_BET, BUY_IN_STEP, CasinoTable, ChatMessage,
@@ -37,6 +37,10 @@ pub struct SeatView {
     pub leaving: bool,
     pub cards: Vec<String>,
     pub hands: Vec<HandView>,
+    /// 홀덤: 지금 만들어진 족보 이름 (내 좌석은 항상, 다른 좌석은 쇼다운에서만).
+    pub hand_name: Option<String>,
+    /// 그 족보를 이루는 카드 (강조 표시용, 보드 카드 포함).
+    pub hand_cards: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,6 +130,20 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>) -> TableView {
         .map(|(index, seat)| {
             let seat = seat.as_ref()?;
             let mine = viewer == Some(seat.user_id);
+            let (hand_name, hand_cards) = if table.kind == GameKind::Holdem
+                && !seat.cards.is_empty()
+                && (mine || (reveal && !seat.folded))
+            {
+                let mut all = seat.cards.clone();
+                if let Some(round) = round {
+                    all.extend(round.board.iter().cloned());
+                }
+                best_hand(&all)
+                    .map(|best| (Some(best.name), best.cards))
+                    .unwrap_or((None, Vec::new()))
+            } else {
+                (None, Vec::new())
+            };
             Some(SeatView {
                 seat: index,
                 user_id: seat.user_id,
@@ -138,6 +156,8 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>) -> TableView {
                 in_hand: seat.in_hand,
                 sit_out: seat.sit_out,
                 leaving: seat.leaving,
+                hand_name,
+                hand_cards,
                 cards: seat
                     .cards
                     .iter()
