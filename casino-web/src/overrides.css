@@ -25,3 +25,15 @@
 .result-dealer{margin:0 0 8px;font-size:12px;color:#bdcbb3}
 .result-note{margin:10px 0 0;font-size:11px;color:#8fa383}
 @media(max-width:760px){.result-banner{min-width:0;width:88%;padding:12px 14px}.result-banner li{font-size:13px}.result-banner li b{font-size:14px}}
+
+/* 내 자리 강조 (홀덤): 조금 크게, 금색 테두리, 카드도 크게 */
+.game-table.holdem .occupied.mine{z-index:3;transform:translate(-50%,-50%) scale(1.18)}
+.occupied.mine .player-avatar{border-color:#dcc17a;box-shadow:0 0 0 3px #dcc17a44,0 4px 18px #0007}
+.occupied.mine .player-name{border-color:#b59a5a;background:#1c2a14f5;color:#f3e6c4}
+.occupied.mine>strong{color:#f2dfae}
+.game-table.holdem .occupied.mine .seat-cards .playing-card.small{width:34px;height:48px}
+.game-table.holdem .occupied.mine .seat-cards .playing-card.small>b{font-size:14px}
+.game-table.holdem .occupied.mine .seat-cards .playing-card.small>b i{font-size:10px}
+.game-table.holdem .occupied.mine .seat-cards .playing-card.small>span{font-size:19px}
+.active-seat.mine .player-avatar{border-color:#dcb956;box-shadow:0 0 0 4px #dcb9562a,0 0 25px #e4b74866}
+@media(max-width:760px){.game-table.holdem .occupied.mine{transform:translate(-50%,-50%) scale(1.1)}.game-table.holdem .occupied.mine .seat-cards .playing-card.small{width:28px;height:40px}}
