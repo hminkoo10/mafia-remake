@@ -107,10 +107,7 @@
 @media(max-width:760px){.chip-stack{left:calc(100% - 10px)}.chip-pile{width:34px;height:38px}.chip-coin{width:28px;height:28px;font-size:8px}.betting-controls.evo .chip{width:42px;height:42px}}
 
 /* 테이블 연출: 딜러 숨결, 딜링 중 움직임, 말풍선, 칩 이동, 승자 강조, 차례 링, 팟 강조 */
-.dealer-backdrop{animation:dealer-idle 9s ease-in-out infinite;transform-origin:50% 30%}
-.game-table.dealing .dealer-backdrop{animation:dealer-dealing 1.1s ease-in-out infinite}
-@keyframes dealer-idle{0%,100%{transform:scale(1) translateY(0)}50%{transform:scale(1.025) translateY(3px)}}
-@keyframes dealer-dealing{0%,100%{transform:scale(1.03) translate(0,2px)}50%{transform:scale(1.035) translate(-3px,5px)}}
+.dealer-backdrop,.game-table.dealing .dealer-backdrop{animation:none;transform:none}
 .table-shade{transition:background .6s}
 .game-table.in-play .table-shade{background:linear-gradient(180deg,#0007,transparent 35%,#04211740 53%,#09251f55 65%,#08291ff2)}
 .action-bubble{position:absolute;transform:translate(-50%,-100%);z-index:4;padding:5px 11px;border-radius:12px;background:#f3ead0;color:#1c2924;font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 6px 16px #0008;animation:bubble-pop 1.7s ease-out forwards;pointer-events:none}
@@ -151,3 +148,37 @@ video.dealer-backdrop{position:absolute;width:100%;height:100%;object-fit:cover;
 .rules-table th{text-align:left;padding:6px 8px;color:#e0d2a5;font-weight:600;border-bottom:1px solid #2f3d2b;white-space:nowrap;vertical-align:top}
 .rules-table td{padding:6px 8px;color:#bdcbb0;border-bottom:1px solid #2f3d2b}
 .rules-table th[colspan]{background:#22301f;color:#dec388;white-space:normal}
+
+/* 실제 플레이 영역 안에서도 최근 채팅을 읽을 수 있다. 입력은 오른쪽 채팅 패널. */
+.table-chat-preview{position:absolute;left:22px;top:115px;z-index:1;width:clamp(150px,24%,230px);pointer-events:none;contain:layout paint}
+.table-chat-label{display:block;margin-bottom:6px;font-size:9px;letter-spacing:1px;color:#dec58e;opacity:.85}
+.table-chat-preview p{display:flex;flex-direction:column;gap:3px;margin:0 0 5px;padding:6px 8px;background:linear-gradient(90deg,#081b17dd,#081b1799);border-left:2px solid #9d874c;border-radius:0 5px 5px 0;font-size:11px;line-height:1.4;color:#f0eee6;overflow-wrap:anywhere}
+.table-chat-preview p strong{color:#dec58e;font-size:10px}
+.table-chat-preview p>span{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.table-chat-preview .table-chat-empty{font-size:10px;color:#bdc9b7}
+.chat-messages{overscroll-behavior:contain;overflow-anchor:none;scroll-behavior:auto}
+.chat-message p{overflow-wrap:anywhere}
+.playing-card{will-change:auto}
+.seat-winner .player-avatar{animation:winner-glow 1.2s ease-in-out 3}
+.casino-app:fullscreen{width:100%;height:100%;overflow:auto;background:#101612}
+.casino-app.expanded-screen{position:fixed;inset:0;z-index:100;overflow:auto;background:#101612}
+.is-fullscreen .rail{display:none}
+.is-fullscreen .workspace{margin-left:0;max-width:none;padding:18px 24px}
+.is-fullscreen .breadcrumb{display:none}
+.is-fullscreen .page-heading{margin-bottom:14px}
+.is-fullscreen .topbar{height:64px}
+.is-fullscreen .game-nav[data-slot]{height:64px!important}
+.is-fullscreen .game-table{max-height:none;min-height:500px;height:calc(100dvh - 240px);aspect-ratio:auto}
+.is-fullscreen .chat-messages{height:calc(100dvh - 350px);min-height:250px}
+@media(max-width:760px){
+  .page-heading{flex-direction:column;align-items:stretch;gap:12px}
+  .dealer-backdrop-poster,.dealer-backdrop-media{height:auto;aspect-ratio:3/2;object-fit:cover;object-position:center top;mask-image:linear-gradient(#000 80%,transparent)}
+  .table-chat-preview{left:12px;top:112px;width:40%;max-width:165px}
+  .table-chat-preview p{padding:4px 6px;font-size:10px;line-height:1.3}
+  .table-chat-preview p:nth-of-type(1):not(:last-child){display:none}
+  .heading-actions{gap:5px;flex-wrap:nowrap;justify-content:flex-end}
+  .heading-actions button{padding:9px}
+  .is-fullscreen .workspace{padding:16px 11px}
+  .is-fullscreen .game-table{height:calc(100dvh - 220px);min-height:535px}
+  .is-fullscreen .chat-messages{height:320px}
+}

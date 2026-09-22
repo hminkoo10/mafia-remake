@@ -1,6 +1,6 @@
 // noir-casino app/page.tsx 의 이식본. 화면 구조·클래스·문구는 원본을 그대로 따르고,
 // 데이터 소스만 봇의 /casino/api (개인 링크 세션, 여러 테이블, Discord 코인)로 바꿨다.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
   AudioLines,
@@ -14,6 +14,8 @@ import {
   Grid2X2,
   History,
   LogOut,
+  Maximize,
+  Minimize,
   Plus,
   RefreshCw,
   Send,
@@ -27,7 +29,10 @@ import {
 } from "lucide-react";
 import { CasinoApiError, fetchState, readLink, sendCommand, wsUrl } from "./api";
 import { setSoundEnabled, sfx, soundEnabled } from "./sounds";
-import { DealerHands } from "./components/DealerHands";
+import { ChatMessages, TableChatPreview } from "./components/TableChat";
+import { DealerBackdrop } from "./components/DealerBackdrop";
+import type { DealerMood } from "./dealer-media";
+import { isStaleSnapshot, nextClockDelay, snapshotKey } from "./state-sync";
 import type { CasinoCommand, GameKind, SeatResult, StateResponse, TableRules, TableView } from "./types";
 import {
   Dialog,
@@ -66,45 +71,10 @@ const phases: Record<string, string> = {
 const suits: Record<string, string> = { s: "♠", h: "♥", d: "♦", c: "♣" };
 const DEALER_IMAGE = `${import.meta.env.BASE_URL}dealer.png`;
 const dealerPortrait = (id: string) => (id === "sophia" ? DEALER_IMAGE : `${import.meta.env.BASE_URL}dealers/${id}.png`);
-/** 딜러 클립: dealers/<id>-idle.webm(대기 루프), -deal.webm(카드 나누기), -flip.webm(카드 오픈). */
-type DealerMood = "idle" | "deal" | "flip";
-const dealerClip = (id: string, mood: DealerMood) => `${import.meta.env.BASE_URL}dealers/${id}-${mood}.webm`;
-
-/** 딜러 배경: 상황별 무음 클립이 있으면 영상, 없으면 초상, 그것도 없으면 소피아 사진. */
-function DealerBackdrop({ id, name, mood }: { id: string; name: string; mood: DealerMood }) {
-  const [missing, setMissing] = useState<Record<string, boolean>>({});
-  const [imageFailed, setImageFailed] = useState(false);
-  useEffect(() => {
-    setMissing({});
-    setImageFailed(false);
-  }, [id]);
-  const poster = imageFailed ? DEALER_IMAGE : dealerPortrait(id);
-  // 원하는 클립이 없으면 대기 루프, 그것도 없으면 사진.
-  const clipMood: DealerMood | null = !missing[mood] ? mood : !missing.idle ? "idle" : null;
-  if (clipMood) {
-    const src = dealerClip(id, clipMood);
-    return (
-      <video
-        key={src}
-        className="dealer-backdrop"
-        autoPlay
-        muted
-        loop
-        playsInline
-        poster={poster}
-        onError={() => setMissing((state) => ({ ...state, [clipMood]: true }))}
-        aria-label={`에메랄드 테이블의 AI 딜러 ${name}`}
-      >
-        <source src={src} type="video/webm" onError={() => setMissing((state) => ({ ...state, [clipMood]: true }))} />
-      </video>
-    );
-  }
-  return <img key={`${id}-img`} className="dealer-backdrop" src={poster} onError={() => setImageFailed(true)} alt={`에메랄드 테이블의 AI 딜러 ${name}`} />;
-}
 const POLL_MS = 1200;
 const RECONNECT_MS = 2000;
 
-function PlayingCard({ card, small = false, lit = false }: { card?: string; small?: boolean; lit?: boolean }) {
+const PlayingCard = memo(function PlayingCard({ card, small = false, lit = false }: { card?: string; small?: boolean; lit?: boolean }) {
   // 뒷면("??")이었다가 앞면이 되면 뒤집기 애니메이션을 낸다.
   const previous = useRef(card);
   const [flipping, setFlipping] = useState(false);
@@ -139,7 +109,7 @@ function PlayingCard({ card, small = false, lit = false }: { card?: string; smal
       )}
     </span>
   );
-}
+});
 
 const defaultRules: TableRules = {
   small_blind: 50,
@@ -280,6 +250,8 @@ const dealt = (cards: string[], times: number[] | undefined, now: number) =>
   cards.filter((_, index) => (times?.[index] ?? 0) <= now);
 
 export default function Casino() {
+  const appRef = useRef<HTMLDivElement>(null);
+  const [fullscreen, setFullscreen] = useState<"native" | "expanded" | null>(null);
   const [{ token, table: linkTable }] = useState(readLink);
   const [tableId, setTableId] = useState<string | null>(linkTable);
   const [data, setData] = useState<StateResponse | null>(null);
@@ -307,9 +279,11 @@ export default function Casino() {
     [lastPlacements, setLastPlacements] = useState<Placement[]>([]),
     [raise, setRaise] = useState(200),
     [chat, setChat] = useState(""),
-    [clock, setClock] = useState(0),
+    [clock, setClock] = useState(Date.now),
     [offset, setOffset] = useState(0);
   const stateRef = useRef<StateResponse | null>(null),
+    snapshotRef = useRef(""),
+    refreshingRef = useRef(false),
     tableRef = useRef<string | null>(linkTable),
     pendingRef = useRef(false),
     expiredRef = useRef(!token),
@@ -324,14 +298,13 @@ export default function Casino() {
     wasMyTurn = useRef(false),
     resultSounded = useRef<string | null>(null),
     lastNarration = useRef("");
-  const chatBottom = useRef<HTMLDivElement>(null);
-
   const accept = useCallback((value: StateResponse) => {
     const wanted = tableRef.current;
     // 보고 있던 테이블이 아직 있는데 다른 테이블 상태가 오면(전환 직후 늦은 푸시) 무시한다.
     if (value.table && wanted && value.table.id !== wanted && value.tables.some((t) => t.id === wanted)) {
       return;
     }
+    if (isStaleSnapshot(stateRef.current, value)) return;
     if (value.table && value.table.id !== wanted) {
       tableRef.current = value.table.id;
       setTableId(value.table.id);
@@ -340,8 +313,13 @@ export default function Casino() {
       setTableId(null);
     }
     stateRef.current = value;
-    setData(value);
-    setOffset(value.server_time - Date.now());
+    const key = snapshotKey(value);
+    if (snapshotRef.current !== key) {
+      snapshotRef.current = key;
+      setData(value);
+    }
+    const nextOffset = value.server_time - Date.now();
+    setOffset((current) => Math.abs(current - nextOffset) > 250 ? nextOffset : current);
     setConnected(true);
     setError("");
   }, []);
@@ -357,11 +335,14 @@ export default function Casino() {
     setError(e instanceof Error ? e.message : "연결을 확인해 주세요.");
   }, []);
   const refresh = useCallback(async () => {
-    if (!token || pendingRef.current || expiredRef.current) return;
+    if (!token || pendingRef.current || expiredRef.current || refreshingRef.current) return;
+    refreshingRef.current = true;
     try {
       accept(await fetchState(token, tableRef.current));
     } catch (e) {
       fail(e);
+    } finally {
+      refreshingRef.current = false;
     }
   }, [token, accept, fail]);
 
@@ -418,11 +399,6 @@ export default function Casino() {
     };
   }, [token, accept]);
 
-  useEffect(() => {
-    const timer = setInterval(() => setClock(Date.now()), 250);
-    return () => clearInterval(timer);
-  }, []);
-
   // 링크의 ?table= 을 현재 테이블과 맞춘다.
   useEffect(() => {
     const url = new URL(location.href);
@@ -452,6 +428,52 @@ export default function Casino() {
   const shoe = table.shoe;
   const shoeAge = shoe ? serverNow - shoe.shuffled_at : -1;
   const shuffling = !!shoe && shoe.total > 0 && shoeAge >= 0 && shoeAge < 2500;
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = () => {
+      if (document.visibilityState === "hidden") return;
+      const now = Date.now();
+      setClock(now);
+      const delay = nextClockDelay(now + offset, round?.deadline ?? 0, round?.reveal_until ?? 0, shoe?.total ? shoe.shuffled_at + 2500 : 0);
+      if (delay !== null) timer = setTimeout(tick, delay);
+    };
+    const visibility = () => { clearTimeout(timer); tick(); };
+    tick();
+    document.addEventListener("visibilitychange", visibility);
+    return () => { clearTimeout(timer); document.removeEventListener("visibilitychange", visibility); };
+  }, [table.id, round?.deadline, round?.reveal_until, shoe?.shuffled_at, shoe?.total, offset]);
+
+  useEffect(() => {
+    const change = () => setFullscreen((current) => document.fullscreenElement === appRef.current ? "native" : current === "native" ? null : current);
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (document.fullscreenElement === appRef.current) void document.exitFullscreen().catch(() => {});
+      setFullscreen((current) => current === "expanded" ? null : current);
+    };
+    document.addEventListener("fullscreenchange", change);
+    window.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("fullscreenchange", change); window.removeEventListener("keydown", escape); };
+  }, []);
+  useEffect(() => {
+    if (fullscreen !== "expanded") return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previous; };
+  }, [fullscreen]);
+  const toggleFullscreen = async () => {
+    if (fullscreen) {
+      if (document.fullscreenElement === appRef.current) await document.exitFullscreen();
+      setFullscreen(null);
+      return;
+    }
+    try {
+      if (!document.fullscreenEnabled || !appRef.current?.requestFullscreen) throw new Error("unavailable");
+      await appRef.current.requestFullscreen();
+      setFullscreen("native");
+    } catch {
+      setFullscreen("expanded");
+    }
+  };
   const maxBuyin = Math.max(tableRules.min_buy_in, Math.min(tableRules.max_buy_in, floorStep(balance, tableRules.buy_in_step)));
   // 블랙잭 베팅: 최소~최대 사이, 단위에 맞고, 테이블 칩을 넘지 않아야 한다.
   const maxWager = me ? Math.min(tableRules.max_bet, floorStep(me.stack, tableRules.bet_step)) : tableRules.max_bet;
@@ -555,9 +577,6 @@ export default function Casino() {
     }
     lastNarration.current = table.narration;
   }, [table.narration, muted]);
-  useEffect(() => {
-    chatBottom.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [table.messages.length]);
   useEffect(() => {
     document.title = noTable ? "CASINO73 — Texas Hold’em & Blackjack" : `${table.name} · CASINO73`;
   }, [noTable, table.name]);
@@ -689,7 +708,7 @@ export default function Casino() {
   const seatedElsewhere = tables.find((t) => t.id === data?.me.seated_table && t.id !== table.id) ?? null;
 
   return (
-    <div className="casino-app">
+    <div ref={appRef} className={`casino-app ${fullscreen ? "is-fullscreen" : ""} ${fullscreen === "expanded" ? "expanded-screen" : ""}`}>
       <Toaster position="top-center" richColors />
       <header className="topbar">
         <a className="brand" href={location.pathname} aria-label="CASINO73 홈">
@@ -757,6 +776,9 @@ export default function Casino() {
             </p>
           </div>
           <div className="heading-actions">
+            <button className="icon-button" aria-label={fullscreen ? "전체화면 종료" : "전체화면"} title={fullscreen ? "전체화면 종료 (Esc)" : "전체화면"} onClick={() => void toggleFullscreen()}>
+              {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+            </button>
             <button onClick={() => setRules(true)}>
               <CircleHelp size={17} />
               게임 규칙
@@ -808,9 +830,10 @@ export default function Casino() {
                 id={table.dealer.id}
                 name={table.dealer.name}
                 mood={dealerMood}
+                poster={table.dealer.id === "sophia" ? `${import.meta.env.BASE_URL}dealers/sophia-table.png` : dealerPortrait(table.dealer.id)}
               />
               <div className="table-shade" />
-              <DealerHands mood={dealerMood} targets={SEAT_POS.filter((_, i) => table.seats[i]?.in_hand)} />
+              <TableChatPreview messages={table.messages} />
               <div className="table-topline">
                 <span className="room-id">
                   {noTable ? "NO TABLE" : table.name}
@@ -1304,7 +1327,7 @@ export default function Casino() {
             </div>
           </section>
           <aside className="side-panel">
-            <Tabs defaultValue="table" className="panel-tabs">
+            <Tabs defaultValue="chat" className="panel-tabs">
               <TabsList className="panel-tab-list">
                 <TabsTrigger value="table">테이블</TabsTrigger>
                 <TabsTrigger value="chat">
@@ -1375,30 +1398,7 @@ export default function Casino() {
                 </div>
               </TabsContent>
               <TabsContent value="chat">
-                <div className="chat-messages" role="log" aria-label="테이블 채팅">
-                  {table.messages.length === 0 ? (
-                    <div className="chat-empty">
-                      <AudioLines />
-                      <p>
-                        {table.dealer.name}와 함께하는 테이블.
-                        <br />
-                        첫 인사를 건네보세요.
-                      </p>
-                    </div>
-                  ) : (
-                    table.messages.map((m) => (
-                      <div key={m.id} className={`chat-message ${m.dealer ? "from-dealer" : ""}`}>
-                        <strong>
-                          {m.name}
-                          {m.dealer && <span>DEALER</span>}
-                          {m.from_discord && <span>DISCORD</span>}
-                        </strong>
-                        <p>{m.text}</p>
-                      </div>
-                    ))
-                  )}
-                  <div ref={chatBottom} />
-                </div>
+                <ChatMessages key={table.id} messages={table.messages} dealerName={table.dealer.name} />
                 <form
                   className="chat-form"
                   onSubmit={async (e) => {
@@ -1418,7 +1418,7 @@ export default function Casino() {
                     <Send size={17} />
                   </button>
                 </form>
-                <p className="chat-notice">소피아는 게임 상황에 맞춰 자동으로 안내합니다. 채팅은 Discord 테이블 채널과 연결됩니다.</p>
+                <p className="chat-notice">{table.dealer.name}는 게임 상황에 맞춰 자동으로 안내합니다. 채팅은 Discord 테이블 채널과 연결됩니다.</p>
               </TabsContent>
             </Tabs>
             <div className={`connection ${!connected ? "offline" : ""}`}>
