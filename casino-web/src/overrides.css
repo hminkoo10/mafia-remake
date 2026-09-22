@@ -112,3 +112,7 @@
 
 /* 딜러 배경 영상도 이미지와 같은 자리에 맞춘다 */
 video.dealer-backdrop{position:absolute;width:100%;height:100%;object-fit:cover;object-position:center 22%;z-index:-3;background:#0c241c}
+
+/* CASINO73 브랜드: 이름이 길어져 상단바 글자 크기·자간을 조정 */
+.brand>span{font-size:26px;letter-spacing:2px}
+@media(max-width:760px){.brand>span{font-size:20px;letter-spacing:1px}}

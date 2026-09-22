@@ -61,31 +61,36 @@ const phases: Record<string, string> = {
 const suits: Record<string, string> = { s: "♠", h: "♥", d: "♦", c: "♣" };
 const DEALER_IMAGE = `${import.meta.env.BASE_URL}dealer.png`;
 const dealerPortrait = (id: string) => (id === "sophia" ? DEALER_IMAGE : `${import.meta.env.BASE_URL}dealers/${id}.png`);
-const dealerLoop = (id: string) => `${import.meta.env.BASE_URL}dealers/${id}.webm`;
+/** 딜러 클립: dealers/<id>-idle.webm(대기 루프), -deal.webm(카드 나누기), -flip.webm(카드 오픈). */
+type DealerMood = "idle" | "deal" | "flip";
+const dealerClip = (id: string, mood: DealerMood) => `${import.meta.env.BASE_URL}dealers/${id}-${mood}.webm`;
 
-/** 딜러 배경: 무음 루프 영상이 있으면 영상, 없으면 초상, 그것도 없으면 소피아. */
-function DealerBackdrop({ id, name }: { id: string; name: string }) {
-  const [videoFailed, setVideoFailed] = useState(false);
+/** 딜러 배경: 상황별 무음 클립이 있으면 영상, 없으면 초상, 그것도 없으면 소피아 사진. */
+function DealerBackdrop({ id, name, mood }: { id: string; name: string; mood: DealerMood }) {
+  const [missing, setMissing] = useState<Record<string, boolean>>({});
   const [imageFailed, setImageFailed] = useState(false);
   useEffect(() => {
-    setVideoFailed(false);
+    setMissing({});
     setImageFailed(false);
   }, [id]);
   const poster = imageFailed ? DEALER_IMAGE : dealerPortrait(id);
-  if (!videoFailed) {
+  // 원하는 클립이 없으면 대기 루프, 그것도 없으면 사진.
+  const clipMood: DealerMood | null = !missing[mood] ? mood : !missing.idle ? "idle" : null;
+  if (clipMood) {
+    const src = dealerClip(id, clipMood);
     return (
       <video
-        key={id}
+        key={src}
         className="dealer-backdrop"
         autoPlay
         muted
         loop
         playsInline
         poster={poster}
-        onError={() => setVideoFailed(true)}
+        onError={() => setMissing((state) => ({ ...state, [clipMood]: true }))}
         aria-label={`에메랄드 테이블의 AI 딜러 ${name}`}
       >
-        <source src={dealerLoop(id)} type="video/webm" onError={() => setVideoFailed(true)} />
+        <source src={src} type="video/webm" onError={() => setMissing((state) => ({ ...state, [clipMood]: true }))} />
       </video>
     );
   }
@@ -519,7 +524,7 @@ export default function Casino() {
     chatBottom.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [table.messages.length]);
   useEffect(() => {
-    document.title = noTable ? "NOIR — Texas Hold’em & Blackjack" : `${table.name} · NOIR`;
+    document.title = noTable ? "CASINO73 — Texas Hold’em & Blackjack" : `${table.name} · CASINO73`;
   }, [noTable, table.name]);
 
   const chooseTable = useCallback(
@@ -652,10 +657,10 @@ export default function Casino() {
     <div className="casino-app">
       <Toaster position="top-center" richColors />
       <header className="topbar">
-        <a className="brand" href={location.pathname} aria-label="NOIR 홈">
+        <a className="brand" href={location.pathname} aria-label="CASINO73 홈">
           <Club fill="currentColor" />
           <span>
-            NOIR<small>LIVE CASINO</small>
+            CASINO73<small>LIVE CASINO</small>
           </span>
         </a>
         <Tabs value={tableId ?? ""} onValueChange={chooseTable}>
@@ -764,7 +769,11 @@ export default function Casino() {
         <div className="play-layout">
           <section className="table-column">
             <div className={`game-table ${kind} ${revealing ? "dealing" : ""} ${round && round.phase !== "complete" ? "in-play" : ""}`}>
-              <DealerBackdrop id={table.dealer.id} name={table.dealer.name} />
+              <DealerBackdrop
+                id={table.dealer.id}
+                name={table.dealer.name}
+                mood={revealing ? (round?.phase === "complete" || (kind === "blackjack" && round?.reveal) ? "flip" : "deal") : "idle"}
+              />
               <div className="table-shade" />
               <div className="table-topline">
                 <span className="room-id">
@@ -896,7 +905,7 @@ export default function Casino() {
                   </button>
                 ),
               )}
-              <span className="felt-mark">N O I R</span>
+              <span className="felt-mark">C A S I N O 7 3</span>
               {bubble && SEAT_POS[bubble.seat] && (
                 <div key={bubble.id} className="action-bubble" style={{ left: `${SEAT_POS[bubble.seat][0]}%`, top: `${SEAT_POS[bubble.seat][1] - 16}%` }}>
                   {bubble.text}
@@ -1168,7 +1177,7 @@ export default function Casino() {
                 서버 검증 게임
               </span>
               <span>모든 게임은 마피아73 코인으로 진행됩니다.</span>
-              <span>NOIR ORIGINALS</span>
+              <span>CASINO73 ORIGINALS</span>
             </div>
           </section>
           <aside className="side-panel">
@@ -1238,7 +1247,7 @@ export default function Casino() {
                   <p>
                     좋은 플레이, 좋은 매너.
                     <br />
-                    <span>함께 즐기는 NOIR 테이블.</span>
+                    <span>함께 즐기는 CASINO73 테이블.</span>
                   </p>
                 </div>
               </TabsContent>
@@ -1349,7 +1358,7 @@ export default function Casino() {
       <Dialog open={rules} onOpenChange={setRules}>
         <DialogContent className="noir-dialog rules-dialog">
           <DialogTitle>{kindTitle(kind)} 테이블 규칙</DialogTitle>
-          <DialogDescription>NOIR HOUSE RULES · V1 · 마피아73 코인</DialogDescription>
+          <DialogDescription>CASINO73 HOUSE RULES · V1 · 마피아73 코인</DialogDescription>
           {kind === "holdem" ? (
             <div className="rules-copy">
               <p>2–6인 노 리밋 홀덤. 스몰 블라인드 50 / 빅 블라인드 100. 레이크 없음.</p>
@@ -1421,7 +1430,7 @@ export default function Casino() {
       </Sheet>
       <Dialog open={lobby} onOpenChange={setLobby}>
         <DialogContent className="noir-dialog">
-          <DialogTitle>NOIR 테이블</DialogTitle>
+          <DialogTitle>CASINO73 테이블</DialogTitle>
           <DialogDescription>{tables.length ? "원하는 테이블을 선택하세요." : "열려 있는 테이블이 없습니다. 관리자가 Discord에서 /카지노테이블생성 으로 열 수 있어요."}</DialogDescription>
           {tables.map((t) => (
             <button
