@@ -132,6 +132,55 @@ const kindRoom = (kind: GameKind) => (kind === "holdem" ? "THE SIGNATURE ROOM" :
 const kindStakes = (kind: GameKind, rules: TableRules) =>
   kind === "holdem" ? `${fmt(rules.small_blind)} / ${fmt(rules.big_blind)}` : `${fmt(rules.min_bet)} – ${fmt(rules.max_bet)}`;
 const floorStep = (value: number, step: number) => Math.floor(value / step) * step;
+const CHIP_DENOMS = [100, 500, 1000, 2500, 5000];
+const chipLabel = (v: number) => (v >= 1000 ? `${v / 1000}K` : String(v));
+/** 금액을 큰 칩부터 쌓은 모양으로 나눈다 (표시용). */
+function chipsFor(amount: number): number[] {
+  const out: number[] = [];
+  let rest = amount;
+  for (const value of [...CHIP_DENOMS].reverse()) {
+    while (rest >= value && out.length < 14) {
+      out.push(value);
+      rest -= value;
+    }
+  }
+  return out;
+}
+/** 좌석 옆에 쌓인 칩 더미. onClick이 있으면 베팅 자리(칩 놓기)로 동작한다. */
+function ChipStack({
+  chips,
+  total,
+  onClick,
+  active = false,
+  hint,
+}: {
+  chips: number[];
+  total: number;
+  onClick?: () => void;
+  active?: boolean;
+  hint?: string;
+}) {
+  const shown = chips.slice(-10);
+  return (
+    <button
+      type="button"
+      className={`chip-stack ${active ? "active" : ""} ${chips.length === 0 ? "empty-spot" : ""}`}
+      onClick={onClick}
+      disabled={!onClick}
+      aria-label={total > 0 ? `베팅 ${fmt(total)}` : "베팅 자리"}
+      title={hint}
+    >
+      <span className="chip-pile">
+        {shown.map((value, index) => (
+          <i key={`${index}-${value}`} className={`chip-coin chip-${value}`} style={{ bottom: index * 3 }}>
+            {index === shown.length - 1 ? chipLabel(value) : ""}
+          </i>
+        ))}
+      </span>
+      <b>{total > 0 ? fmt(total) : hint ?? "BET"}</b>
+    </button>
+  );
+}
 /** 등장 시각이 아직 안 된 카드는 화면에서 뺀다 (서버가 준 reveal_at 기준). */
 const dealt = (cards: string[], times: number[] | undefined, now: number) =>
   cards.filter((_, index) => (times?.[index] ?? 0) <= now);
@@ -153,6 +202,9 @@ export default function Casino() {
     [expired, setExpired] = useState(!token),
     [error, setError] = useState(token ? "" : "개인 링크가 아닙니다. Discord에서 /카지노입장 으로 링크를 받아 주세요.");
   const [wager, setWager] = useState(100),
+    [chip, setChip] = useState(500),
+    [chipStack, setChipStack] = useState<number[]>([]),
+    [lastStack, setLastStack] = useState<number[]>([]),
     [raise, setRaise] = useState(200),
     [chat, setChat] = useState(""),
     [clock, setClock] = useState(0),
@@ -163,6 +215,7 @@ export default function Casino() {
     expiredRef = useRef(!token),
     socketRef = useRef<WebSocket | null>(null),
     socketOpenRef = useRef(false),
+    autoBetRound = useRef<string | null>(null),
     lastNarration = useRef("");
   const chatBottom = useRef<HTMLDivElement>(null);
 
@@ -294,6 +347,22 @@ export default function Casino() {
   const clampWager = (value: number) =>
     Math.min(Math.max(maxWager, tableRules.min_bet), Math.max(tableRules.min_bet, floorStep(Number.isFinite(value) ? value : tableRules.min_bet, tableRules.bet_step)));
   const validWager = wager >= tableRules.min_bet && wager <= maxWager && wager % tableRules.bet_step === 0;
+  const stackTotal = chipStack.reduce((sum, value) => sum + value, 0);
+  const canPlaceChip = (value: number) => stackTotal + value <= maxWager;
+  const placeChip = (value: number = chip) => {
+    if (!table.legal.can_bet || disabled || !canPlaceChip(value)) return;
+    setChipStack((stack) => [...stack, value]);
+  };
+  const lockBet = async () => {
+    if (!table.legal.can_bet || stackTotal < tableRules.min_bet || stackTotal > maxWager) return false;
+    const stack = chipStack;
+    const ok = await act({ action: "bet", amount: stackTotal });
+    if (ok) {
+      setLastStack(stack);
+      setChipStack([]);
+    }
+    return ok;
+  };
 
   useEffect(() => {
     if (legal) setRaise(Math.min(legal.min_raise_to, legal.max_raise_to));
@@ -302,6 +371,18 @@ export default function Casino() {
     // 새 베팅 라운드마다 지난 베팅액을 유지하되 현재 칩 안으로 맞춘다.
     if (table.legal.can_bet) setWager((value) => clampWager(value));
   }, [table.legal.can_bet, round?.id, maxWager]);
+  useEffect(() => {
+    // 새 라운드가 열리면 쌓던 칩을 비운다.
+    setChipStack([]);
+    autoBetRound.current = null;
+  }, [round?.id]);
+  useEffect(() => {
+    // 베팅 마감 2초 전: 쌓아 둔 칩이 있으면 자동으로 확정한다 (에볼루션의 "No more bets").
+    if (!table.legal.can_bet || !round || stackTotal < tableRules.min_bet) return;
+    if (seconds > 2 || autoBetRound.current === round.id || pendingRef.current) return;
+    autoBetRound.current = round.id;
+    void lockBet();
+  }, [seconds, table.legal.can_bet, round?.id, stackTotal]);
   useEffect(() => {
     if (!muted && table.narration !== lastNarration.current && "speechSynthesis" in window) {
       speechSynthesis.cancel();
@@ -585,6 +666,18 @@ export default function Casino() {
                       {seat.name.slice(0, 1)}
                       {kind === "holdem" && table.button === i && <i>D</i>}
                     </span>
+                    {kind === "blackjack" &&
+                      (seat.mine && table.legal.can_bet ? (
+                        <ChipStack
+                          chips={chipStack}
+                          total={stackTotal}
+                          active
+                          hint={`${chipLabel(chip)} 놓기`}
+                          onClick={() => placeChip()}
+                        />
+                      ) : (
+                        (seat.bet > 0 || seat.total > 0) && <ChipStack chips={chipsFor(seat.total || seat.bet)} total={seat.total || seat.bet} />
+                      ))}
                     <span className="player-name">
                       {seat.name}
                       {seat.mine && <b>나</b>}
@@ -781,49 +874,63 @@ export default function Casino() {
                       </button>
                     </div>
                   ) : table.legal.can_bet ? (
-                    <div className="betting-controls">
+                    <div className="betting-controls evo">
                       <div className="chip-options">
-                        {[100, 500, 1000, 2500, 5000].map((v) => (
+                        {CHIP_DENOMS.map((v) => (
                           <button
                             key={v}
-                            className={`chip chip-${v}`}
-                            disabled={disabled || wager + v > maxWager}
-                            onClick={() => setWager((value) => Math.min(maxWager, (validWager ? value : tableRules.min_bet - tableRules.min_bet) + v))}
-                            aria-label={`${fmt(v)} 칩 추가`}
-                            title={`${fmt(v)} 칩 추가`}
+                            className={`chip chip-${v} ${chip === v ? "chosen" : ""}`}
+                            disabled={disabled || !canPlaceChip(v)}
+                            onClick={() => {
+                              setChip(v);
+                              placeChip(v);
+                            }}
+                            aria-label={`${fmt(v)} 칩`}
+                            title={`${fmt(v)} 칩 놓기`}
                           >
-                            {v >= 1000 ? `${v / 1000}K` : v}
+                            {chipLabel(v)}
                           </button>
                         ))}
                       </div>
-                      <div className="wager-control">
-                        <input
-                          type="number"
-                          aria-label="베팅 금액"
-                          min={tableRules.min_bet}
-                          max={maxWager}
-                          step={tableRules.bet_step}
-                          value={wager}
-                          disabled={disabled}
-                          onChange={(e) => setWager(Number(e.target.value))}
-                          onBlur={() => setWager((value) => clampWager(value))}
-                        />
-                        <Slider
-                          aria-label="베팅 금액"
-                          min={tableRules.min_bet}
-                          max={Math.max(tableRules.min_bet, maxWager)}
-                          step={tableRules.bet_step}
-                          value={[Math.min(Math.max(tableRules.min_bet, wager), Math.max(tableRules.min_bet, maxWager))]}
-                          disabled={disabled}
-                          onValueChange={(v) => setWager(v[0])}
-                        />
-                        <button type="button" className="text-button" disabled={disabled} onClick={() => setWager(tableRules.min_bet)}>
-                          초기화
+                      <div className="bet-tools">
+                        <span className="bet-total">
+                          베팅 <strong>{fmt(stackTotal)}</strong>
+                          <small>
+                            {" "}
+                            / 최대 {fmt(maxWager)}
+                          </small>
+                        </span>
+                        <button type="button" className="text-button" disabled={disabled || chipStack.length === 0} onClick={() => setChipStack((stack) => stack.slice(0, -1))}>
+                          되돌리기
+                        </button>
+                        <button type="button" className="text-button" disabled={disabled || chipStack.length === 0} onClick={() => setChipStack([])}>
+                          지우기
+                        </button>
+                        <button
+                          type="button"
+                          className="text-button"
+                          disabled={disabled || chipStack.length > 0 || lastStack.length === 0 || lastStack.reduce((s, v) => s + v, 0) > maxWager}
+                          onClick={() => setChipStack(lastStack)}
+                        >
+                          다시 베팅
+                        </button>
+                        <button
+                          type="button"
+                          className="text-button"
+                          disabled={disabled || chipStack.length === 0 || stackTotal * 2 > maxWager}
+                          onClick={() => setChipStack((stack) => [...stack, ...stack])}
+                        >
+                          더블
+                        </button>
+                        <button
+                          className="gold-button"
+                          disabled={disabled || stackTotal < tableRules.min_bet || stackTotal > maxWager || seconds <= 0}
+                          onClick={() => void lockBet()}
+                        >
+                          베팅 확정 <span className="button-timer">{seconds}s</span>
                         </button>
                       </div>
-                      <button className="gold-button" disabled={disabled || !validWager || seconds <= 0} onClick={() => void act({ action: "bet", amount: wager })}>
-                        {fmt(wager)} 베팅 <span className="button-timer">{seconds}s</span>
-                      </button>
+                      <p className="bet-hint">칩을 누르면 내 자리 앞에 쌓입니다. 마감 2초 전에 쌓인 칩은 자동으로 확정됩니다.</p>
                     </div>
                   ) : (
                     <div className="action-row">

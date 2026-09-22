@@ -64,3 +64,25 @@
 .dealing-row p{animation:dealing-pulse 1.2s ease-in-out infinite}
 @keyframes dealing-pulse{0%,100%{opacity:.55}50%{opacity:1}}
 @media(prefers-reduced-motion:reduce){.playing-card,.playing-card.flip{animation:none!important}}
+
+/* 에볼루션식 칩 베팅: 칩 트레이 + 좌석 앞 칩 더미 */
+.betting-controls.evo{flex-direction:column;align-items:stretch;gap:12px}
+.betting-controls.evo .chip-options{justify-content:center;gap:12px}
+.betting-controls.evo .chip{width:46px;height:46px;font-size:11px}
+.betting-controls.evo .chip.chosen{transform:translateY(-6px);box-shadow:0 0 0 2px #dcc17a,0 8px 18px #000a}
+.bet-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:center}
+.bet-tools .bet-total{font-size:13px;color:#a9b797;margin-right:6px}
+.bet-tools .bet-total strong{color:#e6d4a4;font-size:15px;margin-left:4px}
+.bet-tools .bet-total small{color:#7d9174;font-size:11px}
+.bet-tools .gold-button{margin-left:auto}
+.bet-hint{margin:0;font-size:11px;color:#8fa383;text-align:center}
+.chip-stack{position:absolute;left:calc(100% - 4px);top:-4px;display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:0;padding:0;pointer-events:auto;cursor:default}
+.seat.occupied .chip-stack{pointer-events:auto}
+.chip-stack.active{cursor:pointer}
+.chip-stack.active .chip-pile{border-color:#dcc17a}
+.chip-stack.empty-spot .chip-pile{border-style:dashed;animation:spot-pulse 1.4s ease-in-out infinite}
+.chip-pile{position:relative;width:40px;height:44px;border:2px solid transparent;border-radius:50%}
+.chip-coin{position:absolute;left:1px;width:34px;height:34px;border-radius:50%;border:4px dashed #ddd8bfa9;background:#526747;box-shadow:inset 0 0 0 2px #152b1b,0 2px 3px #0006;display:flex;align-items:center;justify-content:center;font-size:9px;font-style:normal;font-weight:700;color:#eee8d6;transform:rotateX(18deg)}
+.chip-stack b{font-size:11px;color:#f0ddb1;background:#09221bce;border:1px solid #91815477;border-radius:10px;padding:1px 7px;white-space:nowrap}
+@keyframes spot-pulse{0%,100%{box-shadow:0 0 0 0 #dcc17a00}50%{box-shadow:0 0 0 6px #dcc17a33}}
+@media(max-width:760px){.chip-stack{left:calc(100% - 10px)}.chip-pile{width:34px;height:38px}.chip-coin{width:28px;height:28px;font-size:8px}.betting-controls.evo .chip{width:42px;height:42px}}
