@@ -91,8 +91,16 @@ pub(super) fn place_bet(
     seat.last_seen = now;
     seat.hands = vec![BjHand::new(Vec::new(), amount, false, false)];
     let name = seat.name.clone();
-    // 베팅창은 닫지 않는다. 다른 참가자가 베팅할 시간을 준다.
     table.say(format!("{name}님, {} 칩 베팅.", format_chips(amount)), now);
+    // 베팅할 수 있는 좌석이 모두 베팅했으면 베팅창을 기다리지 않고 바로 딜한다.
+    let everyone_in = table
+        .seats
+        .iter()
+        .flatten()
+        .all(|seat| seat.in_hand || seat.sit_out || seat.leaving || seat.stack < BJ_MIN_BET);
+    if everyone_in {
+        return deal_blackjack(table, now);
+    }
     Ok(())
 }
 

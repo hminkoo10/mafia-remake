@@ -410,6 +410,43 @@ fn blackjack_split_then_double_each_hand_settles_separately() {
 }
 
 #[test]
+fn blackjack_deals_immediately_once_everyone_has_bet() {
+    let mut table = blackjack_table();
+    sit(&mut table, 61, 0, 10_000, 0);
+    sit(&mut table, 62, 1, 10_000, 0);
+    act(&mut table, 61, CasinoCommand::Start, 0);
+    act(&mut table, 61, CasinoCommand::Bet { amount: 500 }, 100);
+    // 한 명이 아직 베팅 전이면 베팅창을 유지한다.
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Betting);
+    act(&mut table, 62, CasinoCommand::Bet { amount: 300 }, 200);
+    // 모두 베팅했으니 15초를 기다리지 않고 바로 카드를 나눈다.
+    let round = table.round.as_ref().unwrap();
+    assert_ne!(round.phase, Phase::Betting);
+    assert_eq!(round.dealer.len(), 2);
+    assert_eq!(table.seat(0).unwrap().hands[0].cards.len(), 2);
+    assert_eq!(table.seat(1).unwrap().hands[0].cards.len(), 2);
+    assert_eq!(
+        table.seat(0).unwrap().stack + table.seat(1).unwrap().stack,
+        19_200
+    );
+}
+
+#[test]
+fn blackjack_waits_for_a_seat_that_can_still_bet() {
+    let mut table = blackjack_table();
+    sit(&mut table, 63, 0, 10_000, 0);
+    sit(&mut table, 64, 1, 10_000, 0);
+    act(&mut table, 63, CasinoCommand::Start, 0);
+    act(&mut table, 63, CasinoCommand::Bet { amount: 500 }, 100);
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Betting);
+    // 베팅창이 끝나야 딜한다. 베팅하지 않은 좌석은 이번 라운드를 쉰다.
+    table.tick(BET_WINDOW_MS + 1).unwrap();
+    assert_ne!(table.round.as_ref().unwrap().phase, Phase::Betting);
+    assert!(table.seat(0).unwrap().in_hand);
+    assert!(!table.seat(1).unwrap().in_hand);
+}
+
+#[test]
 fn blackjack_without_bets_completes_quietly() {
     let mut table = blackjack_table();
     sit(&mut table, 60, 0, 10_000, 0);
