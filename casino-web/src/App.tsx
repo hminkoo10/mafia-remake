@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { CasinoApiError, fetchState, readLink, sendCommand, wsUrl } from "./api";
 import { setSoundEnabled, sfx, soundEnabled } from "./sounds";
-import type { CasinoCommand, GameKind, StateResponse, TableRules, TableView } from "./types";
+import type { CasinoCommand, GameKind, SeatResult, StateResponse, TableRules, TableView } from "./types";
 import {
   Dialog,
   DialogContent,
@@ -49,6 +49,10 @@ import {
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 const signed = (n: number) => `${n < 0 ? "−" : "+"}${fmt(Math.abs(n))}`;
+const resultTone = (r: SeatResult) => r.won > 0 ? "won" : r.net < 0 ? "lost" : "even";
+const resultHeadline = (r: SeatResult, mine: boolean) => r.won > 0
+  ? `${mine ? "이기셨습니다" : `${r.name} 이김`} ${signed(r.won)}`
+  : `${mine ? "" : `${r.name} `}${r.net < 0 ? `패배 ${signed(r.net)}` : "푸시"}`;
 const phases: Record<string, string> = {
   preflop: "프리플롭",
   flop: "플롭",
@@ -639,7 +643,7 @@ export default function Casino() {
       return;
     }
     winnersShown.current = latestResult.id;
-    const won = latestResult.results.filter((r) => r.net > 0);
+    const won = latestResult.results.filter((r) => r.won > 0);
     setWinners(won.map((r) => r.seat));
     if (won.length) {
       const flightsToWinners = won.map((r) => ({
@@ -673,7 +677,7 @@ export default function Casino() {
     resultSounded.current = latestResult.id;
     const mine = latestResult.results.find((r) => r.seat === table.my_seat);
     if (!mine) return;
-    if (mine.net > 0) sfx.win();
+    if (mine.won > 0) sfx.win();
     else if (mine.net < 0) sfx.lose();
   }, [showResult, latestResult?.id]);
   const seatedElsewhere = tables.find((t) => t.id === data?.me.seated_table && t.id !== table.id) ?? null;
@@ -988,15 +992,11 @@ export default function Casino() {
                       {latestResult.results.map((r) => (
                         <li
                           key={`${r.seat}-${r.user_id}`}
-                          className={`${r.net > 0 ? "won" : r.net < 0 ? "lost" : "even"} ${r.seat === table.my_seat ? "me" : ""}`}
+                          className={`${resultTone(r)} ${r.seat === table.my_seat ? "me" : ""}`}
                         >
-                          <span className="result-name">
-                            {r.name}
-                            {r.seat === table.my_seat ? " (나)" : ""}
-                          </span>
-                          <b>{signed(r.net)}</b>
+                          <b className="result-name">{resultHeadline(r, r.seat === table.my_seat)}</b>
                           <small>
-                            {r.label}
+                            순손익 {signed(r.net)} · {r.label}
                             {r.notes.length > 0 ? ` · ${r.notes.join(" · ")}` : ""}
                           </small>
                         </li>
@@ -1576,11 +1576,10 @@ export default function Casino() {
                   {h.results.length > 0 && (
                     <ul className="history-results">
                       {h.results.map((r) => (
-                        <li key={r.user_id} className={r.net >= 0 ? "won" : "lost"}>
-                          <span>{r.name}</span>
-                          <b>{signed(r.net)}</b>
+                        <li key={r.user_id} className={resultTone(r)}>
+                          <b>{resultHeadline(r, String(r.user_id) === data?.me.user_id)}</b>
                           <small>
-                            {r.label}
+                            순손익 {signed(r.net)} · {r.label}
                             {r.notes.length > 0 ? ` · ${r.notes.join(" · ")}` : ""}
                           </small>
                         </li>

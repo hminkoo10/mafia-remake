@@ -1,9 +1,10 @@
 /* 원본 globals.css(noir.css) 위에 얹는 추가 스타일. 원본 파일은 그대로 두고 여기서만 덧붙인다. */
 
 .history-results{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:4px}
-.history-results li{display:flex;gap:8px;align-items:baseline;font-size:12px;color:#c9d3bb}
+.history-results li{display:flex;flex-direction:column;gap:2px;align-items:baseline;font-size:12px;color:#c9d3bb}
 .history-results b{color:#e6ce94;font-weight:600}
 .history-results li.lost b{color:#e08a82}
+.history-results li.even b{color:#b9c7b2}
 .history-results small{color:#8fa383;font-size:11px}
 
 /* 족보 강조: 족보를 이루는 카드는 노란 테두리, 좌석/독에는 족보 이름 */
@@ -17,11 +18,11 @@
 .result-head button{background:none;border:0;color:#a9b797;font-size:14px;padding:2px 6px}
 .result-banner ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .result-banner li{display:grid;grid-template-columns:1fr auto;gap:2px 12px;align-items:baseline;font-size:14px}
-.result-banner li b{font-size:16px;color:#e6ce94}
+.result-banner li b{grid-column:1/-1;font-size:16px;color:#e6ce94}
 .result-banner li.lost b{color:#e08a82}
 .result-banner li.even b{color:#b9c7b2}
 .result-banner li small{grid-column:1/-1;font-size:11px;color:#9fb28f}
-.result-banner li.me .result-name{color:#f2d16b}
+.result-banner li.me.won .result-name{color:#f2d16b}
 .result-dealer{margin:0 0 8px;font-size:12px;color:#bdcbb3}
 .result-note{margin:10px 0 0;font-size:11px;color:#8fa383}
 @media(max-width:760px){.result-banner{min-width:0;width:88%;padding:12px 14px}.result-banner li{font-size:13px}.result-banner li b{font-size:14px}}

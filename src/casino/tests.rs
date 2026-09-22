@@ -197,6 +197,7 @@ fn blackjack_side_bets_are_settled_on_the_deal() {
     assert_eq!(result.wagered, 700);
     // 딜러 13 → Tc로 23 버스트: 메인 +500.
     assert_eq!(result.net, 500 + 4_200);
+    assert_eq!(result.won, 4_700);
     assert!(
         result
             .notes
@@ -233,6 +234,7 @@ fn insurance_pays_two_to_one_against_dealer_blackjack() {
     let result = &table.history[0].results[0];
     assert_eq!(result.wagered, 750);
     assert_eq!(result.net, 0);
+    assert_eq!(result.won, 500);
     assert!(
         result
             .notes
@@ -240,6 +242,97 @@ fn insurance_pays_two_to_one_against_dealer_blackjack() {
             .any(|note| note.contains("인슈어런스 2:1"))
     );
     assert_eq!(table.seat(0).unwrap().stack, 10_000);
+}
+
+#[test]
+fn blackjack_winnings_keep_main_win_when_side_losses_make_net_negative() {
+    let mut table = blackjack_table();
+    sit(&mut table, 80, 0, 10_000, 0);
+    table
+        .start_with_deck(80, deck_from_top(&["Th", "9s", "Kd", "8c"]), 0)
+        .unwrap();
+    act(
+        &mut table,
+        80,
+        CasinoCommand::Bet {
+            amount: 2_000,
+            pairs: 1_500,
+            plus3: 1_500,
+        },
+        100,
+    );
+    act(&mut table, 80, CasinoCommand::Stand, 200);
+    let result = &table.history[0].results[0];
+    assert_eq!(result.net, -1_000);
+    assert_eq!(table.seat(0).unwrap().stack, 9_000);
+    assert_eq!(result.won, 2_000);
+}
+
+#[test]
+fn blackjack_winnings_exclude_returned_stakes_and_reset_each_round() {
+    let mut table = blackjack_table();
+    sit(&mut table, 80, 0, 10_000, 0);
+    // 21+3 플러시 5:1 적중, 메인 13은 딜러 19에 패배.
+    table
+        .start_with_deck(80, deck_from_top(&["5h", "9h", "8h", "Tc"]), 0)
+        .unwrap();
+    act(
+        &mut table,
+        80,
+        CasinoCommand::Bet {
+            amount: 2_000,
+            pairs: 0,
+            plus3: 1_000,
+        },
+        100,
+    );
+    act(&mut table, 80, CasinoCommand::Stand, 200);
+    assert_eq!(table.history[0].results[0].won, 5_000);
+    assert_eq!(table.history[0].results[0].net, 3_000);
+    assert_eq!(table.seat(0).unwrap().stack, 13_000);
+    // 다음 판에 전부 지면 이전 적중 금액이 남지 않는다.
+    table
+        .start_with_deck(80, deck_from_top(&["5h", "9s", "8d", "Tc"]), 300)
+        .unwrap();
+    act(
+        &mut table,
+        80,
+        CasinoCommand::Bet {
+            amount: 500,
+            pairs: 100,
+            plus3: 100,
+        },
+        400,
+    );
+    act(&mut table, 80, CasinoCommand::Stand, 500);
+    assert_eq!(table.history[0].results[0].won, 0);
+    assert_eq!(table.history[0].results[0].net, -700);
+    // 푸시는 원금만 반환하므로 won은 0.
+    table
+        .start_with_deck(80, deck_from_top(&["Th", "9s", "9d", "Tc"]), 600)
+        .unwrap();
+    act(
+        &mut table,
+        80,
+        CasinoCommand::Bet {
+            amount: 500,
+            pairs: 0,
+            plus3: 0,
+        },
+        700,
+    );
+    act(&mut table, 80, CasinoCommand::Stand, 800);
+    assert_eq!(table.history[0].results[0].won, 0);
+    assert_eq!(table.history[0].results[0].net, 0);
+    let mut old = serde_json::to_value(&table).unwrap();
+    old["history"][0]["results"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("won");
+    old["seats"][0].as_object_mut().unwrap().remove("side_won");
+    let restored: CasinoTable = serde_json::from_value(old).unwrap();
+    assert_eq!(restored.history[0].results[0].won, 0);
+    assert_eq!(restored.seat(0).unwrap().side_won, 0);
 }
 
 #[test]

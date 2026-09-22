@@ -227,6 +227,9 @@ pub struct Seat {
     /// 사이드베팅·인슈어런스 순손익 합계 (이번 라운드).
     #[serde(default)]
     pub side_net: i64,
+    /// 적중한 사이드베팅·인슈어런스의 이익 합계 (원금 제외).
+    #[serde(default)]
+    pub side_won: i64,
     /// 사이드베팅·인슈어런스 결과 설명 (이번 라운드).
     #[serde(default)]
     pub side_notes: Vec<String>,
@@ -245,6 +248,7 @@ impl Seat {
             insurance: 0,
             insurance_decided: false,
             side_net: 0,
+            side_won: 0,
             side_notes: Vec::new(),
             bet: 0,
             total: 0,
@@ -351,6 +355,9 @@ pub struct SeatResult {
     pub wagered: i64,
     /// 순손익 (+면 딴 것, -면 잃은 것).
     pub net: i64,
+    /// 이긴 베팅의 이익 합계 (원금·다른 베팅의 손실 제외).
+    #[serde(default)]
+    pub won: i64,
     /// 족보·결과 이름 ("원 페어", "폴드", "승리" 등).
     pub label: String,
     /// 사이드베팅·인슈어런스 결과 ("퍼펙트 페어 12:1 +1,200" 등).

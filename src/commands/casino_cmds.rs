@@ -175,13 +175,20 @@ fn render_hand_result(result: &HandResult, kind: GameKind) -> String {
         ));
     }
     for entry in &result.results {
+        let headline = if entry.won > 0 {
+            format!("이김 {}", signed_chips(entry.won))
+        } else if entry.net < 0 {
+            format!("패배 {}", signed_chips(entry.net))
+        } else {
+            "푸시".to_string()
+        };
         let notes = if entry.notes.is_empty() {
             String::new()
         } else {
             format!(" · {}", entry.notes.join(" · "))
         };
         lines.push(format!(
-            "**{}** {} · {}{notes}",
+            "**{}** {headline}\n순손익 {} · {}{notes}",
             entry.name,
             signed_chips(entry.net),
             entry.label

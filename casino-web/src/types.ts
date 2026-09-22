@@ -121,6 +121,7 @@ export interface SeatResult {
   seat: number;
   wagered: number;
   net: number;
+  won: number;
   label: string;
   notes: string[];
 }
