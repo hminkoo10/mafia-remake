@@ -439,8 +439,12 @@ impl CasinoHub {
             match result {
                 Ok(events) => {
                     self.apply_events(&events).await;
-                    if table.read().await.version != before {
+                    let guard = table.read().await;
+                    if guard.version != before {
                         changed.push(id);
+                    } else if guard.is_revealing(now) {
+                        // 카드 연출 중에는 상태가 안 바뀌어도 화면을 자주 밀어 준다.
+                        self.notify(&id);
                     }
                 }
                 Err(error) => eprintln!("casino tick failed for {id}: {error}"),
@@ -459,7 +463,7 @@ impl CasinoHub {
     pub async fn view_for(&self, table_id: &str, viewer: Option<u64>) -> Option<TableView> {
         let table = self.table(table_id)?;
         let table = table.read().await;
-        Some(table_view(&table, viewer))
+        Some(table_view(&table, viewer, now_ms()))
     }
 
     pub fn binding(&self, table_id: &str) -> Option<TableBinding> {

@@ -61,11 +61,23 @@ const POLL_MS = 1200;
 const RECONNECT_MS = 2000;
 
 function PlayingCard({ card, small = false, lit = false }: { card?: string; small?: boolean; lit?: boolean }) {
+  // 뒷면("??")이었다가 앞면이 되면 뒤집기 애니메이션을 낸다.
+  const previous = useRef(card);
+  const [flipping, setFlipping] = useState(false);
+  useEffect(() => {
+    if (previous.current === "??" && card && card !== "??") {
+      setFlipping(true);
+      const timer = window.setTimeout(() => setFlipping(false), 650);
+      previous.current = card;
+      return () => window.clearTimeout(timer);
+    }
+    previous.current = card;
+  }, [card]);
   return (
     <span
       className={`playing-card ${small ? "small" : ""} ${!card ? "empty" : card === "??" ? "back" : ""} ${
         card && /[hd]$/.test(card) ? "red" : ""
-      } ${lit ? "lit" : ""}`}
+      } ${lit ? "lit" : ""} ${flipping ? "flip" : ""}`}
       aria-label={!card ? "카드 대기" : card === "??" ? "비공개 카드" : `${card[0] === "T" ? "10" : card[0]} ${suits[card[1]]}`}
     >
       {!card ? (
@@ -120,6 +132,9 @@ const kindRoom = (kind: GameKind) => (kind === "holdem" ? "THE SIGNATURE ROOM" :
 const kindStakes = (kind: GameKind, rules: TableRules) =>
   kind === "holdem" ? `${fmt(rules.small_blind)} / ${fmt(rules.big_blind)}` : `${fmt(rules.min_bet)} – ${fmt(rules.max_bet)}`;
 const floorStep = (value: number, step: number) => Math.floor(value / step) * step;
+/** 등장 시각이 아직 안 된 카드는 화면에서 뺀다 (서버가 준 reveal_at 기준). */
+const dealt = (cards: string[], times: number[] | undefined, now: number) =>
+  cards.filter((_, index) => (times?.[index] ?? 0) <= now);
 
 export default function Casino() {
   const [{ token, table: linkTable }] = useState(readLink);
@@ -264,6 +279,9 @@ export default function Casino() {
   const anySeat = Boolean(data?.me.seated_table),
     isTurn = round?.turn === table.my_seat && table.my_seat >= 0;
   const seconds = round?.deadline ? Math.max(0, Math.ceil((round.deadline - (clock + offset)) / 1000)) : 0;
+  const serverNow = clock + offset;
+  // 카드 연출(딜·오픈) 중에는 액션을 숨기고 결과도 미룬다.
+  const revealing = round !== null && serverNow < round.reveal_until;
   const legal = table.legal.poker,
     bj = table.legal.blackjack;
   const balance = data?.me.coins ?? 0,
@@ -368,11 +386,19 @@ export default function Casino() {
       toast.info(`Discord에서 ${command} 을 입력하면 개인 링크를 받아요.`);
     }
   };
-  const cards = kind === "holdem" ? (round?.board ?? []) : (round?.dealer ?? []);
+  const cards =
+    kind === "holdem"
+      ? dealt(round?.board ?? [], round?.board_reveal_at, serverNow)
+      : dealt(round?.dealer ?? [], round?.dealer_reveal_at, serverNow);
   // 라운드가 끝나면 결과를 테이블 위에 띄운다. 다음 라운드가 시작되거나 닫을 때까지 남는다.
   const latestResult = table.history[0] ?? null;
   const showResult =
-    round !== null && round.phase === "complete" && latestResult !== null && latestResult.id === round.id && dismissedResult !== latestResult.id;
+    round !== null &&
+    round.phase === "complete" &&
+    !revealing &&
+    latestResult !== null &&
+    latestResult.id === round.id &&
+    dismissedResult !== latestResult.id;
   const seatedElsewhere = tables.find((t) => t.id === data?.me.seated_table && t.id !== table.id) ?? null;
 
   return (
@@ -504,7 +530,7 @@ export default function Casino() {
                 <div className="community-cards">
                   {Array.from({ length: Math.max(kind === "holdem" ? 5 : 2, cards.length) }, (_, i) => (
                     <PlayingCard
-                      key={`${round?.id}-${i}-${cards[i] ?? ""}`}
+                      key={`${round?.id}-${i}`}
                       card={cards[i]}
                       lit={!!cards[i] && (me?.hand_cards.includes(cards[i]) ?? false)}
                     />
@@ -515,7 +541,11 @@ export default function Casino() {
                 )}
                 <p className="board-status">
                   {round
-                    ? round.phase === "complete"
+                    ? revealing
+                      ? round.phase === "complete"
+                        ? "카드를 확인하는 중…"
+                        : "카드를 나누는 중…"
+                      : round.phase === "complete"
                       ? "라운드 종료 · 다음 핸드를 시작하세요"
                       : round.phase === "betting"
                         ? `베팅 마감까지 ${seconds}초`
@@ -537,8 +567,10 @@ export default function Casino() {
                   >
                     <div className="seat-cards">
                       {kind === "holdem" ? (
-                        seat.cards.map((card, k) => <PlayingCard key={k} card={card} small lit={seat.hand_cards.includes(card)} />)
-                      ) : seat.hands.some((h) => h.cards.length > 0) ? (
+                        dealt(seat.cards, seat.cards_reveal_at, serverNow).map((card, k) => (
+                          <PlayingCard key={k} card={card} small lit={seat.hand_cards.includes(card)} />
+                        ))
+                      ) : seat.hands.some((h) => dealt(h.cards, h.reveal_at, serverNow).length > 0) ? (
                         <span className="hand-score">
                           {seat.hands.map((h, k) => (
                             <span key={h.id} className={round?.turn === i && round.hand === k ? "active-score" : ""}>
@@ -650,7 +682,9 @@ export default function Casino() {
                       <div className="my-cards">
                         {kind === "holdem" ? (
                           me.cards.length ? (
-                            me.cards.map((c, i) => <PlayingCard key={i} card={c} small lit={me.hand_cards.includes(c)} />)
+                            dealt(me.cards, me.cards_reveal_at, serverNow).map((c, i) => (
+                              <PlayingCard key={i} card={c} small lit={me.hand_cards.includes(c)} />
+                            ))
                           ) : (
                             <span>다음 핸드 대기</span>
                           )
@@ -658,7 +692,7 @@ export default function Casino() {
                           me.hands.map((h, i) => (
                             <div className={`bj-hand ${round?.hand === i && isTurn ? "selected-hand" : ""}`} key={h.id}>
                               <div>
-                                {h.cards.map((c, k) => (
+                                {dealt(h.cards, h.reveal_at, serverNow).map((c, k) => (
                                   <PlayingCard key={k} card={c} small />
                                 ))}
                               </div>
@@ -681,7 +715,14 @@ export default function Casino() {
                       </button>
                     </div>
                   </div>
-                  {me.sit_out && !isTurn ? (
+                  {revealing ? (
+                    <div className="action-row dealing-row">
+                      <div>
+                        <span className="eyebrow">{round?.phase === "complete" ? "SHOWDOWN" : "DEALING"}</span>
+                        <p>{round?.phase === "complete" ? "카드를 확인하는 중이에요." : "소피아가 카드를 나누고 있어요."}</p>
+                      </div>
+                    </div>
+                  ) : me.sit_out && !isTurn ? (
                     <div className="action-row">
                       <p>시간 초과로 자리 비움 상태입니다.</p>
                       <button className="gold-button" disabled={disabled} onClick={() => void act({ action: "resume" })}>

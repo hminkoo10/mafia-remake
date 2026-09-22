@@ -10,6 +10,13 @@ use serde::{Deserialize, Serialize};
 pub const SEAT_COUNT: usize = 6;
 /// 액션 제한시간.
 pub const TURN_MS: i64 = 30_000;
+/// 연출용 시간차 (ms). 카드는 이 간격으로 한 장씩 열리고, 그동안 액션은 막힌다.
+/// 테스트에서는 0으로 두어 게임 흐름을 즉시 검증한다.
+pub const DEAL_CARD_MS: i64 = if cfg!(test) { 0 } else { 380 };
+pub const STREET_PAUSE_MS: i64 = if cfg!(test) { 0 } else { 900 };
+pub const SHOWDOWN_STEP_MS: i64 = if cfg!(test) { 0 } else { 800 };
+pub const DEALER_DRAW_MS: i64 = if cfg!(test) { 0 } else { 900 };
+pub const SETTLE_PAUSE_MS: i64 = if cfg!(test) { 0 } else { 700 };
 /// 블랙잭 베팅창.
 pub const BET_WINDOW_MS: i64 = 15_000;
 /// 라운드가 없는 상태에서 이 시간 동안 아무 행동이 없으면 자동 퇴장(칩 반환).
@@ -104,6 +111,9 @@ pub struct BjHand {
     pub payout: Option<i64>,
     #[serde(default)]
     pub result: Option<String>,
+    /// 카드별로 화면에 나타나는 시각 (ms). 비어 있거나 짧으면 나머지는 즉시 보인다.
+    #[serde(default)]
+    pub reveal_at: Vec<i64>,
 }
 
 impl BjHand {
@@ -117,6 +127,7 @@ impl BjHand {
             split_aces,
             payout: None,
             result: None,
+            reveal_at: Vec::new(),
         }
     }
 
@@ -143,6 +154,9 @@ pub struct Seat {
     pub sit_out: bool,
     pub missed: u32,
     pub last_seen: i64,
+    /// 홀덤 홀 카드가 화면에 나타나는 시각 (카드와 같은 순서).
+    #[serde(default)]
+    pub cards_reveal_at: Vec<i64>,
 }
 
 impl Seat {
@@ -152,6 +166,7 @@ impl Seat {
             name,
             stack,
             cards: Vec::new(),
+            cards_reveal_at: Vec::new(),
             bet: 0,
             total: 0,
             folded: false,
@@ -195,6 +210,32 @@ pub struct Round {
     pub deadline: i64,
     pub pot: i64,
     pub reveal: bool,
+    /// 연출이 끝나는 시각. 그 전에는 액션을 받지 않는다.
+    #[serde(default)]
+    pub reveal_until: i64,
+    /// 보드 카드가 열리는 시각 (보드와 같은 순서).
+    #[serde(default)]
+    pub board_reveal_at: Vec<i64>,
+    /// 딜러 카드가 놓이는 시각 (블랙잭).
+    #[serde(default)]
+    pub dealer_reveal_at: Vec<i64>,
+    /// 딜러의 뒤집힌 카드가 공개되는 시각 (블랙잭 정산).
+    #[serde(default)]
+    pub dealer_flip_at: i64,
+    /// 쇼다운에서 좌석별 홀 카드가 공개되는 시각 (좌석 번호 순, 0이면 없음).
+    #[serde(default)]
+    pub showdown_reveal_at: Vec<i64>,
+}
+
+impl Round {
+    /// 새 연출을 예약할 기준 시각: 진행 중인 연출이 있으면 그 끝, 아니면 지금.
+    pub fn reveal_base(&self, now: i64) -> i64 {
+        now.max(self.reveal_until)
+    }
+
+    pub(super) fn schedule_defaults(now: i64) -> (i64, Vec<i64>, Vec<i64>, i64, Vec<i64>) {
+        (now, Vec::new(), Vec::new(), 0, vec![0; SEAT_COUNT])
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -787,6 +828,7 @@ impl CasinoTable {
                         if self.kind != GameKind::Holdem {
                             return Err(CasinoError::invalid("허용되지 않는 블랙잭 액션입니다."));
                         }
+                        self.ensure_reveal_done(now)?;
                         let action = match command {
                             CasinoCommand::Fold => PokerAction::Fold,
                             CasinoCommand::Check => PokerAction::Check,
@@ -804,6 +846,7 @@ impl CasinoTable {
                         if self.kind != GameKind::Blackjack {
                             return Err(CasinoError::invalid("허용되지 않는 홀덤 액션입니다."));
                         }
+                        self.ensure_reveal_done(now)?;
                         let action = match command {
                             CasinoCommand::Hit => BjAction::Hit,
                             CasinoCommand::Stand => BjAction::Stand,
@@ -821,6 +864,28 @@ impl CasinoTable {
         self.reconcile(was_playing, &mut events);
         self.version += 1;
         Ok(events)
+    }
+
+    /// 카드 연출이 끝나기 전에는 액션을 받지 않는다.
+    fn ensure_reveal_done(&self, now: i64) -> Result<(), CasinoError> {
+        if self
+            .round
+            .as_ref()
+            .is_some_and(|round| now < round.reveal_until)
+        {
+            return Err(CasinoError::new(
+                "REVEALING",
+                "카드를 여는 중이에요. 잠시만 기다려 주세요.",
+            ));
+        }
+        Ok(())
+    }
+
+    /// 연출(카드 열기)이 진행 중인지.
+    pub fn is_revealing(&self, now: i64) -> bool {
+        self.round
+            .as_ref()
+            .is_some_and(|round| now < round.reveal_until)
     }
 
     /// 현재 차례인 좌석의 합법 액션 (홀덤).

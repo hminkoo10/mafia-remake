@@ -128,7 +128,7 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
     }
     let ticker = hub.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let mut interval = tokio::time::interval(Duration::from_millis(250));
         loop {
             interval.tick().await;
             ticker.tick_all().await;

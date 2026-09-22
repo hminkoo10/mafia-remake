@@ -2,8 +2,9 @@
 
 use super::cards::{CasinoError, PokerRank, draw, poker_rank, shuffled_deck};
 use super::table::{
-    CasinoTable, GameKind, HOLDEM_BIG_BLIND, HOLDEM_SMALL_BLIND, HandResult, Payout, Phase, Round,
-    SEAT_COUNT, Seat, SeatResult, TURN_MS, format_chips, new_id, signed_chips,
+    CasinoTable, DEAL_CARD_MS, GameKind, HOLDEM_BIG_BLIND, HOLDEM_SMALL_BLIND, HandResult, Payout,
+    Phase, Round, SEAT_COUNT, SETTLE_PAUSE_MS, SHOWDOWN_STEP_MS, STREET_PAUSE_MS, Seat, SeatResult,
+    TURN_MS, format_chips, new_id, signed_chips,
 };
 use serde::Serialize;
 
@@ -93,6 +94,7 @@ pub(super) fn start_poker(
     for seat in table.seats.iter_mut().flatten() {
         seat.in_hand = !seat.sit_out && !seat.leaving && seat.stack > 0;
         seat.cards.clear();
+        seat.cards_reveal_at.clear();
         seat.hands.clear();
         seat.bet = 0;
         seat.total = 0;
@@ -120,6 +122,8 @@ pub(super) fn start_poker(
     };
     let big = table.next_seat(small, |seat| seat.in_hand);
     table.big_blind_seat = big;
+    let (reveal_until, board_reveal_at, dealer_reveal_at, dealer_flip_at, showdown_reveal_at) =
+        Round::schedule_defaults(now);
     let mut round = Round {
         id: new_id(),
         deck: deck.unwrap_or_else(|| shuffled_deck(1)),
@@ -133,17 +137,27 @@ pub(super) fn start_poker(
         deadline: now + TURN_MS,
         pot: 0,
         reveal: false,
+        reveal_until,
+        board_reveal_at,
+        dealer_reveal_at,
+        dealer_flip_at,
+        showdown_reveal_at,
     };
+    // 홀 카드는 버튼 왼쪽부터 한 장씩 시간차를 두고 나눈다.
+    let mut at = now;
     for _ in 0..2 {
         let mut index = table.button;
         for _ in 0..count {
             index = table.next_seat(index, |seat| seat.in_hand);
             let card = draw(&mut round.deck)?;
+            at += DEAL_CARD_MS;
             if let Some(seat) = table.seat_mut(index) {
                 seat.cards.push(card);
+                seat.cards_reveal_at.push(at);
             }
         }
     }
+    round.reveal_until = at + DEAL_CARD_MS;
     if let Some(seat) = table.seat_mut(small) {
         commit(seat, HOLDEM_SMALL_BLIND);
     }
@@ -295,6 +309,25 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
         round.phase = Phase::Complete;
         round.turn = -1;
         round.deadline = 0;
+        // 쇼다운: 버튼 왼쪽부터 한 명씩 카드를 공개하고, 마지막 공개 뒤에 결과를 띄운다.
+        let base = round.reveal_base(now) + SETTLE_PAUSE_MS;
+        if round.showdown_reveal_at.len() < SEAT_COUNT {
+            round.showdown_reveal_at.resize(SEAT_COUNT, 0);
+        }
+        if reveal {
+            let mut ordered = contenders.clone();
+            ordered.sort_by_key(|index| {
+                (*index as i32 - button + SEAT_COUNT as i32 - 1).rem_euclid(SEAT_COUNT as i32)
+            });
+            let mut at = base;
+            for index in ordered {
+                round.showdown_reveal_at[index] = at;
+                at += SHOWDOWN_STEP_MS;
+            }
+            round.reveal_until = at - SHOWDOWN_STEP_MS + SETTLE_PAUSE_MS;
+        } else {
+            round.reveal_until = base;
+        }
         round.id.clone()
     };
     // 참가한 모든 좌석의 순손익. 진 사람도 족보(쇼다운) 또는 "폴드"로 남긴다.
@@ -389,7 +422,7 @@ fn advance(table: &mut CasinoTable, from: i32, now: i64) -> Result<(), CasinoErr
     if next != -1 {
         let round = table.round.as_mut().expect("round exists");
         round.turn = next;
-        round.deadline = now + TURN_MS;
+        round.deadline = round.reveal_base(now) + TURN_MS;
         return Ok(());
     }
     if table.round.as_ref().expect("round exists").phase == Phase::River {
@@ -407,10 +440,15 @@ fn advance(table: &mut CasinoTable, from: i32, now: i64) -> Result<(), CasinoErr
         // 스트리트마다 한 장을 버린다.
         draw(&mut round.deck)?;
         let count = if round.phase == Phase::Preflop { 3 } else { 1 };
+        // 베팅이 끝나고 잠깐 뜸을 들인 뒤 한 장씩 연다.
+        let mut at = round.reveal_base(now) + STREET_PAUSE_MS;
         for _ in 0..count {
             let card = draw(&mut round.deck)?;
             round.board.push(card);
+            round.board_reveal_at.push(at);
+            at += DEAL_CARD_MS;
         }
+        round.reveal_until = at;
         round.phase = match round.board.len() {
             3 => Phase::Flop,
             4 => Phase::Turn,
@@ -426,7 +464,7 @@ fn advance(table: &mut CasinoTable, from: i32, now: i64) -> Result<(), CasinoErr
     let turn = table.next_seat(button, actionable);
     let round = table.round.as_mut().expect("round exists");
     round.turn = turn;
-    round.deadline = now + TURN_MS;
+    round.deadline = round.reveal_base(now) + TURN_MS;
     Ok(())
 }
 

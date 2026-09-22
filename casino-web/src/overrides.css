@@ -44,3 +44,23 @@
 .wager-control [data-slot=slider]{flex:1;min-width:90px}
 .wager-control .text-button{white-space:nowrap}
 @media(max-width:760px){.wager-control{flex-basis:100%}}
+
+/* 3D 카드: 딜러 쪽에서 날아와 놓이고, 뒷면이 앞면으로 뒤집힌다 */
+.game-table{perspective:1200px}
+.community-cards,.seat-cards,.my-cards,.bj-hand>div{transform-style:preserve-3d}
+.playing-card{animation:deal-in-3d .55s cubic-bezier(.2,.8,.25,1);backface-visibility:hidden;will-change:transform}
+.playing-card.empty{animation:none}
+.playing-card.flip{animation:card-flip .6s ease-out}
+@keyframes deal-in-3d{
+  0%{opacity:0;transform:translate(-20px,-140px) rotateX(38deg) rotateZ(-10deg) scale(.7)}
+  60%{opacity:1;transform:translate(0,-6px) rotateX(6deg) rotateZ(1deg) scale(1.02)}
+  100%{opacity:1;transform:translate(0,0) rotateX(0) rotateZ(0) scale(1)}
+}
+@keyframes card-flip{
+  0%{transform:rotateY(90deg) scale(1.05);filter:brightness(1.2)}
+  100%{transform:rotateY(0) scale(1);filter:brightness(1)}
+}
+.dealing-row .eyebrow{color:#dcc17a}
+.dealing-row p{animation:dealing-pulse 1.2s ease-in-out infinite}
+@keyframes dealing-pulse{0%,100%{opacity:.55}50%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.playing-card,.playing-card.flip{animation:none!important}}

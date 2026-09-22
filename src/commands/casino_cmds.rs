@@ -932,7 +932,8 @@ pub async fn run_casino_relay(ctx: serenity::Context, data: Data) {
 /// 시간 초과·유휴 정리 루프.
 pub async fn run_casino_ticker(data: Data) {
     let hub = data.casino.clone();
-    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    // 카드 연출(수백 ms 단위)을 매끄럽게 밀어 주기 위해 250ms마다 돈다.
+    let mut interval = tokio::time::interval(Duration::from_millis(250));
     loop {
         interval.tick().await;
         hub.tick_all().await;

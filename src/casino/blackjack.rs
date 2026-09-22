@@ -2,9 +2,9 @@
 
 use super::cards::{CasinoError, blackjack_value, card_value, draw, shuffled_deck};
 use super::table::{
-    BET_WINDOW_MS, BJ_BET_STEP, BJ_MAX_BET, BJ_MIN_BET, BjHand, CasinoTable, GameKind, HandResult,
-    HandStatus, Payout, Phase, Round, SEAT_COUNT, SeatResult, TURN_MS, format_chips, new_id,
-    signed_chips,
+    BET_WINDOW_MS, BJ_BET_STEP, BJ_MAX_BET, BJ_MIN_BET, BjHand, CasinoTable, DEAL_CARD_MS,
+    DEALER_DRAW_MS, GameKind, HandResult, HandStatus, Payout, Phase, Round, SEAT_COUNT,
+    SETTLE_PAUSE_MS, SeatResult, TURN_MS, format_chips, new_id, signed_chips,
 };
 use serde::Serialize;
 
@@ -44,6 +44,8 @@ pub(super) fn start_blackjack(
         seat.total = 0;
         seat.bet = 0;
     }
+    let (reveal_until, board_reveal_at, dealer_reveal_at, dealer_flip_at, showdown_reveal_at) =
+        Round::schedule_defaults(now);
     table.round = Some(Round {
         id: new_id(),
         deck: deck.unwrap_or_else(|| shuffled_deck(6)),
@@ -57,6 +59,11 @@ pub(super) fn start_blackjack(
         deadline: now + BET_WINDOW_MS,
         pot: 0,
         reveal: false,
+        reveal_until,
+        board_reveal_at,
+        dealer_reveal_at,
+        dealer_flip_at,
+        showdown_reveal_at,
     });
     table.say("베팅을 받습니다. 15초 안에 칩을 놓아주세요.", now);
     Ok(())
@@ -119,25 +126,31 @@ pub(super) fn deal_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), Ca
         );
         return Ok(());
     }
+    // 참가자 순서대로 한 장씩, 딜러는 마지막에. 카드마다 시간차를 둔다.
+    let mut at = table.round.as_ref().expect("round exists").reveal_base(now);
     for _ in 0..2 {
         for &index in &players {
             let card = draw(&mut table.round.as_mut().expect("round exists").deck)?;
+            at += DEAL_CARD_MS;
             if let Some(hand) = table.seats[index]
                 .as_mut()
                 .and_then(|seat| seat.hands.first_mut())
             {
                 hand.cards.push(card);
+                hand.reveal_at.push(at);
             }
         }
         let card = draw(&mut table.round.as_mut().expect("round exists").deck)?;
-        table
-            .round
-            .as_mut()
-            .expect("round exists")
-            .dealer
-            .push(card);
+        at += DEAL_CARD_MS;
+        let round = table.round.as_mut().expect("round exists");
+        round.dealer.push(card);
+        round.dealer_reveal_at.push(at);
     }
-    table.round.as_mut().expect("round exists").phase = Phase::Playing;
+    {
+        let round = table.round.as_mut().expect("round exists");
+        round.phase = Phase::Playing;
+        round.reveal_until = at + DEAL_CARD_MS;
+    }
     for &index in &players {
         if let Some(hand) = table.seats[index]
             .as_mut()
@@ -194,7 +207,7 @@ fn next_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), CasinoError> 
             let round = table.round.as_mut().expect("round exists");
             round.turn = index as i32;
             round.hand = hand;
-            round.deadline = now + TURN_MS;
+            round.deadline = round.reveal_base(now) + TURN_MS;
             return Ok(());
         }
     }
@@ -211,6 +224,9 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
             return Err(CasinoError::invalid("이미 정산된 라운드입니다."));
         }
         round.reveal = true;
+        // 딜러가 뒤집힌 카드를 공개한 뒤 한 장씩 뽑는다.
+        round.dealer_flip_at = round.reveal_base(now) + SETTLE_PAUSE_MS;
+        round.reveal_until = round.dealer_flip_at + SETTLE_PAUSE_MS;
     }
     let any_live = table
         .seats
@@ -229,7 +245,10 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
                 break;
             }
             let card = draw(&mut round.deck)?;
+            let at = round.reveal_until - SETTLE_PAUSE_MS + DEALER_DRAW_MS;
             round.dealer.push(card);
+            round.dealer_reveal_at.push(at);
+            round.reveal_until = at + SETTLE_PAUSE_MS;
         }
     }
     let (dealer, dealer_cards) = {
@@ -369,6 +388,7 @@ pub(super) fn blackjack_action(
             BjAction::Hit => {
                 let hand = &mut seat.hands[hand_index];
                 hand.cards.push(draw(deck)?);
+                hand.reveal_at.push(now);
                 let total = blackjack_value(&hand.cards).0;
                 if total >= 21 {
                     hand.status = if total > 21 {
@@ -386,6 +406,7 @@ pub(super) fn blackjack_action(
                 let hand = &mut seat.hands[hand_index];
                 hand.bet *= 2;
                 hand.cards.push(draw(deck)?);
+                hand.reveal_at.push(now);
                 hand.status = if blackjack_value(&hand.cards).0 > 21 {
                     HandStatus::Bust
                 } else {
@@ -400,12 +421,14 @@ pub(super) fn blackjack_action(
                     .cards
                     .pop()
                     .ok_or_else(|| CasinoError::new("ENGINE_STATE", "스플릿 상태 오류"))?;
+                seat.hands[hand_index].reveal_at.pop();
                 let split_aces = seat.hands[hand_index].cards[0].starts_with('A');
                 {
                     let hand = &mut seat.hands[hand_index];
                     hand.split = true;
                     hand.split_aces = split_aces;
                     hand.cards.push(draw(deck)?);
+                    hand.reveal_at.push(now);
                 }
                 let second_cards = vec![other, draw(deck)?];
                 let mut second = BjHand::new(second_cards, bet, true, split_aces);

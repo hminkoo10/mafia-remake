@@ -7,6 +7,7 @@ export type HandStatus = "playing" | "stand" | "bust" | "surrender";
 export interface HandView {
   id: string;
   cards: string[];
+  reveal_at: number[];
   bet: number;
   total: number;
   soft: boolean;
@@ -28,6 +29,7 @@ export interface SeatView {
   sit_out: boolean;
   leaving: boolean;
   cards: string[];
+  cards_reveal_at: number[];
   hands: HandView[];
   hand_name: string | null;
   hand_cards: string[];
@@ -46,6 +48,9 @@ export interface RoundView {
   current_bet: number;
   pot: number;
   reveal: boolean;
+  reveal_until: number;
+  board_reveal_at: number[];
+  dealer_reveal_at: number[];
 }
 
 export interface PokerLegal {

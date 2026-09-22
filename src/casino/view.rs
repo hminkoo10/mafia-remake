@@ -14,6 +14,8 @@ use serde::Serialize;
 pub struct HandView {
     pub id: String,
     pub cards: Vec<String>,
+    /// 카드별 등장 시각 (클라이언트가 이 시각까지 카드를 숨기고 딜 애니메이션을 낸다).
+    pub reveal_at: Vec<i64>,
     pub bet: i64,
     pub total: i64,
     pub soft: bool,
@@ -36,6 +38,8 @@ pub struct SeatView {
     pub sit_out: bool,
     pub leaving: bool,
     pub cards: Vec<String>,
+    /// 홀 카드별 등장 시각.
+    pub cards_reveal_at: Vec<i64>,
     pub hands: Vec<HandView>,
     /// 홀덤: 지금 만들어진 족보 이름 (내 좌석은 항상, 다른 좌석은 쇼다운에서만).
     pub hand_name: Option<String>,
@@ -57,6 +61,10 @@ pub struct RoundView {
     pub current_bet: i64,
     pub pot: i64,
     pub reveal: bool,
+    /// 카드 연출이 끝나는 시각. 그 전에는 액션 버튼을 숨기고 결과도 띄우지 않는다.
+    pub reveal_until: i64,
+    pub board_reveal_at: Vec<i64>,
+    pub dealer_reveal_at: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,13 +124,20 @@ pub fn table_rules() -> TableRules {
 }
 
 /// `viewer`가 보는 테이블. None이면 관전자(모든 비공개 카드가 가려진다).
-pub fn table_view(table: &CasinoTable, viewer: Option<u64>) -> TableView {
+/// `now`는 서버 시각(ms): 아직 공개 시각이 안 된 비밀 카드는 가려서 보낸다.
+pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableView {
     let round = table.round.as_ref();
     let active = table.playing();
     let my_seat = viewer
         .and_then(|viewer| table.seat_index(viewer))
         .map_or(-1, |index| index as i32);
     let reveal = round.is_some_and(|round| round.reveal);
+    let reveal_done = round.is_none_or(|round| now >= round.reveal_until);
+    let showdown_at = |index: usize| -> i64 {
+        round
+            .and_then(|round| round.showdown_reveal_at.get(index).copied())
+            .unwrap_or(0)
+    };
     let seats = table
         .seats
         .iter()
@@ -130,20 +145,20 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>) -> TableView {
         .map(|(index, seat)| {
             let seat = seat.as_ref()?;
             let mine = viewer == Some(seat.user_id);
-            let (hand_name, hand_cards) = if table.kind == GameKind::Holdem
-                && !seat.cards.is_empty()
-                && (mine || (reveal && !seat.folded))
-            {
-                let mut all = seat.cards.clone();
-                if let Some(round) = round {
-                    all.extend(round.board.iter().cloned());
-                }
-                best_hand(&all)
-                    .map(|best| (Some(best.name), best.cards))
-                    .unwrap_or((None, Vec::new()))
-            } else {
-                (None, Vec::new())
-            };
+            let shown = mine || (reveal && !seat.folded && showdown_at(index) <= now);
+            let (hand_name, hand_cards) =
+                if table.kind == GameKind::Holdem && !seat.cards.is_empty() && reveal_done && shown
+                {
+                    let mut all = seat.cards.clone();
+                    if let Some(round) = round {
+                        all.extend(round.board.iter().cloned());
+                    }
+                    best_hand(&all)
+                        .map(|best| (Some(best.name), best.cards))
+                        .unwrap_or((None, Vec::new()))
+                } else {
+                    (None, Vec::new())
+                };
             Some(SeatView {
                 seat: index,
                 user_id: seat.user_id,
@@ -162,27 +177,43 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>) -> TableView {
                     .cards
                     .iter()
                     .map(|card| {
-                        if mine || (reveal && !seat.folded) {
+                        if shown {
                             card.clone()
                         } else {
                             "??".to_string()
                         }
                     })
                     .collect(),
+                cards_reveal_at: seat.cards_reveal_at.clone(),
                 hands: seat
                     .hands
                     .iter()
                     .map(|hand| {
-                        let (total, soft) = blackjack_value(&hand.cards);
+                        // 아직 화면에 놓이지 않은 카드는 합계에 넣지 않는다.
+                        let visible = hand
+                            .cards
+                            .iter()
+                            .enumerate()
+                            .filter(|(index, _)| {
+                                hand.reveal_at.get(*index).is_none_or(|at| *at <= now)
+                            })
+                            .map(|(_, card)| card.clone())
+                            .collect::<Vec<_>>();
+                        let (total, soft) = blackjack_value(&visible);
                         HandView {
                             id: hand.id.clone(),
                             cards: hand.cards.clone(),
+                            reveal_at: hand.reveal_at.clone(),
                             bet: hand.bet,
                             total,
                             soft,
                             status: hand.status,
-                            result: hand.result.clone(),
-                            payout: hand.payout,
+                            result: if reveal_done {
+                                hand.result.clone()
+                            } else {
+                                None
+                            },
+                            payout: if reveal_done { hand.payout } else { None },
                         }
                     })
                     .collect(),
@@ -199,14 +230,15 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>) -> TableView {
             .iter()
             .enumerate()
             .map(|(index, card)| {
-                if round.reveal || index == 0 {
+                if index == 0 || (round.reveal && now >= round.dealer_flip_at) {
                     card.clone()
                 } else {
                     "??".to_string()
                 }
             })
             .collect(),
-        dealer_total: round.reveal.then(|| blackjack_value(&round.dealer).0),
+        dealer_total: (round.reveal && now >= round.reveal_until)
+            .then(|| blackjack_value(&round.dealer).0),
         turn: round.turn,
         hand: round.hand,
         deadline: round.deadline,
@@ -217,6 +249,9 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>) -> TableView {
             round.pot
         },
         reveal: round.reveal,
+        reveal_until: round.reveal_until,
+        board_reveal_at: round.board_reveal_at.clone(),
+        dealer_reveal_at: round.dealer_reveal_at.clone(),
     });
     let minimum = if table.kind == GameKind::Holdem {
         1

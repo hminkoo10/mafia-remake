@@ -160,17 +160,18 @@ fn holdem_three_players_play_a_full_hand_to_showdown() {
     );
     assert_eq!(committed(&table), 300);
 
-    for phase in [Phase::Turn, Phase::River] {
+    for (step, phase) in [Phase::Turn, Phase::River].into_iter().enumerate() {
+        let at = 2_000 + step as i64 * 1_000;
         // 플롭부터는 버튼 다음(1)부터 시작한다.
         assert_eq!(table.round.as_ref().unwrap().turn, 1);
-        act(&mut table, 11, CasinoCommand::Check, 2_000);
-        act(&mut table, 12, CasinoCommand::Check, 2_100);
-        act(&mut table, 10, CasinoCommand::Check, 2_200);
+        act(&mut table, 11, CasinoCommand::Check, at);
+        act(&mut table, 12, CasinoCommand::Check, at + 100);
+        act(&mut table, 10, CasinoCommand::Check, at + 200);
         assert_eq!(table.round.as_ref().unwrap().phase, phase);
     }
-    act(&mut table, 11, CasinoCommand::Check, 3_000);
-    act(&mut table, 12, CasinoCommand::Check, 3_100);
-    let events = act(&mut table, 10, CasinoCommand::Check, 3_200);
+    act(&mut table, 11, CasinoCommand::Check, 4_000);
+    act(&mut table, 12, CasinoCommand::Check, 4_100);
+    let events = act(&mut table, 10, CasinoCommand::Check, 4_200);
 
     assert_eq!(table.round.as_ref().unwrap().phase, Phase::Complete);
     assert_eq!(table.seat(0).unwrap().stack, 10_200);
@@ -204,7 +205,7 @@ fn holdem_three_players_play_a_full_hand_to_showdown() {
         [CasinoEvent::RoundSettled { house_delta: 0, .. }]
     ));
     // 쇼다운이면 폴드하지 않은 카드가 공개된다.
-    let spectator = table_view(&table, None);
+    let spectator = table_view(&table, None, i64::MAX);
     assert_eq!(
         spectator.seats[1].as_ref().unwrap().cards,
         cards(&["Kh", "Kd"])
@@ -380,7 +381,7 @@ fn blackjack_pays_natural_three_to_two_and_wins_against_bust() {
     assert_eq!(round.turn, 1, "내추럴은 자동 스탠드라 P1 차례");
     assert_eq!(table.seat(0).unwrap().hands[0].status, HandStatus::Stand);
     // 딜러 홀 카드는 공개 전에는 가려진다.
-    let view = table_view(&table, Some(41));
+    let view = table_view(&table, Some(41), i64::MAX);
     assert_eq!(view.round.as_ref().unwrap().dealer, cards(&["Th", "??"]));
     assert!(view.legal.blackjack.is_some());
 
@@ -706,7 +707,7 @@ fn table_view_hides_other_players_cards_until_showdown() {
     sit(&mut table, 120, 0, 10_000, 0);
     sit(&mut table, 121, 1, 10_000, 0);
     act(&mut table, 120, CasinoCommand::Start, 0);
-    let mine = table_view(&table, Some(120));
+    let mine = table_view(&table, Some(120), i64::MAX);
     assert_eq!(mine.my_seat, 0);
     assert_eq!(mine.seats[0].as_ref().unwrap().cards.len(), 2);
     assert!(
@@ -718,7 +719,7 @@ fn table_view_hides_other_players_cards_until_showdown() {
             .all(|card| card != "??")
     );
     assert_eq!(mine.seats[1].as_ref().unwrap().cards, cards(&["??", "??"]));
-    let spectator = table_view(&table, None);
+    let spectator = table_view(&table, None, i64::MAX);
     assert_eq!(spectator.my_seat, -1);
     assert!(
         spectator
