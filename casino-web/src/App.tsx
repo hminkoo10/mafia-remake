@@ -464,25 +464,6 @@ export default function Casino() {
     prevBets.current = { round: round?.id ?? null, bets, pot };
   }, [table.seats, round?.id, round?.phase, round?.pot]);
   useEffect(() => {
-    // 결과가 뜨면 팟이 승자에게 날아가고 승자 좌석이 빛난다.
-    if (!showResult || !latestResult || winnersShown.current === latestResult.id) {
-      if (!showResult) setWinners([]);
-      return;
-    }
-    winnersShown.current = latestResult.id;
-    const won = latestResult.results.filter((r) => r.net > 0);
-    setWinners(won.map((r) => r.seat));
-    if (won.length) {
-      const flightsToWinners = won.map((r) => ({
-        id: flightId.current++,
-        from: kind === "holdem" ? POT_POS : ([50, 30] as [number, number]),
-        to: SEAT_POS[r.seat] ?? POT_POS,
-        amount: r.net + r.wagered,
-      }));
-      setFlights((current) => [...current, ...flightsToWinners]);
-    }
-  }, [showResult, latestResult?.id]);
-  useEffect(() => {
     if (!muted && table.narration !== lastNarration.current && "speechSynthesis" in window) {
       speechSynthesis.cancel();
       const speech = new SpeechSynthesisUtterance(table.narration);
@@ -579,6 +560,25 @@ export default function Casino() {
     latestResult !== null &&
     latestResult.id === round.id &&
     dismissedResult !== latestResult.id;
+  useEffect(() => {
+    // 결과가 뜨면 팟이 승자에게 날아가고 승자 좌석이 빛난다.
+    if (!showResult || !latestResult || winnersShown.current === latestResult.id) {
+      if (!showResult) setWinners([]);
+      return;
+    }
+    winnersShown.current = latestResult.id;
+    const won = latestResult.results.filter((r) => r.net > 0);
+    setWinners(won.map((r) => r.seat));
+    if (won.length) {
+      const flightsToWinners = won.map((r) => ({
+        id: flightId.current++,
+        from: kind === "holdem" ? POT_POS : ([50, 30] as [number, number]),
+        to: SEAT_POS[r.seat] ?? POT_POS,
+        amount: r.net + r.wagered,
+      }));
+      setFlights((current) => [...current, ...flightsToWinners]);
+    }
+  }, [showResult, latestResult?.id]);
   const seatedElsewhere = tables.find((t) => t.id === data?.me.seated_table && t.id !== table.id) ?? null;
 
   return (
