@@ -729,7 +729,7 @@ pub async fn run_vote(
         ),
         "최후변론",
         serenity::Colour::GOLD,
-        final_defense_components(guild_id, nominee.user_id, false),
+        final_defense_components(guild_id, false),
         false,
         true,
     )
@@ -751,11 +751,7 @@ pub async fn run_vote(
     let _ = defense_message
         .edit(
             &ctx.http,
-            serenity::EditMessage::new().components(final_defense_components(
-                guild_id,
-                nominee.user_id,
-                true,
-            )),
+            serenity::EditMessage::new().components(final_defense_components(guild_id, true)),
         )
         .await;
     if running.read().await.game.phase == Phase::Ended {

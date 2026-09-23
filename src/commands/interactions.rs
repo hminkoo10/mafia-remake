@@ -88,8 +88,9 @@ pub async fn handle_component(
             handle_confirm_vote(ctx, data, component, parse_guild(guild)?, *approve == "1").await?
         }
         ["skipday", guild] => handle_skip_day(ctx, data, component, parse_guild(guild)?).await?,
-        ["enddefense", guild, nominee] => {
-            handle_end_defense(ctx, data, component, parse_guild(guild)?, nominee.parse()?).await?
+        // 세 조각짜리는 배포 전에 보낸 버튼이다. 대상자 ID는 쓰지 않는다.
+        ["enddefense", guild] | ["enddefense", guild, _] => {
+            handle_end_defense(ctx, data, component, parse_guild(guild)?).await?
         }
         ["extendday", guild] => {
             handle_day_extension(ctx, data, component, parse_guild(guild)?).await?
@@ -1022,24 +1023,24 @@ pub async fn handle_end_defense(
     data: &Data,
     component: &serenity::ComponentInteraction,
     guild_id: serenity::GuildId,
-    nominee_id: u64,
 ) -> Result<()> {
-    if component.user.id.get() != nominee_id {
-        send_component_private(ctx, component, "최후변론 대상자만 발언을 마칠 수 있습니다.")
-            .await?;
-        return Ok(());
-    }
     let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
         send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
         return Ok(());
     };
+    let nominee_id = component.user.id.get();
     let (notify, nominee_name) = {
         let mut running_write = running.write().await;
-        if running_write.game.phase != Phase::FinalDefense
-            || running_write.final_defense_user_id != Some(nominee_id)
-        {
+        let current_nominee = running_write.final_defense_user_id;
+        if running_write.game.phase != Phase::FinalDefense || current_nominee.is_none() {
             drop(running_write);
             send_component_private(ctx, component, "지금은 최후변론 시간이 아닙니다.").await?;
+            return Ok(());
+        }
+        if current_nominee != Some(nominee_id) {
+            drop(running_write);
+            send_component_private(ctx, component, "최후변론 대상자만 발언을 마칠 수 있습니다.")
+                .await?;
             return Ok(());
         }
         if running_write.final_defense_ended {
@@ -1074,7 +1075,7 @@ pub async fn handle_end_defense(
                         "발언 종료",
                         serenity::Colour::DARK_GREEN,
                     ))
-                    .components(final_defense_components(guild_id, nominee_id, true)),
+                    .components(final_defense_components(guild_id, true)),
             ),
         )
         .await?;

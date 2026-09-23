@@ -357,13 +357,14 @@ pub fn day_skip_components(
 
 /// 최후변론 대상자 전용 `발언 종료` 버튼. 대상자가 누르면 남은 시간을 기다리지
 /// 않고 바로 찬반 투표로 넘어간다 (다른 사람이 누르면 거부).
+/// 버튼 ID에는 대상자의 ID를 넣지 않는다. 공개 채널 메시지라 익명 게임에서 실제
+/// 계정이 드러나기 때문이다. 누른 사람이 대상자인지는 게임 상태로 확인한다.
 pub fn final_defense_components(
     guild_id: serenity::GuildId,
-    nominee_id: u64,
     disabled: bool,
 ) -> Vec<serenity::CreateActionRow> {
     vec![serenity::CreateActionRow::Buttons(vec![
-        serenity::CreateButton::new(format!("enddefense:{}:{nominee_id}", guild_id.get()))
+        serenity::CreateButton::new(format!("enddefense:{}", guild_id.get()))
             .label("발언 종료")
             .style(serenity::ButtonStyle::Danger)
             .disabled(disabled),
@@ -501,6 +502,14 @@ mod tests {
         );
         assert!(failure.log_detail().contains("memo_channel_id=Some(20)"));
         assert!(failure.log_detail().contains("cannot message user"));
+    }
+
+    #[test]
+    fn final_defense_button_does_not_carry_the_nominee_id() {
+        // 공개 채널 버튼이라 익명 게임에서 대상자의 실제 ID가 드러나면 안 된다.
+        let json = serde_json::to_value(final_defense_components(serenity::GuildId::new(7), false))
+            .unwrap();
+        assert_eq!(json[0]["components"][0]["custom_id"], "enddefense:7");
     }
 }
 
