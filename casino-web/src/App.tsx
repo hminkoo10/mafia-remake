@@ -1667,7 +1667,16 @@ export default function Casino() {
                 </div>
                 <div className="dealer-note" aria-live="polite">
                   <span className="dealer-avatar">
-                    <img src={dealerPortrait(table.dealer.id)} onError={(e) => ((e.currentTarget as HTMLImageElement).src = DEALER_IMAGE)} alt="" />
+                    <img
+                      src={
+                        motion && table.dealer.id === "sophia" && hasDealerVideo("sophia")
+                          ? // 영상 속 딜러와 같은 얼굴 (같은 구도라 얼굴 확대 위치도 같다)
+                            `${import.meta.env.BASE_URL}dealers/sophia-video.jpg`
+                          : dealerPortrait(table.dealer.id)
+                      }
+                      onError={(e) => ((e.currentTarget as HTMLImageElement).src = DEALER_IMAGE)}
+                      alt=""
+                    />
                   </span>
                   <div>
                     <strong>

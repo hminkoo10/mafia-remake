@@ -16,7 +16,8 @@
   object-fit: cover;
   object-position: center 22%;
   pointer-events: none;
-  transition: opacity 200ms ease;
+  /* 동작 영상(딜·플립)이 끝나 대기 영상으로 돌아갈 때 손 위치가 달라 보이지 않게 천천히 겹친다. */
+  transition: opacity 450ms ease;
 }
 
 .dealer-backdrop-poster {
