@@ -1100,3 +1100,56 @@ fn coin_gifts_keep_the_unsettled_game_bet() {
     assert!(gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 1, 0).is_err());
     assert_eq!(stats.users["1"].coins, 4_000);
 }
+
+fn temp_stats_path(label: &str) -> PathBuf {
+    std::env::temp_dir()
+        .join(format!("mafia-stats-{label}-{}", uuid::Uuid::new_v4()))
+        .join("stats.json")
+}
+
+#[test]
+fn concurrent_saves_always_leave_the_newest_stats_file() {
+    let path = temp_stats_path("concurrent");
+    // 호출부처럼 상태를 바꿀 때마다 복제해 스냅샷을 뜬다. 뒤의 스냅샷일수록 코인이 많다.
+    let mut live = StatsFile::default();
+    let snapshots = (1..=32)
+        .map(|coins| {
+            ensure_player_stats(&mut live, 1, "Alpha").coins = coins;
+            live.clone()
+        })
+        .collect::<Vec<_>>();
+    let barrier = std::sync::Barrier::new(snapshots.len());
+    std::thread::scope(|scope| {
+        for snapshot in snapshots.iter().rev() {
+            let (path, barrier) = (&path, &barrier);
+            scope.spawn(move || {
+                barrier.wait();
+                save_stats(path, snapshot).unwrap();
+                // 다른 저장이 한창이어도 stats.json은 있고, 방금 저장한 것보다 오래되지 않았다.
+                let text = fs::read_to_string(path).expect("stats.json must exist");
+                let on_disk: StatsFile = serde_json::from_str(&text).unwrap();
+                assert!(on_disk.users["1"].coins >= snapshot.users["1"].coins);
+            });
+        }
+    });
+    assert_eq!(load_stats(&path).unwrap().users["1"].coins, 32);
+    fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn save_stats_ignores_an_older_snapshot() {
+    let path = temp_stats_path("order");
+    let mut live = StatsFile::default();
+    ensure_player_stats(&mut live, 1, "Alpha").coins = 100;
+    let older = live.clone();
+    ensure_player_stats(&mut live, 1, "Alpha").coins = 200;
+    let mut newer = live.clone();
+    save_stats(&path, &newer).unwrap();
+    save_stats(&path, &older).unwrap();
+    assert_eq!(load_stats(&path).unwrap().users["1"].coins, 200);
+    // 같은 스냅샷을 고쳐 다시 저장하는 것은 막지 않는다.
+    newer.users.get_mut("1").unwrap().coins = 300;
+    save_stats(&path, &newer).unwrap();
+    assert_eq!(load_stats(&path).unwrap().users["1"].coins, 300);
+    fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}

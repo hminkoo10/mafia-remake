@@ -4,9 +4,13 @@ use anyhow::{Context, Result};
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
-    path::Path,
+    path::{Path, PathBuf},
+    sync::{
+        Mutex, PoisonError,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    },
 };
 
 pub const INITIAL_RATING: i64 = 1000;
@@ -76,6 +80,35 @@ pub struct StatsFile {
     /// 관리자가 발급한 코인 쿠폰 (코드 → 쿠폰). 코드는 1회용이다.
     #[serde(default)]
     pub coin_coupons: HashMap<String, CoinCoupon>,
+    /// 저장 순서용 스냅샷 번호 (파일에는 쓰지 않는다). `SnapshotSeq` 참고.
+    #[serde(skip)]
+    snapshot_seq: SnapshotSeq,
+}
+
+static NEXT_SNAPSHOT_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// 만들거나 복제할 때마다 전역 카운터에서 새 번호를 받는다. 호출부는 잠금 안에서
+/// `stats_file.clone()`으로 스냅샷을 뜨므로, 번호가 클수록 더 최신 상태다.
+/// `save_stats`는 이미 쓴 것보다 오래된 스냅샷을 버린다.
+#[derive(Debug)]
+struct SnapshotSeq(u64);
+
+impl SnapshotSeq {
+    fn next() -> Self {
+        Self(NEXT_SNAPSHOT_SEQ.fetch_add(1, AtomicOrdering::Relaxed))
+    }
+}
+
+impl Default for SnapshotSeq {
+    fn default() -> Self {
+        Self::next()
+    }
+}
+
+impl Clone for SnapshotSeq {
+    fn clone(&self) -> Self {
+        Self::next()
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -224,8 +257,22 @@ pub fn load_stats(path: impl AsRef<Path>) -> Result<StatsFile> {
         .with_context(|| format!("stats JSON을 파싱하지 못했습니다: {}", path.display()))
 }
 
+/// 경로별로 마지막에 쓴 스냅샷 번호. 저장을 한 번에 하나씩 하는 잠금도 겸한다.
+static SAVED_SNAPSHOT_SEQ: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
+
+/// stats 파일을 저장한다. 여러 블로킹 스레드에서 동시에 불러도 되며, 이미 쓴
+/// 스냅샷보다 오래된 스냅샷(먼저 복제된 것)은 쓰지 않고 넘어간다.
 pub fn save_stats(path: impl AsRef<Path>, stats: &StatsFile) -> Result<()> {
     let path = path.as_ref();
+    let mut saved = SAVED_SNAPSHOT_SEQ
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if saved
+        .get(path)
+        .is_some_and(|&seq| seq > stats.snapshot_seq.0)
+    {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("stats 디렉터리를 만들지 못했습니다: {}", parent.display()))?;
@@ -241,13 +288,10 @@ pub fn save_stats(path: impl AsRef<Path>, stats: &StatsFile) -> Result<()> {
     text.push('\n');
     fs::write(&temp_path, text)
         .with_context(|| format!("stats 임시 파일을 쓰지 못했습니다: {}", temp_path.display()))?;
-    if path.exists() {
-        fs::remove_file(path).with_context(|| {
-            format!("기존 stats 파일을 교체하지 못했습니다: {}", path.display())
-        })?;
-    }
+    // rename은 기존 파일을 한 번에 바꿔치기한다 (지운 뒤 옮기면 파일이 없는 순간이 생긴다).
     fs::rename(&temp_path, path)
         .with_context(|| format!("stats 파일을 저장하지 못했습니다: {}", path.display()))?;
+    saved.insert(path.to_path_buf(), stats.snapshot_seq.0);
     Ok(())
 }
 
