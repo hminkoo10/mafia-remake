@@ -328,39 +328,80 @@ fn oauth_code_shape_is_checked_before_discord_call() {
 }
 
 #[test]
-fn auth_rate_limit_is_per_ip_and_expires() {
-    let mut attempts = HashMap::new();
-    let first: IpAddr = "203.0.113.7".parse().unwrap();
-    let second: IpAddr = "203.0.113.8".parse().unwrap();
+fn auth_cooldown_follows_discord_retry_after_within_bounds() {
+    let limiter = AuthLimiter::new();
     let start = Instant::now();
+    assert_eq!(limiter.cooling_down(start), None);
 
-    for _ in 0..AUTH_RATE_MAX_ATTEMPTS {
-        assert!(record_auth_attempt(&mut attempts, first, start));
-    }
-    assert!(!record_auth_attempt(&mut attempts, first, start));
-    assert!(record_auth_attempt(&mut attempts, second, start));
+    assert_eq!(
+        limiter.cool_down(start, Some(Duration::from_secs(3))),
+        Duration::from_secs(3)
+    );
+    assert_eq!(
+        limiter.cooling_down(start + Duration::from_secs(1)),
+        Some(Duration::from_secs(2))
+    );
+    assert_eq!(limiter.cooling_down(start + Duration::from_secs(3)), None);
 
-    let later = start + AUTH_RATE_WINDOW;
-    assert!(record_auth_attempt(&mut attempts, first, later));
-    // 창이 지난 다른 IP 항목은 정리된다.
-    assert!(!attempts.contains_key(&second));
+    // 너무 짧거나 긴 값은 범위 안으로, 없으면 기본값. 더 이른 끝으로 줄이지는 않는다.
+    let later = start + Duration::from_secs(10);
+    assert_eq!(
+        limiter.cool_down(later, Some(Duration::from_secs(3600))),
+        AUTH_COOLDOWN_MAX
+    );
+    assert_eq!(
+        limiter.cool_down(later, Some(Duration::ZERO)),
+        AUTH_COOLDOWN_MAX
+    );
+    let fresh = AuthLimiter::new();
+    assert_eq!(
+        fresh.cool_down(later, Some(Duration::ZERO)),
+        AUTH_COOLDOWN_MIN
+    );
+    let fresh = AuthLimiter::new();
+    assert_eq!(fresh.cool_down(later, None), AUTH_COOLDOWN_DEFAULT);
 }
 
 #[test]
-fn auth_client_ip_prefers_cloudflare_header() {
-    let peer: SocketAddr = "198.51.100.1:5000".parse().unwrap();
-    let mut headers = HeaderMap::new();
-    assert_eq!(client_ip(&headers, Some(peer)), peer.ip());
-    assert_eq!(client_ip(&headers, None), IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-
-    headers.insert("CF-Connecting-IP", "203.0.113.9".parse().unwrap());
+fn discord_retry_after_reads_header_then_body() {
+    let body = serde_json::json!({ "retry_after": 2.5 });
     assert_eq!(
-        client_ip(&headers, Some(peer)),
-        "203.0.113.9".parse::<IpAddr>().unwrap()
+        discord_retry_after(Some("7"), &body),
+        Some(Duration::from_secs(7))
     );
+    assert_eq!(
+        discord_retry_after(None, &body),
+        Some(Duration::from_millis(2500))
+    );
+    assert_eq!(
+        discord_retry_after(Some("soon"), &body),
+        Some(Duration::from_millis(2500))
+    );
+    assert_eq!(
+        discord_retry_after(Some("-1"), &serde_json::json!({})),
+        None
+    );
+    assert_eq!(discord_retry_after(None, &serde_json::json!({})), None);
+}
 
-    headers.insert("CF-Connecting-IP", "not-an-ip".parse().unwrap());
-    assert_eq!(client_ip(&headers, Some(peer)), peer.ip());
+#[tokio::test]
+async fn auth_slots_queue_a_burst_instead_of_rejecting_it() {
+    // 게임 시작 때 참가자들이 한꺼번에 열어도(같은 프록시 주소) 거절하지 않고 차례로 처리한다.
+    let limiter = Arc::new(AuthLimiter::new());
+    let held = (0..AUTH_MAX_CONCURRENT)
+        .map(|_| limiter.slots.try_acquire().unwrap())
+        .collect::<Vec<_>>();
+    assert!(limiter.slots.try_acquire().is_err());
+    let waiter = {
+        let limiter = limiter.clone();
+        tokio::spawn(async move {
+            tokio::time::timeout(AUTH_QUEUE_WAIT, limiter.slots.acquire())
+                .await
+                .is_ok()
+        })
+    };
+    drop(held);
+    assert!(waiter.await.unwrap());
 }
 
 #[test]

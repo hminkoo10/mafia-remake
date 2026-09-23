@@ -7,10 +7,10 @@ use crate::{
 };
 use anyhow::Result;
 use axum::{
-    Extension, Json, Router,
+    Json, Router,
     body::Body,
     extract::{
-        ConnectInfo, Query, State,
+        Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, Method, StatusCode, Uri, header},
@@ -27,12 +27,11 @@ use poise::serenity_prelude as serenity;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{RwLock, Semaphore, broadcast};
 use tower_http::{
     cors::{Any, CorsLayer},
     services::ServeDir,
@@ -53,8 +52,7 @@ pub struct ActivityState {
     pub client_id: String,
     pub client_secret: String,
     pub discord_updates: broadcast::Sender<ActivityDiscordUpdate>,
-    /// 클라이언트 IP별 OAuth 교환 시도 (창 시작 시각, 횟수)
-    auth_attempts: Arc<Mutex<HashMap<IpAddr, (Instant, u32)>>>,
+    auth_limiter: Arc<AuthLimiter>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -96,7 +94,7 @@ impl ActivityState {
             client_id,
             client_secret,
             discord_updates,
-            auth_attempts: Arc::new(Mutex::new(HashMap::new())),
+            auth_limiter: Arc::new(AuthLimiter::new()),
         }
     }
 
@@ -338,7 +336,7 @@ pub async fn run_activity_server(
         };
         println!("Discord Activity 서버 시작 (HTTPS): https://{addr}");
         if let Err(e) = axum_server::bind_rustls(addr, config)
-            .serve(router.into_make_service_with_connect_info::<SocketAddr>())
+            .serve(router.into_make_service())
             .await
         {
             eprintln!("Activity 서버 오류: {e}");
@@ -352,12 +350,7 @@ pub async fn run_activity_server(
             }
         };
         println!("Discord Activity 서버 시작 (HTTP): http://{addr}");
-        if let Err(e) = axum::serve(
-            listener,
-            router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        {
+        if let Err(e) = axum::serve(listener, router).await {
             eprintln!("Activity 서버 오류: {e}");
         }
     }
@@ -370,8 +363,77 @@ pub async fn run_activity_server(
 /// Discord 쪽 OAuth 호출이 멈춰도 요청이 무한정 붙잡히지 않게 한다.
 const DISCORD_OAUTH_TIMEOUT: Duration = Duration::from_secs(10);
 const OAUTH_CODE_LEN: std::ops::RangeInclusive<usize> = 8..=128;
-const AUTH_RATE_WINDOW: Duration = Duration::from_secs(60);
-const AUTH_RATE_MAX_ATTEMPTS: u32 = 10;
+/// 동시에 진행하는 Discord OAuth 교환 수. Activity 요청은 Discord 프록시를 거쳐 거의 같은
+/// 주소에서 오고, CF-Connecting-IP는 원본 서버에 바로 붙으면 위조할 수 있어서 IP별 제한은
+/// 게임 시작 때 한꺼번에 여는 참가자만 막는다. 대신 전체 동시 실행 수를 묶고, 자리가 날
+/// 때까지 잠깐 줄을 세운다.
+const AUTH_MAX_CONCURRENT: usize = 4;
+const AUTH_QUEUE_WAIT: Duration = Duration::from_secs(10);
+/// Discord가 429를 주면 Retry-After만큼(이 범위 안으로) 모든 교환을 멈춘다. 계속 두드리면
+/// Discord가 봇의 IP를 막을 수 있다.
+const AUTH_COOLDOWN_DEFAULT: Duration = Duration::from_secs(5);
+const AUTH_COOLDOWN_MIN: Duration = Duration::from_secs(1);
+const AUTH_COOLDOWN_MAX: Duration = Duration::from_secs(60);
+
+pub(crate) struct AuthLimiter {
+    slots: Semaphore,
+    cooldown_until: Mutex<Option<Instant>>,
+}
+
+impl AuthLimiter {
+    fn new() -> Self {
+        Self {
+            slots: Semaphore::new(AUTH_MAX_CONCURRENT),
+            cooldown_until: Mutex::new(None),
+        }
+    }
+
+    /// Discord 429 뒤 대기 중이면 남은 시간.
+    fn cooling_down(&self, now: Instant) -> Option<Duration> {
+        let until = *self
+            .cooldown_until
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        until
+            .and_then(|until| until.checked_duration_since(now))
+            .filter(|left| !left.is_zero())
+    }
+
+    /// Discord가 429를 줬다. 이미 더 늦게까지 멈춰 있으면 줄이지 않는다.
+    fn cool_down(&self, now: Instant, retry_after: Option<Duration>) -> Duration {
+        let wait = retry_after
+            .unwrap_or(AUTH_COOLDOWN_DEFAULT)
+            .clamp(AUTH_COOLDOWN_MIN, AUTH_COOLDOWN_MAX);
+        let mut until = self
+            .cooldown_until
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let candidate = now + wait;
+        let until = until.get_or_insert(candidate);
+        if *until < candidate {
+            *until = candidate;
+        }
+        until.saturating_duration_since(now)
+    }
+}
+
+/// Discord 429 응답의 대기 시간. Retry-After 헤더(초)를 먼저 보고, 없으면 본문의 retry_after.
+fn discord_retry_after(header: Option<&str>, body: &serde_json::Value) -> Option<Duration> {
+    header
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .or_else(|| body["retry_after"].as_f64())
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+}
+
+fn auth_too_many(retry_after: Duration) -> Response {
+    let seconds = retry_after.as_secs() + u64::from(retry_after.subsec_nanos() > 0);
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, seconds.max(1).to_string())],
+        Json(serde_json::json!({ "error": "too many requests" })),
+    )
+        .into_response()
+}
 
 /// 요청으로 들어온 Discord ID(snowflake)를 읽는다. serenity `*Id::new(0)`은 패닉하고
 /// 릴리스 빌드는 panic=abort라 봇 전체가 죽으므로 0도 거절한다.
@@ -387,36 +449,8 @@ fn is_plausible_oauth_code(code: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
-/// Cloudflare를 거치면 CF-Connecting-IP가 실제 클라이언트 주소다. 없으면 TCP 상대 주소를 쓰고,
-/// 둘 다 모르면 한 버킷(0.0.0.0)으로 묶는다.
-fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> IpAddr {
-    headers
-        .get("CF-Connecting-IP")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<IpAddr>().ok())
-        .or_else(|| peer.map(|addr| addr.ip()))
-        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
-}
-
-/// IP별 고정 창 레이트 리밋. 창이 지난 항목은 매번 지우고, 허용되면 횟수를 센다.
-fn record_auth_attempt(
-    attempts: &mut HashMap<IpAddr, (Instant, u32)>,
-    client: IpAddr,
-    now: Instant,
-) -> bool {
-    attempts.retain(|_, (started, _)| now.saturating_duration_since(*started) < AUTH_RATE_WINDOW);
-    let (_, count) = attempts.entry(client).or_insert((now, 0));
-    if *count >= AUTH_RATE_MAX_ATTEMPTS {
-        return false;
-    }
-    *count += 1;
-    true
-}
-
 async fn auth_handler(
     State(state): State<ActivityState>,
-    headers: HeaderMap,
-    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     println!("[auth] code={:?} guild_id={:?}", query.code, query.guild_id);
@@ -451,20 +485,19 @@ async fn auth_handler(
             .into_response();
     }
 
-    let client = client_ip(&headers, peer.map(|Extension(ConnectInfo(addr))| addr));
-    let allowed = {
-        let mut attempts = state
-            .auth_attempts
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        record_auth_attempt(&mut attempts, client, Instant::now())
+    let limiter = state.auth_limiter.clone();
+    if let Some(left) = limiter.cooling_down(Instant::now()) {
+        return auth_too_many(left);
+    }
+    // 자리가 날 때까지 기다린다. 끝까지 자리가 안 나면 잠시 뒤 다시 시도하게 한다.
+    let _slot = match tokio::time::timeout(AUTH_QUEUE_WAIT, limiter.slots.acquire()).await {
+        Ok(Ok(slot)) => slot,
+        Ok(Err(_)) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(_) => return auth_too_many(AUTH_COOLDOWN_MIN),
     };
-    if !allowed {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({ "error": "too many requests" })),
-        )
-            .into_response();
+    // 기다리는 동안 다른 요청이 429를 받았을 수 있다.
+    if let Some(left) = limiter.cooling_down(Instant::now()) {
+        return auth_too_many(left);
     }
 
     let http = match reqwest::Client::builder()
@@ -494,6 +527,21 @@ async fn auth_handler(
         Ok(res) if res.status().is_success() => {
             let body: serde_json::Value = res.json().await.unwrap_or_default();
             body["access_token"].as_str().unwrap_or("").to_string()
+        }
+        Ok(res) if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+            let header = res
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            let body: serde_json::Value = res.json().await.unwrap_or_default();
+            let retry_after = discord_retry_after(header.as_deref(), &body);
+            let left = limiter.cool_down(Instant::now(), retry_after);
+            eprintln!(
+                "Discord token exchange rate limited: pausing OAuth for {}ms",
+                left.as_millis()
+            );
+            return auth_too_many(left);
         }
         Ok(res) => {
             let status = res.status();
