@@ -31,17 +31,11 @@
   opacity: 1;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .dealer-backdrop-poster,
-  .dealer-backdrop-media {
-    transition: none;
-  }
+/* 연출을 끄면(앱 버튼) 영상 대신 사진만 보인다. 전환 효과는 .casino-app.calm 규칙이 끈다. */
+.dealer-backdrop-layer[data-reduced-motion="true"] .dealer-backdrop-poster {
+  opacity: 1 !important;
+}
 
-  .dealer-backdrop-layer[data-reduced-motion="true"] .dealer-backdrop-poster {
-    opacity: 1 !important;
-  }
-
-  .dealer-backdrop-layer[data-reduced-motion="true"] .dealer-backdrop-media {
-    opacity: 0 !important;
-  }
+.dealer-backdrop-layer[data-reduced-motion="true"] .dealer-backdrop-media {
+  opacity: 0 !important;
 }

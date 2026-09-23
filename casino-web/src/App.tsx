@@ -349,12 +349,13 @@ const dealt = (cards: string[], times: number[] | undefined, now: number) =>
 export default function Casino() {
   const appRef = useRef<HTMLDivElement>(null);
   const [fullscreen, setFullscreen] = useState<"native" | "expanded" | null>(null);
-  const [dealerVideo, setDealerVideo] = useState(() => {
+  // 연출: 카드·칩 애니메이션과 딜러 영상. 기기의 '동작 줄이기'와 상관없이 켜 두고, 버튼으로 끌 수 있다.
+  const [motion, setMotion] = useState(() => {
     try {
-      const saved = localStorage.getItem("casino-dealer-video");
+      const saved = localStorage.getItem("casino-motion");
       if (saved !== null) return saved === "true";
     } catch { /* Storage can be unavailable in embedded browsers. */ }
-    return !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    return true;
   });
   const [{ token, table: linkTable }] = useState(readLink);
   const [tableId, setTableId] = useState<string | null>(linkTable);
@@ -926,7 +927,9 @@ export default function Casino() {
   return (
     <div
       ref={appRef}
-      className={`casino-app ${fullscreen ? "is-fullscreen" : ""} ${fullscreen === "expanded" ? "expanded-screen" : ""} ${drag ? "chip-dragging" : ""}`}
+      className={`casino-app ${fullscreen ? "is-fullscreen" : ""} ${fullscreen === "expanded" ? "expanded-screen" : ""} ${drag ? "chip-dragging" : ""} ${
+        motion ? "" : "calm"
+      }`}
     >
       <Toaster position="top-center" richColors />
       {drag && (
@@ -1000,16 +1003,22 @@ export default function Casino() {
             </p>
           </div>
           <div className="heading-actions">
-            {hasDealerVideo(table.dealer.id) && <button
+            <button
               className="icon-button"
-              aria-label={dealerVideo ? "딜러 영상 끄기" : "딜러 영상 켜기"}
-              aria-pressed={dealerVideo}
-              title={dealerVideo ? "딜러 영상 끄기" : "딜러 영상 켜기"}
+              aria-label={motion ? "연출 끄기" : "연출 켜기"}
+              aria-pressed={motion}
+              title={motion ? "연출 끄기 (카드·칩 애니메이션, 딜러 영상)" : "연출 켜기 (카드·칩 애니메이션, 딜러 영상)"}
               onClick={() => {
-                setDealerVideo(!dealerVideo);
-                try { localStorage.setItem("casino-dealer-video", String(!dealerVideo)); } catch { /* Optional preference. */ }
+                setMotion(!motion);
+                try {
+                  localStorage.setItem("casino-motion", String(!motion));
+                } catch {
+                  /* Optional preference. */
+                }
               }}
-            >{dealerVideo ? <Video size={18} /> : <VideoOff size={18} />}</button>}
+            >
+              {motion ? <Video size={18} /> : <VideoOff size={18} />}
+            </button>
             <button className="icon-button" aria-label={fullscreen ? "전체화면 종료" : "전체화면"} title={fullscreen ? "전체화면 종료 (Esc)" : "전체화면"} onClick={() => void toggleFullscreen()}>
               {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
             </button>
@@ -1064,8 +1073,15 @@ export default function Casino() {
                 id={table.dealer.id}
                 name={table.dealer.name}
                 mood={dealerMood}
-                motionEnabled={dealerVideo}
-                poster={table.dealer.id === "sophia" ? `${import.meta.env.BASE_URL}dealers/sophia-table.png` : dealerPortrait(table.dealer.id)}
+                motionEnabled={motion}
+                poster={
+                  table.dealer.id !== "sophia"
+                    ? dealerPortrait(table.dealer.id)
+                    : motion && hasDealerVideo("sophia")
+                      ? // 영상 첫 프레임: 영상이 뜨기 전후로 딜러 얼굴이 바뀌지 않게 한다.
+                        `${import.meta.env.BASE_URL}dealers/sophia-video.jpg`
+                      : `${import.meta.env.BASE_URL}dealers/sophia-table.png`
+                }
               />
               <div className="table-shade" />
               <span className="shoe-anchor" aria-hidden="true" style={{ left: `${shoePos[0]}%`, top: `${shoePos[1]}%` }} />

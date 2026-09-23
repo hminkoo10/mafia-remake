@@ -16,7 +16,8 @@
 @keyframes shoe-fan{0%,100%{transform:translateX(calc(var(--fan)*1px)) rotate(calc(var(--fan)*1deg))}25%,75%{transform:translateX(calc(var(--fan)*9px)) rotate(calc(var(--fan)*11deg))}50%{transform:translateX(calc(var(--fan)*-4px)) rotate(calc(var(--fan)*-5deg))}}
 @keyframes shoe-overlay{0%{opacity:0}12%,85%{opacity:1}100%{opacity:0}}
 @media(max-width:760px){.shoe-status{left:14px;top:69px;width:165px;padding:7px 9px}.shoe-status>div:first-child{font-size:10px}.shoe-status small{font-size:8px}.shoe-shuffle{width:225px}}
-@media(prefers-reduced-motion:reduce){.shoe-gauge>span{transition:none}.shoe-shuffle,.shoe-fan>span{animation:none}.shoe-fan>span{transform:translateX(calc(var(--fan)*9px)) rotate(calc(var(--fan)*11deg))}}
+/* 연출을 끄면(.calm) 모든 애니메이션이 멈춘다: 셔플 카드는 펼친 모양으로 둔다. */
+.casino-app.calm .shoe-fan>span{transform:translateX(calc(var(--fan)*9px)) rotate(calc(var(--fan)*11deg))}
 
 .history-results{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:4px}
 .history-results li{display:flex;flex-direction:column;gap:2px;align-items:baseline;font-size:12px;color:#c9d3bb}
@@ -82,7 +83,6 @@
 .dealing-row .eyebrow{color:#dcc17a}
 .dealing-row p{animation:dealing-pulse 1.2s ease-in-out infinite}
 @keyframes dealing-pulse{0%,100%{opacity:.55}50%{opacity:1}}
-@media(prefers-reduced-motion:reduce){.playing-card,.playing-card.flip{animation:none!important}}
 
 /* 에볼루션식 칩 베팅: 칩 트레이 + 좌석 앞 칩 더미 */
 .betting-controls.evo{flex-direction:column;align-items:stretch;gap:12px}
@@ -124,7 +124,6 @@
 .turn-ring .turn-ring-progress{stroke:#dcb956;stroke-dasharray:132;transition:stroke-dashoffset .25s linear;stroke-linecap:round}
 .pot-pill{transition:transform .2s}
 .pot-pill.bump{transform:translateX(-50%) scale(1.18);box-shadow:0 0 18px #e4b74888}
-@media(prefers-reduced-motion:reduce){.dealer-backdrop,.game-table.dealing .dealer-backdrop,.seat-winner .player-avatar,.action-bubble{animation:none!important}.chip-flight{transition:none}}
 
 /* 딜러 배경 영상도 이미지와 같은 자리에 맞춘다 */
 video.dealer-backdrop{position:absolute;width:100%;height:100%;object-fit:cover;object-position:center 22%;z-index:-3;background:#0c241c}
@@ -205,7 +204,7 @@ video.dealer-backdrop{position:absolute;width:100%;height:100%;object-fit:cover;
 .playing-card.landed.flip{animation:card-flip .6s ease-out}
 @keyframes shoe-deal{0%{opacity:0;transform:translate(var(--from-x),var(--from-y)) rotate(-24deg) scale(.6)}10%{opacity:1}80%{transform:translate(0,-4px) rotate(2deg) scale(1.03)}100%{opacity:1;transform:none}}
 @keyframes shoe-deal-back{0%,64%{opacity:1}100%{opacity:0}}
-@media(prefers-reduced-motion:reduce){.playing-card.from-shoe::after{display:none}}
+.casino-app.calm .playing-card.from-shoe::after{display:none}
 
 /* 블랙잭: 모든 참가자의 핸드를 좌석 앞에 펼친다. 스플릿하면 두 핸드가 나란히 놓인다. */
 .bj-seat-hands{gap:8px;align-items:flex-end}
@@ -274,7 +273,6 @@ video.dealer-backdrop{position:absolute;width:100%;height:100%;object-fit:cover;
   .game-table.blackjack .occupied.mine .seat-hand-cards .playing-card+.playing-card{margin-left:-18px}
   .seat-hand-cards .playing-card+.playing-card{margin-left:-15px}
 }
-@media(prefers-reduced-motion:reduce){.bet-circle,.drag-chip{transition:none}.seat-hand-result{animation:none}}
 
 /* 블랙잭 배치: 딜러 카드는 딜러 바로 앞, 참가자 핸드는 좌석 앞. 서로 겹치지 않게 높이를 나눈다. */
 .game-table.blackjack .dealer-name{top:37%}
@@ -289,7 +287,6 @@ video.dealer-backdrop{position:absolute;width:100%;height:100%;object-fit:cover;
 .seat-hand-result{position:absolute;left:50%;top:-11px;z-index:4;transform:translateX(-50%);animation:hand-result-in .3s ease-out}
 @keyframes hand-result-in{from{opacity:0;transform:translate(-50%,6px) scale(.9)}to{opacity:1;transform:translate(-50%,0)}}
 @media(max-width:760px){.felt-rules{font-size:8px;letter-spacing:1.5px;top:62%}.game-table.blackjack .table-chat-preview{top:132px}}
-@media(prefers-reduced-motion:reduce){.seat-hand-result{animation:none}}
 /* 스플릿 핸드 사이 간격: 모서리 표시(점수·베팅)가 옆 핸드와 겹치지 않게 */
 .bj-seat-hands{gap:16px}
 .seat-hand-bet{top:-9px;bottom:auto;right:-7px}
