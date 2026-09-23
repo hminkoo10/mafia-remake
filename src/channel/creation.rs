@@ -1043,11 +1043,12 @@ pub async fn ensure_memo_channel(
     {
         return Some(channel_id);
     }
-    let (guild_id, display_name) = {
+    let (guild_id, display_name, anonymous) = {
         let running_read = running.read().await;
         (
             running_read.guild_id,
             status_display_name(&running_read, player),
+            running_read.anonymous_enabled,
         )
     };
     if verify_game_member(ctx, running, player.user_id)
@@ -1085,13 +1086,22 @@ pub async fn ensure_memo_channel(
     let _ = send_channel_embed(
         &ctx.http,
         channel.id,
-        "개인 메모 채널입니다.\n`/메모 참가자 메모내용`으로 참가자별 메모를 저장하고, `/메모 참가자`로 저장한 메모를 다시 볼 수 있습니다.",
+        memo_channel_welcome(anonymous),
         "메모 채널",
         serenity::Colour::DARK_GREEN,
         vec![],
     )
     .await;
     Some(channel.id)
+}
+
+/// 메모 채널 첫 안내. 익명 게임에서 `참가자` 항목은 거부되므로 `익명이름`으로 안내한다.
+pub fn memo_channel_welcome(anonymous: bool) -> &'static str {
+    if anonymous {
+        "개인 메모 채널입니다.\n`/메모 익명이름 메모내용`으로 참가자별 메모를 저장하고, `/메모 익명이름`으로 저장한 메모를 다시 볼 수 있습니다.\n익명 게임에서는 `참가자` 항목을 쓸 수 없습니다."
+    } else {
+        "개인 메모 채널입니다.\n`/메모 참가자 메모내용`으로 참가자별 메모를 저장하고, `/메모 참가자`로 저장한 메모를 다시 볼 수 있습니다."
+    }
 }
 
 pub async fn ensure_anonymous_dead_input_channel(

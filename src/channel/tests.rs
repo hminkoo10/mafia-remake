@@ -886,3 +886,12 @@ fn manager_commands_only_run_in_the_home_guild() {
     assert!(unset.contains("HOME_GUILD_ID"), "{unset}");
     assert!(home_guild_denial(0, 100).is_some());
 }
+
+#[test]
+fn memo_channel_welcome_points_anonymous_games_to_alias() {
+    // 익명 게임은 `참가자` 항목을 거부하므로 안내도 `익명이름`을 가리켜야 한다.
+    let anonymous = memo_channel_welcome(true);
+    assert!(anonymous.contains("/메모 익명이름"), "{anonymous}");
+    assert!(!anonymous.contains("/메모 참가자"), "{anonymous}");
+    assert!(memo_channel_welcome(false).contains("/메모 참가자"));
+}
