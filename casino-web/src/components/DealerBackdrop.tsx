@@ -87,6 +87,8 @@ function DealerBackdropInner({ id, name, mood, poster, motionEnabled }: DealerBa
         video.currentTime = 0;
         setEnded((current) => current[mood] ? { ...current, [mood]: false } : current);
       }
+      // Resuming a tab or toggling motion must not replay an already completed gesture.
+      if (video.ended && !shouldRestart) continue;
       void video.play().catch(() => {
         // Autoplay rejection is not a missing-media failure; leave the ready frame visible.
       });
