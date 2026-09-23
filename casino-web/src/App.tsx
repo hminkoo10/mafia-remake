@@ -35,7 +35,8 @@ import { ChatMessages, TableChatPreview } from "./components/TableChat";
 import { DealerBackdrop, hasDealerVideo } from "./components/DealerBackdrop";
 import type { DealerMood } from "./dealer-media";
 import { isStaleSnapshot, nextClockDelay, snapshotKey } from "./state-sync";
-import type { CasinoCommand, GameKind, HandView, SeatResult, SeatView, StateResponse, TableRules, TableView } from "./types";
+import { ALL_DENOMS, chipLabel, fmt, handResultText, handScore, handTone, potRaiseTo, signed, tableDenoms } from "./table-helpers";
+import type { CasinoCommand, GameKind, SeatResult, SeatView, StateResponse, TableRules, TableView } from "./types";
 import {
   Dialog,
   DialogContent,
@@ -55,8 +56,6 @@ import {
   toast,
 } from "./ui";
 
-const fmt = (n: number) => n.toLocaleString("en-US");
-const signed = (n: number) => `${n < 0 ? "−" : "+"}${fmt(Math.abs(n))}`;
 const resultTone = (r: SeatResult) => r.won > 0 ? "won" : r.net < 0 ? "lost" : "even";
 const resultHeadline = (r: SeatResult, mine: boolean) => r.won > 0
   ? `${mine ? "이기셨습니다" : `${r.name} 이김`} ${signed(r.won)}`
@@ -198,24 +197,12 @@ const kindRoom = (kind: GameKind) => (kind === "holdem" ? "THE SIGNATURE ROOM" :
 const kindStakes = (kind: GameKind, rules: TableRules) =>
   kind === "holdem" ? `${fmt(rules.small_blind)} / ${fmt(rules.big_blind)}` : `${fmt(rules.min_bet)} – ${fmt(rules.max_bet)}`;
 const floorStep = (value: number, step: number) => Math.floor(value / step) * step;
-/** 칩 단위 전체. 테이블 한도에 맞는 것 6개까지 트레이에 올린다. */
-const ALL_DENOMS = [100, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000];
-function tableDenoms(rules: TableRules): number[] {
-  const usable = ALL_DENOMS.filter((value) => value <= Math.max(rules.max_bet, rules.bet_step) && value % rules.bet_step === 0);
-  // 가장 작은 칩으로 최소 베팅을 맞출 수 있게, 최소 베팅 이하에서 가장 큰 칩부터 보여 준다.
-  let start = 0;
-  usable.forEach((value, index) => {
-    if (value <= rules.min_bet) start = index;
-  });
-  return usable.slice(start, start + 6);
-}
 type BetSpot = "main" | "pairs" | "plus3";
 interface Placement {
   spot: BetSpot;
   value: number;
 }
 const SPOT_LABEL: Record<BetSpot, string> = { main: "메인", pairs: "퍼펙트 페어", plus3: "21+3" };
-const chipLabel = (v: number) => (v >= 1_000_000 ? `${v / 1_000_000}M` : v >= 1000 ? `${v / 1000}K` : String(v));
 /** 금액을 큰 칩부터 쌓은 모양으로 나눈다 (표시용). */
 function chipsFor(amount: number): number[] {
   const out: number[] = [];
@@ -314,30 +301,6 @@ function BetCircle({
     </button>
   );
 }
-/** 블랙잭 핸드 결과 색 (좌석 위 결과 표시). */
-const handTone = (result: string | null) =>
-  !result ? "" : /블랙잭|승리/.test(result) ? "hand-won" : result === "푸시" ? "hand-push" : "hand-lost";
-const handResultText = (hand: HandView) => {
-  const gain = (hand.payout ?? 0) - hand.bet;
-  if (!hand.result) return "";
-  if (hand.result.includes("블랙잭")) return `BLACKJACK ${signed(gain)}`;
-  if (hand.result === "승리") return `WIN ${signed(gain)}`;
-  if (hand.result === "푸시") return "PUSH";
-  if (hand.result === "버스트") return `BUST ${signed(gain)}`;
-  if (hand.result === "서렌더") return `SURRENDER ${signed(gain)}`;
-  return `LOSE ${signed(gain)}`;
-};
-/** 핸드 점수: 아직 진행 중인 소프트 핸드는 "7/17"처럼 두 값을 보여 준다. */
-const handScore = (hand: HandView, visible: number, single: boolean) =>
-  hand.total > 21
-    ? hand.result
-      ? String(hand.total)
-      : "BUST"
-    : single && visible === 2 && hand.total === 21
-      ? "BJ"
-      : hand.soft && hand.status === "playing" && hand.total < 21
-        ? `${hand.total - 10}/${hand.total}`
-        : String(hand.total);
 /** 좌석의 메인 베팅 합 (스플릿·더블 포함). */
 const mainBet = (seat: SeatView) => seat.hands.reduce((sum, hand) => sum + hand.bet, 0) || seat.bet;
 /** 좌석의 테이블 위 위치 (noir.css의 .seat-N과 같은 값, % 단위). */
@@ -752,11 +715,7 @@ export default function Casino() {
       window.removeEventListener("pointercancel", end);
     };
   }, [dragging, table.legal.can_bet]);
-  const potRaise = (fraction: number) => {
-    if (!legal || !round) return 0;
-    const target = round.current_bet + Math.round((round.pot + legal.to_call) * fraction);
-    return Math.max(Math.min(legal.min_raise_to, legal.max_raise_to), Math.min(legal.max_raise_to, target));
-  };
+  const potRaise = (fraction: number) => (legal && round ? potRaiseTo(round, legal, fraction) : 0);
   const sidesValid = (pairsTotal === 0 || pairsTotal >= tableRules.side_bet_min) && (plus3Total === 0 || plus3Total >= tableRules.side_bet_min);
   const lockBet = async () => {
     if (!table.legal.can_bet || stackTotal < tableRules.min_bet || stackTotal > maxWager || !sidesValid) return false;
