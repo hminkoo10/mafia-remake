@@ -1034,6 +1034,20 @@ pub fn special_role_rule_text(role: Role) -> String {
     )
 }
 
+/// 관리 명령을 받을 서버인지 본다. 코인·설정·카지노는 봇이 들어간 모든 서버가 함께 쓰므로,
+/// 누구나 역할 이름을 정할 수 있는 다른 서버의 관리자 역할은 믿지 않는다. 막으면 안내 문구를 준다.
+fn home_guild_denial(home_guild_id: u64, guild_id: u64) -> Option<&'static str> {
+    if home_guild_id == 0 {
+        Some(
+            "이 봇의 본 서버가 정해지지 않아 관리 명령을 사용할 수 없습니다.\n봇 운영자가 .env에 HOME_GUILD_ID(본 서버 ID)를 설정하고 봇을 다시 시작해야 합니다.",
+        )
+    } else if home_guild_id != guild_id {
+        Some("관리 명령은 이 봇의 본 서버에서만 사용할 수 있습니다.")
+    } else {
+        None
+    }
+}
+
 pub async fn require_manager(ctx: Context<'_>) -> Result<bool, Error> {
     let Some(guild_id) = ctx.guild_id() else {
         reply_embed(
@@ -1046,7 +1060,15 @@ pub async fn require_manager(ctx: Context<'_>) -> Result<bool, Error> {
         .await?;
         return Ok(false);
     };
-    let manager_role = ctx.data().config.read().await.manager_role.clone();
+    let (manager_role, home_guild_id) = {
+        let config = ctx.data().config.read().await;
+        (config.manager_role.clone(), config.home_guild_id)
+    };
+    // 본 서버가 아니면 역할을 보기 전에 막는다 (관리자 역할 이름도 알려 주지 않는다).
+    if let Some(message) = home_guild_denial(home_guild_id, guild_id.get()) {
+        reply_embed(ctx, message, "권한 오류", serenity::Colour::RED, true).await?;
+        return Ok(false);
+    }
     let member = guild_id
         .member(ctx.serenity_context(), ctx.author().id)
         .await?;

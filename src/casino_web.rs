@@ -212,7 +212,7 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
         state_path,
         Arc::new(tokio::sync::RwLock::new(stats)),
         Arc::new(stats_path),
-    ));
+    )?);
     let binding = TableBinding {
         guild_id: 0,
         channel_id: 0,

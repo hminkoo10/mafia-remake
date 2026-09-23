@@ -41,6 +41,11 @@ pub struct BotConfig {
     /// 관리자 로그 채널 ID. 0이면 보내지 않는다 (코인 관리·코인 선물·쿠폰 발급·블랙리스트·초기화 기록).
     #[serde(default)]
     pub log_channel_id: u64,
+    /// 본 서버(길드) ID. 코인·설정·카지노는 모든 서버가 함께 쓰므로 관리 명령은 이 서버에서만 받는다.
+    /// 0이면 미설정: 봇이 서버 하나에만 있으면 시작할 때 그 서버로 정하고, 여러 서버면 관리 명령을 막는다.
+    /// .env의 HOME_GUILD_ID가 있으면 그 값이 우선한다.
+    #[serde(default)]
+    pub home_guild_id: u64,
     #[serde(default)]
     pub reveal_death_roles: bool,
     #[serde(default = "default_true")]
@@ -148,6 +153,19 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<BotConfig> {
     Ok(config)
 }
 
+/// .env의 HOME_GUILD_ID 값을 읽는다. 비었거나 0이면 None(설정 파일 값을 그대로 쓴다).
+/// 숫자가 아니면 오류다: 잘못 적은 값을 조용히 무시하면 관리 명령이 엉뚱한 서버에 열린다.
+pub fn parse_home_guild_id(value: &str) -> Result<Option<u64>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let guild_id = value
+        .parse::<u64>()
+        .with_context(|| format!("HOME_GUILD_ID는 서버(길드) ID 숫자여야 합니다: {value}"))?;
+    Ok((guild_id != 0).then_some(guild_id))
+}
+
 /// config.json을 저장한다. 호출부는 설정 쓰기 잠금을 쥔 채 부르므로 순서는 잠금이 지킨다.
 /// 파일은 rename 한 번으로 바뀌어, 저장 중 봇이 멈춰도 config.json이 사라지지 않는다
 /// (사라지면 다음 시작 때 예시 설정으로 덮인다).
@@ -212,4 +230,34 @@ const fn default_neutral_special_count() -> u32 {
 
 fn default_anonymous_name_mode() -> String {
     "animal".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn home_guild_id_env_is_optional_but_must_be_a_number() {
+        assert_eq!(parse_home_guild_id("").unwrap(), None);
+        assert_eq!(parse_home_guild_id("  ").unwrap(), None);
+        assert_eq!(parse_home_guild_id("0").unwrap(), None);
+        assert_eq!(
+            parse_home_guild_id(" 123456789012345678 ").unwrap(),
+            Some(123_456_789_012_345_678)
+        );
+        assert!(parse_home_guild_id("my-server").is_err());
+        assert!(parse_home_guild_id("-1").is_err());
+    }
+
+    #[test]
+    fn example_config_parses_and_old_configs_default_to_no_home_guild() {
+        let example: BotConfig =
+            serde_json::from_str(include_str!("../config.example.json")).unwrap();
+        assert_eq!(example.home_guild_id, 0);
+
+        let mut value = serde_json::to_value(&example).unwrap();
+        value.as_object_mut().unwrap().remove("home_guild_id");
+        let old: BotConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(old.home_guild_id, 0);
+    }
 }

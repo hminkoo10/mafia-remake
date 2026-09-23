@@ -126,6 +126,7 @@ fn selection_test_config() -> config::BotConfig {
         coupon_api_key: String::new(),
         coupon_coins_per_point: 10_000,
         log_channel_id: 0,
+        home_guild_id: 0,
         reveal_death_roles: false,
         reveal_public_police_status: true,
         reveal_morning_mafia_count: true,
@@ -776,4 +777,19 @@ fn recruitment_cleanup_skips_spectators_when_the_role_is_missing() {
 
     assert_eq!(removals.len(), 3);
     assert!(removals.iter().all(|(user_id, _)| *user_id != 7));
+}
+
+/// 코인·설정·카지노는 모든 서버가 함께 쓴다. 다른 서버에서 '관리자' 이름의 역할을 만들어도
+/// 관리 명령을 쓸 수 없어야 하고, 본 서버가 정해지지 않았으면 어느 서버에서도 막는다.
+#[test]
+fn manager_commands_only_run_in_the_home_guild() {
+    assert_eq!(home_guild_denial(100, 100), None);
+
+    let other_guild = home_guild_denial(100, 200).unwrap();
+    assert!(other_guild.contains("본 서버에서만"), "{other_guild}");
+    assert!(!other_guild.contains("관리자"), "{other_guild}");
+
+    let unset = home_guild_denial(0, 200).unwrap();
+    assert!(unset.contains("HOME_GUILD_ID"), "{unset}");
+    assert!(home_guild_denial(0, 100).is_some());
 }

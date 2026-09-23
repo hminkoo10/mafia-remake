@@ -104,7 +104,13 @@ pub struct TableSummary {
 }
 
 impl CasinoHub {
-    pub fn load(path: PathBuf, stats: Arc<RwLock<StatsFile>>, stats_path: Arc<PathBuf>) -> Self {
+    /// casino.json을 불러온다. 파일이 없으면 빈 카지노다. 파일이 있는데 읽거나 파싱하지 못하면
+    /// 오류를 돌려준다: 빈 상태로 시작하면 다음 저장이 테이블과 앉은 사람들의 칩을 지운다.
+    pub fn load(
+        path: PathBuf,
+        stats: Arc<RwLock<StatsFile>>,
+        stats_path: Arc<PathBuf>,
+    ) -> Result<Self> {
         let (updates, _) = broadcast::channel(256);
         let hub = Self {
             tables: DashMap::new(),
@@ -119,18 +125,14 @@ impl CasinoHub {
             avatars: DashMap::new(),
             save_lock: tokio::sync::Mutex::new(()),
         };
-        match load_file(&hub.path) {
-            Ok(file) => {
-                hub.house.store(file.house, Ordering::Relaxed);
-                for stored in file.tables {
-                    let id = stored.table.id.clone();
-                    hub.bindings.insert(id.clone(), stored.binding);
-                    hub.tables.insert(id, Arc::new(RwLock::new(stored.table)));
-                }
-            }
-            Err(error) => eprintln!("failed to load casino state: {error:?}"),
+        let file = load_file(&hub.path)?;
+        hub.house.store(file.house, Ordering::Relaxed);
+        for stored in file.tables {
+            let id = stored.table.id.clone();
+            hub.bindings.insert(id.clone(), stored.binding);
+            hub.tables.insert(id, Arc::new(RwLock::new(stored.table)));
         }
-        hub
+        Ok(hub)
     }
 
     pub fn notify(&self, table_id: &str) {

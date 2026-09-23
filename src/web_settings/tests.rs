@@ -23,6 +23,7 @@ fn test_config() -> BotConfig {
         coupon_api_key: String::new(),
         coupon_coins_per_point: 10_000,
         log_channel_id: 0,
+        home_guild_id: 0,
         reveal_death_roles: true,
         reveal_public_police_status: true,
         reveal_morning_mafia_count: true,

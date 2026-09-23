@@ -10,7 +10,11 @@ pub(crate) mod web_settings;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::AtomicU64;
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Instant,
+};
 use tokio::sync::{Notify, RwLock};
 
 const MAX_GAME_PLAYERS: usize = 24;
@@ -639,6 +643,76 @@ fn warn_settings_web_exposure(base_url: Option<&str>, web_port: u16) {
     }
 }
 
+/// 읽지 못한 상태 파일을 같은 폴더의 "<이름>.corrupt-<unix 초>"로 옮기고 옮긴 경로를 돌려준다.
+/// 그 이름이 이미 있으면 뒤에 번호를 붙여, 전에 옮겨 둔 파일을 덮어쓰지 않는다.
+fn move_aside_corrupt_file(path: &Path) -> Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .with_context(|| format!("상태 파일 이름이 없습니다: {}", path.display()))?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let mut target = path.with_file_name(format!("{file_name}.corrupt-{timestamp}"));
+    let mut suffix = 1_u32;
+    while target.exists() {
+        target = path.with_file_name(format!("{file_name}.corrupt-{timestamp}-{suffix}"));
+        suffix += 1;
+    }
+    std::fs::rename(path, &target).with_context(|| {
+        format!(
+            "상태 파일을 옮기지 못했습니다: {} → {}",
+            path.display(),
+            target.display()
+        )
+    })?;
+    Ok(target)
+}
+
+/// 코인·레이팅(stats.json)이나 카지노 칩(casino.json)처럼 잃으면 안 되는 상태 파일을 불러온다.
+/// 파일이 없으면 로더가 빈 상태를 준다. 파일이 있는데 읽거나 파싱하지 못했을 때 빈 상태로
+/// 계속하면 다음 저장이 진짜 파일을 빈 상태로 덮어쓴다. 그래서 파일을 옆으로 옮겨 보존하고
+/// 시작을 멈춘다 (옮기지 못해도 멈춘다).
+fn load_state_file<T>(path: &Path, load: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
+    load(path).map_err(|error| match move_aside_corrupt_file(path) {
+        Ok(moved) => error.context(format!(
+            "{}을(를) 읽지 못해 봇을 시작하지 않습니다. 데이터는 {}에 그대로 옮겨 두었습니다. \
+             파일을 고쳐 원래 이름으로 되돌린 뒤 다시 시작하세요 (그대로 다시 시작하면 빈 상태로 시작합니다).",
+            path.display(),
+            moved.display()
+        )),
+        Err(move_error) => error.context(format!(
+            "{}을(를) 읽지 못했고 옆으로 옮기지도 못해 봇을 시작하지 않습니다 ({move_error:#}). \
+             빈 상태로 덮어쓰지 않도록 파일을 직접 확인하세요.",
+            path.display()
+        )),
+    })
+}
+
+/// 리플레이 기록(replays.json)을 불러온다. 코인·칩과 달리 없어도 봇을 돌릴 수 있으므로,
+/// 읽지 못하면 옆으로 옮겨 보존하고 크게 알린 뒤 빈 기록으로 계속한다. 옮기지 못하면 다음
+/// 저장이 덮어쓰므로 시작을 멈춘다.
+fn load_replays_or_move_aside(path: &Path) -> Result<VecDeque<Value>> {
+    match web_settings::load_completed_replays(path) {
+        Ok(replays) => Ok(replays),
+        Err(error) => {
+            let moved = move_aside_corrupt_file(path).with_context(|| {
+                format!(
+                    "{}을(를) 읽지 못했고 옆으로 옮기지도 못해 봇을 시작하지 않습니다: {error:#}",
+                    path.display()
+                )
+            })?;
+            eprintln!(
+                "!!! 리플레이 기록 {}을(를) 읽지 못해 {}(으)로 옮기고 빈 기록으로 시작합니다. \
+                 원인: {error:#}",
+                path.display(),
+                moved.display()
+            );
+            Ok(VecDeque::new())
+        }
+    }
+}
+
 fn explicit_url_port(url: &str) -> Option<u16> {
     let without_scheme = url
         .strip_prefix("https://")
@@ -720,6 +794,135 @@ mod main_tests {
         assert!(!release_game_bets(&locks, "game-c"));
     }
 
+    fn state_temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mafia-state-{name}-{}-{}",
+            std::process::id(),
+            mafia_remake::atomic_file::next_seq()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 폴더 안에서 `<이름>.corrupt-`로 시작하는 파일들 (옮겨 둔 사본).
+    fn corrupt_copies(dir: &Path, file_name: &str) -> Vec<PathBuf> {
+        let prefix = format!("{file_name}.corrupt-");
+        let mut copies = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+            })
+            .collect::<Vec<_>>();
+        copies.sort();
+        copies
+    }
+
+    #[test]
+    fn corrupt_stats_file_is_moved_aside_and_startup_stops() {
+        let dir = state_temp_dir("stats-corrupt");
+        let path = dir.join("stats.json");
+        std::fs::write(&path, "{\"users\": {\"1\": {\"coins\": 5").unwrap();
+
+        let error = load_state_file(&path, |path| stats::load_stats(path))
+            .expect_err("깨진 stats.json으로 시작하면 안 된다");
+
+        // 원래 이름은 비워 두고(다음 시작 때 새로 쓰지 않도록 시작을 멈춘다), 데이터는 그대로 보존한다.
+        assert!(!path.exists());
+        let copies = corrupt_copies(&dir, "stats.json");
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        assert_eq!(
+            std::fs::read_to_string(&copies[0]).unwrap(),
+            "{\"users\": {\"1\": {\"coins\": 5"
+        );
+        assert!(format!("{error:#}").contains(".corrupt-"), "{error:#}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_or_valid_state_files_load_without_being_moved() {
+        let dir = state_temp_dir("stats-ok");
+        let path = dir.join("stats.json");
+
+        // 파일이 없으면 새로 시작한다.
+        let fresh = load_state_file(&path, |path| stats::load_stats(path)).unwrap();
+        assert!(fresh.users.is_empty());
+
+        let mut saved = stats::StatsFile::default();
+        stats::refund_coins(&mut saved, 1, "p1", 700);
+        stats::save_stats(&path, &saved).unwrap();
+        let loaded = load_state_file(&path, |path| stats::load_stats(path)).unwrap();
+        assert_eq!(loaded.users["1"].coins, 700);
+        assert!(path.exists());
+        assert!(corrupt_copies(&dir, "stats.json").is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn corrupt_casino_file_is_moved_aside_and_startup_stops() {
+        let dir = state_temp_dir("casino");
+        let path = dir.join("casino.json");
+        let stats = Arc::new(RwLock::new(stats::StatsFile::default()));
+        let stats_path = Arc::new(dir.join("stats.json"));
+        let load = |path: &Path| {
+            casino_hub::CasinoHub::load(path.to_path_buf(), stats.clone(), stats_path.clone())
+        };
+
+        // 파일이 없으면 빈 카지노로 시작한다.
+        let hub = load_state_file(&path, load).unwrap();
+        assert!(hub.tables.is_empty());
+
+        std::fs::write(&path, "{\"house\": 12, \"tables\": [").unwrap();
+        assert!(load_state_file(&path, load).is_err());
+        assert!(!path.exists());
+        let copies = corrupt_copies(&dir, "casino.json");
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        assert_eq!(
+            std::fs::read_to_string(&copies[0]).unwrap(),
+            "{\"house\": 12, \"tables\": ["
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn corrupt_replays_are_moved_aside_and_the_bot_continues_empty() {
+        let dir = state_temp_dir("replays");
+        let path = dir.join("replays.json");
+        std::fs::write(&path, "[{\"game_key\": ").unwrap();
+
+        let replays = load_replays_or_move_aside(&path).unwrap();
+
+        assert!(replays.is_empty());
+        assert!(!path.exists());
+        let copies = corrupt_copies(&dir, "replays.json");
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        assert_eq!(
+            std::fs::read_to_string(&copies[0]).unwrap(),
+            "[{\"game_key\": "
+        );
+        // 파일이 없으면 그냥 빈 기록이다.
+        assert!(load_replays_or_move_aside(&path).unwrap().is_empty());
+        assert_eq!(corrupt_copies(&dir, "replays.json").len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn moving_aside_never_overwrites_an_earlier_copy() {
+        let dir = state_temp_dir("move-aside");
+        let path = dir.join("stats.json");
+        std::fs::write(&path, "first").unwrap();
+        let first = move_aside_corrupt_file(&path).unwrap();
+        std::fs::write(&path, "second").unwrap();
+        let second = move_aside_corrupt_file(&path).unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "second");
+        assert!(!path.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn scientist_initial_replay_team_is_mafia() {
         assert_eq!(RunningGame::role_team_key(Role::Scientist), "mafia");
@@ -773,11 +976,16 @@ async fn main() -> Result<()> {
     let api_keys_path = workspace_root.join("api_keys.json");
     let stats_path = workspace_root.join("stats.json");
     let completed_replays_path = workspace_root.join("replays.json");
-    let config = config::load_config(&config_path)?;
+    let mut config = config::load_config(&config_path)?;
+    // 본 서버는 .env의 HOME_GUILD_ID가 config.json보다 우선한다.
+    if let Ok(value) = std::env::var("HOME_GUILD_ID")
+        && let Some(home_guild_id) = config::parse_home_guild_id(&value)?
+    {
+        config.home_guild_id = home_guild_id;
+    }
     let api_keys = web_settings::load_api_key_store(&api_keys_path)?;
-    let stats = stats::load_stats(&stats_path).unwrap_or_default();
-    let mut loaded_replays =
-        web_settings::load_completed_replays(&completed_replays_path).unwrap_or_default();
+    let stats = load_state_file(&stats_path, |path| stats::load_stats(path))?;
+    let mut loaded_replays = load_replays_or_move_aside(&completed_replays_path)?;
     while loaded_replays.len() > COMPLETED_REPLAY_LIMIT {
         loaded_replays.pop_back();
     }
@@ -840,11 +1048,16 @@ async fn main() -> Result<()> {
     let activity_tls_cert = std::env::var("ACTIVITY_TLS_CERT").ok();
     let activity_tls_key = std::env::var("ACTIVITY_TLS_KEY").ok();
     // 카지노: 테이블 상태(casino.json)와 개인 링크 세션은 봇과 웹이 같이 쓴다.
-    let casino_hub: casino_hub::SharedHub = Arc::new(casino_hub::CasinoHub::load(
-        workspace_root.join("casino.json"),
-        stats_arc.clone(),
-        stats_path_arc.clone(),
-    ));
+    let casino_hub: casino_hub::SharedHub = Arc::new(load_state_file(
+        &workspace_root.join("casino.json"),
+        |path| {
+            casino_hub::CasinoHub::load(
+                path.to_path_buf(),
+                stats_arc.clone(),
+                stats_path_arc.clone(),
+            )
+        },
+    )?);
     let casino_base_url = casino_hub::casino_base_url(
         &web_host,
         activity_port,
@@ -916,6 +1129,35 @@ async fn main() -> Result<()> {
                     Err(e) => eprintln!("Global command registration warning: {e}"),
                 }
                 println!("Rust Mafia bot ready: {}", ready.user.name);
+                // 본 서버가 비어 있으면 정한다. 코인·설정·카지노는 모든 서버가 함께 쓰므로
+                // 관리 명령은 본 서버에서만 받는다 (channel::require_manager).
+                {
+                    let mut config_write = config_setup.write().await;
+                    if config_write.home_guild_id == 0 {
+                        let guild_ids = ready
+                            .guilds
+                            .iter()
+                            .map(|guild| guild.id.get())
+                            .collect::<Vec<_>>();
+                        match guild_ids.as_slice() {
+                            [] => {}
+                            [only] => {
+                                config_write.home_guild_id = *only;
+                                match config::save_config(&*config_path_setup, &config_write) {
+                                    Ok(()) => println!(
+                                        "본 서버를 {only}(으)로 정해 config.json에 저장했습니다. 관리 명령은 이 서버에서만 받습니다."
+                                    ),
+                                    Err(error) => eprintln!(
+                                        "본 서버를 {only}(으)로 정했지만 config.json에 저장하지 못했습니다: {error:?}"
+                                    ),
+                                }
+                            }
+                            several => eprintln!(
+                                "경고: 봇이 여러 서버 {several:?}에 있어 본 서버를 정하지 못했습니다. .env에 HOME_GUILD_ID를 설정하기 전까지 관리 명령은 모든 서버에서 막힙니다."
+                            ),
+                        }
+                    }
+                }
                 let data = Data {
                     config: config_setup.clone(),
                     config_path: config_path_setup.clone(),
