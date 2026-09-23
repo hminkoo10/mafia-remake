@@ -711,6 +711,80 @@ pub async fn show_manager_status(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+const MEMO_ANONYMOUS_TARGET_GUIDE: &str = "익명 게임에서는 `익명이름` 항목으로 메모 대상을 선택하세요. (`참가자` 항목은 사용할 수 없습니다.)";
+
+/// /메모 대상을 정한다. 익명 게임에서 실제 유저로 대상을 받으면, 참가 여부나 익명 이름을
+/// 되돌려주는 순간 실제 유저 ↔ 익명 이름이 드러난다. 그래서 익명 게임은 익명 이름으로만
+/// 대상을 받고, 실제 유저를 고르면 참가 여부와 상관없이 같은 문구로 거절한다.
+fn memo_target(
+    running: &RunningGame,
+    target_user_id: Option<u64>,
+    target_alias: Option<&str>,
+) -> Result<Player, &'static str> {
+    if !running.anonymous_enabled {
+        let Some(user_id) = target_user_id else {
+            return Err("메모 대상 참가자를 선택하세요.");
+        };
+        return running
+            .game
+            .get_player(user_id)
+            .cloned()
+            .ok_or("메모 대상은 현재 게임 참가자여야 합니다.");
+    }
+    if target_user_id.is_some() {
+        return Err(MEMO_ANONYMOUS_TARGET_GUIDE);
+    }
+    let Some(alias) = target_alias
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty())
+    else {
+        return Err(MEMO_ANONYMOUS_TARGET_GUIDE);
+    };
+    running
+        .anonymous_aliases
+        .iter()
+        .find(|(_, candidate)| candidate.as_str() == alias)
+        .and_then(|(user_id, _)| running.game.get_player(*user_id))
+        .cloned()
+        .ok_or("해당 익명 이름의 참가자가 없습니다. `익명이름` 목록에서 선택하세요.")
+}
+
+/// 익명 게임의 익명 이름 목록. 게임 현황과 같은 순서(이름순)라 참가 순서가 드러나지 않는다.
+fn memo_alias_choices(running: &RunningGame, partial: &str) -> Vec<String> {
+    if !running.anonymous_enabled {
+        return Vec::new();
+    }
+    let partial = partial.trim().to_lowercase();
+    let mut aliases = running
+        .game
+        .players
+        .iter()
+        .filter_map(|player| running.anonymous_aliases.get(&player.user_id))
+        .filter(|alias| alias.to_lowercase().contains(&partial))
+        .cloned()
+        .collect::<Vec<_>>();
+    aliases.sort_by_key(|alias| alias.to_lowercase());
+    aliases
+}
+
+async fn autocomplete_memo_alias(ctx: Context<'_>, partial: &str) -> Vec<String> {
+    let Some(guild_id) = ctx.guild_id() else {
+        return Vec::new();
+    };
+    let Some(running) = ctx.data().games.get(&guild_id).map(|entry| entry.clone()) else {
+        return Vec::new();
+    };
+    let running_read = running.read().await;
+    if running_read
+        .game
+        .get_player(ctx.author().id.get())
+        .is_none()
+    {
+        return Vec::new();
+    }
+    memo_alias_choices(&running_read, partial)
+}
+
 #[poise::command(
     slash_command,
     rename = "메모",
@@ -718,7 +792,10 @@ pub async fn show_manager_status(ctx: Context<'_>) -> Result<(), Error> {
 )]
 pub async fn memo(
     ctx: Context<'_>,
-    #[description = "메모 대상 참가자"] 참가자: serenity::User,
+    #[description = "메모 대상 참가자 (익명 게임은 익명이름 사용)"] 참가자: Option<serenity::User>,
+    #[description = "익명 게임의 메모 대상 익명 이름"]
+    #[autocomplete = "autocomplete_memo_alias"]
+    익명이름: Option<String>,
     #[description = "저장할 메모 내용. 비워두면 조회합니다."] 메모내용: Option<String>,
 ) -> Result<(), Error> {
     let Some(guild_id) = ctx.guild_id() else {
@@ -757,16 +834,16 @@ pub async fn memo(
             .await?;
             return Ok(());
         };
-        let Some(target) = running_read.game.get_player(참가자.id.get()).cloned() else {
-            reply_embed(
-                ctx,
-                "메모 대상은 현재 게임 참가자여야 합니다.",
-                "메모",
-                serenity::Colour::RED,
-                true,
-            )
-            .await?;
-            return Ok(());
+        let target = match memo_target(
+            &running_read,
+            참가자.as_ref().map(|user| user.id.get()),
+            익명이름.as_deref(),
+        ) {
+            Ok(target) => target,
+            Err(message) => {
+                reply_embed(ctx, message, "메모", serenity::Colour::RED, true).await?;
+                return Ok(());
+            }
         };
         (author, target)
     };

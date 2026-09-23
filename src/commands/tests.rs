@@ -74,3 +74,94 @@ fn non_anonymous_sender_labels_keep_the_real_name() {
         "마피아 실제 이름"
     );
 }
+
+fn memo_test_running(anonymous_enabled: bool) -> RunningGame {
+    let mut running = crate::channel::tests::dead_chat_test_running();
+    running.anonymous_enabled = anonymous_enabled;
+    running.anonymous_aliases = HashMap::from([
+        (1, "너구리".to_string()),
+        (2, "고양이".to_string()),
+        (3, "다람쥐".to_string()),
+        (4, "고라니".to_string()),
+    ]);
+    running
+}
+
+/// 익명 게임에서 실제 유저로 메모 대상을 고르면 참가자든 아니든 같은 문구로 거절해야 한다.
+/// 익명 이름을 되돌려주면 누구나 실제 유저 ↔ 익명 이름을 맞춰볼 수 있다.
+#[test]
+fn anonymous_memo_rejects_real_user_targets_without_revealing_anything() {
+    let running = memo_test_running(true);
+
+    let participant = memo_target(&running, Some(2), None).unwrap_err();
+    let outsider = memo_target(&running, Some(999), None).unwrap_err();
+    let with_alias = memo_target(&running, Some(2), Some("고양이")).unwrap_err();
+
+    assert_eq!(participant, MEMO_ANONYMOUS_TARGET_GUIDE);
+    assert_eq!(outsider, participant);
+    assert_eq!(with_alias, participant);
+    for alias in running.anonymous_aliases.values() {
+        assert!(!participant.contains(alias.as_str()));
+    }
+}
+
+#[test]
+fn anonymous_memo_targets_are_chosen_by_alias() {
+    let running = memo_test_running(true);
+
+    assert_eq!(
+        memo_target(&running, None, Some(" 다람쥐 "))
+            .unwrap()
+            .user_id,
+        3
+    );
+    assert_eq!(
+        memo_target(&running, None, None).unwrap_err(),
+        MEMO_ANONYMOUS_TARGET_GUIDE
+    );
+    assert_eq!(
+        memo_target(&running, None, Some("  ")).unwrap_err(),
+        MEMO_ANONYMOUS_TARGET_GUIDE
+    );
+    // 실명이나 없는 익명 이름으로는 대상을 찾지 않는다.
+    assert!(memo_target(&running, None, Some("p3")).is_err());
+    assert!(memo_target(&running, None, Some("호랑이")).is_err());
+}
+
+#[test]
+fn non_anonymous_memo_still_targets_the_selected_user() {
+    let running = memo_test_running(false);
+
+    assert_eq!(memo_target(&running, Some(2), None).unwrap().user_id, 2);
+    // 익명 이름 항목은 일반 게임에서 쓰이지 않는다.
+    assert_eq!(
+        memo_target(&running, Some(2), Some("다람쥐"))
+            .unwrap()
+            .user_id,
+        2
+    );
+    assert_eq!(
+        memo_target(&running, Some(999), None).unwrap_err(),
+        "메모 대상은 현재 게임 참가자여야 합니다."
+    );
+    assert_eq!(
+        memo_target(&running, None, Some("다람쥐")).unwrap_err(),
+        "메모 대상 참가자를 선택하세요."
+    );
+}
+
+#[test]
+fn memo_alias_choices_only_list_anonymous_aliases_by_name() {
+    assert!(memo_alias_choices(&memo_test_running(false), "").is_empty());
+
+    let running = memo_test_running(true);
+    assert_eq!(
+        memo_alias_choices(&running, ""),
+        vec!["고라니", "고양이", "너구리", "다람쥐"]
+    );
+    assert_eq!(
+        memo_alias_choices(&running, " 고 "),
+        vec!["고라니", "고양이"]
+    );
+    assert!(memo_alias_choices(&running, "p1").is_empty());
+}
