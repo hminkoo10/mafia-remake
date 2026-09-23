@@ -1,6 +1,6 @@
 // noir-casino app/page.tsx 의 이식본. 화면 구조·클래스·문구는 원본을 그대로 따르고,
 // 데이터 소스만 봇의 /casino/api (개인 링크 세션, 여러 테이블, Discord 코인)로 바꿨다.
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
   AudioLines,
@@ -35,7 +35,7 @@ import { ChatMessages, TableChatPreview } from "./components/TableChat";
 import { DealerBackdrop, hasDealerVideo } from "./components/DealerBackdrop";
 import type { DealerMood } from "./dealer-media";
 import { isStaleSnapshot, nextClockDelay, snapshotKey } from "./state-sync";
-import type { CasinoCommand, GameKind, SeatResult, StateResponse, TableRules, TableView } from "./types";
+import type { CasinoCommand, GameKind, HandView, SeatResult, SeatView, StateResponse, TableRules, TableView } from "./types";
 import {
   Dialog,
   DialogContent,
@@ -76,10 +76,51 @@ const dealerPortrait = (id: string) => (id === "sophia" ? DEALER_IMAGE : `${impo
 const POLL_MS = 1200;
 const RECONNECT_MS = 2000;
 
-const PlayingCard = memo(function PlayingCard({ card, small = false, lit = false }: { card?: string; small?: boolean; lit?: boolean }) {
+/** 카드가 출발하는 딜러 사진 속 슈 입구 (사진 가로·세로 비율). */
+const SHOE_IN_PHOTO: [number, number] = [0.79, 0.6];
+const FLIGHT_MS = 520;
+
+const PlayingCard = memo(function PlayingCard({
+  card,
+  small = false,
+  lit = false,
+  fly = false,
+}: {
+  card?: string;
+  small?: boolean;
+  lit?: boolean;
+  /** 방금 딜된 카드: 딜러의 슈에서 날아와 놓인다 (처음 그릴 때만 본다). */
+  fly?: boolean;
+}) {
   // 뒷면("??")이었다가 앞면이 되면 뒤집기 애니메이션을 낸다.
   const previous = useRef(card);
+  const element = useRef<HTMLSpanElement>(null);
   const [flipping, setFlipping] = useState(false);
+  const [flight, setFlight] = useState<"pending" | "flying" | "landed" | null>(fly ? "pending" : null);
+  const [from, setFrom] = useState<[number, number]>([0, 0]);
+  useLayoutEffect(() => {
+    if (flight !== "pending") return;
+    const el = element.current;
+    const shoe = el?.closest(".game-table")?.querySelector<HTMLElement>(".shoe-anchor");
+    if (!el || !shoe) {
+      setFlight(null);
+      return;
+    }
+    const start = shoe.getBoundingClientRect();
+    const end = el.getBoundingClientRect();
+    // 내 자리처럼 확대된 좌석 안이면 화면 거리를 카드 좌표로 되돌린다.
+    const scale = el.offsetWidth ? end.width / el.offsetWidth : 1;
+    setFrom([
+      (start.left + start.width / 2 - (end.left + end.width / 2)) / scale,
+      (start.top + start.height / 2 - (end.top + end.height / 2)) / scale,
+    ]);
+    setFlight("flying");
+  }, [flight]);
+  useEffect(() => {
+    if (flight !== "flying") return;
+    const timer = window.setTimeout(() => setFlight("landed"), FLIGHT_MS + 80);
+    return () => window.clearTimeout(timer);
+  }, [flight]);
   useEffect(() => {
     if (previous.current === "??" && card && card !== "??") {
       setFlipping(true);
@@ -91,9 +132,13 @@ const PlayingCard = memo(function PlayingCard({ card, small = false, lit = false
   }, [card]);
   return (
     <span
+      ref={element}
       className={`playing-card ${small ? "small" : ""} ${!card ? "empty" : card === "??" ? "back" : ""} ${
         card && /[hd]$/.test(card) ? "red" : ""
-      } ${lit ? "lit" : ""} ${flipping ? "flip" : ""}`}
+      } ${lit ? "lit" : ""} ${flipping ? "flip" : ""} ${
+        flight === "pending" ? "from-shoe-pending" : flight === "flying" ? "from-shoe" : flight === "landed" ? "landed" : ""
+      }`}
+      style={flight === "flying" ? ({ "--from-x": `${from[0]}px`, "--from-y": `${from[1]}px` } as React.CSSProperties) : undefined}
       aria-label={!card ? "카드 대기" : card === "??" ? "비공개 카드" : `${card[0] === "T" ? "10" : card[0]} ${suits[card[1]]}`}
     >
       {!card ? (
@@ -153,19 +198,29 @@ const kindRoom = (kind: GameKind) => (kind === "holdem" ? "THE SIGNATURE ROOM" :
 const kindStakes = (kind: GameKind, rules: TableRules) =>
   kind === "holdem" ? `${fmt(rules.small_blind)} / ${fmt(rules.big_blind)}` : `${fmt(rules.min_bet)} – ${fmt(rules.max_bet)}`;
 const floorStep = (value: number, step: number) => Math.floor(value / step) * step;
-const CHIP_DENOMS = [100, 500, 1000, 2500, 5000];
+/** 칩 단위 전체. 테이블 한도에 맞는 것 6개까지 트레이에 올린다. */
+const ALL_DENOMS = [100, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000];
+function tableDenoms(rules: TableRules): number[] {
+  const usable = ALL_DENOMS.filter((value) => value <= Math.max(rules.max_bet, rules.bet_step) && value % rules.bet_step === 0);
+  // 가장 작은 칩으로 최소 베팅을 맞출 수 있게, 최소 베팅 이하에서 가장 큰 칩부터 보여 준다.
+  let start = 0;
+  usable.forEach((value, index) => {
+    if (value <= rules.min_bet) start = index;
+  });
+  return usable.slice(start, start + 6);
+}
 type BetSpot = "main" | "pairs" | "plus3";
 interface Placement {
   spot: BetSpot;
   value: number;
 }
 const SPOT_LABEL: Record<BetSpot, string> = { main: "메인", pairs: "퍼펙트 페어", plus3: "21+3" };
-const chipLabel = (v: number) => (v >= 1000 ? `${v / 1000}K` : String(v));
+const chipLabel = (v: number) => (v >= 1_000_000 ? `${v / 1_000_000}M` : v >= 1000 ? `${v / 1000}K` : String(v));
 /** 금액을 큰 칩부터 쌓은 모양으로 나눈다 (표시용). */
 function chipsFor(amount: number): number[] {
   const out: number[] = [];
   let rest = amount;
-  for (const value of [...CHIP_DENOMS].reverse()) {
+  for (const value of [...ALL_DENOMS].reverse()) {
     while (rest >= value && out.length < 14) {
       out.push(value);
       rest -= value;
@@ -180,20 +235,26 @@ function ChipStack({
   onClick,
   active = false,
   hint,
+  spot,
+  over = false,
 }: {
   chips: number[];
   total: number;
   onClick?: () => void;
   active?: boolean;
   hint?: string;
+  /** 칩을 끌어다 놓을 수 있는 베팅 자리. */
+  spot?: BetSpot;
+  over?: boolean;
 }) {
   const shown = chips.slice(-10);
   return (
     <button
       type="button"
-      className={`chip-stack ${active ? "active" : ""} ${chips.length === 0 ? "empty-spot" : ""}`}
+      className={`chip-stack ${active ? "active" : ""} ${chips.length === 0 ? "empty-spot" : ""} ${over ? "drop-over" : ""}`}
       onClick={onClick}
       disabled={!onClick}
+      data-bet-spot={spot}
       aria-label={total > 0 ? `베팅 ${fmt(total)}` : "베팅 자리"}
       title={hint}
     >
@@ -208,6 +269,77 @@ function ChipStack({
     </button>
   );
 }
+/** 베팅 독의 베팅 원: 쌓인 칩과 금액. 칩을 끌어다 놓거나, 칩을 고른 뒤 누르면 올라간다. */
+function BetCircle({
+  spot,
+  label,
+  chips,
+  total,
+  limit,
+  active,
+  over,
+  disabled,
+  onClick,
+}: {
+  spot: BetSpot;
+  label: string;
+  chips: number[];
+  total: number;
+  limit: number;
+  active: boolean;
+  over: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const shown = chips.slice(-9);
+  return (
+    <button
+      type="button"
+      data-bet-spot={spot}
+      className={`bet-circle ${spot} ${active ? "active" : ""} ${over ? "drop-over" : ""} ${total > 0 ? "filled" : ""}`}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={`${label} 베팅 ${fmt(total)}`}
+    >
+      <span className="bet-circle-label">{label}</span>
+      <span className="chip-pile">
+        {shown.map((value, index) => (
+          <i key={`${index}-${value}`} className={`chip-coin chip-${value}`} style={{ bottom: index * 3 }}>
+            {index === shown.length - 1 ? chipLabel(value) : ""}
+          </i>
+        ))}
+      </span>
+      <b>{total > 0 ? fmt(total) : "BET"}</b>
+      <small>최대 {fmt(limit)}</small>
+    </button>
+  );
+}
+/** 블랙잭 핸드 결과 색 (좌석 위 결과 표시). */
+const handTone = (result: string | null) =>
+  !result ? "" : /블랙잭|승리/.test(result) ? "hand-won" : result === "푸시" ? "hand-push" : "hand-lost";
+const handResultText = (hand: HandView) => {
+  const gain = (hand.payout ?? 0) - hand.bet;
+  if (!hand.result) return "";
+  if (hand.result.includes("블랙잭")) return `BLACKJACK ${signed(gain)}`;
+  if (hand.result === "승리") return `WIN ${signed(gain)}`;
+  if (hand.result === "푸시") return "PUSH";
+  if (hand.result === "버스트") return `BUST ${signed(gain)}`;
+  if (hand.result === "서렌더") return `SURRENDER ${signed(gain)}`;
+  return `LOSE ${signed(gain)}`;
+};
+/** 핸드 점수: 아직 진행 중인 소프트 핸드는 "7/17"처럼 두 값을 보여 준다. */
+const handScore = (hand: HandView, visible: number, single: boolean) =>
+  hand.total > 21
+    ? hand.result
+      ? String(hand.total)
+      : "BUST"
+    : single && visible === 2 && hand.total === 21
+      ? "BJ"
+      : hand.soft && hand.status === "playing" && hand.total < 21
+        ? `${hand.total - 10}/${hand.total}`
+        : String(hand.total);
+/** 좌석의 메인 베팅 합 (스플릿·더블 포함). */
+const mainBet = (seat: SeatView) => seat.hands.reduce((sum, hand) => sum + hand.bet, 0) || seat.bet;
 /** 좌석의 테이블 위 위치 (noir.css의 .seat-N과 같은 값, % 단위). */
 const SEAT_POS: Array<[number, number]> = [
   [12, 63],
@@ -437,6 +569,43 @@ export default function Casino() {
   const shoe = table.shoe;
   const shoeAge = shoe ? serverNow - shoe.shuffled_at : -1;
   const shuffling = !!shoe && shoe.total > 0 && shoeAge >= 0 && shoeAge < 2500;
+  const denoms = tableDenoms(tableRules);
+  const sideBetsOpen = tableRules.side_bet_max > 0;
+  useEffect(() => {
+    // 다른 한도의 테이블로 옮기면 트레이에 있는 칩으로 다시 고른다.
+    if (!denoms.includes(chip)) setChip(denoms[Math.min(1, denoms.length - 1)] ?? tableRules.min_bet);
+  }, [denoms.join(","), chip]);
+  /** 방금 놓인 카드인지 (서버 공개 시각 기준). 이런 카드만 슈에서 날아온다. */
+  const fresh = (at: number | undefined) => !!at && serverNow - at < 900;
+  // 카드가 출발할 슈 위치: 딜러 사진 속 슈 입구를 테이블 좌표(%)로 옮긴다.
+  const tableEl = useRef<HTMLDivElement>(null);
+  const [shoePos, setShoePos] = useState<[number, number]>([79, 34]);
+  useLayoutEffect(() => {
+    const box = tableEl.current;
+    if (!box) return;
+    const img = box.querySelector<HTMLImageElement>(".dealer-backdrop-poster");
+    const measure = () => {
+      const outer = box.getBoundingClientRect();
+      if (!img || !img.naturalWidth || !outer.width || !outer.height) return;
+      const rect = img.getBoundingClientRect();
+      const style = getComputedStyle(img);
+      const [px, py] = style.objectPosition.split(" ").map((value) => parseFloat(value) / 100);
+      const scale = (style.objectFit === "contain" ? Math.min : Math.max)(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+      const width = img.naturalWidth * scale,
+        height = img.naturalHeight * scale;
+      const x = rect.left - outer.left + (rect.width - width) * (Number.isFinite(px) ? px : 0.5) + SHOE_IN_PHOTO[0] * width;
+      const y = rect.top - outer.top + (rect.height - height) * (Number.isFinite(py) ? py : 0.5) + SHOE_IN_PHOTO[1] * height;
+      setShoePos([(100 * x) / outer.width, (100 * y) / outer.height]);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    img?.addEventListener("load", measure);
+    return () => {
+      observer.disconnect();
+      img?.removeEventListener("load", measure);
+    };
+  }, [table.id, table.dealer.id]);
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = () => {
@@ -508,6 +677,85 @@ export default function Casino() {
     if (!table.legal.can_bet || disabled || !canPlaceAt(which, value)) return;
     sfx.chip();
     setPlacements((list) => [...list, { spot: which, value }]);
+  };
+  const placeableAnywhere = (value: number) => (["main", "pairs", "plus3"] as BetSpot[]).some((which) => canPlaceAt(which, value));
+  /** 칩을 못 놓는 이유 (끌어 놓기 실패 안내). */
+  const placeRefusal = (which: BetSpot, value: number) =>
+    grandTotal + value > seatChips
+      ? "테이블 칩이 부족해요."
+      : which === "main"
+        ? `메인 베팅은 최대 ${fmt(tableRules.max_bet)}까지예요.`
+        : `사이드베팅은 자리마다 최대 ${fmt(tableRules.side_bet_max)}까지예요.`;
+  // 칩 끌어 놓기: 트레이의 칩을 베팅 자리(독의 베팅 원, 내 좌석의 칩 자리)로 옮긴다.
+  const [drag, setDrag] = useState<{ value: number; x: number; y: number; over: BetSpot | null } | null>(null);
+  const dragRef = useRef<{ value: number; x: number; y: number; moved: boolean; pointer: number } | null>(null);
+  const suppressClick = useRef(false);
+  const spotAt = (x: number, y: number): BetSpot | null => {
+    const target = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-bet-spot]");
+    const which = target?.dataset.betSpot as BetSpot | undefined;
+    return which && (which === "main" || sideBetsOpen) ? which : null;
+  };
+  const chipDrag = (value: number) => ({
+    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => {
+      if (event.button !== 0 || event.currentTarget.disabled) return;
+      dragRef.current = { value, x: event.clientX, y: event.clientY, moved: false, pointer: event.pointerId };
+      try {
+        // 손가락·마우스가 칩 밖으로 나가도 끝까지 따라가게 잡아 둔다.
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // 이미 끝난 포인터면 캡처 없이 진행한다.
+      }
+    },
+    onPointerMove: (event: React.PointerEvent<HTMLButtonElement>) => {
+      const current = dragRef.current;
+      if (!current || current.pointer !== event.pointerId) return;
+      if (!current.moved && Math.hypot(event.clientX - current.x, event.clientY - current.y) < 6) return;
+      current.moved = true;
+      setDrag({ value, x: event.clientX, y: event.clientY, over: spotAt(event.clientX, event.clientY) });
+    },
+    onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => {
+      const current = dragRef.current;
+      dragRef.current = null;
+      if (!current?.moved) return;
+      // 끌기가 끝난 뒤 따라오는 클릭은 칩을 한 번 더 놓지 않게 무시한다.
+      suppressClick.current = true;
+      window.setTimeout(() => (suppressClick.current = false), 0);
+      setDrag(null);
+      const target = spotAt(event.clientX, event.clientY);
+      if (!target) return;
+      if (!canPlaceAt(target, value)) {
+        toast.info(placeRefusal(target, value));
+        return;
+      }
+      setChip(value);
+      setSpot(target);
+      placeChip(value, target);
+    },
+    onPointerCancel: () => {
+      dragRef.current = null;
+      setDrag(null);
+    },
+  });
+  const dragging = drag !== null;
+  useEffect(() => {
+    // 끄는 도중 베팅이 마감돼 칩 트레이가 사라지면 포인터 캡처도 풀린다. 창에서 끝을 받아 정리한다.
+    if (!dragging) return;
+    const end = () => {
+      dragRef.current = null;
+      setDrag(null);
+    };
+    if (!table.legal.can_bet) end();
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+    return () => {
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    };
+  }, [dragging, table.legal.can_bet]);
+  const potRaise = (fraction: number) => {
+    if (!legal || !round) return 0;
+    const target = round.current_bet + Math.round((round.pot + legal.to_call) * fraction);
+    return Math.max(Math.min(legal.min_raise_to, legal.max_raise_to), Math.min(legal.max_raise_to, target));
   };
   const sidesValid = (pairsTotal === 0 || pairsTotal >= tableRules.side_bet_min) && (plus3Total === 0 || plus3Total >= tableRules.side_bet_min);
   const lockBet = async () => {
@@ -717,8 +965,16 @@ export default function Casino() {
   const seatedElsewhere = tables.find((t) => t.id === data?.me.seated_table && t.id !== table.id) ?? null;
 
   return (
-    <div ref={appRef} className={`casino-app ${fullscreen ? "is-fullscreen" : ""} ${fullscreen === "expanded" ? "expanded-screen" : ""}`}>
+    <div
+      ref={appRef}
+      className={`casino-app ${fullscreen ? "is-fullscreen" : ""} ${fullscreen === "expanded" ? "expanded-screen" : ""} ${drag ? "chip-dragging" : ""}`}
+    >
       <Toaster position="top-center" richColors />
+      {drag && (
+        <div className={`drag-chip chip-${drag.value} ${drag.over ? "over" : ""}`} style={{ left: drag.x, top: drag.y }} aria-hidden="true">
+          {chipLabel(drag.value)}
+        </div>
+      )}
       <header className="topbar">
         <a className="brand" href={location.pathname} aria-label="CASINO73 홈">
           <Club fill="currentColor" />
@@ -844,7 +1100,7 @@ export default function Casino() {
         )}
         <div className="play-layout">
           <section className="table-column">
-            <div className={`game-table ${kind} ${revealing ? "dealing" : ""} ${round && round.phase !== "complete" ? "in-play" : ""}`}>
+            <div ref={tableEl} className={`game-table ${kind} ${revealing ? "dealing" : ""} ${round && round.phase !== "complete" ? "in-play" : ""}`}>
               <DealerBackdrop
                 id={table.dealer.id}
                 name={table.dealer.name}
@@ -853,6 +1109,7 @@ export default function Casino() {
                 poster={table.dealer.id === "sophia" ? `${import.meta.env.BASE_URL}dealers/sophia-table.png` : dealerPortrait(table.dealer.id)}
               />
               <div className="table-shade" />
+              <span className="shoe-anchor" aria-hidden="true" style={{ left: `${shoePos[0]}%`, top: `${shoePos[1]}%` }} />
               <TableChatPreview messages={table.messages} />
               <div className="table-topline">
                 <span className="room-id">
@@ -891,8 +1148,9 @@ export default function Casino() {
                 <div className="community-cards">
                   {Array.from({ length: Math.max(kind === "holdem" ? 5 : 2, cards.length) }, (_, i) => (
                     <PlayingCard
-                      key={`${round?.id}-${i}`}
+                      key={`${round?.id}-${i}-${cards[i] ? "card" : "slot"}`}
                       card={cards[i]}
+                      fly={!!cards[i] && fresh((kind === "holdem" ? round?.board_reveal_at : round?.dealer_reveal_at)?.[i])}
                       lit={!!cards[i] && (me?.hand_cards.includes(cards[i]) ?? false)}
                     />
                   ))}
@@ -928,21 +1186,31 @@ export default function Casino() {
                       seat.folded ? "folded" : ""
                     } ${winners.includes(i) ? "seat-winner" : ""}`}
                   >
-                    <div className="seat-cards">
-                      {kind === "holdem" ? (
-                        dealt(seat.cards, seat.cards_reveal_at, serverNow).map((card, k) => (
-                          <PlayingCard key={k} card={card} small lit={seat.hand_cards.includes(card)} />
-                        ))
-                      ) : seat.hands.some((h) => dealt(h.cards, h.reveal_at, serverNow).length > 0) ? (
-                        <span className="hand-score">
-                          {seat.hands.map((h, k) => (
-                            <span key={h.id} className={round?.turn === i && round.hand === k ? "active-score" : ""}>
-                              {h.total > 21 ? "BUST" : h.total}
-                              {h.result?.includes("블랙잭") ? " BJ" : ""}
-                            </span>
-                          ))}
-                        </span>
-                      ) : null}
+                    <div className={`seat-cards ${kind === "blackjack" ? "bj-seat-hands" : ""}`}>
+                      {kind === "holdem"
+                        ? dealt(seat.cards, seat.cards_reveal_at, serverNow).map((card, k) => (
+                            <PlayingCard key={k} card={card} small fly={fresh(seat.cards_reveal_at[k])} lit={seat.hand_cards.includes(card)} />
+                          ))
+                        : seat.hands.map((h, k) => {
+                            const shown = dealt(h.cards, h.reveal_at, serverNow);
+                            if (!shown.length) return null;
+                            const active = round?.phase === "playing" && round.turn === i && round.hand === k && !revealing;
+                            return (
+                              <div key={h.id} className={`seat-hand ${active ? "active-hand" : ""} ${handTone(h.result)}`}>
+                                <div className="seat-hand-cards">
+                                  {shown.map((c, n) => (
+                                    <PlayingCard key={`${n}-${c}`} card={c} small fly={fresh(h.reveal_at[n])} />
+                                  ))}
+                                </div>
+                                <span className="seat-hand-total">{handScore(h, shown.length, seat.hands.length === 1)}</span>
+                                {h.result ? (
+                                  <span className="seat-hand-result">{handResultText(h)}</span>
+                                ) : (
+                                  (seat.hands.length > 1 || h.bet !== seat.bet) && <span className="seat-hand-bet">{fmt(h.bet)}</span>
+                                )}
+                              </div>
+                            );
+                          })}
                     </div>
                     <span className="player-avatar">
                       {seat.name.slice(0, 1)}
@@ -970,31 +1238,37 @@ export default function Casino() {
                             total={stackTotal}
                             active={spot === "main"}
                             hint={`${chipLabel(chip)} 놓기`}
+                            spot="main"
+                            over={drag?.over === "main"}
                             onClick={() => {
                               setSpot("main");
                               placeChip(chip, "main");
                             }}
                           />
-                          <div className="side-spots">
-                            {(["pairs", "plus3"] as BetSpot[]).map((which) => (
-                              <ChipStack
-                                key={which}
-                                chips={chipsAt(which)}
-                                total={which === "pairs" ? pairsTotal : plus3Total}
-                                active={spot === which}
-                                hint={which === "pairs" ? "PP" : "21+3"}
-                                onClick={() => {
-                                  setSpot(which);
-                                  placeChip(chip, which);
-                                }}
-                              />
-                            ))}
-                          </div>
+                          {sideBetsOpen && (
+                            <div className="side-spots">
+                              {(["pairs", "plus3"] as BetSpot[]).map((which) => (
+                                <ChipStack
+                                  key={which}
+                                  chips={chipsAt(which)}
+                                  total={which === "pairs" ? pairsTotal : plus3Total}
+                                  active={spot === which}
+                                  hint={which === "pairs" ? "PP" : "21+3"}
+                                  spot={which}
+                                  over={drag?.over === which}
+                                  onClick={() => {
+                                    setSpot(which);
+                                    placeChip(chip, which);
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          )}
                         </>
                       ) : (
-                        seat.bet > 0 && (
+                        mainBet(seat) > 0 && (
                           <>
-                            <ChipStack chips={chipsFor(seat.bet)} total={seat.bet} />
+                            <ChipStack chips={chipsFor(mainBet(seat))} total={mainBet(seat)} />
                             {(seat.side_pairs > 0 || seat.side_plus3 > 0 || seat.insurance > 0) && (
                               <div className="side-spots">
                                 {seat.side_pairs > 0 && <ChipStack chips={chipsFor(seat.side_pairs)} total={seat.side_pairs} hint="PP" />}
@@ -1032,6 +1306,7 @@ export default function Casino() {
                   </button>
                 ),
               )}
+              {kind === "blackjack" && <span className="felt-rules">BLACKJACK PAYS 3 TO 2 · INSURANCE PAYS 2 TO 1</span>}
               <span className="felt-mark">C A S I N O 7 3</span>
               {bubble && SEAT_POS[bubble.seat] && (
                 <div key={bubble.id} className="action-bubble" style={{ left: `${SEAT_POS[bubble.seat][0]}%`, top: `${SEAT_POS[bubble.seat][1] - 16}%` }}>
@@ -1175,6 +1450,28 @@ export default function Casino() {
                           ALL IN
                         </button>
                       </div>
+                      <div className="raise-presets" role="group" aria-label="레이즈 금액 빠른 선택">
+                        {([
+                          ["최소", 0],
+                          ["½ 팟", 0.5],
+                          ["¾ 팟", 0.75],
+                          ["팟", 1],
+                        ] as Array<[string, number]>).map(([label, fraction]) => {
+                          const value = fraction === 0 ? Math.min(legal.min_raise_to, legal.max_raise_to) : potRaise(fraction);
+                          return (
+                            <button
+                              key={label}
+                              type="button"
+                              className={raise === value ? "chosen" : ""}
+                              disabled={!legal.can_raise || disabled}
+                              onClick={() => setRaise(value)}
+                            >
+                              {label}
+                              <b>{fmt(value)}</b>
+                            </button>
+                          );
+                        })}
+                      </div>
                       <div className="action-buttons">
                         <button className="fold-button" disabled={disabled} onClick={() => void act({ action: "fold" })}>
                           폴드
@@ -1232,33 +1529,43 @@ export default function Casino() {
                     </div>
                   ) : table.legal.can_bet ? (
                     <div className="betting-controls evo">
-                      <div className="chip-options">
-                        {CHIP_DENOMS.map((v) => (
-                          <button
-                            key={v}
-                            className={`chip chip-${v} ${chip === v ? "chosen" : ""}`}
-                            disabled={disabled || !canPlaceChip(v)}
+                      <div className="bet-spots">
+                        {(sideBetsOpen ? (["pairs", "main", "plus3"] as BetSpot[]) : (["main"] as BetSpot[])).map((which) => (
+                          <BetCircle
+                            key={which}
+                            spot={which}
+                            label={SPOT_LABEL[which]}
+                            chips={chipsAt(which)}
+                            total={which === "main" ? stackTotal : which === "pairs" ? pairsTotal : plus3Total}
+                            limit={which === "main" ? maxWager : tableRules.side_bet_max}
+                            active={spot === which}
+                            over={drag?.over === which}
+                            disabled={disabled}
                             onClick={() => {
-                              setChip(v);
-                              placeChip(v);
+                              setSpot(which);
+                              if (canPlaceAt(which, chip)) placeChip(chip, which);
+                              else toast.info(placeRefusal(which, chip));
                             }}
-                            aria-label={`${fmt(v)} 칩`}
-                            title={`${fmt(v)} 칩 놓기`}
-                          >
-                            {chipLabel(v)}
-                          </button>
+                          />
                         ))}
                       </div>
-                      <div className="spot-tabs">
-                        {(["main", "pairs", "plus3"] as BetSpot[]).map((which) => (
+                      <div className="chip-options" role="group" aria-label="칩 고르기. 끌어서 베팅 자리에 놓을 수 있어요.">
+                        {denoms.map((v) => (
                           <button
-                            key={which}
+                            key={v}
                             type="button"
-                            className={`spot-tab ${spot === which ? "chosen" : ""}`}
-                            onClick={() => setSpot(which)}
+                            className={`chip chip-${v} ${chip === v ? "chosen" : ""}`}
+                            disabled={disabled || !placeableAnywhere(v)}
+                            {...chipDrag(v)}
+                            onClick={() => {
+                              if (suppressClick.current) return;
+                              setChip(v);
+                              if (canPlaceChip(v)) placeChip(v);
+                            }}
+                            aria-label={`${fmt(v)} 칩`}
+                            title={`${fmt(v)} 칩 · 누르면 ${SPOT_LABEL[spot]}에 놓고, 끌어서 원하는 자리에 놓을 수 있어요`}
                           >
-                            {SPOT_LABEL[which]}
-                            <b>{fmt(which === "main" ? stackTotal : which === "pairs" ? pairsTotal : plus3Total)}</b>
+                            {chipLabel(v)}
                           </button>
                         ))}
                       </div>
@@ -1267,7 +1574,8 @@ export default function Casino() {
                           합계 <strong>{fmt(grandTotal)}</strong>
                           <small>
                             {" "}
-                            / 메인 최대 {fmt(maxWager)} · 사이드 최대 {fmt(tableRules.side_bet_max)}
+                            / 메인 {fmt(tableRules.min_bet)}~{fmt(maxWager)}
+                            {sideBetsOpen ? ` · 사이드 최대 ${fmt(tableRules.side_bet_max)}` : ""}
                           </small>
                         </span>
                         <button type="button" className="text-button" disabled={disabled || placements.length === 0} onClick={() => setPlacements((list) => list.slice(0, -1))}>
@@ -1303,7 +1611,11 @@ export default function Casino() {
                         </button>
                       </div>
                       <p className="bet-hint">
-                        칩을 고르고 자리(메인 · PP · 21+3)를 누르면 쌓입니다. 사이드베팅은 {fmt(tableRules.side_bet_min)}~{fmt(tableRules.side_bet_max)}. 마감 2초 전에 쌓인 칩은 자동으로 확정됩니다.
+                        칩을 끌어서 베팅 자리에 놓거나, 칩을 고른 뒤 자리를 누르세요.{" "}
+                        {sideBetsOpen
+                          ? `사이드베팅은 ${fmt(tableRules.side_bet_min)}~${fmt(tableRules.side_bet_max)}.`
+                          : "이 테이블은 사이드베팅이 없습니다."}{" "}
+                        마감 2초 전에 쌓인 칩은 자동으로 확정됩니다.
                       </p>
                     </div>
                   ) : (
@@ -1367,8 +1679,8 @@ export default function Casino() {
                     </strong>
                   </div>
                   <div>
-                    <span>{kind === "holdem" ? "블라인드" : "최소 베팅"}</span>
-                    <strong>{kind === "holdem" ? kindStakes(kind, tableRules) : fmt(tableRules.min_bet)}</strong>
+                    <span>{kind === "holdem" ? "블라인드" : "베팅 한도"}</span>
+                    <strong>{kindStakes(kind, tableRules)}</strong>
                   </div>
                   <div>
                     <span>바이인</span>
@@ -1401,7 +1713,7 @@ export default function Casino() {
                     <div>
                       <strong>{t.name}</strong>
                       <span>
-                        {t.kind_text} · {t.seated}/{t.seat_count}
+                        {t.kind_text} · {t.stakes} · {t.seated}/{t.seat_count}
                         {t.id === data?.me.seated_table ? " · 착석 중" : ""}
                       </span>
                     </div>
@@ -1506,15 +1818,22 @@ export default function Casino() {
             <div className="rules-copy">
               <h3>기본</h3>
               <ul>
-                <li>2~6인 노 리밋 텍사스 홀덤. 스몰 블라인드 50 / 빅 블라인드 100. 레이크(수수료) 없음.</li>
-                <li>바이인 5,000~20,000 칩. 나가면 남은 칩이 코인으로 돌아옵니다.</li>
+                <li>
+                  2~6인 노 리밋 텍사스 홀덤. 스몰 블라인드 {fmt(tableRules.small_blind)} / 빅 블라인드 {fmt(tableRules.big_blind)}. 레이크(수수료) 없음.
+                </li>
+                <li>
+                  바이인 {fmt(tableRules.min_buy_in)}~{fmt(tableRules.max_buy_in)} 칩. 나가면 남은 칩이 코인으로 돌아옵니다.
+                </li>
                 <li>개인 카드 2장 + 공용 카드 5장 중 가장 강한 5장이 내 패입니다.</li>
               </ul>
               <h3>진행</h3>
               <ul>
                 <li>프리플롭 → 플롭(3장) → 턴(1장) → 리버(1장). 각 단계마다 베팅.</li>
                 <li>프리플롭은 빅 블라인드 다음 사람부터, 그 뒤 단계는 버튼 다음 사람부터 행동합니다. 2인이면 버튼이 스몰 블라인드를 내고 프리플롭에 먼저 행동합니다.</li>
-                <li>레이즈 금액은 이번 단계의 <b>총 베팅액</b>입니다. 최소 레이즈 폭은 직전 레이즈 폭 이상(처음엔 빅 블라인드).</li>
+                <li>
+                  레이즈 금액은 이번 단계의 <b>총 베팅액</b>입니다. 최소 레이즈 폭은 직전 레이즈 폭 이상(처음엔 빅 블라인드). 최소 · ½ 팟 · ¾ 팟 ·
+                  팟 버튼으로 금액을 바로 고를 수 있습니다.
+                </li>
                 <li>올인이 있으면 각자 낸 만큼만 걸린 사이드팟으로 나눠 정산합니다. 무승부는 팟을 나누고 남는 1칩은 버튼 왼쪽부터 받습니다.</li>
                 <li>남은 사람이 한 명이면 카드를 공개하지 않고 팟을 가져갑니다.</li>
               </ul>
@@ -1535,7 +1854,7 @@ export default function Casino() {
               </table>
               <h3>시간</h3>
               <ul>
-                <li>차례마다 30초. 시간이 지나면 체크할 수 있으면 체크, 아니면 폴드.</li>
+                <li>차례마다 {tableRules.turn_ms / 1000}초. 시간이 지나면 체크할 수 있으면 체크, 아니면 폴드.</li>
                 <li>2회 연속 시간 초과 → 다음 핸드부터 자리 비움(복귀 버튼으로 돌아옴). 30분 동안 아무 행동이 없으면 자동 퇴장.</li>
               </ul>
             </div>
@@ -1543,8 +1862,12 @@ export default function Casino() {
             <div className="rules-copy">
               <h3>기본 (에볼루션 라이브 블랙잭 규칙)</h3>
               <ul>
-                <li>8덱, 매 라운드 새 셔플. 딜러는 소프트 17을 포함해 17 이상이면 스탠드.</li>
-                <li>메인 베팅 100~5,000 (100 단위). 바이인 5,000~20,000 칩.</li>
+                <li>8덱 슈를 이어서 씁니다. 빨간 컷 카드가 나오면 다음 라운드 전에 새로 섞습니다. 딜러는 소프트 17을 포함해 17 이상이면 스탠드.</li>
+                <li>
+                  메인 베팅 {fmt(tableRules.min_bet)}~{fmt(tableRules.max_bet)} ({fmt(tableRules.bet_step)} 단위). 바이인{" "}
+                  {fmt(tableRules.min_buy_in)}~{fmt(tableRules.max_buy_in)} 칩.
+                </li>
+                <li>칩을 끌어서 메인 · PP · 21+3 자리에 놓거나, 칩을 고른 뒤 자리를 눌러 쌓습니다.</li>
                 <li>딜러가 에이스를 보이면 먼저 인슈어런스를 받고, 그다음 딜러 블랙잭을 확인합니다. 10 계열을 보이면 바로 확인합니다. 딜러 블랙잭이면 그 자리에서 정산합니다.</li>
               </ul>
               <h3>배당</h3>
@@ -1571,7 +1894,11 @@ export default function Casino() {
                 <li>딜러가 블랙잭이면 인슈어런스 2:1 — 500 베팅 · 인슈어런스 250이면 메인 −500, 인슈어런스 +500으로 본전.</li>
                 <li>딜러가 블랙잭이 아니면 인슈어런스를 잃고 게임을 계속합니다.</li>
               </ul>
-              <h3>사이드베팅 (100~2,500, 딜 직후 정산)</h3>
+              <h3>
+                {sideBetsOpen
+                  ? `사이드베팅 (${fmt(tableRules.side_bet_min)}~${fmt(tableRules.side_bet_max)}, 딜 직후 정산)`
+                  : "사이드베팅 (이 테이블은 받지 않음)"}
+              </h3>
               <table className="rules-table">
                 <tbody>
                   <tr><th colSpan={2}>퍼펙트 페어 — 내 처음 두 장이 같은 숫자</th></tr>
@@ -1590,7 +1917,10 @@ export default function Casino() {
               <h3>시간</h3>
               <ul>
                 <li>베팅 15초 (베팅할 수 있는 사람이 모두 확정하면 바로 딜). 마감 2초 전에 쌓아 둔 칩은 자동 확정.</li>
-                <li>인슈어런스 10초, 액션 30초. 시간이 지나면 스탠드. 2회 연속 초과 → 자리 비움. 30분 무응답 → 자동 퇴장.</li>
+                <li>
+                  인슈어런스 {tableRules.insurance_ms / 1000}초, 액션 {tableRules.turn_ms / 1000}초. 시간이 지나면 스탠드. 2회 연속 초과 → 자리 비움. 30분
+                  무응답 → 자동 퇴장.
+                </li>
               </ul>
             </div>
           )}
@@ -1663,7 +1993,7 @@ export default function Casino() {
               <div>
                 <strong>{t.name}</strong>
                 <span>
-                  {t.kind_text} · {t.seated} / {t.seat_count} 참여 중{t.phase_text ? ` · ${t.phase_text}` : ""}
+                  {t.kind_text} · {t.stakes} · {t.seated} / {t.seat_count} 참여 중{t.phase_text ? ` · ${t.phase_text}` : ""}
                 </span>
               </div>
               <ArrowUpRight />

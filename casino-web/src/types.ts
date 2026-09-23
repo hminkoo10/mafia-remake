@@ -170,6 +170,8 @@ export interface TableSummary {
   playing: boolean;
   phase_text: string | null;
   channel_id: number | null;
+  /** 판돈 ("블라인드 50/100", "베팅 100~5,000"). */
+  stakes: string;
 }
 
 export interface CasinoMe {
