@@ -1482,17 +1482,26 @@ impl MafiaGame {
         if alive.len() * 2 > self.players.len() {
             return None;
         }
-        let holder = alive.iter().find(|player| {
+        let active_holder = |player: &&Player| {
             self.has_tier_ability(player.user_id, TierAbility::TimeLimit)
                 && !self.is_frog(player)
                 && !self.escaped_on_day.contains_key(&player.user_id)
-                && (self.is_mafia_team(player) || self.is_cult_team(player))
-        })?;
-        if self.is_cult_team(holder) {
-            Some(Winner::Cult)
-        } else {
-            Some(Winner::Mafia)
+        };
+        // 마피아팀과 교주팀 보유자가 함께 살아 있으면 마피아팀이 이긴다. 예전에는 플레이어
+        // 목록이 마피아팀부터라 순서로 정해졌는데, 목록을 섞은 뒤에도 같은 결과를 낸다.
+        // 교주에게 포섭된 보유자는 원래 직업과 상관없이 교주팀으로 센다(예전과 같다).
+        if alive.iter().any(|player| {
+            active_holder(player) && self.is_mafia_team(player) && !self.is_cult_team(player)
+        }) {
+            return Some(Winner::Mafia);
         }
+        if alive
+            .iter()
+            .any(|player| active_holder(player) && self.is_cult_team(player))
+        {
+            return Some(Winner::Cult);
+        }
+        None
     }
 
     pub fn winning_prophet(&self) -> Option<&Player> {

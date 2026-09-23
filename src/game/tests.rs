@@ -823,6 +823,41 @@ fn time_limit_wins_for_the_holders_team_at_half_survivors() {
     assert_eq!(game.winner(), Some(Winner::Cult));
 }
 
+/// [시한부] 마피아팀과 교주팀 보유자가 함께 살아 있으면 목록 순서와 상관없이 마피아팀이 이긴다.
+#[test]
+fn time_limit_tie_between_mafia_and_cult_goes_to_mafia_in_any_order() {
+    for (mafia_id, leader_id) in [(1_u64, 4_u64), (4, 1)] {
+        let players = (1..=8)
+            .map(|id| (id as u64, format!("P{id}")))
+            .collect::<Vec<_>>();
+        let mut game = MafiaGame::new(players, 1, 0, 0, vec![]).unwrap();
+        for id in 1..=8 {
+            let role = if id == mafia_id {
+                Role::Mafia
+            } else if id == leader_id {
+                Role::CultLeader
+            } else {
+                Role::Citizen
+            };
+            game.get_player_mut(id).unwrap().role = role;
+        }
+        game.tier_abilities.clear();
+        game.tier_abilities
+            .insert(mafia_id, vec![TierAbility::TimeLimit]);
+        game.tier_abilities
+            .insert(leader_id, vec![TierAbility::TimeLimit]);
+        game.day_number = 2;
+        game.phase = Phase::Night;
+        for id in (1..=8)
+            .filter(|id| *id != mafia_id && *id != leader_id)
+            .take(4)
+        {
+            game.get_player_mut(id).unwrap().alive = false;
+        }
+        assert_eq!(game.winner(), Some(Winner::Mafia), "mafia={mafia_id}");
+    }
+}
+
 /// [밀정] 두 번째 낮이 되면 보유 보조가 자동으로 마피아와 접선한다.
 #[test]
 fn inside_man_auto_contacts_on_the_second_day() {
