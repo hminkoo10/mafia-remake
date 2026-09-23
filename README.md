@@ -78,6 +78,10 @@ DISCORD_TOKEN=your_bot_token_here
 DISCORD_CLIENT_ID=your_client_id_here
 DISCORD_CLIENT_SECRET=your_client_secret_here
 
+# 본 서버 ID (봇이 여러 서버에 있으면 필수). 관리 명령은 이 서버에서만 받습니다.
+# 봇이 서버 하나에만 있으면 비워도 시작할 때 그 서버로 정합니다.
+# HOME_GUILD_ID=your_home_guild_id_here
+
 # 웹 설정 서버 (선택, 기본값 사용 가능)
 WEB_SETTINGS_HOST=0.0.0.0
 WEB_SETTINGS_PORT=8800
