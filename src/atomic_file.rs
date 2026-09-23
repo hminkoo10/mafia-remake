@@ -68,9 +68,37 @@ pub fn replace(path: &Path, contents: &[u8], seq: Option<u64>) -> Result<bool> {
     Ok(true)
 }
 
+/// 상태 파일이 정말 없는지. 로더는 없을 때만 빈 상태로 시작해야 한다. `Path::exists`는
+/// 권한 오류나 끊어진 심볼릭 링크(마운트 전 볼륨 등)도 "없음"으로 보므로, 그때 빈 상태로
+/// 시작한 뒤 저장하면 진짜 파일을 덮어쓴다. 여기서는 경로 자체가 없을 때만 참이다.
+pub fn is_missing(path: &Path) -> bool {
+    matches!(
+        fs::symlink_metadata(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_absent_path_counts_as_missing() {
+        let dir = temp_dir("missing");
+        let path = dir.join("stats.json");
+        assert!(is_missing(&path));
+        fs::write(&path, "{}").unwrap();
+        assert!(!is_missing(&path));
+        #[cfg(unix)]
+        {
+            // 대상이 없는 심볼릭 링크는 없는 파일이 아니다.
+            let link = dir.join("linked.json");
+            std::os::unix::fs::symlink(dir.join("absent/target.json"), &link).unwrap();
+            assert!(!link.exists());
+            assert!(!is_missing(&link));
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

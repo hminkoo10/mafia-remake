@@ -134,7 +134,7 @@ pub struct BotConfig {
 
 pub fn load_config(path: impl AsRef<Path>) -> Result<BotConfig> {
     let path = path.as_ref();
-    if !path.exists() {
+    if crate::atomic_file::is_missing(path) {
         let example_path = path.with_file_name("config.example.json");
         fs::copy(&example_path, path).with_context(|| {
             format!(

@@ -248,7 +248,7 @@ impl Default for PlayerStats {
 
 pub fn load_stats(path: impl AsRef<Path>) -> Result<StatsFile> {
     let path = path.as_ref();
-    if !path.exists() {
+    if crate::atomic_file::is_missing(path) {
         return Ok(StatsFile::default());
     }
     let text = fs::read_to_string(path)

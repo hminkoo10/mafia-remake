@@ -613,7 +613,7 @@ pub struct WebSettingsState {
 
 pub fn load_api_key_store(path: impl AsRef<Path>) -> Result<ApiKeyStore> {
     let path = path.as_ref();
-    if !path.exists() {
+    if mafia_remake::atomic_file::is_missing(path) {
         return Ok(ApiKeyStore::default());
     }
     let text = fs::read_to_string(path)
@@ -633,7 +633,7 @@ fn save_api_key_store(path: impl AsRef<Path>, store: &ApiKeyStore) -> Result<()>
 
 pub fn load_completed_replays(path: impl AsRef<Path>) -> Result<VecDeque<Value>> {
     let path = path.as_ref();
-    if !path.exists() {
+    if mafia_remake::atomic_file::is_missing(path) {
         return Ok(VecDeque::new());
     }
     let text = fs::read_to_string(path)

@@ -702,23 +702,25 @@ fn copy_aside_corrupt_file(path: &Path) -> Result<PathBuf> {
         }
     }
     let target = unused_corrupt_path(path, &file_name);
-    let written = std::fs::OpenOptions::new()
+    let copy_error = |error: std::io::Error| {
+        anyhow::Error::new(error).context(format!(
+            "상태 파일의 복사본을 만들지 못했습니다: {} → {}",
+            path.display(),
+            target.display()
+        ))
+    };
+    // 같은 초에 다른 프로세스가 먼저 만든 이름이면 create_new가 실패한다. 그 파일은 남의
+    // 복사본이므로 지우지 않는다. 지우는 건 여기서 만들었다가 쓰다 실패한 파일뿐이다.
+    let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&target)
-        .and_then(|mut file| {
-            std::io::Write::write_all(&mut file, &contents)?;
-            file.sync_all()
-        });
+        .map_err(copy_error)?;
+    let written = std::io::Write::write_all(&mut file, &contents).and_then(|()| file.sync_all());
+    drop(file);
     if let Err(error) = written {
         let _ = std::fs::remove_file(&target);
-        return Err(error).with_context(|| {
-            format!(
-                "상태 파일의 복사본을 만들지 못했습니다: {} → {}",
-                path.display(),
-                target.display()
-            )
-        });
+        return Err(copy_error(error));
     }
     Ok(target)
 }

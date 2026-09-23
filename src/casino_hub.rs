@@ -518,7 +518,7 @@ fn short_id() -> String {
 }
 
 fn load_file(path: &Path) -> Result<CasinoFile> {
-    if !path.exists() {
+    if mafia_remake::atomic_file::is_missing(path) {
         return Ok(CasinoFile::default());
     }
     let text = std::fs::read_to_string(path).context("casino.json 읽기 실패")?;
