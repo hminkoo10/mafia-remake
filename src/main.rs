@@ -643,13 +643,15 @@ fn warn_settings_web_exposure(base_url: Option<&str>, web_port: u16) {
     }
 }
 
-/// 읽지 못한 상태 파일을 같은 폴더의 "<이름>.corrupt-<unix 초>"로 옮기고 옮긴 경로를 돌려준다.
-/// 그 이름이 이미 있으면 뒤에 번호를 붙여, 전에 옮겨 둔 파일을 덮어쓰지 않는다.
-fn move_aside_corrupt_file(path: &Path) -> Result<PathBuf> {
-    let file_name = path
-        .file_name()
+fn state_file_name(path: &Path) -> Result<String> {
+    path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        .with_context(|| format!("상태 파일 이름이 없습니다: {}", path.display()))?;
+        .with_context(|| format!("상태 파일 이름이 없습니다: {}", path.display()))
+}
+
+/// 같은 폴더에서 아직 쓰이지 않은 "<이름>.corrupt-<unix 초>" 경로. 그 이름이 이미 있으면 뒤에
+/// 번호를 붙여, 전에 남겨 둔 파일을 덮어쓰지 않는다.
+fn unused_corrupt_path(path: &Path, file_name: &str) -> PathBuf {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs());
@@ -659,6 +661,13 @@ fn move_aside_corrupt_file(path: &Path) -> Result<PathBuf> {
         target = path.with_file_name(format!("{file_name}.corrupt-{timestamp}-{suffix}"));
         suffix += 1;
     }
+    target
+}
+
+/// 읽지 못한 상태 파일을 같은 폴더의 "<이름>.corrupt-<unix 초>"로 옮기고 옮긴 경로를 돌려준다.
+fn move_aside_corrupt_file(path: &Path) -> Result<PathBuf> {
+    let file_name = state_file_name(path)?;
+    let target = unused_corrupt_path(path, &file_name);
     std::fs::rename(path, &target).with_context(|| {
         format!(
             "상태 파일을 옮기지 못했습니다: {} → {}",
@@ -669,21 +678,67 @@ fn move_aside_corrupt_file(path: &Path) -> Result<PathBuf> {
     Ok(target)
 }
 
+/// 읽지 못한 상태 파일의 복사본을 같은 폴더의 "<이름>.corrupt-<unix 초>"로 남기고 그 경로를
+/// 돌려준다. 원본은 건드리지 않는다. 같은 내용의 복사본이 이미 있으면 그 경로를 돌려주고 새로
+/// 만들지 않아, 시작 실패로 재시작이 반복돼도 복사본이 쌓이지 않는다.
+fn copy_aside_corrupt_file(path: &Path) -> Result<PathBuf> {
+    let file_name = state_file_name(path)?;
+    let contents = std::fs::read(path)
+        .with_context(|| format!("상태 파일을 읽지 못했습니다: {}", path.display()))?;
+    let prefix = format!("{file_name}.corrupt-");
+    let dir = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let same_name = entry.file_name().to_string_lossy().starts_with(&prefix);
+            let same_size = entry
+                .metadata()
+                .is_ok_and(|meta| meta.is_file() && meta.len() == contents.len() as u64);
+            if same_name && same_size && std::fs::read(entry.path()).is_ok_and(|c| c == contents) {
+                return Ok(entry.path());
+            }
+        }
+    }
+    let target = unused_corrupt_path(path, &file_name);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .and_then(|mut file| {
+            std::io::Write::write_all(&mut file, &contents)?;
+            file.sync_all()
+        });
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&target);
+        return Err(error).with_context(|| {
+            format!(
+                "상태 파일의 복사본을 만들지 못했습니다: {} → {}",
+                path.display(),
+                target.display()
+            )
+        });
+    }
+    Ok(target)
+}
+
 /// 코인·레이팅(stats.json)이나 카지노 칩(casino.json)처럼 잃으면 안 되는 상태 파일을 불러온다.
 /// 파일이 없으면 로더가 빈 상태를 준다. 파일이 있는데 읽거나 파싱하지 못했을 때 빈 상태로
-/// 계속하면 다음 저장이 진짜 파일을 빈 상태로 덮어쓴다. 그래서 파일을 옆으로 옮겨 보존하고
-/// 시작을 멈춘다 (옮기지 못해도 멈춘다).
+/// 계속하면 다음 저장이 진짜 파일을 빈 상태로 덮어쓴다. 그래서 시작을 멈춘다. 원본은 그대로
+/// 둬서, 자동 재시작이 걸려 있어도 누가 파일을 고치거나 지울 때까지 계속 시작을 멈춘다
+/// (옮겨 두면 다음 시작이 파일이 없는 줄 알고 빈 상태로 시작한다). 복사본은 따로 남긴다.
 fn load_state_file<T>(path: &Path, load: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
-    load(path).map_err(|error| match move_aside_corrupt_file(path) {
-        Ok(moved) => error.context(format!(
-            "{}을(를) 읽지 못해 봇을 시작하지 않습니다. 데이터는 {}에 그대로 옮겨 두었습니다. \
-             파일을 고쳐 원래 이름으로 되돌린 뒤 다시 시작하세요 (그대로 다시 시작하면 빈 상태로 시작합니다).",
+    load(path).map_err(|error| match copy_aside_corrupt_file(path) {
+        Ok(copy) => error.context(format!(
+            "{}을(를) 읽지 못해 봇을 시작하지 않습니다. 원본은 그대로 두었고 복사본을 {}에 남겼습니다. \
+             파일을 고치거나, 비운 상태로 시작하려면 원본을 지운 뒤 다시 시작하세요.",
             path.display(),
-            moved.display()
+            copy.display()
         )),
-        Err(move_error) => error.context(format!(
-            "{}을(를) 읽지 못했고 옆으로 옮기지도 못해 봇을 시작하지 않습니다 ({move_error:#}). \
-             빈 상태로 덮어쓰지 않도록 파일을 직접 확인하세요.",
+        Err(copy_error) => error.context(format!(
+            "{}을(를) 읽지 못해 봇을 시작하지 않습니다. 복사본은 만들지 못했습니다 ({copy_error:#}). \
+             원본은 그대로 두었으니 파일을 직접 확인하세요.",
             path.display()
         )),
     })
@@ -820,23 +875,30 @@ mod main_tests {
     }
 
     #[test]
-    fn corrupt_stats_file_is_moved_aside_and_startup_stops() {
+    fn corrupt_stats_file_stays_in_place_and_every_restart_stops() {
         let dir = state_temp_dir("stats-corrupt");
         let path = dir.join("stats.json");
-        std::fs::write(&path, "{\"users\": {\"1\": {\"coins\": 5").unwrap();
+        let broken = "{\"users\": {\"1\": {\"coins\": 5";
+        std::fs::write(&path, broken).unwrap();
 
         let error = load_state_file(&path, |path| stats::load_stats(path))
             .expect_err("깨진 stats.json으로 시작하면 안 된다");
-
-        // 원래 이름은 비워 두고(다음 시작 때 새로 쓰지 않도록 시작을 멈춘다), 데이터는 그대로 보존한다.
-        assert!(!path.exists());
-        let copies = corrupt_copies(&dir, "stats.json");
-        assert_eq!(copies.len(), 1, "{copies:?}");
-        assert_eq!(
-            std::fs::read_to_string(&copies[0]).unwrap(),
-            "{\"users\": {\"1\": {\"coins\": 5"
-        );
         assert!(format!("{error:#}").contains(".corrupt-"), "{error:#}");
+
+        // 원본은 그대로 있어서, 자동 재시작이 다시 불러도 빈 상태로 시작하지 않는다.
+        // 복사본은 한 번만 만든다.
+        for _ in 0..3 {
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+            let copies = corrupt_copies(&dir, "stats.json");
+            assert_eq!(copies.len(), 1, "{copies:?}");
+            assert_eq!(std::fs::read_to_string(&copies[0]).unwrap(), broken);
+            assert!(load_state_file(&path, |path| stats::load_stats(path)).is_err());
+        }
+
+        // 내용이 바뀌면 그 내용도 따로 남긴다.
+        std::fs::write(&path, "{\"users\": [").unwrap();
+        assert!(load_state_file(&path, |path| stats::load_stats(path)).is_err());
+        assert_eq!(corrupt_copies(&dir, "stats.json").len(), 2);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -860,7 +922,7 @@ mod main_tests {
     }
 
     #[test]
-    fn corrupt_casino_file_is_moved_aside_and_startup_stops() {
+    fn corrupt_casino_file_is_copied_aside_and_startup_stops() {
         let dir = state_temp_dir("casino");
         let path = dir.join("casino.json");
         let stats = Arc::new(RwLock::new(stats::StatsFile::default()));
@@ -875,7 +937,11 @@ mod main_tests {
 
         std::fs::write(&path, "{\"house\": 12, \"tables\": [").unwrap();
         assert!(load_state_file(&path, load).is_err());
-        assert!(!path.exists());
+        assert!(load_state_file(&path, load).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{\"house\": 12, \"tables\": ["
+        );
         let copies = corrupt_copies(&dir, "casino.json");
         assert_eq!(copies.len(), 1, "{copies:?}");
         assert_eq!(
