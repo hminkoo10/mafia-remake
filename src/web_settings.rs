@@ -616,33 +616,12 @@ pub fn load_api_key_store(path: impl AsRef<Path>) -> Result<ApiKeyStore> {
         .with_context(|| format!("API 키 JSON을 파싱하지 못했습니다: {}", path.display()))
 }
 
+/// API 키 파일을 저장한다. 호출부는 API 키 쓰기 잠금을 쥔 채 부르므로 순서는 잠금이 지킨다.
 fn save_api_key_store(path: impl AsRef<Path>, store: &ApiKeyStore) -> Result<()> {
     let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!("API 키 디렉터리를 만들지 못했습니다: {}", parent.display())
-        })?;
-    }
     let text = serde_json::to_string_pretty(store).context("API 키 JSON 직렬화 실패")?;
-    let temp_path = path.with_file_name(format!(
-        "{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("api_keys.json")
-    ));
-    fs::write(&temp_path, format!("{text}\n")).with_context(|| {
-        format!(
-            "API 키 임시 파일을 쓰지 못했습니다: {}",
-            temp_path.display()
-        )
-    })?;
-    if path.exists() {
-        fs::remove_file(path).with_context(|| {
-            format!("기존 API 키 파일을 교체하지 못했습니다: {}", path.display())
-        })?;
-    }
-    fs::rename(&temp_path, path)
-        .with_context(|| format!("API 키 파일을 교체하지 못했습니다: {}", path.display()))?;
+    mafia_remake::atomic_file::replace(path, format!("{text}\n").as_bytes(), None)
+        .with_context(|| format!("API 키 파일을 저장하지 못했습니다: {}", path.display()))?;
     Ok(())
 }
 
@@ -658,28 +637,19 @@ pub fn load_completed_replays(path: impl AsRef<Path>) -> Result<VecDeque<Value>>
     Ok(values.into())
 }
 
-pub fn save_completed_replays(path: impl AsRef<Path>, replays: &VecDeque<Value>) -> Result<()> {
+/// 완료된 판 리플레이 목록을 저장한다. 판이 끝날 때마다 잠금 밖에서 따로 저장하므로
+/// `seq`(목록 잠금 안에서 스냅샷을 뜰 때 받은 `atomic_file::next_seq()`)로 순서를 지킨다.
+/// 먼저 뜬 스냅샷이 늦게 저장되면 건너뛴다.
+pub fn save_completed_replays(
+    path: impl AsRef<Path>,
+    replays: &VecDeque<Value>,
+    seq: u64,
+) -> Result<()> {
     let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("replays directory create failed: {}", parent.display()))?;
-    }
     let values = replays.iter().cloned().collect::<Vec<_>>();
     let text = serde_json::to_string_pretty(&values).context("replays JSON serialize failed")?;
-    let temp_path = path.with_file_name(format!(
-        "{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("replays.json")
-    ));
-    fs::write(&temp_path, format!("{text}\n"))
-        .with_context(|| format!("replays temp write failed: {}", temp_path.display()))?;
-    if path.exists() {
-        fs::remove_file(path)
-            .with_context(|| format!("replays old file replace failed: {}", path.display()))?;
-    }
-    fs::rename(&temp_path, path)
-        .with_context(|| format!("replays file replace failed: {}", path.display()))?;
+    mafia_remake::atomic_file::replace(path, format!("{text}\n").as_bytes(), Some(seq))
+        .with_context(|| format!("replays file save failed: {}", path.display()))?;
     Ok(())
 }
 

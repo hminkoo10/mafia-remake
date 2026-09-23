@@ -794,11 +794,14 @@ pub async fn announce_winner(
         }
         let completed_replays_path = data.completed_replays_path.clone();
         let completed_replays_snapshot = completed_replays.clone();
+        // 목록 잠금 안에서 번호를 받아, 늦게 도착한 이전 스냅샷이 새 목록을 덮지 않게 한다.
+        let completed_replays_seq = mafia_remake::atomic_file::next_seq();
         tokio::spawn(async move {
             match tokio::task::spawn_blocking(move || {
                 crate::web_settings::save_completed_replays(
                     &*completed_replays_path,
                     &completed_replays_snapshot,
+                    completed_replays_seq,
                 )
             })
             .await

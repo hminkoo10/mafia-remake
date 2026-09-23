@@ -148,28 +148,14 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<BotConfig> {
     Ok(config)
 }
 
+/// config.json을 저장한다. 호출부는 설정 쓰기 잠금을 쥔 채 부르므로 순서는 잠금이 지킨다.
+/// 파일은 rename 한 번으로 바뀌어, 저장 중 봇이 멈춰도 config.json이 사라지지 않는다
+/// (사라지면 다음 시작 때 예시 설정으로 덮인다).
 pub fn save_config(path: impl AsRef<Path>, config: &BotConfig) -> Result<()> {
     let path = path.as_ref();
     let text = serde_json::to_string_pretty(config).context("config JSON 직렬화 실패")?;
-    let temp_path = path.with_file_name(format!(
-        "{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("config.json")
-    ));
-    fs::write(&temp_path, format!("{text}\n")).with_context(|| {
-        format!(
-            "config 임시 파일을 쓰지 못했습니다: {}",
-            temp_path.display()
-        )
-    })?;
-    if path.exists() {
-        fs::remove_file(path).with_context(|| {
-            format!("기존 config 파일을 교체하지 못했습니다: {}", path.display())
-        })?;
-    }
-    fs::rename(&temp_path, path)
-        .with_context(|| format!("config 파일을 교체하지 못했습니다: {}", path.display()))?;
+    crate::atomic_file::replace(path, format!("{text}\n").as_bytes(), None)
+        .with_context(|| format!("config 파일을 저장하지 못했습니다: {}", path.display()))?;
     Ok(())
 }
 
