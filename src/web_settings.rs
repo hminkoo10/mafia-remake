@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::TcpListener;
-use tokio::sync::RwLock;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio_rustls::TlsAcceptor;
 use uuid::Uuid;
 
@@ -35,6 +35,12 @@ pub(crate) use self::pages::*;
 
 const WEB_SETTINGS_PATH: &str = "/web-settings";
 const WEB_SETTINGS_SESSION_TTL_SECONDS: u64 = 600;
+// 멈춘 연결이 소켓을 계속 붙잡지 못하도록 핸드셰이크/요청 읽기/응답 쓰기에 제한 시간을 둔다.
+const WEB_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const WEB_CONNECTION_IO_TIMEOUT: Duration = Duration::from_secs(15);
+// 동시 연결 수 상한. 넘치는 연결은 받자마자 끊어 파일 디스크립터 고갈(EMFILE)을 막는다.
+const WEB_MAX_CONNECTIONS: usize = 256;
+const WEB_ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 const MAX_GAME_PLAYERS: usize = 24;
 const WEB_LEADERBOARD_METRICS: &[&str] = &[
     "rating", "wins", "streak", "winrate", "games", "mafia", "playtime", "coins", "star",
@@ -1099,22 +1105,31 @@ pub async fn run_server(
     tls_key: Option<String>,
 ) -> Result<()> {
     let listener = TcpListener::bind((host.as_str(), port)).await?;
+    let connection_slots = Arc::new(Semaphore::new(WEB_MAX_CONNECTIONS));
     if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
         let tls_config = Arc::new(load_tls_config(&cert, &key)?);
         let acceptor = TlsAcceptor::from(tls_config);
         println!("Rust web settings server ready (HTTPS): https://{host}:{port}");
         loop {
-            let (stream, _addr) = listener.accept().await?;
+            let Some((stream, slot)) = accept_connection(&listener, &connection_slots).await else {
+                continue;
+            };
             let state = state.clone();
             let acceptor = acceptor.clone();
             tokio::spawn(async move {
-                match acceptor.accept(stream).await {
-                    Ok(stream) => {
-                        if let Err(error) = handle_connection(stream, state).await {
+                let _slot = slot;
+                match tokio::time::timeout(WEB_TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await
+                {
+                    Ok(Ok(stream)) => {
+                        if let Err(error) =
+                            handle_connection(stream, state, WEB_CONNECTION_IO_TIMEOUT).await
+                        {
                             eprintln!("web settings error: {error:?}");
                         }
                     }
-                    Err(error) => eprintln!("web settings tls error: {error:?}"),
+                    Ok(Err(error)) => eprintln!("web settings tls error: {error:?}"),
+                    // 핸드셰이크를 끝내지 않고 버티는 연결은 조용히 끊는다.
+                    Err(_) => {}
                 }
             });
         }
@@ -1122,13 +1137,36 @@ pub async fn run_server(
 
     println!("Rust web settings server ready (HTTP): http://{host}:{port}");
     loop {
-        let (stream, _addr) = listener.accept().await?;
+        let Some((stream, slot)) = accept_connection(&listener, &connection_slots).await else {
+            continue;
+        };
         let state = state.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle_connection(stream, state).await {
+            let _slot = slot;
+            if let Err(error) = handle_connection(stream, state, WEB_CONNECTION_IO_TIMEOUT).await {
                 eprintln!("web settings error: {error:?}");
             }
         });
+    }
+}
+
+/// 연결 하나를 받아 동시 연결 슬롯과 함께 돌려준다. accept 실패(EMFILE 등)는
+/// 서버를 끝내지 않고 잠시 쉰 뒤 다시 시도하도록 `None`을 돌려주고,
+/// 슬롯이 가득 찼으면 받은 연결을 바로 끊는다.
+async fn accept_connection(
+    listener: &TcpListener,
+    connection_slots: &Arc<Semaphore>,
+) -> Option<(TcpStream, OwnedSemaphorePermit)> {
+    match listener.accept().await {
+        Ok((stream, _addr)) => {
+            let slot = connection_slots.clone().try_acquire_owned().ok()?;
+            Some((stream, slot))
+        }
+        Err(error) => {
+            eprintln!("web settings accept error: {error:?}");
+            tokio::time::sleep(WEB_ACCEPT_RETRY_DELAY).await;
+            None
+        }
     }
 }
 
@@ -1156,18 +1194,30 @@ fn load_tls_config(cert_path: &str, key_path: &str) -> Result<ServerConfig> {
         .context("failed to build web settings TLS config")
 }
 
-async fn handle_connection<S>(mut stream: S, state: WebSettingsState) -> Result<()>
+async fn handle_connection<S>(
+    mut stream: S,
+    state: WebSettingsState,
+    io_timeout: Duration,
+) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let response = match read_http_request(&mut stream).await {
+    // 요청을 끝까지 보내지 않거나 응답을 읽지 않고 버티는 연결은 제한 시간 뒤 조용히 끊는다.
+    let Ok(request) = tokio::time::timeout(io_timeout, read_http_request(&mut stream)).await else {
+        return Ok(());
+    };
+    let response = match request {
         Ok(request) => route_request(&state, request).await,
         Err(error) => http_response(
             "400 Bad Request",
             &render_message_page("잘못된 요청", &error.to_string()),
         ),
     };
-    stream.write_all(response.as_bytes()).await?;
+    if let Ok(written) =
+        tokio::time::timeout(io_timeout, stream.write_all(response.as_bytes())).await
+    {
+        written?;
+    }
     Ok(())
 }
 

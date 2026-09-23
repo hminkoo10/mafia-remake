@@ -775,3 +775,66 @@ fn rating_page_explains_rating_for_players() {
     assert!(html.contains("자주 묻는 질문"));
     assert!(html.contains("졌는데 왜 점수가 안 깎였나요?"));
 }
+
+#[tokio::test]
+async fn stalled_request_read_is_dropped_after_timeout() {
+    // 연결만 열고 요청을 보내지 않는 클라이언트가 태스크를 영원히 붙잡으면 안 된다.
+    let (mut client, server) = tokio::io::duplex(1024);
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        handle_connection(server, test_state(), Duration::from_millis(50)),
+    )
+    .await
+    .expect("stalled request read should time out");
+
+    assert!(result.is_ok());
+    let mut received = Vec::new();
+    client.read_to_end(&mut received).await.unwrap();
+    assert!(received.is_empty(), "stalled connection gets no response");
+}
+
+#[tokio::test]
+async fn stalled_response_write_is_dropped_after_timeout() {
+    // 요청은 보내고 응답을 읽지 않는 클라이언트도 쓰기 제한 시간 뒤에 끊는다.
+    let (mut client, server) = tokio::io::duplex(64);
+    client
+        .write_all(b"GET /api/status HTTP/1.1\r\n\r\n")
+        .await
+        .unwrap();
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        handle_connection(server, test_state(), Duration::from_millis(50)),
+    )
+    .await
+    .expect("stalled response write should time out");
+
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn full_connection_slots_drop_new_connections() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let slots = Arc::new(Semaphore::new(1));
+
+    let _first_client = TcpStream::connect(addr).await.unwrap();
+    let (_first, slot) = accept_connection(&listener, &slots)
+        .await
+        .expect("first connection gets a slot");
+
+    let mut second_client = TcpStream::connect(addr).await.unwrap();
+    assert!(accept_connection(&listener, &slots).await.is_none());
+    // 슬롯이 없어 거절된 연결은 서버가 바로 닫는다.
+    let mut buf = [0u8; 1];
+    let read = tokio::time::timeout(Duration::from_secs(5), second_client.read(&mut buf))
+        .await
+        .expect("rejected connection should be closed");
+    assert!(matches!(read, Ok(0) | Err(_)));
+
+    // 슬롯이 반납되면 다시 받는다.
+    drop(slot);
+    let _third_client = TcpStream::connect(addr).await.unwrap();
+    assert!(accept_connection(&listener, &slots).await.is_some());
+}
