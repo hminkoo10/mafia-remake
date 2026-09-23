@@ -7,10 +7,10 @@ use crate::{
 };
 use anyhow::Result;
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     body::Body,
     extract::{
-        Query, State,
+        ConnectInfo, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, Method, StatusCode, Uri, header},
@@ -27,8 +27,9 @@ use poise::serenity_prelude as serenity;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{RwLock, broadcast};
@@ -52,6 +53,8 @@ pub struct ActivityState {
     pub client_id: String,
     pub client_secret: String,
     pub discord_updates: broadcast::Sender<ActivityDiscordUpdate>,
+    /// 클라이언트 IP별 OAuth 교환 시도 (창 시작 시각, 횟수)
+    auth_attempts: Arc<Mutex<HashMap<IpAddr, (Instant, u32)>>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -74,7 +77,6 @@ pub struct ActivitySession {
     pub user_id: u64,
     #[allow(dead_code)]
     pub username: String,
-    #[allow(dead_code)]
     pub guild_id: u64,
     pub expires_at: Instant,
 }
@@ -94,6 +96,7 @@ impl ActivityState {
             client_id,
             client_secret,
             discord_updates,
+            auth_attempts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -335,7 +338,7 @@ pub async fn run_activity_server(
         };
         println!("Discord Activity 서버 시작 (HTTPS): https://{addr}");
         if let Err(e) = axum_server::bind_rustls(addr, config)
-            .serve(router.into_make_service())
+            .serve(router.into_make_service_with_connect_info::<SocketAddr>())
             .await
         {
             eprintln!("Activity 서버 오류: {e}");
@@ -349,7 +352,12 @@ pub async fn run_activity_server(
             }
         };
         println!("Discord Activity 서버 시작 (HTTP): http://{addr}");
-        if let Err(e) = axum::serve(listener, router).await {
+        if let Err(e) = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        {
             eprintln!("Activity 서버 오류: {e}");
         }
     }
@@ -359,15 +367,63 @@ pub async fn run_activity_server(
 // OAuth 인증
 // ─────────────────────────────────────────────
 
+/// Discord 쪽 OAuth 호출이 멈춰도 요청이 무한정 붙잡히지 않게 한다.
+const DISCORD_OAUTH_TIMEOUT: Duration = Duration::from_secs(10);
+const OAUTH_CODE_LEN: std::ops::RangeInclusive<usize> = 8..=128;
+const AUTH_RATE_WINDOW: Duration = Duration::from_secs(60);
+const AUTH_RATE_MAX_ATTEMPTS: u32 = 10;
+
+/// 요청으로 들어온 Discord ID(snowflake)를 읽는다. serenity `*Id::new(0)`은 패닉하고
+/// 릴리스 빌드는 panic=abort라 봇 전체가 죽으므로 0도 거절한다.
+fn parse_discord_id(value: &str) -> Option<u64> {
+    value.parse::<u64>().ok().filter(|id| *id != 0)
+}
+
+/// Discord OAuth 인가 코드로 볼 수 없는 값(길이·문자)은 Discord에 보내기 전에 거절한다.
+fn is_plausible_oauth_code(code: &str) -> bool {
+    OAUTH_CODE_LEN.contains(&code.len())
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// Cloudflare를 거치면 CF-Connecting-IP가 실제 클라이언트 주소다. 없으면 TCP 상대 주소를 쓰고,
+/// 둘 다 모르면 한 버킷(0.0.0.0)으로 묶는다.
+fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>) -> IpAddr {
+    headers
+        .get("CF-Connecting-IP")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<IpAddr>().ok())
+        .or_else(|| peer.map(|addr| addr.ip()))
+        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+}
+
+/// IP별 고정 창 레이트 리밋. 창이 지난 항목은 매번 지우고, 허용되면 횟수를 센다.
+fn record_auth_attempt(
+    attempts: &mut HashMap<IpAddr, (Instant, u32)>,
+    client: IpAddr,
+    now: Instant,
+) -> bool {
+    attempts.retain(|_, (started, _)| now.saturating_duration_since(*started) < AUTH_RATE_WINDOW);
+    let (_, count) = attempts.entry(client).or_insert((now, 0));
+    if *count >= AUTH_RATE_MAX_ATTEMPTS {
+        return false;
+    }
+    *count += 1;
+    true
+}
+
 async fn auth_handler(
     State(state): State<ActivityState>,
+    headers: HeaderMap,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     println!("[auth] code={:?} guild_id={:?}", query.code, query.guild_id);
 
-    let guild_id: u64 = match query.guild_id.parse() {
-        Ok(id) => id,
-        Err(_) => {
+    let guild_id = match parse_discord_id(&query.guild_id) {
+        Some(id) => id,
+        None => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "error": "invalid guild_id" })),
@@ -387,8 +443,43 @@ async fn auth_handler(
         .into_response();
     }
 
+    if !is_plausible_oauth_code(&query.code) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid code" })),
+        )
+            .into_response();
+    }
+
+    let client = client_ip(&headers, peer.map(|Extension(ConnectInfo(addr))| addr));
+    let allowed = {
+        let mut attempts = state
+            .auth_attempts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        record_auth_attempt(&mut attempts, client, Instant::now())
+    };
+    if !allowed {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({ "error": "too many requests" })),
+        )
+            .into_response();
+    }
+
+    let http = match reqwest::Client::builder()
+        .timeout(DISCORD_OAUTH_TIMEOUT)
+        .build()
+    {
+        Ok(http) => http,
+        Err(e) => {
+            eprintln!("Discord OAuth HTTP client build failed: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
     // Discord OAuth2 코드 → access_token
-    let token_res = reqwest::Client::new()
+    let token_res = http
         .post("https://discord.com/api/oauth2/token")
         .form(&[
             ("client_id", state.client_id.as_str()),
@@ -421,7 +512,7 @@ async fn auth_handler(
     };
 
     // access_token → 유저 정보
-    let user_res = reqwest::Client::new()
+    let user_res = http
         .get("https://discord.com/api/users/@me")
         .header("Authorization", format!("Bearer {access_token}"))
         .send()
@@ -447,7 +538,13 @@ async fn auth_handler(
         }
     };
 
-    let user_id_u64: u64 = user_id.parse().unwrap_or(0);
+    let Some(user_id_u64) = parse_discord_id(&user_id) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "user fetch failed" })),
+        )
+            .into_response();
+    };
     let session_token = Uuid::new_v4().to_string();
     state.sessions.insert(
         session_token.clone(),
@@ -504,9 +601,9 @@ async fn state_handler(
         }
     };
 
-    let guild_id: u64 = match query.guild_id.parse() {
-        Ok(id) => id,
-        Err(_) => {
+    let guild_id = match parse_discord_id(&query.guild_id) {
+        Some(id) => id,
+        None => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({ "error": "invalid guild_id" })),
@@ -514,6 +611,13 @@ async fn state_handler(
                 .into_response();
         }
     };
+    if guild_id != session.guild_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "guild mismatch" })),
+        )
+            .into_response();
+    }
 
     let guild_key = serenity::GuildId::new(guild_id);
     let show_confirm_counts = state.config.read().await.show_confirmation_vote_counts;
@@ -588,16 +692,29 @@ async fn action_handler(
         }
     };
 
-    let guild_id: u64 = match body.guild_id.parse() {
-        Ok(id) => id,
-        Err(_) => {
-            return Json(ActionResponse {
-                ok: false,
-                message: Some("잘못된 guild_id".into()),
-            })
-            .into_response();
+    let guild_id = match parse_discord_id(&body.guild_id) {
+        Some(id) => id,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ActionResponse {
+                    ok: false,
+                    message: Some("잘못된 guild_id".into()),
+                }),
+            )
+                .into_response();
         }
     };
+    if guild_id != session.guild_id {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ActionResponse {
+                ok: false,
+                message: Some("이 서버의 세션이 아닙니다.".into()),
+            }),
+        )
+            .into_response();
+    }
 
     let guild_key = serenity::GuildId::new(guild_id);
     let running_arc = match state.games.get(&guild_key) {
@@ -613,6 +730,10 @@ async fn action_handler(
 
     let mut running = running_arc.write().await;
     let user_id = session.user_id;
+    // 익명 게임에서는 대상이 별명 기반 ID로 들어오므로 실제 user_id로 되돌려 쓴다.
+    let aliases = running
+        .anonymous_enabled
+        .then(|| running.anonymous_aliases.clone());
 
     let mut discord_update = None;
     let result: Result<Option<String>, String> = match body.action.as_str() {
@@ -652,10 +773,18 @@ async fn action_handler(
                     Err(error) => Err(error.to_string()),
                 }
             } else {
-                let target = body
+                let Ok(target) = body
                     .target_id
                     .as_deref()
-                    .and_then(|s| s.parse::<u64>().ok());
+                    .map(|id| resolve_player_id(aliases.as_ref(), id).ok_or(()))
+                    .transpose()
+                else {
+                    return Json(ActionResponse {
+                        ok: false,
+                        message: Some("잘못된 target_id".into()),
+                    })
+                    .into_response();
+                };
                 match running.game.submit_night_action(user_id, target) {
                     Ok(selection_message) => {
                         // 경찰은 대상을 고른 즉시 조사 결과를 본다 (Discord 쪽과 동일).
@@ -701,10 +830,18 @@ async fn action_handler(
             }
         }
         "day_vote" => {
-            let target = body
+            let Ok(target) = body
                 .target_id
                 .as_deref()
-                .and_then(|s| s.parse::<u64>().ok());
+                .map(|id| resolve_player_id(aliases.as_ref(), id).ok_or(()))
+                .transpose()
+            else {
+                return Json(ActionResponse {
+                    ok: false,
+                    message: Some("잘못된 target_id".into()),
+                })
+                .into_response();
+            };
             let was_known_mafia_team = running
                 .game
                 .get_player(user_id)
@@ -818,9 +955,9 @@ async fn action_handler(
                     .into_response();
                 }
             };
-            let t1: u64 = match ids[0].parse() {
-                Ok(v) => v,
-                Err(_) => {
+            let t1 = match resolve_player_id(aliases.as_ref(), &ids[0]) {
+                Some(v) => v,
+                None => {
                     return Json(ActionResponse {
                         ok: false,
                         message: Some("잘못된 target_id".into()),
@@ -828,9 +965,9 @@ async fn action_handler(
                     .into_response();
                 }
             };
-            let t2: u64 = match ids[1].parse() {
-                Ok(v) => v,
-                Err(_) => {
+            let t2 = match resolve_player_id(aliases.as_ref(), &ids[1]) {
+                Some(v) => v,
+                None => {
                     return Json(ActionResponse {
                         ok: false,
                         message: Some("잘못된 target_id".into()),
@@ -885,7 +1022,11 @@ async fn action_handler(
             }
         }
         "hacker_action" => {
-            let Some(target_id) = body.target_id.as_deref().and_then(|id| id.parse().ok()) else {
+            let Some(target_id) = body
+                .target_id
+                .as_deref()
+                .and_then(|id| resolve_player_id(aliases.as_ref(), id))
+            else {
                 return Json(ActionResponse {
                     ok: false,
                     message: Some("target_id 필요".into()),
@@ -909,7 +1050,11 @@ async fn action_handler(
             }
         }
         "vigilante_action" => {
-            let Some(target_id) = body.target_id.as_deref().and_then(|id| id.parse().ok()) else {
+            let Some(target_id) = body
+                .target_id
+                .as_deref()
+                .and_then(|id| resolve_player_id(aliases.as_ref(), id))
+            else {
                 return Json(ActionResponse {
                     ok: false,
                     message: Some("target_id 필요".into()),
@@ -937,10 +1082,12 @@ async fn action_handler(
         }
         "psychologist_action" => {
             let (Some(first_target_id), Some(second_target_id)) = (
-                body.target_id.as_deref().and_then(|id| id.parse().ok()),
+                body.target_id
+                    .as_deref()
+                    .and_then(|id| resolve_player_id(aliases.as_ref(), id)),
                 body.secondary_target_id
                     .as_deref()
-                    .and_then(|id| id.parse().ok()),
+                    .and_then(|id| resolve_player_id(aliases.as_ref(), id)),
             ) else {
                 return Json(ActionResponse {
                     ok: false,
@@ -1028,6 +1175,8 @@ async fn action_handler(
 // WebSocket (폴링 기반 실시간 업데이트)
 // ─────────────────────────────────────────────
 
+const ACTIVITY_WS_MAX_MESSAGE_SIZE: usize = 16 * 1024;
+
 async fn ws_handler(
     State(state): State<ActivityState>,
     Query(query): Query<WsQuery>,
@@ -1039,12 +1188,17 @@ async fn ws_handler(
         Some(s) => s,
         None => return (StatusCode::UNAUTHORIZED, "invalid session").into_response(),
     };
-    let guild_id: u64 = match query.guild_id.parse() {
-        Ok(id) => id,
-        Err(_) => return (StatusCode::BAD_REQUEST, "invalid guild_id").into_response(),
+    let Some(guild_id) = parse_discord_id(&query.guild_id) else {
+        return (StatusCode::BAD_REQUEST, "invalid guild_id").into_response();
     };
+    if guild_id != session.guild_id {
+        return (StatusCode::FORBIDDEN, "guild mismatch").into_response();
+    }
 
-    ws.on_upgrade(move |socket| handle_ws(socket, state, session.user_id, guild_id))
+    // 클라이언트는 상태를 받기만 하므로 큰 메시지를 받아 줄 이유가 없다.
+    ws.max_message_size(ACTIVITY_WS_MAX_MESSAGE_SIZE)
+        .max_frame_size(ACTIVITY_WS_MAX_MESSAGE_SIZE)
+        .on_upgrade(move |socket| handle_ws(socket, state, session.user_id, guild_id))
 }
 
 async fn handle_ws(mut socket: WebSocket, state: ActivityState, user_id: u64, guild_id: u64) {
@@ -1116,12 +1270,46 @@ async fn handle_ws(mut socket: WebSocket, state: ActivityState, user_id: u64, gu
 // 게임 상태 직렬화 헬퍼
 // ─────────────────────────────────────────────
 
+const ANONYMOUS_PLAYER_ID_PREFIX: &str = "alias:";
+
+/// Activity로 내보내는 플레이어 ID. 익명 게임(`aliases`가 Some)에서는 실제 Discord ID 대신
+/// 별명으로 만든 값을 써서 별명 옆에 실제 계정이 드러나지 않게 한다.
+fn public_player_id(aliases: Option<&HashMap<u64, String>>, user_id: u64) -> String {
+    match aliases.and_then(|aliases| aliases.get(&user_id)) {
+        Some(alias) => format!("{ANONYMOUS_PLAYER_ID_PREFIX}{alias}"),
+        None => user_id.to_string(),
+    }
+}
+
+/// Activity가 보낸 플레이어 ID를 실제 user_id로 되돌린다. 익명 게임에서 별명이 있는 플레이어는
+/// 별명 ID로만 가리킬 수 있고(실제 ID로 찔러 보는 것 방지), 모르거나 겹치는 별명은 거절한다.
+fn resolve_player_id(aliases: Option<&HashMap<u64, String>>, public_id: &str) -> Option<u64> {
+    let Some(aliases) = aliases else {
+        return public_id.parse().ok();
+    };
+    if let Some(alias) = public_id.strip_prefix(ANONYMOUS_PLAYER_ID_PREFIX) {
+        let mut matches = aliases
+            .iter()
+            .filter(|(_, candidate)| candidate.as_str() == alias)
+            .map(|(user_id, _)| *user_id);
+        let user_id = matches.next()?;
+        return matches.next().is_none().then_some(user_id);
+    }
+    public_id
+        .parse()
+        .ok()
+        .filter(|user_id| !aliases.contains_key(user_id))
+}
+
 fn build_game_state(
     running: &mut RunningGame,
     user_id: u64,
     show_confirm_counts: bool,
 ) -> GameStateDto {
     let game = &mut running.game;
+    let aliases = running
+        .anonymous_enabled
+        .then_some(&running.anonymous_aliases);
     let phase_str = match game.phase {
         Phase::Night => "Night",
         Phase::Day => "Day",
@@ -1185,7 +1373,7 @@ fn build_game_state(
             (
                 night_targets(game, player)
                     .into_iter()
-                    .map(|target| target.user_id.to_string())
+                    .map(|target| public_player_id(aliases, target.user_id))
                     .collect(),
                 role == Role::Reporter,
             )
@@ -1201,7 +1389,7 @@ fn build_game_state(
         game.alive_players()
             .into_iter()
             .filter(|player| player.user_id != user_id)
-            .map(|player| player.user_id.to_string())
+            .map(|player| public_player_id(aliases, player.user_id))
             .collect()
     } else {
         vec![]
@@ -1226,13 +1414,21 @@ fn build_game_state(
                 p.name.clone()
             };
 
+            let shown_role = game.visible_role(p);
             PlayerDto {
-                id: p.user_id.to_string(),
+                id: public_player_id(aliases, p.user_id),
                 name: display_name,
                 alive: p.alive,
                 is_you,
-                role: role_visible.then(|| role_name(game.visible_role(p))),
-                role_team: role_visible.then(|| player_team(game, p)),
+                role: role_visible.then(|| role_name(shown_role)),
+                // 남의 진영은 보이는 직업으로만 정한다 (공개된 사기꾼 변장이 색으로 들통나지 않게).
+                role_team: role_visible.then(|| {
+                    if is_you || game_ended {
+                        player_team(game, p)
+                    } else {
+                        shown_role_team(shown_role)
+                    }
+                }),
             }
         })
         .collect();
@@ -1258,7 +1454,7 @@ fn build_game_state(
     // 밤 지목 대상
     let my_night_target = if matches!(game.phase, Phase::Night) {
         game.get_night_action_target(user_id)
-            .map(|id| id.to_string())
+            .map(|id| public_player_id(aliases, id))
     } else {
         None
     };
@@ -1274,7 +1470,7 @@ fn build_game_state(
     let vote_targets = if matches!(game.phase, Phase::Vote) {
         game.current_vote_counts()
             .into_iter()
-            .map(|(id, count)| (id.to_string(), count as u32))
+            .map(|(id, count)| (public_player_id(aliases, id), count as u32))
             .collect()
     } else {
         HashMap::new()
@@ -1287,7 +1483,9 @@ fn build_game_state(
 
     // 현재 지목된 플레이어: Vote 이후 단계에서는 running에 저장됨
     let nominee = if matches!(game.phase, Phase::FinalDefense | Phase::ConfirmVote) {
-        running.final_defense_user_id.map(|id| id.to_string())
+        running
+            .final_defense_user_id
+            .map(|id| public_player_id(aliases, id))
     } else {
         None
     };
@@ -1321,7 +1519,7 @@ fn build_game_state(
             game.contractor_contract_targets(me_player)
                 .iter()
                 .map(|p| ContractorTargetDto {
-                    id: p.user_id.to_string(),
+                    id: public_player_id(aliases, p.user_id),
                     name: p.name.clone(),
                 })
                 .collect()
@@ -1453,6 +1651,20 @@ fn player_team(game: &MafiaGame, player: &Player) -> String {
     } else if game.is_mafia_team(player) {
         "Mafia"
     } else if player.role == Role::Joker {
+        "Neutral"
+    } else {
+        "Citizen"
+    }
+    .to_string()
+}
+
+/// 화면에 보이는 직업만으로 정한 진영. 실제 직업·포교 여부를 쓰면 변장·가림이 진영 색으로 드러난다.
+fn shown_role_team(role: Role) -> String {
+    if role == Role::CultLeader {
+        "Cult"
+    } else if role.is_mafia_team() {
+        "Mafia"
+    } else if role == Role::Joker {
         "Neutral"
     } else {
         "Citizen"

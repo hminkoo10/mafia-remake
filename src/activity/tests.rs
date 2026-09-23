@@ -300,3 +300,149 @@ fn activity_team_uses_game_team_rules() {
         "Cult"
     );
 }
+
+#[test]
+fn request_discord_ids_reject_zero_and_garbage() {
+    assert_eq!(
+        parse_discord_id("123456789012345678"),
+        Some(123456789012345678)
+    );
+    // GuildId::new(0)은 패닉한다 → 요청 단계에서 거절돼야 한다.
+    assert_eq!(parse_discord_id("0"), None);
+    assert_eq!(parse_discord_id(""), None);
+    assert_eq!(parse_discord_id("-1"), None);
+    assert_eq!(parse_discord_id("abc"), None);
+    assert_eq!(parse_discord_id("18446744073709551616"), None);
+}
+
+#[test]
+fn oauth_code_shape_is_checked_before_discord_call() {
+    assert!(is_plausible_oauth_code("aB3dE5gH7jK9mN1pQ3sT5vX7zA9cE1"));
+    assert!(is_plausible_oauth_code("mock_code"));
+    assert!(!is_plausible_oauth_code(""));
+    assert!(!is_plausible_oauth_code("short"));
+    assert!(!is_plausible_oauth_code(&"a".repeat(129)));
+    assert!(!is_plausible_oauth_code("abcdefgh ijk"));
+    assert!(!is_plausible_oauth_code("abcdefgh&code=x"));
+    assert!(!is_plausible_oauth_code("가나다라마바사아자차"));
+}
+
+#[test]
+fn auth_rate_limit_is_per_ip_and_expires() {
+    let mut attempts = HashMap::new();
+    let first: IpAddr = "203.0.113.7".parse().unwrap();
+    let second: IpAddr = "203.0.113.8".parse().unwrap();
+    let start = Instant::now();
+
+    for _ in 0..AUTH_RATE_MAX_ATTEMPTS {
+        assert!(record_auth_attempt(&mut attempts, first, start));
+    }
+    assert!(!record_auth_attempt(&mut attempts, first, start));
+    assert!(record_auth_attempt(&mut attempts, second, start));
+
+    let later = start + AUTH_RATE_WINDOW;
+    assert!(record_auth_attempt(&mut attempts, first, later));
+    // 창이 지난 다른 IP 항목은 정리된다.
+    assert!(!attempts.contains_key(&second));
+}
+
+#[test]
+fn auth_client_ip_prefers_cloudflare_header() {
+    let peer: SocketAddr = "198.51.100.1:5000".parse().unwrap();
+    let mut headers = HeaderMap::new();
+    assert_eq!(client_ip(&headers, Some(peer)), peer.ip());
+    assert_eq!(client_ip(&headers, None), IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+
+    headers.insert("CF-Connecting-IP", "203.0.113.9".parse().unwrap());
+    assert_eq!(
+        client_ip(&headers, Some(peer)),
+        "203.0.113.9".parse::<IpAddr>().unwrap()
+    );
+
+    headers.insert("CF-Connecting-IP", "not-an-ip".parse().unwrap());
+    assert_eq!(client_ip(&headers, Some(peer)), peer.ip());
+}
+
+#[test]
+fn player_ids_round_trip_through_aliases() {
+    let aliases = HashMap::from([(111, "호랑이".to_string()), (222, "여우".to_string())]);
+
+    // 익명이 아니면 그대로 Discord ID다.
+    assert_eq!(public_player_id(None, 111), "111");
+    assert_eq!(resolve_player_id(None, "111"), Some(111));
+
+    let tiger = public_player_id(Some(&aliases), 111);
+    assert_eq!(tiger, "alias:호랑이");
+    assert_eq!(resolve_player_id(Some(&aliases), &tiger), Some(111));
+    assert_eq!(resolve_player_id(Some(&aliases), "alias:여우"), Some(222));
+    // 모르는 별명, 별명이 있는 플레이어의 실제 ID는 거절한다.
+    assert_eq!(resolve_player_id(Some(&aliases), "alias:곰"), None);
+    assert_eq!(resolve_player_id(Some(&aliases), "111"), None);
+    // 별명이 없는 플레이어는 숫자 ID 그대로 쓴다.
+    assert_eq!(public_player_id(Some(&aliases), 333), "333");
+    assert_eq!(resolve_player_id(Some(&aliases), "333"), Some(333));
+
+    let duplicated = HashMap::from([(111, "곰".to_string()), (222, "곰".to_string())]);
+    assert_eq!(resolve_player_id(Some(&duplicated), "alias:곰"), None);
+}
+
+#[test]
+fn anonymous_activity_state_hides_discord_ids() {
+    let mut running = activity_test_running(activity_test_game());
+    running.anonymous_enabled = true;
+    running.anonymous_aliases = (1..=5)
+        .map(|user_id| (user_id, format!("동물{user_id}")))
+        .collect();
+    running.game.phase = Phase::Vote;
+    running.game.day_votes.insert(1, Some(2));
+
+    let state = build_game_state(&mut running, 1, true);
+
+    for player in &state.players {
+        assert!(player.id.starts_with("alias:"), "{}", player.id);
+    }
+    assert!(
+        state
+            .players
+            .iter()
+            .any(|player| player.is_you && player.id == "alias:동물1")
+    );
+    assert_eq!(state.vote_targets.get("alias:동물2"), Some(&1));
+
+    running.game.phase = Phase::ConfirmVote;
+    running.final_defense_user_id = Some(2);
+    let state = build_game_state(&mut running, 1, true);
+    assert_eq!(state.nominee.as_deref(), Some("alias:동물2"));
+}
+
+#[test]
+fn revealed_fraudster_disguise_shows_disguise_team_to_others() {
+    let mut game = activity_test_game();
+    game.get_player_mut(2).unwrap().role = Role::Fraudster;
+    game.fraudster_disguises.insert(2, (3, Role::Doctor));
+    game.publicly_revealed_ids.insert(2);
+    let mut running = activity_test_running(game);
+
+    let fraudster_row = |state: &GameStateDto| {
+        let row = state
+            .players
+            .iter()
+            .find(|player| player.id == "2")
+            .unwrap();
+        (row.role.clone(), row.role_team.clone())
+    };
+
+    let others_view = build_game_state(&mut running, 1, true);
+    assert_eq!(
+        fraudster_row(&others_view),
+        (Some("의사".to_string()), Some("Citizen".to_string()))
+    );
+
+    // 본인 화면은 실제 진영을 그대로 보여 준다.
+    let own_view = build_game_state(&mut running, 2, true);
+    assert_eq!(fraudster_row(&own_view).1, Some("Mafia".to_string()));
+
+    running.game.phase = Phase::Ended;
+    let ended_view = build_game_state(&mut running, 1, true);
+    assert_eq!(fraudster_row(&ended_view).1, Some("Mafia".to_string()));
+}
