@@ -12,8 +12,8 @@ use crate::channel::*;
 use crate::embed::*;
 use crate::runner::{
     contractor_contract_components, contractor_contract_prompt, effective_night_role, game_loop,
-    night_action_components, night_targets, role_message, role_short_guide,
-    trigger_timed_night_events,
+    night_action_components, night_targets, resolve_skippable_target_option,
+    resolve_target_option_value, role_message, role_short_guide, trigger_timed_night_events,
 };
 use ab_glyph::{
     Font, FontArc, GlyphId, OutlinedGlyph, PxScale, Rect as GlyphRect, ScaleFont, point,

@@ -267,6 +267,7 @@ pub(crate) async fn update_contractor_message(
     actor_id: u64,
     targets: &[Player],
     draft: &ContractorContractDraft,
+    anonymous: bool,
 ) -> Result<()> {
     component
         .create_response(
@@ -279,7 +280,7 @@ pub(crate) async fn update_contractor_message(
                         serenity::Colour::DARK_GREEN,
                     ))
                     .components(contractor_contract_components(
-                        guild_id, actor_id, targets, draft,
+                        guild_id, actor_id, targets, draft, anonymous,
                     )),
             ),
         )
@@ -303,15 +304,23 @@ pub async fn handle_contractor_target(
         send_component_private(ctx, component, "잘못된 청부 선택입니다.").await?;
         return Ok(());
     }
-    let Some(target_id) = selected_values(component)
-        .first()
-        .and_then(|value| value.parse().ok())
-    else {
+    let Some(target_value) = selected_values(component).first().cloned() else {
         send_component_private(ctx, component, "청부 대상을 선택해야 합니다.").await?;
         return Ok(());
     };
     let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
         send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
+        return Ok(());
+    };
+    let (target_id, anonymous) = {
+        let running_read = running.read().await;
+        (
+            resolve_target_option_value(&running_read, &target_value),
+            running_read.anonymous_enabled,
+        )
+    };
+    let Some(target_id) = target_id else {
+        send_component_private(ctx, component, "청부 대상을 선택해야 합니다.").await?;
         return Ok(());
     };
 
@@ -344,7 +353,10 @@ pub async fn handle_contractor_target(
             return Ok(());
         }
     };
-    update_contractor_message(ctx, component, guild_id, actor_id, &targets, &draft).await?;
+    update_contractor_message(
+        ctx, component, guild_id, actor_id, &targets, &draft, anonymous,
+    )
+    .await?;
     Ok(())
 }
 
@@ -401,7 +413,11 @@ pub async fn handle_contractor_role(
             return Ok(());
         }
     };
-    update_contractor_message(ctx, component, guild_id, actor_id, &targets, &draft).await?;
+    let anonymous = running.read().await.anonymous_enabled;
+    update_contractor_message(
+        ctx, component, guild_id, actor_id, &targets, &draft, anonymous,
+    )
+    .await?;
     Ok(())
 }
 
@@ -435,7 +451,11 @@ pub async fn handle_contractor_group(
             return Ok(());
         }
     };
-    update_contractor_message(ctx, component, guild_id, actor_id, &targets, &draft).await?;
+    let anonymous = running.read().await.anonymous_enabled;
+    update_contractor_message(
+        ctx, component, guild_id, actor_id, &targets, &draft, anonymous,
+    )
+    .await?;
     Ok(())
 }
 
@@ -535,6 +555,7 @@ pub async fn handle_contractor_submit(
         running.read().await.night_notify.notify_waiters();
     }
     let reset_draft = ContractorContractDraft::default();
+    let anonymous = running.read().await.anonymous_enabled;
     component
         .create_response(
             ctx,
@@ -553,6 +574,7 @@ pub async fn handle_contractor_submit(
                         actor_id,
                         &targets,
                         &reset_draft,
+                        anonymous,
                     )),
             ),
         )
@@ -820,6 +842,26 @@ pub async fn handle_join(
         return Ok(());
     }
     if let Some(member) = component.member.clone() {
+        // 관전자 역할이 남은 채 참가하면 게임 중 모든 비공개 채널을 볼 수 있다.
+        // 먼저 회수하고, 회수하지 못하면 참가시키지 않는다.
+        if let Some(spectator_role_id) = rec.spectator_role_id {
+            if member.roles.contains(&spectator_role_id) {
+                let removed = crate::http_pool::with_fallback(ctx, |http| {
+                    let member = member.clone();
+                    async move { member.remove_role(&http, spectator_role_id).await }
+                })
+                .await;
+                if removed.is_err() {
+                    send_component_private(
+                        ctx,
+                        component,
+                        "관전자 역할을 회수하지 못해 참가할 수 없습니다. 잠시 후 다시 시도하세요.",
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+        }
         if !member.roles.contains(&rec.participant_role_id) {
             let role_id = rec.participant_role_id;
             let _ = crate::http_pool::with_fallback(ctx, |http| {
@@ -945,17 +987,20 @@ pub async fn handle_leave(
         send_component_private(ctx, component, "참가하거나 관전 등록한 상태가 아닙니다.").await?;
         return Ok(());
     };
+    // 인터랙션의 멤버 정보는 클릭 시점 스냅샷이라, 관전 등록 직후 바로 나가면 방금
+    // 준 역할이 아직 안 보인다. 스냅샷을 믿지 말고 항상 회수한다(없는 역할 회수는
+    // 아무 일도 하지 않는다). 모집 잠금을 쥔 채 회수해야 뒤이은 참가·관전 처리가
+    // 회수보다 먼저 끝나지 않는다.
+    if let Some(role_id) = role_to_remove {
+        let user_id = component.user.id;
+        let _ = crate::http_pool::with_fallback(ctx, |http| async move {
+            http.remove_member_role(guild_id, user_id, role_id, None)
+                .await
+        })
+        .await;
+    }
     let updated = rec.clone();
     drop(rec);
-    if let (Some(member), Some(role_id)) = (component.member.clone(), role_to_remove) {
-        if member.roles.contains(&role_id) {
-            let _ = crate::http_pool::with_fallback(ctx, |http| {
-                let member = member.clone();
-                async move { member.remove_role(&http, role_id).await }
-            })
-            .await;
-        }
-    }
     send_component_private(ctx, component, reply).await?;
     update_recruitment_message(
         ctx,
@@ -1399,13 +1444,17 @@ pub async fn handle_night_action(
         return Ok(());
     };
     let values = selected_values(component);
-    let target_id = values.first().and_then(|value| {
-        if value == "skip" {
-            None
-        } else {
-            value.parse().ok()
-        }
-    });
+    let (target_id, anonymous) = {
+        let running_read = running.read().await;
+        (
+            resolve_skippable_target_option(&running_read, values.first().map(String::as_str)),
+            running_read.anonymous_enabled,
+        )
+    };
+    let Some(target_id) = target_id else {
+        send_component_private(ctx, component, "현재 선택할 수 없는 대상입니다.").await?;
+        return Ok(());
+    };
     let (
         message,
         done,
@@ -1528,6 +1577,7 @@ pub async fn handle_night_action(
                             actor_id,
                             Role::Mafia,
                             &targets,
+                            anonymous,
                         )),
                 ),
             )
@@ -1556,6 +1606,7 @@ pub async fn handle_night_action(
                             actor_id,
                             Role::Spy,
                             &targets,
+                            anonymous,
                         )),
                 ),
             )
@@ -1578,7 +1629,9 @@ pub async fn handle_night_action(
                             "밤 행동 완료",
                             serenity::Colour::DARK_GREEN,
                         ))
-                        .components(night_action_components(guild_id, actor_id, role, &targets)),
+                        .components(night_action_components(
+                            guild_id, actor_id, role, &targets, anonymous,
+                        )),
                 ),
             )
             .await?;
@@ -1637,15 +1690,17 @@ pub async fn handle_terrorist_final_defense_target(
         send_component_private(ctx, component, "본인에게 온 선택지만 사용할 수 있습니다.").await?;
         return Ok(());
     }
-    let Some(target_id) = selected_values(component)
-        .first()
-        .and_then(|value| value.parse::<u64>().ok())
-    else {
+    let Some(target_value) = selected_values(component).first().cloned() else {
         send_component_private(ctx, component, "대상을 선택해야 합니다.").await?;
         return Ok(());
     };
     let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
         send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
+        return Ok(());
+    };
+    let target_id = resolve_target_option_value(&*running.read().await, &target_value);
+    let Some(target_id) = target_id else {
+        send_component_private(ctx, component, "대상을 선택해야 합니다.").await?;
         return Ok(());
     };
     let selection_result = {
@@ -1705,13 +1760,12 @@ pub async fn handle_day_vote(
         return Ok(());
     };
     let values = selected_values(component);
-    let target_id = values.first().and_then(|value| {
-        if value == "skip" {
-            None
-        } else {
-            value.parse().ok()
-        }
-    });
+    let target_id =
+        resolve_skippable_target_option(&*running.read().await, values.first().map(String::as_str));
+    let Some(target_id) = target_id else {
+        send_component_private(ctx, component, "현재 선택할 수 없는 대상입니다.").await?;
+        return Ok(());
+    };
     let voter_id = component.user.id.get();
     let (message, done, newly_contacted_mafia) = {
         let mut running_write = running.write().await;
@@ -1810,9 +1864,7 @@ pub async fn handle_hacker(
     guild_id: serenity::GuildId,
     actor_id: u64,
 ) -> Result<()> {
-    let value = selected_values(component)
-        .first()
-        .and_then(|v| v.parse().ok());
+    let value = selected_values(component).first().cloned();
     handle_day_action(
         ctx,
         data,
@@ -1835,9 +1887,7 @@ pub async fn handle_vigilante(
     guild_id: serenity::GuildId,
     actor_id: u64,
 ) -> Result<()> {
-    let value = selected_values(component)
-        .first()
-        .and_then(|v| v.parse().ok());
+    let value = selected_values(component).first().cloned();
     handle_day_action(
         ctx,
         data,
@@ -1888,10 +1938,18 @@ pub async fn handle_psychologist(
         send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
         return Ok(());
     };
-    let (Some(first), Some(second)) = (
-        values.first().and_then(|value| value.parse().ok()),
-        values.get(1).and_then(|value| value.parse().ok()),
-    ) else {
+    let (first, second) = {
+        let running_read = running.read().await;
+        (
+            values
+                .first()
+                .and_then(|value| resolve_target_option_value(&running_read, value)),
+            values
+                .get(1)
+                .and_then(|value| resolve_target_option_value(&running_read, value)),
+        )
+    };
+    let (Some(first), Some(second)) = (first, second) else {
         ack_component(ctx, component).await;
         return Ok(());
     };
@@ -2003,7 +2061,7 @@ pub async fn handle_day_action<F, G>(
     component: &serenity::ComponentInteraction,
     guild_id: serenity::GuildId,
     actor_id: u64,
-    target_id: Option<u64>,
+    target_value: Option<String>,
     replay_kind: &'static str,
     title: &'static str,
     apply: F,
@@ -2017,12 +2075,17 @@ where
         send_component_private(ctx, component, "본인에게 온 선택지만 사용할 수 있습니다.").await?;
         return Ok(());
     }
-    let Some(target_id) = target_id else {
+    let Some(target_value) = target_value else {
         send_component_private(ctx, component, "대상을 선택해야 합니다.").await?;
         return Ok(());
     };
     let Some(running) = data.games.get(&guild_id).map(|entry| entry.clone()) else {
         send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
+        return Ok(());
+    };
+    let target_id = resolve_target_option_value(&*running.read().await, &target_value);
+    let Some(target_id) = target_id else {
+        send_component_private(ctx, component, "대상을 선택해야 합니다.").await?;
         return Ok(());
     };
     let (message, newly_contacted_mafia) = {

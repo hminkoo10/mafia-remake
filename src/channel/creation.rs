@@ -406,12 +406,16 @@ pub fn final_role_reveal_text(running: &RunningGame) -> String {
     }
 }
 
+/// `/상태`에 붙는 같은 그룹 현황. 이미 비공개 채팅을 함께 쓰는 그룹(교주팀, 접선한
+/// 마피아팀, 역할 채팅이 있는 직업 — 연인은 대화방이 열려 있을 때만)만 보여준다.
+/// 그 밖의 직업(예: 시민)까지 같은 직업끼리 묶어 보여주면 익명 게임에서 누가 같은
+/// 직업인지가 새어 나가므로 None.
 pub fn private_role_status_player_ids(
     running: &RunningGame,
     player: &Player,
-) -> (String, Vec<u64>) {
+) -> Option<(String, Vec<u64>)> {
     if running.game.is_cult_team(player) {
-        return (
+        return Some((
             "내 교주팀".to_string(),
             running
                 .game
@@ -420,10 +424,10 @@ pub fn private_role_status_player_ids(
                 .filter(|target| running.game.is_cult_team(target))
                 .map(|target| target.user_id)
                 .collect(),
-        );
+        ));
     }
     if running.game.is_known_mafia_team(player) {
-        return (
+        return Some((
             "내 마피아팀".to_string(),
             running
                 .game
@@ -432,9 +436,14 @@ pub fn private_role_status_player_ids(
                 .filter(|target| running.game.is_known_mafia_team(target))
                 .map(|target| target.user_id)
                 .collect(),
-        );
+        ));
     }
-    (
+    let shares_role_chat = PRIVATE_CHAT_ROLES.contains(&player.role)
+        && (player.role != Role::Lover || lover_chat_is_open(&running.game));
+    if !shares_role_chat {
+        return None;
+    }
+    Some((
         format!("내 역할({})", player.role.value()),
         running
             .game
@@ -443,7 +452,7 @@ pub fn private_role_status_player_ids(
             .filter(|target| target.role == player.role)
             .map(|target| target.user_id)
             .collect(),
-    )
+    ))
 }
 
 pub fn command_status_text(running: &RunningGame, requester_id: u64) -> String {
@@ -454,7 +463,9 @@ pub fn command_status_text(running: &RunningGame, requester_id: u64) -> String {
     if !running.anonymous_enabled {
         return message;
     }
-    let (label, same_group_ids) = private_role_status_player_ids(running, player);
+    let Some((label, same_group_ids)) = private_role_status_player_ids(running, player) else {
+        return message;
+    };
     let same_group = same_group_ids
         .into_iter()
         .filter_map(|user_id| running.game.get_player(user_id))

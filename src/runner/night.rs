@@ -929,7 +929,7 @@ pub async fn send_night_action_dm(
     running: &Arc<RwLock<RunningGame>>,
     actor: &Player,
 ) -> std::result::Result<SecretDeliveryRoute, SecretDeliveryFailure> {
-    let (guild_id, role, can_change, targets, contractor_draft) = {
+    let (guild_id, role, can_change, targets, contractor_draft, anonymous) = {
         let running_read = running.read().await;
         let role = effective_night_role(&running_read.game, actor);
         let targets = if role == Role::Contractor {
@@ -952,6 +952,7 @@ pub async fn send_night_action_dm(
             running_read.game.night_action_can_be_changed(actor),
             targets,
             contractor_draft,
+            running_read.anonymous_enabled,
         )
     };
     if targets.is_empty() && role != Role::Reporter {
@@ -963,7 +964,13 @@ pub async fn send_night_action_dm(
             running,
             actor,
             contractor_contract_prompt(&targets, &contractor_draft),
-            contractor_contract_components(guild_id, actor.user_id, &targets, &contractor_draft),
+            contractor_contract_components(
+                guild_id,
+                actor.user_id,
+                &targets,
+                &contractor_draft,
+                anonymous,
+            ),
         )
         .await;
     }
@@ -995,7 +1002,7 @@ pub async fn send_night_action_dm(
         running,
         actor,
         prompt,
-        night_action_components(guild_id, actor.user_id, role, &targets),
+        night_action_components(guild_id, actor.user_id, role, &targets, anonymous),
     )
     .await
 }
@@ -1036,11 +1043,57 @@ pub fn night_action_notice(role: Role) -> Option<&'static str> {
     }
 }
 
+/// 대상 셀렉트의 옵션 값. 익명 게임에서는 실제 user_id 대신 표시 이름(= 익명 이름)
+/// 에서 만든 값을 써서, 컴포넌트 페이로드를 들여다봐도 익명 이름과 유저가 이어지지
+/// 않게 한다. `a:` 접두사로 `skip`과 겹치지 않고, Discord 옵션 값 상한(100자)에 맞춰
+/// 자른다. 비익명 게임은 예전처럼 user_id를 그대로 쓴다.
+pub fn target_option_value(anonymous: bool, target: &Player) -> String {
+    if anonymous {
+        format!("a:{}", target.name).chars().take(100).collect()
+    } else {
+        target.user_id.to_string()
+    }
+}
+
+/// `target_option_value`로 만든 값을 user_id로 되돌린다. 익명 게임에서는 익명 이름
+/// 값만 받고(숫자 user_id는 거부), 모르는 값이나 여러 명에게 겹치는 값은 None.
+pub fn resolve_target_option_value(running: &RunningGame, value: &str) -> Option<u64> {
+    if !running.anonymous_enabled {
+        return value.parse().ok();
+    }
+    let mut matches = running
+        .game
+        .players
+        .iter()
+        .filter(|player| target_option_value(true, player) == value)
+        .map(|player| player.user_id);
+    let user_id = matches.next()?;
+    matches.next().is_none().then_some(user_id)
+}
+
+/// `skip`을 고를 수 있는 대상 셀렉트(밤 행동, 지목 투표)의 값을 해석한다.
+/// `Some(None)`은 스킵, `Some(Some(id))`는 대상, `None`은 거부할 값이다.
+/// 비익명 게임은 예전처럼 숫자가 아닌 값을 스킵으로 보고, 익명 게임은 모르는 값을 거부한다.
+pub fn resolve_skippable_target_option(
+    running: &RunningGame,
+    value: Option<&str>,
+) -> Option<Option<u64>> {
+    match value {
+        None | Some("skip") => Some(None),
+        Some(value) => match resolve_target_option_value(running, value) {
+            Some(user_id) => Some(Some(user_id)),
+            None if running.anonymous_enabled => None,
+            None => Some(None),
+        },
+    }
+}
+
 pub fn night_action_components(
     guild_id: serenity::GuildId,
     actor_id: u64,
     role: Role,
     targets: &[Player],
+    anonymous: bool,
 ) -> Vec<serenity::CreateActionRow> {
     let mut options = targets
         .iter()
@@ -1048,7 +1101,7 @@ pub fn night_action_components(
         .map(|target| {
             serenity::CreateSelectMenuOption::new(
                 target.name.chars().take(100).collect::<String>(),
-                target.user_id.to_string(),
+                target_option_value(anonymous, target),
             )
         })
         .collect::<Vec<_>>();
@@ -1069,6 +1122,7 @@ pub fn terrorist_final_defense_components(
     guild_id: serenity::GuildId,
     actor_id: u64,
     targets: &[Player],
+    anonymous: bool,
 ) -> Vec<serenity::CreateActionRow> {
     let options = targets
         .iter()
@@ -1076,7 +1130,7 @@ pub fn terrorist_final_defense_components(
         .map(|target| {
             serenity::CreateSelectMenuOption::new(
                 target.name.chars().take(100).collect::<String>(),
-                target.user_id.to_string(),
+                target_option_value(anonymous, target),
             )
         })
         .collect::<Vec<_>>();
@@ -1095,6 +1149,7 @@ pub fn contractor_contract_components(
     actor_id: u64,
     targets: &[Player],
     draft: &ContractorContractDraft,
+    anonymous: bool,
 ) -> Vec<serenity::CreateActionRow> {
     let target_row = |slot: usize| {
         let other_target_id = draft.target_ids[1 - slot];
@@ -1105,7 +1160,7 @@ pub fn contractor_contract_components(
             .map(|target| {
                 serenity::CreateSelectMenuOption::new(
                     target.name.chars().take(100).collect::<String>(),
-                    target.user_id.to_string(),
+                    target_option_value(anonymous, target),
                 )
             })
             .collect::<Vec<_>>();

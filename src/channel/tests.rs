@@ -768,6 +768,99 @@ fn cancelled_recruitment_gives_back_participant_and_spectator_roles() {
     );
 }
 
+/// 익명 `/상태` 테스트용: 1·2 시민, 3 경찰, 4 마피아.
+fn anonymous_status_test_running() -> RunningGame {
+    let mut running = dead_chat_test_running();
+    running.anonymous_enabled = true;
+    for (user_id, role) in [
+        (1, Role::Citizen),
+        (2, Role::Citizen),
+        (3, Role::Police),
+        (4, Role::Mafia),
+    ] {
+        running.game.get_player_mut(user_id).unwrap().role = role;
+    }
+    running
+}
+
+#[test]
+fn anonymous_status_hides_fellow_members_of_roles_without_a_private_chat() {
+    let running = anonymous_status_test_running();
+    let citizen = running.game.get_player(1).unwrap();
+
+    // 시민끼리는 비공개 채팅이 없으니 누가 같은 시민인지 알려주면 안 된다.
+    assert_eq!(private_role_status_player_ids(&running, citizen), None);
+    assert_eq!(command_status_text(&running, 1), game_status_text(&running));
+}
+
+#[test]
+fn anonymous_status_keeps_groups_that_already_share_a_private_chat() {
+    let running = anonymous_status_test_running();
+
+    let police = running.game.get_player(3).unwrap();
+    let (label, ids) = private_role_status_player_ids(&running, police).unwrap();
+    assert_eq!(label, format!("내 역할({})", Role::Police.value()));
+    assert_eq!(ids, vec![3]);
+    assert!(command_status_text(&running, 3).contains(&label));
+
+    let mafia = running.game.get_player(4).unwrap();
+    let (label, ids) = private_role_status_player_ids(&running, mafia).unwrap();
+    assert_eq!(label, "내 마피아팀");
+    assert_eq!(ids, vec![4]);
+}
+
+#[test]
+fn anonymous_status_shows_lovers_only_while_their_chat_is_open() {
+    let mut running = anonymous_status_test_running();
+    running.game.get_player_mut(1).unwrap().role = Role::Lover;
+    running.game.get_player_mut(2).unwrap().role = Role::Lover;
+
+    running.game.phase = Phase::Day;
+    let lover = running.game.get_player(1).unwrap().clone();
+    assert_eq!(private_role_status_player_ids(&running, &lover), None);
+    assert_eq!(command_status_text(&running, 1), game_status_text(&running));
+
+    running.game.phase = Phase::Night;
+    let (_, mut ids) = private_role_status_player_ids(&running, &lover).unwrap();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 2]);
+}
+
+#[test]
+fn game_cleanup_strips_spectator_role_from_participants_too() {
+    let roles = ChannelRoleIds {
+        everyone: serenity::RoleId::new(1),
+        participant: Some(serenity::RoleId::new(10)),
+        spectator: Some(serenity::RoleId::new(12)),
+        manager: None,
+        dead: Some(serenity::RoleId::new(11)),
+        bot: serenity::UserId::new(99),
+    };
+
+    let targets = game_role_cleanup_targets(roles, [1, 2], [3]);
+
+    let participant_roles = [10, 11, 12]
+        .into_iter()
+        .map(serenity::RoleId::new)
+        .collect::<HashSet<_>>();
+    assert_eq!(targets.len(), 3);
+    assert_eq!(targets[&1], participant_roles);
+    assert_eq!(targets[&2], participant_roles);
+    assert_eq!(targets[&3], HashSet::from([serenity::RoleId::new(12)]));
+
+    // 서버에 관전자 역할이 없으면 관전자는 정리 대상이 아니다.
+    let roles = ChannelRoleIds {
+        spectator: None,
+        ..roles
+    };
+    let targets = game_role_cleanup_targets(roles, [1], [3]);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(
+        targets[&1],
+        HashSet::from([serenity::RoleId::new(10), serenity::RoleId::new(11)])
+    );
+}
+
 #[test]
 fn recruitment_cleanup_skips_spectators_when_the_role_is_missing() {
     let mut recruitment = recruitment_fixture();

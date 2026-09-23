@@ -423,7 +423,7 @@ pub async fn send_day_multi_select(
     placeholder: &str,
     count: u8,
 ) -> bool {
-    let (guild_id, mut targets) = {
+    let (guild_id, mut targets, anonymous) = {
         let running_read = running.read().await;
         (
             running_read.guild_id,
@@ -434,6 +434,7 @@ pub async fn send_day_multi_select(
                 .filter(|player| player.alive && player.user_id != actor.user_id)
                 .cloned()
                 .collect::<Vec<_>>(),
+            running_read.anonymous_enabled,
         )
     };
     targets.sort_by_key(|player| player.name.to_lowercase());
@@ -443,7 +444,7 @@ pub async fn send_day_multi_select(
         .map(|target| {
             serenity::CreateSelectMenuOption::new(
                 target.name.chars().take(100).collect::<String>(),
-                target.user_id.to_string(),
+                target_option_value(anonymous, target),
             )
         })
         .collect::<Vec<_>>();
@@ -494,7 +495,7 @@ pub async fn run_vote(
 ) -> Result<()> {
     let config = data.config.read().await.clone();
     let escaped_executions;
-    let (guild_id, vote_notify, seconds, alive) = {
+    let (guild_id, vote_notify, seconds, alive, anonymous) = {
         let mut running_write = running.write().await;
         escaped_executions = running_write.game.start_vote()?;
         running_write.phase_deadline =
@@ -521,6 +522,7 @@ pub async fn run_vote(
                 .into_iter()
                 .cloned()
                 .collect::<Vec<_>>(),
+            running_write.anonymous_enabled,
         )
     };
     // [도주] 전날 처형을 피해 도주한 플레이어는 투표 시작과 함께 사망한다.
@@ -555,7 +557,7 @@ pub async fn run_vote(
         .map(|target| {
             serenity::CreateSelectMenuOption::new(
                 target.name.chars().take(100).collect::<String>(),
-                target.user_id.to_string(),
+                target_option_value(anonymous, target),
             )
         })
         .collect::<Vec<_>>();
@@ -647,7 +649,7 @@ pub async fn run_vote(
     }
     let nominee = vote_result.executed.unwrap();
     // [묵비권] 보유자가 지목되면 최후변론 시간이 30초 늘어난다.
-    let (terrorist_targets, defense_seconds) = {
+    let (terrorist_targets, defense_seconds, anonymous) = {
         let mut running_write = running.write().await;
         running_write.final_defense_user_id = Some(nominee.user_id);
         running_write.final_defense_ended = false;
@@ -658,6 +660,7 @@ pub async fn run_vote(
                 .game
                 .begin_terrorist_final_defense(nominee.user_id),
             defense_seconds,
+            running_write.anonymous_enabled,
         )
     };
     let extension_note = if defense_seconds > mafia_remake::model::FINAL_DEFENSE_SECONDS {
@@ -680,7 +683,12 @@ pub async fn run_vote(
             running,
             &nominee,
             "최후의 반론 중 습격할 한 명을 선택하세요.\n투표로 처형되면, 선택한 대상이 마피아 또는 접선을 완료한 마피아 보조직업일 때 함께 사망합니다.",
-            terrorist_final_defense_components(guild_id, nominee.user_id, &terrorist_targets),
+            terrorist_final_defense_components(
+                guild_id,
+                nominee.user_id,
+                &terrorist_targets,
+                anonymous,
+            ),
         )
         .await
     {

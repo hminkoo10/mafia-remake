@@ -308,6 +308,7 @@ fn contractor_components_stay_within_discord_limits() {
         42,
         &targets,
         &ContractorContractDraft::default(),
+        false,
     );
     let json = serde_json::to_value(&components).unwrap();
     let rows = json.as_array().unwrap();
@@ -434,4 +435,173 @@ fn game_result_image_renders_png() {
     assert_eq!(decoded.width(), 2240);
     assert!(decoded.height() > 520);
     assert_eq!(*decoded.get_pixel(1222, 266), image_color("#dcfce7"));
+}
+
+/// 셀렉트 컴포넌트 JSON에서 옵션 값만 모은다.
+fn select_option_values(components: &[serenity::CreateActionRow]) -> Vec<String> {
+    let json = serde_json::to_value(components).unwrap();
+    json.as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|row| row["components"].as_array().unwrap().clone())
+        .filter_map(|component| component.get("options").cloned())
+        .flat_map(|options| options.as_array().unwrap().clone())
+        .map(|option| option["value"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// 익명 게임: 동물 별명을 쓰고 user_id는 큰 값으로 둬서, 옵션 값에 user_id가
+/// 남았는지 확실히 드러나게 한다.
+fn anonymous_select_test_running() -> RunningGame {
+    let mut running = dead_chat_test_running();
+    running.anonymous_enabled = true;
+    let aliases = ["너구리", "고양이", "여우", "수달"];
+    for (index, player) in running.game.players.iter_mut().enumerate() {
+        player.user_id = 900_000_000_000_000_001 + index as u64;
+        running
+            .anonymous_original_names
+            .insert(player.user_id, player.name.clone());
+        running
+            .anonymous_aliases
+            .insert(player.user_id, aliases[index].to_string());
+        player.name = aliases[index].to_string();
+    }
+    running
+}
+
+#[test]
+fn anonymous_select_options_hide_user_ids_and_map_back_to_players() {
+    let running = anonymous_select_test_running();
+    let targets = running.game.players.clone();
+    let guild_id = serenity::GuildId::new(1);
+
+    let mut values = select_option_values(&night_action_components(
+        guild_id,
+        42,
+        Role::Doctor,
+        &targets,
+        true,
+    ));
+    values.extend(select_option_values(&terrorist_final_defense_components(
+        guild_id, 42, &targets, true,
+    )));
+    values.extend(select_option_values(&contractor_contract_components(
+        guild_id,
+        42,
+        &targets,
+        &ContractorContractDraft::default(),
+        true,
+    )));
+
+    // 청부 직업 셀렉트 값은 직업 이름이라 대상 옵션(`a:` 접두사)만 센다:
+    // 밤 행동 1 + 테러리스트 1 + 청부 대상 2 셀렉트.
+    let target_value_count = values
+        .iter()
+        .filter(|value| value.starts_with("a:"))
+        .count();
+    assert_eq!(target_value_count, targets.len() * 4);
+    for value in &values {
+        for target in &targets {
+            assert!(
+                !value.contains(&target.user_id.to_string()),
+                "옵션 값에 user_id가 노출됨: {value}"
+            );
+        }
+    }
+    for target in &targets {
+        let value = target_option_value(true, target);
+        assert_eq!(value, format!("a:{}", target.name));
+        assert_eq!(
+            resolve_target_option_value(&running, &value),
+            Some(target.user_id)
+        );
+        assert_eq!(
+            resolve_skippable_target_option(&running, Some(value.as_str())),
+            Some(Some(target.user_id))
+        );
+    }
+}
+
+#[test]
+fn anonymous_select_values_reject_raw_user_ids_and_unknown_aliases() {
+    let running = anonymous_select_test_running();
+    let raw_user_id = running.game.players[0].user_id.to_string();
+
+    // 숫자 user_id를 직접 보내면 익명 이름을 알아내는 통로가 되므로 거부한다.
+    assert_eq!(resolve_target_option_value(&running, &raw_user_id), None);
+    assert_eq!(resolve_target_option_value(&running, "a:없는동물"), None);
+    assert_eq!(resolve_target_option_value(&running, "너구리"), None);
+    assert_eq!(
+        resolve_skippable_target_option(&running, Some(raw_user_id.as_str())),
+        None
+    );
+    assert_eq!(
+        resolve_skippable_target_option(&running, Some("a:없는동물")),
+        None
+    );
+    // 스킵은 그대로 스킵이다.
+    assert_eq!(
+        resolve_skippable_target_option(&running, Some("skip")),
+        Some(None)
+    );
+    assert_eq!(resolve_skippable_target_option(&running, None), Some(None));
+}
+
+#[test]
+fn anonymous_select_values_fit_discord_limit_and_reject_ambiguous_names() {
+    let mut running = anonymous_select_test_running();
+    let long_name = "가".repeat(150);
+    running.game.players[0].name = long_name.clone();
+
+    let value = target_option_value(true, &running.game.players[0]);
+    assert_eq!(value.chars().count(), 100);
+    assert_eq!(
+        resolve_target_option_value(&running, &value),
+        Some(running.game.players[0].user_id)
+    );
+
+    // 잘린 값이 두 명에게 겹치면 누구인지 알 수 없으니 거부한다.
+    running.game.players[1].name = format!("{long_name}나");
+    assert_eq!(resolve_target_option_value(&running, &value), None);
+}
+
+#[test]
+fn non_anonymous_select_values_keep_user_ids() {
+    let running = dead_chat_test_running();
+    let targets = running.game.players.clone();
+
+    let values = select_option_values(&night_action_components(
+        serenity::GuildId::new(1),
+        42,
+        Role::Reporter,
+        &targets,
+        false,
+    ));
+    let mut expected = targets
+        .iter()
+        .map(|target| target.user_id.to_string())
+        .collect::<Vec<_>>();
+    expected.push("skip".to_string());
+    assert_eq!(values, expected);
+
+    for target in &targets {
+        assert_eq!(
+            target_option_value(false, target),
+            target.user_id.to_string()
+        );
+        assert_eq!(
+            resolve_target_option_value(&running, &target.user_id.to_string()),
+            Some(target.user_id)
+        );
+    }
+    // 비익명 게임은 예전 그대로: 숫자가 아니면 대상 없음(스킵)으로 본다.
+    assert_eq!(resolve_target_option_value(&running, "a:p1"), None);
+    assert_eq!(
+        resolve_skippable_target_option(&running, Some("a:p1")),
+        Some(None)
+    );
+    assert_eq!(
+        resolve_skippable_target_option(&running, Some("3")),
+        Some(Some(3))
+    );
 }

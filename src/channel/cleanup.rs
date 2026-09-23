@@ -185,19 +185,8 @@ pub async fn cleanup_game(
         )
     };
     if let Some(roles) = running_channel_roles(ctx, data, running).await {
-        let participant_cleanup_role_ids = [roles.participant, roles.dead]
-            .into_iter()
-            .flatten()
-            .collect::<HashSet<_>>();
-        let mut cleanup_targets = participant_user_ids
-            .into_iter()
-            .map(|user_id| (user_id, participant_cleanup_role_ids.clone()))
-            .collect::<HashMap<_, _>>();
-        if let Some(role_id) = roles.spectator {
-            for user_id in spectator_user_ids {
-                cleanup_targets.entry(user_id).or_default().insert(role_id);
-            }
-        }
+        let cleanup_targets =
+            game_role_cleanup_targets(roles, participant_user_ids, spectator_user_ids);
         let mut member_snapshots = guild_id
             .members(&ctx.http, Some(1000), None)
             .await
@@ -449,6 +438,30 @@ pub async fn cleanup_orphaned_game_artifacts(
             .await;
 
     summary
+}
+
+/// 게임이 끝날 때 유저별로 회수할 게임 역할. 참가자에게서는 관전자 역할도 회수한다:
+/// 관전 등록을 취소한 뒤 참가한 유저에게 관전자 역할이 남아 있으면 다음 게임에서도
+/// 모든 비공개 채널을 볼 수 있다.
+pub(crate) fn game_role_cleanup_targets(
+    roles: ChannelRoleIds,
+    participant_user_ids: impl IntoIterator<Item = u64>,
+    spectator_user_ids: impl IntoIterator<Item = u64>,
+) -> HashMap<u64, HashSet<serenity::RoleId>> {
+    let participant_cleanup_role_ids = [roles.participant, roles.dead, roles.spectator]
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<_>>();
+    let mut cleanup_targets = participant_user_ids
+        .into_iter()
+        .map(|user_id| (user_id, participant_cleanup_role_ids.clone()))
+        .collect::<HashMap<_, _>>();
+    if let Some(role_id) = roles.spectator {
+        for user_id in spectator_user_ids {
+            cleanup_targets.entry(user_id).or_default().insert(role_id);
+        }
+    }
+    cleanup_targets
 }
 
 pub(crate) async fn remove_cleanup_roles_from_member_snapshot(
