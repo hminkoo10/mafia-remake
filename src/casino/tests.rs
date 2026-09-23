@@ -1192,6 +1192,268 @@ fn closing_a_table_returns_pending_bets_too() {
     assert!(table.round.is_none());
 }
 
+/// 닫을 때 돌려준 칩 (좌석 순서).
+fn cash_outs(events: &[CasinoEvent]) -> Vec<(u64, i64)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            CasinoEvent::CashOut {
+                user_id, amount, ..
+            } => Some((*user_id, *amount)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 지금 테이블을 닫으면 돌려줄 칩 합계 (원본은 그대로 둔다).
+fn closed_total(table: &CasinoTable) -> i64 {
+    cash_outs(&table.clone().close())
+        .iter()
+        .map(|(_, amount)| amount)
+        .sum()
+}
+
+#[test]
+fn closing_after_a_finished_holdem_hand_pays_only_the_stacks() {
+    let mut table = holdem_table();
+    sit(&mut table, 111, 0, 10_000, 0);
+    sit(&mut table, 112, 1, 10_000, 0);
+    act(&mut table, 111, CasinoCommand::Start, 0);
+    // 먼저 액션하는 쪽이 올인, 상대가 콜 → 보드를 끝까지 열고 정산된다.
+    let first = table.round.as_ref().unwrap().turn;
+    let first_user = table.seat(first).unwrap().user_id;
+    let all_in = table.poker_legal_for(first).unwrap().max_raise_to;
+    assert_eq!(all_in, 10_000);
+    act(
+        &mut table,
+        first_user,
+        CasinoCommand::Raise { amount: all_in },
+        100,
+    );
+    let second = table.round.as_ref().unwrap().turn;
+    let second_user = table.seat(second).unwrap().user_id;
+    act(&mut table, second_user, CasinoCommand::Call, 200);
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Complete);
+    assert_eq!(stacks(&table), 20_000);
+    // 끝난 핸드의 total은 기록으로 남아 있지만, 이미 팟으로 정산되었다.
+    assert_eq!(committed(&table), 20_000);
+    let expected = table
+        .seats
+        .iter()
+        .flatten()
+        .map(|seat| (seat.user_id, seat.stack))
+        .collect::<Vec<_>>();
+    let events = table.close();
+    assert_eq!(cash_outs(&events), expected);
+    assert_eq!(
+        cash_outs(&events)
+            .iter()
+            .map(|(_, amount)| amount)
+            .sum::<i64>(),
+        20_000,
+        "끝난 핸드의 베팅을 한 번 더 돌려주면 안 된다"
+    );
+}
+
+#[test]
+fn closing_after_a_finished_blackjack_round_pays_only_the_stack() {
+    let mut table = blackjack_table();
+    sit(&mut table, 113, 0, 10_000, 0);
+    // 내 17 (Th 7d) 대 딜러 19 (9s Kc): 메인·사이드 모두 진다.
+    table
+        .start_with_deck(113, deck_from_top(&["Th", "9s", "7d", "Kc"]), 0)
+        .unwrap();
+    act(
+        &mut table,
+        113,
+        CasinoCommand::Bet {
+            amount: 5_000,
+            pairs: 100,
+            plus3: 100,
+        },
+        100,
+    );
+    act(&mut table, 113, CasinoCommand::Stand, 200);
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Complete);
+    assert_eq!(table.seat(0).unwrap().stack, 4_800);
+    let events = table.close();
+    assert_eq!(cash_outs(&events), vec![(113, 4_800)]);
+}
+
+#[test]
+fn closing_during_blackjack_betting_refunds_every_stake_once() {
+    let mut table = blackjack_table();
+    sit(&mut table, 114, 0, 10_000, 0);
+    sit(&mut table, 115, 1, 10_000, 0);
+    act(&mut table, 114, CasinoCommand::Start, 0);
+    act(
+        &mut table,
+        114,
+        CasinoCommand::Bet {
+            amount: 500,
+            pairs: 100,
+            plus3: 100,
+        },
+        100,
+    );
+    // 115가 아직 베팅하지 않아 딜 전이다: 사이드베팅도 정산되지 않았다.
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Betting);
+    assert_eq!(table.seat(0).unwrap().stack, 9_300);
+    let events = table.close();
+    assert_eq!(cash_outs(&events), vec![(114, 10_000), (115, 10_000)]);
+}
+
+#[test]
+fn closing_mid_blackjack_round_keeps_side_bets_settled_on_the_deal() {
+    // 사이드베팅 적중: 컬러 페어 +1,200, 21+3 트리플 +3,000은 이미 스택에 있다.
+    let mut table = blackjack_table();
+    sit(&mut table, 116, 0, 10_000, 0);
+    table
+        .start_with_deck(116, deck_from_top(&["8h", "8s", "8d", "5c", "Tc"]), 0)
+        .unwrap();
+    act(
+        &mut table,
+        116,
+        CasinoCommand::Bet {
+            amount: 500,
+            pairs: 100,
+            plus3: 100,
+        },
+        100,
+    );
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Playing);
+    assert_eq!(table.seat(0).unwrap().stack, 13_700);
+    // 메인 500만 돌려준다 (사이드 원금 200은 적중 때 이미 돌려받았다).
+    assert_eq!(cash_outs(&table.close()), vec![(116, 14_200)]);
+
+    // 사이드베팅 실패: 잃은 사이드 원금은 돌려주지 않는다.
+    let mut table = blackjack_table();
+    sit(&mut table, 117, 0, 10_000, 0);
+    table
+        .start_with_deck(117, deck_from_top(&["Th", "9s", "Kd", "8c"]), 0)
+        .unwrap();
+    act(
+        &mut table,
+        117,
+        CasinoCommand::Bet {
+            amount: 2_000,
+            pairs: 1_500,
+            plus3: 1_500,
+        },
+        100,
+    );
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Playing);
+    assert_eq!(table.seat(0).unwrap().stack, 5_000);
+    assert_eq!(cash_outs(&table.close()), vec![(117, 7_000)]);
+
+    // 스플릿 뒤에 닫으면 두 핸드의 베팅을 모두 돌려준다.
+    let mut table = blackjack_table();
+    sit(&mut table, 118, 0, 10_000, 0);
+    let now = deal_blackjack_with(
+        &mut table,
+        118,
+        &[(118, 200)],
+        &["8h", "5c", "8d", "9s", "3h", "Tc"],
+        0,
+    );
+    act(&mut table, 118, CasinoCommand::Split, now + 100);
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Playing);
+    assert_eq!(table.seat(0).unwrap().stack, 9_600);
+    assert_eq!(cash_outs(&table.close()), vec![(118, 10_000)]);
+}
+
+#[test]
+fn closing_refunds_insurance_only_before_the_dealer_checks() {
+    let mut table = blackjack_table();
+    sit(&mut table, 119, 0, 10_000, 0);
+    sit(&mut table, 120, 1, 10_000, 0);
+    // 119: 9h 7d, 120: 6c 5s, 딜러: As 5c (블랙잭 아님).
+    table
+        .start_with_deck(
+            119,
+            deck_from_top(&["9h", "6c", "As", "7d", "5s", "5c", "Tc", "9d"]),
+            0,
+        )
+        .unwrap();
+    for (user, amount, at) in [(119, 500, 100), (120, 300, 200)] {
+        act(
+            &mut table,
+            user,
+            CasinoCommand::Bet {
+                amount,
+                pairs: 0,
+                plus3: 0,
+            },
+            at,
+        );
+    }
+    act(&mut table, 119, CasinoCommand::Insure { accept: true }, 300);
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Insurance);
+    assert_eq!(table.seat(0).unwrap().stack, 9_250);
+    // 딜러 확인 전: 인슈어런스는 아직 정산되지 않았으므로 베팅과 함께 돌려준다.
+    assert_eq!(
+        cash_outs(&table.clone().close()),
+        vec![(119, 10_000), (120, 10_000)]
+    );
+    // 딜러가 블랙잭이 아니면 인슈어런스 250은 이미 잃은 것이다.
+    table.tick(300 + INSURANCE_MS + 1).unwrap();
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Playing);
+    assert_eq!(cash_outs(&table.close()), vec![(119, 9_750), (120, 10_000)]);
+}
+
+#[test]
+fn closing_a_holdem_table_at_any_moment_conserves_chips() {
+    let mut table = holdem_table();
+    for (user, seat) in [(130, 0), (131, 2), (132, 4)] {
+        sit(&mut table, user, seat, 10_000, 0);
+    }
+    let mut rng = crate::system_random::rng();
+    let mut now = 0;
+    for _ in 0..40 {
+        let funded = table
+            .seats
+            .iter()
+            .flatten()
+            .filter(|seat| seat.stack > 0)
+            .map(|seat| seat.user_id)
+            .collect::<Vec<_>>();
+        if funded.len() < 2 {
+            break;
+        }
+        now += 1_000;
+        act(&mut table, funded[0], CasinoCommand::Start, now);
+        let mut guard = 0;
+        while table.playing() {
+            guard += 1;
+            assert!(guard < 500, "라운드가 끝나지 않습니다");
+            // 진행 중에 닫으면 건 칩(total)을 돌려줘 총액이 그대로다.
+            assert_eq!(closed_total(&table), 30_000, "진행 중 닫기");
+            now += 1_000;
+            let turn = table.round.as_ref().unwrap().turn;
+            let actor = table.seat(turn).unwrap().user_id;
+            let legal = table.poker_legal_for(turn).unwrap();
+            let roll = rng.next_u64() % 10;
+            let command = if roll < 2 {
+                CasinoCommand::Fold
+            } else if roll < 7 || !legal.can_raise {
+                if legal.can_check {
+                    CasinoCommand::Check
+                } else {
+                    CasinoCommand::Call
+                }
+            } else {
+                CasinoCommand::Raise {
+                    amount: legal.max_raise_to,
+                }
+            };
+            act(&mut table, actor, command, now);
+        }
+        // 끝난 뒤에 닫으면 스택만 돌려준다.
+        assert_eq!(stacks(&table), 30_000);
+        assert_eq!(closed_total(&table), 30_000, "끝난 뒤 닫기");
+    }
+}
+
 #[test]
 fn table_view_hides_other_players_cards_until_showdown() {
     let mut table = holdem_table();

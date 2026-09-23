@@ -482,6 +482,29 @@ impl Seat {
             self.missed = 0;
         }
     }
+
+    /// 라운드가 무효가 될 때 돌려줄, 아직 정산되지 않은 베팅.
+    /// `phase`는 진행 중인 라운드의 단계 (없거나 끝났으면 None).
+    fn unsettled_stake(&self, kind: GameKind, phase: Option<Phase>) -> i64 {
+        match (kind, phase) {
+            // 끝난 라운드의 total은 이미 정산된 기록일 뿐이다.
+            (_, None | Some(Phase::Complete)) => 0,
+            // 홀덤 팟은 핸드가 끝날 때 한 번에 정산된다.
+            (GameKind::Holdem, Some(_)) => self.total,
+            // 딜 전에는 사이드베팅까지 아무것도 정산되지 않았다.
+            (GameKind::Blackjack, Some(Phase::Betting)) => self.total,
+            // 딜 때 사이드베팅이 정산되었다. 인슈어런스는 딜러 확인 전(Insurance)에만 남아 있다.
+            (GameKind::Blackjack, Some(phase)) => {
+                let main = self.hands.iter().map(|hand| hand.bet).sum::<i64>();
+                let insurance = if phase == Phase::Insurance {
+                    self.insurance
+                } else {
+                    0
+                };
+                main + insurance
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1006,13 +1029,17 @@ impl CasinoTable {
     /// 테이블을 닫는다: 모든 좌석의 칩을 돌려준다 (진행 중 라운드는 무효).
     pub fn close(&mut self) -> Vec<CasinoEvent> {
         let mut events = Vec::new();
-        for (index, seat) in self.seats.iter_mut().enumerate() {
-            if let Some(seat) = seat.as_mut() {
-                // 진행 중이던 베팅(total)은 정산되지 않으므로 함께 돌려준다.
-                seat.stack += seat.total;
-                seat.total = 0;
-            }
-            let _ = index;
+        // 진행 중이던 라운드의 아직 정산되지 않은 베팅만 돌려준다.
+        // 끝난 라운드의 total까지 돌려주면 이미 정산된 칩이 두 번 나간다.
+        let phase = self
+            .round
+            .as_ref()
+            .map(|round| round.phase)
+            .filter(|_| self.playing());
+        let kind = self.kind;
+        for seat in self.seats.iter_mut().flatten() {
+            seat.stack += seat.unsettled_stake(kind, phase);
+            seat.total = 0;
         }
         for index in 0..SEAT_COUNT {
             self.cash_out(index, &mut events);
