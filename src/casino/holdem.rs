@@ -363,6 +363,8 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
                 wagered: seat.total,
                 net: returned - seat.total,
                 won: (returned - seat.total).max(0),
+                // 딴 핸드는 가져간 팟 전체를 보여 준다.
+                paid: if returned > seat.total { returned } else { 0 },
                 label,
                 notes: Vec::new(),
             }

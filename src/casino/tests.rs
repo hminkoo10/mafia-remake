@@ -235,6 +235,7 @@ fn insurance_pays_two_to_one_against_dealer_blackjack() {
     assert_eq!(result.wagered, 750);
     assert_eq!(result.net, 0);
     assert_eq!(result.won, 500);
+    assert_eq!(result.paid, 750);
     assert!(
         result
             .notes
@@ -266,6 +267,7 @@ fn blackjack_winnings_keep_main_win_when_side_losses_make_net_negative() {
     assert_eq!(result.net, -1_000);
     assert_eq!(table.seat(0).unwrap().stack, 9_000);
     assert_eq!(result.won, 2_000);
+    assert_eq!(result.paid, 4_000);
 }
 
 #[test]
@@ -288,6 +290,7 @@ fn blackjack_winnings_exclude_returned_stakes_and_reset_each_round() {
     );
     act(&mut table, 80, CasinoCommand::Stand, 200);
     assert_eq!(table.history[0].results[0].won, 5_000);
+    assert_eq!(table.history[0].results[0].paid, 6_000);
     assert_eq!(table.history[0].results[0].net, 3_000);
     assert_eq!(table.seat(0).unwrap().stack, 13_000);
     // 다음 판에 전부 지면 이전 적중 금액이 남지 않는다.
@@ -306,8 +309,9 @@ fn blackjack_winnings_exclude_returned_stakes_and_reset_each_round() {
     );
     act(&mut table, 80, CasinoCommand::Stand, 500);
     assert_eq!(table.history[0].results[0].won, 0);
+    assert_eq!(table.history[0].results[0].paid, 0);
     assert_eq!(table.history[0].results[0].net, -700);
-    // 푸시는 원금만 반환하므로 won은 0.
+    // 푸시는 원금만 반환하므로 won·paid는 0.
     table
         .start_with_deck(80, deck_from_top(&["Th", "9s", "9d", "Tc"]), 600)
         .unwrap();
@@ -323,15 +327,22 @@ fn blackjack_winnings_exclude_returned_stakes_and_reset_each_round() {
     );
     act(&mut table, 80, CasinoCommand::Stand, 800);
     assert_eq!(table.history[0].results[0].won, 0);
+    assert_eq!(table.history[0].results[0].paid, 0);
     assert_eq!(table.history[0].results[0].net, 0);
     let mut old = serde_json::to_value(&table).unwrap();
     old["history"][0]["results"][0]
         .as_object_mut()
         .unwrap()
         .remove("won");
+    old["history"][0]["results"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("paid");
     old["seats"][0].as_object_mut().unwrap().remove("side_won");
+    old["seats"][0].as_object_mut().unwrap().remove("side_paid");
     let restored: CasinoTable = serde_json::from_value(old).unwrap();
     assert_eq!(restored.history[0].results[0].won, 0);
+    assert_eq!(restored.history[0].results[0].paid, 0);
     assert_eq!(restored.seat(0).unwrap().side_won, 0);
 }
 
@@ -1474,4 +1485,61 @@ fn blackjack_split_keeps_a_reveal_time_for_every_card() {
     let hands = &view.seats[0].as_ref().unwrap().hands;
     assert_eq!(hands.len(), 2);
     assert_eq!((hands[0].total, hands[1].total), (11, 18));
+}
+
+#[test]
+fn blackjack_natural_returns_two_and_a_half_times_the_bet() {
+    let mut table = blackjack_table();
+    sit(&mut table, 95, 0, 20_000, 0);
+    // 딜: P0 As, 딜러 9c, P0 Kd, 딜러 7h → P0 블랙잭, 딜러 16 (내추럴은 바로 정산).
+    table
+        .start_with_deck(95, deck_from_top(&["As", "9c", "Kd", "7h", "5d"]), 0)
+        .unwrap();
+    act(
+        &mut table,
+        95,
+        CasinoCommand::Bet {
+            amount: 5_000,
+            pairs: 0,
+            plus3: 0,
+        },
+        100,
+    );
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Complete);
+    let hand = &table.seat(0).unwrap().hands[0];
+    assert_eq!(
+        hand.payout,
+        Some(12_500),
+        "블랙잭은 베팅의 2.5배를 돌려준다"
+    );
+    let result = &table.history[0].results[0];
+    assert_eq!(result.paid, 12_500, "결과 헤드라인은 돌려받는 12,500");
+    assert_eq!(result.won, 7_500);
+    assert_eq!(result.net, 7_500);
+    assert_eq!(table.seat(0).unwrap().stack, 20_000 + 7_500);
+}
+
+#[test]
+fn holdem_winner_is_shown_the_pot_it_collects() {
+    let mut table = holdem_table();
+    sit(&mut table, 96, 0, 10_000, 0);
+    sit(&mut table, 97, 1, 10_000, 0);
+    act(&mut table, 96, CasinoCommand::Start, 0);
+    // 차례인 사람이 폴드하면 상대가 블라인드 팟을 가져간다.
+    let turn = table.round.as_ref().unwrap().turn;
+    let folder = table.seat(turn).unwrap().user_id;
+    act(&mut table, folder, CasinoCommand::Fold, 100);
+    let result = table.history[0]
+        .results
+        .iter()
+        .find(|result| result.user_id != folder)
+        .unwrap();
+    assert_eq!(result.won, result.net);
+    assert_eq!(result.paid, result.wagered + result.net, "가져간 팟 전체");
+    let loser = table.history[0]
+        .results
+        .iter()
+        .find(|result| result.user_id == folder)
+        .unwrap();
+    assert_eq!((loser.won, loser.paid), (0, 0));
 }

@@ -196,7 +196,12 @@ fn render_hand_result(result: &HandResult, kind: GameKind) -> String {
     }
     for entry in &result.results {
         let headline = if entry.won > 0 {
-            format!("이김 {}", signed_chips(entry.won))
+            // 이긴 베팅이 돌려준 총액 (블랙잭 5,000 → 12,500). 예전 기록은 이익만 있다.
+            if entry.paid > 0 {
+                format!("이김 {}", format_number(entry.paid))
+            } else {
+                format!("이김 {}", signed_chips(entry.won))
+            }
         } else if entry.net < 0 {
             format!("패배 {}", signed_chips(entry.net))
         } else {

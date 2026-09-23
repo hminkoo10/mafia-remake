@@ -116,6 +116,8 @@ export interface Payout {
 }
 
 export interface SeatResult {
+  /** 이긴 베팅이 돌려준 총액 (원금 포함). 예전 기록은 0. */
+  paid?: number;
   user_id: number;
   name: string;
   seat: number;

@@ -23,11 +23,12 @@ export const chipLabel = (v: number) => (v >= 1_000_000 ? `${v / 1_000_000}M` : 
 export const handTone = (result: string | null) =>
   !result ? "" : /블랙잭|승리/.test(result) ? "hand-won" : result === "푸시" ? "hand-push" : "hand-lost";
 
+/** 좌석 위 핸드 결과. 이긴 핸드는 돌려받는 총액(원금 포함), 진 핸드는 잃은 금액. */
 export const handResultText = (hand: Pick<HandView, "result" | "payout" | "bet">) => {
   const gain = (hand.payout ?? 0) - hand.bet;
   if (!hand.result) return "";
-  if (hand.result.includes("블랙잭")) return `BLACKJACK ${signed(gain)}`;
-  if (hand.result === "승리") return `WIN ${signed(gain)}`;
+  if (hand.result.includes("블랙잭")) return `BLACKJACK ${fmt(hand.payout ?? 0)}`;
+  if (hand.result === "승리") return `WIN ${fmt(hand.payout ?? 0)}`;
   if (hand.result === "푸시") return "PUSH";
   if (hand.result === "버스트") return `BUST ${signed(gain)}`;
   if (hand.result === "서렌더") return `SURRENDER ${signed(gain)}`;

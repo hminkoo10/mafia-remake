@@ -86,6 +86,7 @@ pub(super) fn start_blackjack(
         seat.insurance_decided = false;
         seat.side_net = 0;
         seat.side_won = 0;
+        seat.side_paid = 0;
         seat.side_notes.clear();
     }
     let uses_shoe = deck.is_none();
@@ -309,6 +310,7 @@ fn settle_side_bets(table: &mut CasinoTable, players: &[usize], now: i64) {
                     seat.stack += stake * (odds + 1);
                     seat.side_net += stake * odds;
                     seat.side_won += stake * odds;
+                    seat.side_paid += stake * (odds + 1);
                     seat.side_notes
                         .push(format!("{label} {odds}:1 {}", signed_chips(stake * odds)));
                     lines.push(format!("{}님 {label} {odds}:1!", seat.name));
@@ -327,6 +329,7 @@ fn settle_side_bets(table: &mut CasinoTable, players: &[usize], now: i64) {
                     seat.stack += stake * (odds + 1);
                     seat.side_net += stake * odds;
                     seat.side_won += stake * odds;
+                    seat.side_paid += stake * (odds + 1);
                     seat.side_notes.push(format!(
                         "21+3 {label} {odds}:1 {}",
                         signed_chips(stake * odds)
@@ -530,6 +533,7 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
             seat.stack += seat.insurance * 3;
             seat.side_net += seat.insurance * 2;
             seat.side_won += seat.insurance * 2;
+            seat.side_paid += seat.insurance * 3;
             seat.side_notes.push(format!(
                 "인슈어런스 2:1 {}",
                 signed_chips(seat.insurance * 2)
@@ -538,6 +542,7 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
         let mut wagered = seat.side_pairs + seat.side_plus3 + seat.insurance;
         let mut net = seat.side_net;
         let mut won = seat.side_won;
+        let mut paid = seat.side_paid;
         let mut labels = Vec::new();
         for hand in &mut seat.hands {
             let score = blackjack_value(&hand.cards).0;
@@ -567,6 +572,9 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
             wagered += hand.bet;
             net += payout - hand.bet;
             won += (payout - hand.bet).max(0);
+            if payout > hand.bet {
+                paid += payout;
+            }
             labels.push(label.to_string());
             payouts.push(Payout {
                 name: seat.name.clone(),
@@ -581,6 +589,7 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
             wagered,
             net,
             won,
+            paid,
             label: labels.join(" / "),
             notes: seat.side_notes.clone(),
         });

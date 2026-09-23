@@ -57,8 +57,9 @@ import {
 } from "./ui";
 
 const resultTone = (r: SeatResult) => r.won > 0 ? "won" : r.net < 0 ? "lost" : "even";
+// 에볼루션처럼 이긴 베팅이 돌려준 총액을 보여 준다 (블랙잭 5,000 → 12,500). 예전 기록은 이익만 있다.
 const resultHeadline = (r: SeatResult, mine: boolean) => r.won > 0
-  ? `${mine ? "이기셨습니다" : `${r.name} 이김`} ${signed(r.won)}`
+  ? `${mine ? "이기셨습니다" : `${r.name} 이김`} ${r.paid ? fmt(r.paid) : signed(r.won)}`
   : `${mine ? "" : `${r.name} `}${r.net < 0 ? `패배 ${signed(r.net)}` : "푸시"}`;
 const phases: Record<string, string> = {
   preflop: "프리플롭",
@@ -1848,8 +1849,8 @@ export default function Casino() {
               <h3>배당</h3>
               <table className="rules-table">
                 <tbody>
-                  <tr><th>블랙잭 (처음 두 장 21)</th><td>3:2 — 1,000 베팅이면 +1,500</td></tr>
-                  <tr><th>일반 승리</th><td>1:1 — 1,000 베팅이면 +1,000</td></tr>
+                  <tr><th>블랙잭 (처음 두 장 21)</th><td>3:2 — 베팅의 2.5배를 돌려받음. 5,000 베팅이면 12,500 (순이익 +7,500)</td></tr>
+                  <tr><th>일반 승리</th><td>1:1 — 베팅의 2배를 돌려받음. 1,000 베팅이면 2,000 (순이익 +1,000)</td></tr>
                   <tr><th>푸시 (같은 점수)</th><td>원금 반환</td></tr>
                   <tr><th>딜러 블랙잭 vs 내 블랙잭</th><td>푸시</td></tr>
                   <tr><th>버스트 (22 이상)</th><td>베팅을 잃음 (딜러가 뒤에 버스트해도 동일)</td></tr>
@@ -1888,7 +1889,8 @@ export default function Casino() {
                   <tr><th>수티드 트립스</th><td>같은 숫자·같은 무늬 3장 — 100:1</td></tr>
                 </tbody>
               </table>
-              <p>예: 21+3에 100을 걸고 트리플이 나오면 +3,000. 사이드베팅은 메인 결과와 상관없이 딜 직후 정산됩니다.</p>
+              <p>예: 21+3에 100을 걸고 트리플이 나오면 3,100을 돌려받습니다(순이익 +3,000). 사이드베팅은 메인 결과와 상관없이 딜 직후 정산됩니다.</p>
+              <p>결과 창의 "이기셨습니다" 금액은 이긴 베팅이 돌려준 돈(원금 포함)이고, 그 아래 줄이 이번 라운드 순손익입니다.</p>
               <h3>시간</h3>
               <ul>
                 <li>베팅 15초 (베팅할 수 있는 사람이 모두 확정하면 바로 딜). 마감 2초 전에 쌓아 둔 칩은 자동 확정.</li>

@@ -433,6 +433,9 @@ pub struct Seat {
     /// 적중한 사이드베팅·인슈어런스의 이익 합계 (원금 제외).
     #[serde(default)]
     pub side_won: i64,
+    /// 적중한 사이드베팅·인슈어런스가 돌려준 총액 (원금 포함).
+    #[serde(default)]
+    pub side_paid: i64,
     /// 사이드베팅·인슈어런스 결과 설명 (이번 라운드).
     #[serde(default)]
     pub side_notes: Vec<String>,
@@ -452,6 +455,7 @@ impl Seat {
             insurance_decided: false,
             side_net: 0,
             side_won: 0,
+            side_paid: 0,
             side_notes: Vec::new(),
             bet: 0,
             total: 0,
@@ -564,6 +568,10 @@ pub struct SeatResult {
     /// 이긴 베팅의 이익 합계 (원금·다른 베팅의 손실 제외).
     #[serde(default)]
     pub won: i64,
+    /// 이긴 베팅이 돌려준 총액 (원금 포함). 결과 헤드라인은 에볼루션처럼 이 값을 보여 준다
+    /// (블랙잭 5,000 → 12,500). 예전 기록에는 없어서 0이다.
+    #[serde(default)]
+    pub paid: i64,
     /// 족보·결과 이름 ("원 페어", "폴드", "승리" 등).
     pub label: String,
     /// 사이드베팅·인슈어런스 결과 ("퍼펙트 페어 12:1 +1,200" 등).

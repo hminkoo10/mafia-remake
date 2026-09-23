@@ -22,8 +22,9 @@ test("blackjack hand scores read like a live table", () => {
 });
 
 test("hand results show the win or loss of that hand", () => {
-  assert.equal(handResultText({ result: "승리", payout: 2000, bet: 1000 }), "WIN +1,000");
-  assert.equal(handResultText({ result: "블랙잭 3:2", payout: 2500, bet: 1000 }), "BLACKJACK +1,500");
+  // 이긴 핸드는 돌려받는 총액: 블랙잭 5,000은 2.5배인 12,500.
+  assert.equal(handResultText({ result: "승리", payout: 2000, bet: 1000 }), "WIN 2,000");
+  assert.equal(handResultText({ result: "블랙잭 3:2", payout: 12500, bet: 5000 }), "BLACKJACK 12,500");
   assert.equal(handResultText({ result: "버스트", payout: 0, bet: 500 }), "BUST −500");
   assert.equal(handResultText({ result: "푸시", payout: 500, bet: 500 }), "PUSH");
   assert.equal(handResultText({ result: "패배", payout: 0, bet: 500 }), "LOSE −500");
