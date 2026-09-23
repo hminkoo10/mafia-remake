@@ -1154,7 +1154,10 @@ fn idle_seats_cash_out_after_thirty_minutes() {
 fn closing_a_table_returns_pending_bets_too() {
     let mut table = blackjack_table();
     sit(&mut table, 110, 0, 10_000, 0);
-    act(&mut table, 110, CasinoCommand::Start, 0);
+    // 혼자 베팅하면 바로 딜되므로, 내추럴로 즉시 정산되지 않게 카드를 정해 둔다.
+    table
+        .start_with_deck(110, deck_from_top(&["2h", "3c", "4d", "5s", "6h", "7c"]), 0)
+        .unwrap();
     act(
         &mut table,
         110,
@@ -1208,4 +1211,267 @@ fn table_view_hides_other_players_cards_until_showdown() {
     assert!(spectator.legal.poker.is_none());
     let json = serde_json::to_string(&mine).unwrap();
     assert!(json.contains("\"kind\":\"holdem\""));
+}
+
+#[test]
+fn table_settings_default_to_the_classic_limits() {
+    for kind in [GameKind::Holdem, GameKind::Blackjack] {
+        assert_eq!(
+            TableSettings::build(kind, SettingsRequest::default()).unwrap(),
+            TableSettings::default()
+        );
+    }
+    let high = TableSettings::build(
+        GameKind::Blackjack,
+        SettingsRequest {
+            min_bet: Some(1_000),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        (high.min_bet, high.max_bet, high.side_bet_max),
+        (1_000, 50_000, 25_000)
+    );
+    assert_eq!((high.min_buy_in, high.max_buy_in), (50_000, 200_000));
+    assert!(
+        high.summary(GameKind::Blackjack)
+            .starts_with("베팅 1,000~50,000 · 사이드 최대 25,000")
+    );
+    let holdem = TableSettings::build(
+        GameKind::Holdem,
+        SettingsRequest {
+            big_blind: Some(400),
+            turn_secs: Some(20),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!((holdem.small_blind, holdem.big_blind), (200, 400));
+    assert_eq!(
+        (holdem.min_buy_in, holdem.max_buy_in, holdem.turn_ms),
+        (20_000, 80_000, 20_000)
+    );
+    // 최대 바이인만 낮추면 최소 바이인도 따라 내려간다.
+    let small = TableSettings::build(
+        GameKind::Blackjack,
+        SettingsRequest {
+            max_buy_in: Some(3_000),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!((small.min_buy_in, small.max_buy_in), (3_000, 3_000));
+    let no_side = TableSettings::build(
+        GameKind::Blackjack,
+        SettingsRequest {
+            side_bet_max: Some(0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        no_side
+            .summary(GameKind::Blackjack)
+            .contains("사이드베팅 없음")
+    );
+}
+
+#[test]
+fn table_settings_reject_unplayable_limits() {
+    let bad = |kind, request| TableSettings::build(kind, request).unwrap_err();
+    let cases = [
+        (
+            GameKind::Blackjack,
+            SettingsRequest {
+                min_bet: Some(150),
+                ..Default::default()
+            },
+            "최소 베팅",
+        ),
+        (
+            GameKind::Blackjack,
+            SettingsRequest {
+                min_bet: Some(1_000),
+                max_bet: Some(500),
+                ..Default::default()
+            },
+            "최대 베팅",
+        ),
+        (
+            GameKind::Blackjack,
+            SettingsRequest {
+                side_bet_max: Some(9_900),
+                ..Default::default()
+            },
+            "사이드베팅",
+        ),
+        (
+            GameKind::Holdem,
+            SettingsRequest {
+                big_blind: Some(55),
+                ..Default::default()
+            },
+            "빅 블라인드",
+        ),
+        (
+            GameKind::Holdem,
+            SettingsRequest {
+                min_buy_in: Some(500),
+                ..Default::default()
+            },
+            "최소 바이인은 1,000 이상",
+        ),
+        (
+            GameKind::Holdem,
+            SettingsRequest {
+                min_buy_in: Some(8_000),
+                max_buy_in: Some(6_000),
+                ..Default::default()
+            },
+            "최대 바이인",
+        ),
+        (
+            GameKind::Holdem,
+            SettingsRequest {
+                turn_secs: Some(5),
+                ..Default::default()
+            },
+            "제한 시간",
+        ),
+    ];
+    for (kind, request, text) in cases {
+        let message = bad(kind, request);
+        assert!(message.contains(text), "{message}");
+    }
+    // 게임과 상관없는 항목은 무시한다.
+    assert!(
+        TableSettings::build(
+            GameKind::Holdem,
+            SettingsRequest {
+                min_bet: Some(150),
+                ..Default::default()
+            }
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn saved_tables_without_settings_load_the_classic_limits() {
+    let mut json = serde_json::to_value(blackjack_table()).unwrap();
+    json.as_object_mut().unwrap().remove("settings");
+    let loaded: CasinoTable = serde_json::from_value(json).unwrap();
+    assert_eq!(loaded.settings, TableSettings::default());
+}
+
+#[test]
+fn blackjack_bets_and_buy_ins_follow_the_table_settings() {
+    let settings = TableSettings::build(
+        GameKind::Blackjack,
+        SettingsRequest {
+            min_bet: Some(500),
+            max_bet: Some(2_000),
+            side_bet_max: Some(0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut table = blackjack_table().with_settings(settings);
+    let join = |amount| CasinoCommand::Join {
+        seat: 0,
+        amount,
+        name: "P70".to_string(),
+    };
+    // 최소 바이인은 최소 베팅 50번 = 25,000.
+    let error = table
+        .apply_command(70, "P70", &join(10_000), None, 0)
+        .unwrap_err();
+    assert!(error.message.contains("25,000"), "{}", error.message);
+    sit(&mut table, 70, 0, 25_000, 0);
+    act(&mut table, 70, CasinoCommand::Start, 0);
+    let bet = |amount, pairs| CasinoCommand::Bet {
+        amount,
+        pairs,
+        plus3: 0,
+    };
+    let version = table.version;
+    for (command, text) in [
+        (bet(400, 0), "500~2,000"),
+        (bet(2_500, 0), "500~2,000"),
+        (bet(1_000, 100), "사이드베팅을 받지 않"),
+    ] {
+        let error = table
+            .apply_command(70, "P70", &command, Some(version), 10)
+            .unwrap_err();
+        assert!(error.message.contains(text), "{}", error.message);
+    }
+    act(&mut table, 70, bet(2_000, 0), 20);
+    assert_eq!(table.seat(0).unwrap().hands[0].bet, 2_000);
+    let view = table_view(&table, Some(70), i64::MAX);
+    assert_eq!(
+        (
+            view.rules.min_bet,
+            view.rules.max_bet,
+            view.rules.side_bet_max,
+            view.rules.min_buy_in
+        ),
+        (500, 2_000, 0, 25_000)
+    );
+}
+
+#[test]
+fn holdem_blinds_and_turn_time_follow_the_table_settings() {
+    let settings = TableSettings::build(
+        GameKind::Holdem,
+        SettingsRequest {
+            big_blind: Some(400),
+            turn_secs: Some(20),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut table = holdem_table().with_settings(settings);
+    sit(&mut table, 80, 0, 40_000, 0);
+    sit(&mut table, 81, 1, 40_000, 0);
+    act(&mut table, 80, CasinoCommand::Start, 0);
+    let mut blinds = table
+        .seats
+        .iter()
+        .flatten()
+        .map(|seat| seat.bet)
+        .collect::<Vec<_>>();
+    blinds.sort();
+    assert_eq!(blinds, vec![200, 400]);
+    let round = table.round.as_ref().unwrap();
+    assert_eq!(round.current_bet, 400);
+    assert_eq!(round.deadline, 20_000);
+    let legal = table.poker_legal_for(round.turn).unwrap();
+    assert_eq!(legal.min_raise_to, 800);
+}
+
+#[test]
+fn blackjack_split_keeps_a_reveal_time_for_every_card() {
+    let mut table = blackjack_table();
+    sit(&mut table, 90, 0, 10_000, 0);
+    let now = deal_blackjack_with(
+        &mut table,
+        90,
+        &[(90, 200)],
+        &["8h", "5c", "8d", "9s", "3h", "Tc"],
+        0,
+    );
+    act(&mut table, 90, CasinoCommand::Split, now + 100);
+    let seat = table.seat(0).unwrap();
+    for hand in &seat.hands {
+        assert_eq!(hand.cards.len(), hand.reveal_at.len());
+    }
+    // 옮겨진 카드는 원래 놓인 시각을 유지하고, 새 카드는 스플릿 뒤에 놓인다.
+    assert!(seat.hands[1].reveal_at[0] <= now);
+    assert!(seat.hands[1].reveal_at[1] >= now + 100);
+    assert!(table.round.as_ref().unwrap().reveal_until >= seat.hands[1].reveal_at[1]);
+    let view = table_view(&table, Some(90), i64::MAX);
+    let hands = &view.seats[0].as_ref().unwrap().hands;
+    assert_eq!(hands.len(), 2);
+    assert_eq!((hands[0].total, hands[1].total), (11, 18));
 }

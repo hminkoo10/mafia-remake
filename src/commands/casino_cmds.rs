@@ -4,7 +4,8 @@
 use super::*;
 use crate::casino_hub::{CasinoHub, TableBinding, personal_link, table_channel_name};
 use mafia_remake::casino::{
-    CasinoEvent, ChatMessage, GameKind, HandResult, Phase, TableView, blackjack_value, signed_chips,
+    CasinoEvent, ChatMessage, GameKind, HandResult, Phase, SettingsRequest, TableSettings,
+    TableView, blackjack_value, signed_chips,
 };
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -61,7 +62,26 @@ fn cards_text(cards: &[String]) -> String {
 /// 테이블 채널에 올리는 상태 임베드 본문.
 pub fn render_table_status(view: &TableView, base_url: &str) -> String {
     let mut lines = Vec::new();
-    lines.push(format!("**{}** · {}", view.name, view.kind.value()));
+    let rules = &view.rules;
+    let stakes = match view.kind {
+        GameKind::Holdem => format!(
+            "블라인드 {}/{}",
+            format_number(rules.small_blind),
+            format_number(rules.big_blind)
+        ),
+        GameKind::Blackjack => format!(
+            "베팅 {}~{}",
+            format_number(rules.min_bet),
+            format_number(rules.max_bet)
+        ),
+    };
+    lines.push(format!(
+        "**{}** · {} · {stakes} · 바이인 {}~{}",
+        view.name,
+        view.kind.value(),
+        format_number(rules.min_buy_in),
+        format_number(rules.max_buy_in)
+    ));
     match view.round.as_ref() {
         Some(round) => {
             let mut status = format!("단계: **{}**", round.phase_text);
@@ -218,14 +238,45 @@ fn casino_base_url(data: &Data) -> String {
     rename = "카지노테이블생성",
     description_localized("ko", "관리자: 카지노 테이블을 만들고 전용 채널을 엽니다.")
 )]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_casino_table(
     ctx: Context<'_>,
     #[description = "게임 종류"] 종류: CasinoGameChoice,
     #[description = "테이블 이름 (2~24자)"] 이름: String,
+    #[description = "블랙잭 최소 베팅 (기본 100, 100 단위)"] 최소베팅: Option<i64>,
+    #[description = "블랙잭 최대 베팅 (기본 최소 베팅×50, 최소 5,000)"] 최대베팅: Option<i64>,
+    #[description = "블랙잭 사이드베팅 최대 (기본 최대 베팅의 절반, 0이면 사이드베팅 없음)"]
+    사이드최대: Option<i64>,
+    #[description = "홀덤 빅 블라인드 (기본 100, 짝수, 스몰 블라인드는 절반)"] 빅블라인드: Option<
+        i64,
+    >,
+    #[description = "최소 바이인 (기본: 홀덤 빅 블라인드×50, 블랙잭 최소 베팅×50)"]
+    최소바이인: Option<i64>,
+    #[description = "최대 바이인 (기본: 홀덤 빅 블라인드×200, 블랙잭 최대 베팅×4)"]
+    최대바이인: Option<i64>,
+    #[description = "액션 제한 시간 (초, 10~120, 기본 30)"] 제한시간: Option<i64>,
 ) -> Result<(), Error> {
     if !require_manager(ctx).await? {
         return Ok(());
     }
+    let settings = match TableSettings::build(
+        종류.kind(),
+        SettingsRequest {
+            min_bet: 최소베팅,
+            max_bet: 최대베팅,
+            big_blind: 빅블라인드,
+            min_buy_in: 최소바이인,
+            max_buy_in: 최대바이인,
+            side_bet_max: 사이드최대,
+            turn_secs: 제한시간,
+        },
+    ) {
+        Ok(settings) => settings,
+        Err(message) => {
+            reply_embed(ctx, message, "카지노", serenity::Colour::RED, true).await?;
+            return Ok(());
+        }
+    };
     let Some(guild_id) = ctx.guild_id() else {
         reply_embed(
             ctx,
@@ -284,14 +335,15 @@ pub async fn create_casino_table(
         channel_id: channel.id.get(),
         ..Default::default()
     };
-    let table_id = match hub.create_table(종류.kind(), &이름, ctx.author().id.get(), binding) {
-        Ok(id) => id,
-        Err(message) => {
-            let _ = channel.delete(&serenity_ctx.http).await;
-            reply_embed(ctx, message, "카지노", serenity::Colour::RED, true).await?;
-            return Ok(());
-        }
-    };
+    let table_id =
+        match hub.create_table(종류.kind(), &이름, ctx.author().id.get(), binding, settings) {
+            Ok(id) => id,
+            Err(message) => {
+                let _ = channel.delete(&serenity_ctx.http).await;
+                reply_embed(ctx, message, "카지노", serenity::Colour::RED, true).await?;
+                return Ok(());
+            }
+        };
     hub.save().await;
     refresh_table_status(serenity_ctx, ctx.data(), &table_id).await;
     let log_channel_id = ctx.data().config.read().await.log_channel_id;
@@ -300,19 +352,21 @@ pub async fn create_casino_table(
         log_channel_id,
         "카지노 테이블",
         format!(
-            "{} 님이 {} 테이블 **{}**(<#{}>)을 만들었습니다.",
+            "{} 님이 {} 테이블 **{}**(<#{}>)을 만들었습니다. {}",
             ctx.author().name,
             종류.kind().value(),
             이름,
-            channel.id.get()
+            channel.id.get(),
+            settings.summary(종류.kind())
         ),
     )
     .await;
     let message = format!(
-        "{} 테이블 **{}**을 만들었습니다. 채널: <#{}>\n참가자는 `/카지노입장 테이블:{}` 으로 개인 링크를 받습니다.",
+        "{} 테이블 **{}**을 만들었습니다. 채널: <#{}>\n방 설정: {}\n참가자는 `/카지노입장 테이블:{}` 으로 개인 링크를 받습니다.",
         종류.kind().value(),
         이름,
         channel.id.get(),
+        settings.summary(종류.kind()),
         이름
     );
     if deferred {
@@ -445,9 +499,10 @@ pub async fn list_casino_tables(ctx: Context<'_>) -> Result<(), Error> {
             .iter()
             .map(|summary| {
                 format!(
-                    "**{}** ({}) · {}/{}명 · {}{}",
+                    "**{}** ({} · {}) · {}/{}명 · {}{}",
                     summary.name,
                     summary.kind_text,
+                    summary.stakes,
                     summary.seated,
                     summary.seat_count,
                     summary

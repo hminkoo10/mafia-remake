@@ -1,10 +1,10 @@
-// casino/holdem.rs — 2~6인 노 리밋 텍사스 홀덤 (블라인드 50/100, 사이드팟, 헤즈업 버튼 규칙)
+// casino/holdem.rs — 2~6인 노 리밋 텍사스 홀덤 (방 설정의 블라인드, 사이드팟, 헤즈업 버튼 규칙)
 
 use super::cards::{CasinoError, PokerRank, draw, poker_rank, shuffled_deck};
 use super::table::{
-    CasinoTable, DEAL_CARD_MS, GameKind, HOLDEM_BIG_BLIND, HOLDEM_SMALL_BLIND, HandResult, Payout,
-    Phase, Round, SEAT_COUNT, SETTLE_PAUSE_MS, SHOWDOWN_STEP_MS, STREET_PAUSE_MS, Seat, SeatResult,
-    TURN_MS, format_chips, new_id, signed_chips,
+    CasinoTable, DEAL_CARD_MS, GameKind, HandResult, Payout, Phase, Round, SEAT_COUNT,
+    SETTLE_PAUSE_MS, SHOWDOWN_STEP_MS, STREET_PAUSE_MS, Seat, SeatResult, format_chips, new_id,
+    signed_chips,
 };
 use serde::Serialize;
 
@@ -65,8 +65,8 @@ pub(super) fn poker_legal(table: &CasinoTable, index: i32) -> Option<PokerLegal>
         to_call: to_call.min(seat.stack),
         can_check: to_call == 0,
         can_raise: reopened && opponent_can_call && seat.stack > to_call,
-        min_raise_to: if round.current_bet < HOLDEM_BIG_BLIND {
-            HOLDEM_BIG_BLIND
+        min_raise_to: if round.current_bet < table.settings.big_blind {
+            table.settings.big_blind
         } else {
             round.current_bet + round.min_raise
         },
@@ -91,6 +91,7 @@ pub(super) fn start_poker(
         ));
     }
     let previous_big_blind = table.big_blind_seat;
+    let rules = table.settings;
     for seat in table.seats.iter_mut().flatten() {
         seat.in_hand = !seat.sit_out && !seat.leaving && seat.stack > 0;
         seat.cards.clear();
@@ -133,9 +134,9 @@ pub(super) fn start_poker(
         phase: Phase::Preflop,
         turn: -1,
         hand: 0,
-        current_bet: HOLDEM_BIG_BLIND,
-        min_raise: HOLDEM_BIG_BLIND,
-        deadline: now + TURN_MS,
+        current_bet: rules.big_blind,
+        min_raise: rules.big_blind,
+        deadline: now + rules.turn_ms,
         pot: 0,
         reveal: false,
         reveal_until,
@@ -160,10 +161,10 @@ pub(super) fn start_poker(
     }
     round.reveal_until = at + DEAL_CARD_MS;
     if let Some(seat) = table.seat_mut(small) {
-        commit(seat, HOLDEM_SMALL_BLIND);
+        commit(seat, rules.small_blind);
     }
     if let Some(seat) = table.seat_mut(big) {
-        commit(seat, HOLDEM_BIG_BLIND);
+        commit(seat, rules.big_blind);
     }
     round.turn = table.next_seat(big, actionable);
     table.round = Some(round);
@@ -401,6 +402,7 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
 }
 
 fn advance(table: &mut CasinoTable, from: i32, now: i64) -> Result<(), CasinoError> {
+    let rules = table.settings;
     let live_count = table
         .seats
         .iter()
@@ -425,7 +427,7 @@ fn advance(table: &mut CasinoTable, from: i32, now: i64) -> Result<(), CasinoErr
     if next != -1 {
         let round = table.round.as_mut().expect("round exists");
         round.turn = next;
-        round.deadline = round.reveal_base(now) + TURN_MS;
+        round.deadline = round.reveal_base(now) + rules.turn_ms;
         return Ok(());
     }
     if table.round.as_ref().expect("round exists").phase == Phase::River {
@@ -439,7 +441,7 @@ fn advance(table: &mut CasinoTable, from: i32, now: i64) -> Result<(), CasinoErr
     let phase = {
         let round = table.round.as_mut().expect("round exists");
         round.current_bet = 0;
-        round.min_raise = HOLDEM_BIG_BLIND;
+        round.min_raise = rules.big_blind;
         // 스트리트마다 한 장을 버린다.
         draw(&mut round.deck)?;
         let count = if round.phase == Phase::Preflop { 3 } else { 1 };
@@ -467,7 +469,7 @@ fn advance(table: &mut CasinoTable, from: i32, now: i64) -> Result<(), CasinoErr
     let turn = table.next_seat(button, actionable);
     let round = table.round.as_mut().expect("round exists");
     round.turn = turn;
-    round.deadline = round.reveal_base(now) + TURN_MS;
+    round.deadline = round.reveal_base(now) + rules.turn_ms;
     Ok(())
 }
 

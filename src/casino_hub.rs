@@ -5,8 +5,8 @@ use crate::stats;
 use anyhow::{Context as AnyhowContext, Result};
 use dashmap::DashMap;
 use mafia_remake::casino::{
-    CasinoCommand, CasinoError, CasinoEvent, CasinoTable, GameKind, MAX_BUY_IN, MIN_BUY_IN,
-    TableView, table_view,
+    CasinoCommand, CasinoError, CasinoEvent, CasinoTable, GameKind, TableSettings, TableView,
+    format_chips, table_view,
 };
 use mafia_remake::stats::StatsFile;
 use mafia_remake::system_random;
@@ -99,6 +99,8 @@ pub struct TableSummary {
     pub playing: bool,
     pub phase_text: Option<String>,
     pub channel_id: Option<u64>,
+    /// 판돈 ("블라인드 50/100", "베팅 100~5,000").
+    pub stakes: String,
 }
 
 impl CasinoHub {
@@ -249,6 +251,7 @@ impl CasinoHub {
                     .as_ref()
                     .map(|round| round.phase.value().to_string()),
                 channel_id: self.binding(&id).map(|binding| binding.channel_id),
+                stakes: table.settings.stakes(table.kind),
             });
         }
         summaries.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
@@ -261,6 +264,7 @@ impl CasinoHub {
         name: &str,
         created_by: u64,
         binding: TableBinding,
+        settings: TableSettings,
     ) -> Result<String, String> {
         if self.tables.len() >= MAX_TABLES {
             return Err(format!(
@@ -272,7 +276,8 @@ impl CasinoHub {
             return Err("테이블 이름은 2~24자로 입력하세요.".to_string());
         }
         let id = format!("{}-{}", kind.key(), short_id());
-        let table = CasinoTable::new(id.clone(), kind, name, created_by, now_ms());
+        let table =
+            CasinoTable::new(id.clone(), kind, name, created_by, now_ms()).with_settings(settings);
         self.bindings.insert(id.clone(), binding);
         self.tables.insert(id.clone(), Arc::new(RwLock::new(table)));
         Ok(id)
@@ -373,9 +378,12 @@ impl CasinoHub {
                     return Err(CasinoError::invalid("이미 다른 테이블에 앉아 있습니다."));
                 }
             }
-            if *amount < MIN_BUY_IN || *amount > MAX_BUY_IN {
+            let rules = table.read().await.settings;
+            if *amount < rules.min_buy_in || *amount > rules.max_buy_in {
                 return Err(CasinoError::invalid(format!(
-                    "바이인은 {MIN_BUY_IN}~{MAX_BUY_IN} 칩입니다."
+                    "바이인은 {}~{} 칩입니다.",
+                    format_chips(rules.min_buy_in),
+                    format_chips(rules.max_buy_in)
                 )));
             }
             let mut stats_file = self.stats.write().await;

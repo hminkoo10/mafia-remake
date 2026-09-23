@@ -36,6 +36,209 @@ pub const SIDE_BET_MAX: i64 = 2_500;
 /// 인슈어런스 결정 시간.
 pub const INSURANCE_MS: i64 = 10_000;
 const MESSAGE_LIMIT: usize = 40;
+/// 방 설정으로 고를 수 있는 한도.
+pub const SETTINGS_MAX_CHIPS: i64 = 10_000_000;
+pub const SETTINGS_MIN_TURN_SECS: i64 = 10;
+pub const SETTINGS_MAX_TURN_SECS: i64 = 120;
+
+/// 방 설정: 관리자가 테이블을 만들 때 정한다. 저장 파일에 없던 항목은 기본값을 쓴다.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TableSettings {
+    /// 홀덤 블라인드.
+    pub small_blind: i64,
+    pub big_blind: i64,
+    /// 바이인 범위 (BUY_IN_STEP 단위).
+    pub min_buy_in: i64,
+    pub max_buy_in: i64,
+    /// 블랙잭 메인 베팅 범위 (BJ_BET_STEP 단위).
+    pub min_bet: i64,
+    pub max_bet: i64,
+    /// 블랙잭 사이드베팅(퍼펙트 페어·21+3) 최대. 0이면 사이드베팅을 받지 않는다.
+    pub side_bet_max: i64,
+    /// 액션 제한 시간 (ms).
+    pub turn_ms: i64,
+}
+
+impl Default for TableSettings {
+    fn default() -> Self {
+        Self {
+            small_blind: HOLDEM_SMALL_BLIND,
+            big_blind: HOLDEM_BIG_BLIND,
+            min_buy_in: MIN_BUY_IN,
+            max_buy_in: MAX_BUY_IN,
+            min_bet: BJ_MIN_BET,
+            max_bet: BJ_MAX_BET,
+            side_bet_max: SIDE_BET_MAX,
+            turn_ms: TURN_MS,
+        }
+    }
+}
+
+/// 관리자가 고른 방 설정. 비운 항목은 게임 종류와 다른 값에 맞춰 자동으로 정한다.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SettingsRequest {
+    pub min_bet: Option<i64>,
+    pub max_bet: Option<i64>,
+    pub big_blind: Option<i64>,
+    pub min_buy_in: Option<i64>,
+    pub max_buy_in: Option<i64>,
+    pub side_bet_max: Option<i64>,
+    pub turn_secs: Option<i64>,
+}
+
+fn round_down(value: i64, step: i64) -> i64 {
+    value / step * step
+}
+
+impl TableSettings {
+    /// 요청을 검증해 방 설정을 만든다. 게임 종류와 상관없는 항목은 무시한다.
+    pub fn build(kind: GameKind, request: SettingsRequest) -> Result<Self, String> {
+        let mut settings = Self::default();
+        let turn_secs = request.turn_secs.unwrap_or(TURN_MS / 1000);
+        if !(SETTINGS_MIN_TURN_SECS..=SETTINGS_MAX_TURN_SECS).contains(&turn_secs) {
+            return Err(format!(
+                "제한 시간은 {SETTINGS_MIN_TURN_SECS}~{SETTINGS_MAX_TURN_SECS}초로 정해 주세요."
+            ));
+        }
+        settings.turn_ms = turn_secs * 1000;
+        let (default_min_buy_in, default_max_buy_in, floor_buy_in) = match kind {
+            GameKind::Holdem => {
+                let big = request.big_blind.unwrap_or(HOLDEM_BIG_BLIND);
+                if big < 10 || big % 2 != 0 || big > SETTINGS_MAX_CHIPS / 200 {
+                    return Err(format!(
+                        "빅 블라인드는 10~{} 사이의 짝수로 정해 주세요.",
+                        format_chips(SETTINGS_MAX_CHIPS / 200)
+                    ));
+                }
+                settings.big_blind = big;
+                settings.small_blind = big / 2;
+                // 바이인 기본값: 빅 블라인드 50~200개. 최소 10개는 있어야 한다.
+                (big * 50, big * 200, big * 10)
+            }
+            GameKind::Blackjack => {
+                let min_bet = request.min_bet.unwrap_or(BJ_MIN_BET);
+                let max_bet = request
+                    .max_bet
+                    .unwrap_or_else(|| (min_bet * 50).max(BJ_MAX_BET));
+                if min_bet < BJ_MIN_BET
+                    || min_bet % BJ_BET_STEP != 0
+                    || min_bet > SETTINGS_MAX_CHIPS
+                {
+                    return Err(format!(
+                        "최소 베팅은 {}~{} 사이, {} 단위로 정해 주세요.",
+                        format_chips(BJ_MIN_BET),
+                        format_chips(SETTINGS_MAX_CHIPS),
+                        format_chips(BJ_BET_STEP)
+                    ));
+                }
+                if max_bet < min_bet || max_bet % BJ_BET_STEP != 0 || max_bet > SETTINGS_MAX_CHIPS {
+                    return Err(format!(
+                        "최대 베팅은 최소 베팅({}) 이상 {} 이하, {} 단위로 정해 주세요.",
+                        format_chips(min_bet),
+                        format_chips(SETTINGS_MAX_CHIPS),
+                        format_chips(BJ_BET_STEP)
+                    ));
+                }
+                let side_max = request
+                    .side_bet_max
+                    .unwrap_or_else(|| round_down(max_bet / 2, BJ_BET_STEP).max(SIDE_BET_MIN));
+                if side_max != 0
+                    && (side_max < SIDE_BET_MIN
+                        || side_max > max_bet
+                        || side_max % BJ_BET_STEP != 0)
+                {
+                    return Err(format!(
+                        "사이드베팅 최대는 0(사용 안 함) 또는 {}~{}(최대 베팅) 사이, {} 단위로 정해 주세요.",
+                        format_chips(SIDE_BET_MIN),
+                        format_chips(max_bet),
+                        format_chips(BJ_BET_STEP)
+                    ));
+                }
+                settings.min_bet = min_bet;
+                settings.max_bet = max_bet;
+                settings.side_bet_max = side_max;
+                // 바이인 기본값: 최소 베팅 50번, 최대 베팅 4번. 최소 베팅 한 번은 걸 수 있어야 한다.
+                let min_buy_in = (min_bet * 50).max(MIN_BUY_IN);
+                (min_buy_in, (max_bet * 4).max(min_buy_in), min_bet)
+            }
+        };
+        let min_buy_in = request.min_buy_in.unwrap_or_else(|| {
+            let base = round_down(default_min_buy_in.min(SETTINGS_MAX_CHIPS), BUY_IN_STEP);
+            // 최대 바이인만 낮게 정했으면 최소 바이인도 거기에 맞춘다 (하한 검사는 아래에서).
+            request.max_buy_in.map_or(base, |max| base.min(max))
+        });
+        let max_buy_in = request.max_buy_in.unwrap_or_else(|| {
+            round_down(default_max_buy_in.min(SETTINGS_MAX_CHIPS), BUY_IN_STEP).max(min_buy_in)
+        });
+        if min_buy_in < floor_buy_in.max(BUY_IN_STEP)
+            || min_buy_in % BUY_IN_STEP != 0
+            || min_buy_in > SETTINGS_MAX_CHIPS
+        {
+            return Err(format!(
+                "최소 바이인은 {} 이상 {} 이하, {} 단위로 정해 주세요.",
+                format_chips(round_up(floor_buy_in.max(BUY_IN_STEP), BUY_IN_STEP)),
+                format_chips(SETTINGS_MAX_CHIPS),
+                format_chips(BUY_IN_STEP)
+            ));
+        }
+        if max_buy_in < min_buy_in
+            || max_buy_in % BUY_IN_STEP != 0
+            || max_buy_in > SETTINGS_MAX_CHIPS
+        {
+            return Err(format!(
+                "최대 바이인은 최소 바이인({}) 이상 {} 이하, {} 단위로 정해 주세요.",
+                format_chips(min_buy_in),
+                format_chips(SETTINGS_MAX_CHIPS),
+                format_chips(BUY_IN_STEP)
+            ));
+        }
+        settings.min_buy_in = min_buy_in;
+        settings.max_buy_in = max_buy_in;
+        Ok(settings)
+    }
+
+    /// 판돈 한 줄 ("블라인드 50/100" 또는 "베팅 100~5,000").
+    pub fn stakes(&self, kind: GameKind) -> String {
+        match kind {
+            GameKind::Holdem => format!(
+                "블라인드 {}/{}",
+                format_chips(self.small_blind),
+                format_chips(self.big_blind)
+            ),
+            GameKind::Blackjack => format!(
+                "베팅 {}~{}",
+                format_chips(self.min_bet),
+                format_chips(self.max_bet)
+            ),
+        }
+    }
+
+    /// 한 줄 요약 ("베팅 100~5,000 · 사이드 최대 2,500 · 바이인 5,000~20,000 · 제한 30초").
+    pub fn summary(&self, kind: GameKind) -> String {
+        let mut stakes = self.stakes(kind);
+        if kind == GameKind::Blackjack {
+            if self.side_bet_max > 0 {
+                stakes.push_str(&format!(
+                    " · 사이드 최대 {}",
+                    format_chips(self.side_bet_max)
+                ));
+            } else {
+                stakes.push_str(" · 사이드베팅 없음");
+            }
+        }
+        format!(
+            "{stakes} · 바이인 {}~{} · 제한 {}초",
+            format_chips(self.min_buy_in),
+            format_chips(self.max_buy_in),
+            self.turn_ms / 1000
+        )
+    }
+}
+
+fn round_up(value: i64, step: i64) -> i64 {
+    (value + step - 1) / step * step
+}
 
 /// 딜러 프로필. 초상은 casino-web/public/dealers/<id>.png (dealer.png와 같은 1536x1024 구도),
 /// 있으면 dealers/<id>.webm(무음 루프)도 함께 쓴다. `has_portrait`가 true인 딜러만 교대에 들어간다.
@@ -489,6 +692,9 @@ pub struct CasinoTable {
     pub shoe_total: usize,
     #[serde(default)]
     pub shuffled_at: i64,
+    /// 방 설정 (베팅·블라인드·바이인 한도, 제한 시간).
+    #[serde(default)]
+    pub settings: TableSettings,
 }
 
 fn default_dealer_id() -> String {
@@ -555,7 +761,14 @@ impl CasinoTable {
             shoe_cut: 0,
             shoe_total: 0,
             shuffled_at: 0,
+            settings: TableSettings::default(),
         }
+    }
+
+    /// 방 설정을 바꾼 테이블 (생성 직후에만 쓴다).
+    pub fn with_settings(mut self, settings: TableSettings) -> Self {
+        self.settings = settings;
+        self
     }
 
     /// 현재 딜러.
@@ -833,9 +1046,16 @@ impl CasinoTable {
                 if *seat >= SEAT_COUNT || self.seats[*seat].is_some() {
                     return Err(CasinoError::invalid("이미 선택된 좌석입니다."));
                 }
-                if *amount < MIN_BUY_IN || *amount > MAX_BUY_IN || amount % BUY_IN_STEP != 0 {
+                let rules = self.settings;
+                if *amount < rules.min_buy_in
+                    || *amount > rules.max_buy_in
+                    || amount % BUY_IN_STEP != 0
+                {
                     return Err(CasinoError::invalid(format!(
-                        "바이인은 {MIN_BUY_IN}~{MAX_BUY_IN} 칩, {BUY_IN_STEP} 단위입니다."
+                        "바이인은 {}~{} 칩, {} 단위입니다.",
+                        format_chips(rules.min_buy_in),
+                        format_chips(rules.max_buy_in),
+                        format_chips(BUY_IN_STEP)
                     )));
                 }
                 let name = name.trim();
@@ -964,7 +1184,7 @@ impl CasinoTable {
                         let minimum = if self.kind == GameKind::Holdem {
                             1
                         } else {
-                            BJ_MIN_BET
+                            self.settings.min_bet
                         };
                         let ready = self.seats[index].as_ref().is_some_and(|seat| {
                             !seat.sit_out && !seat.leaving && seat.stack >= minimum

@@ -4,9 +4,8 @@ use super::blackjack::BjLegal;
 use super::cards::{best_hand, blackjack_value};
 use super::holdem::PokerLegal;
 use super::table::{
-    BET_WINDOW_MS, BJ_BET_STEP, BJ_MAX_BET, BJ_MIN_BET, BUY_IN_STEP, CasinoTable, ChatMessage,
-    GameKind, HOLDEM_BIG_BLIND, HOLDEM_SMALL_BLIND, HandResult, HandStatus, INSURANCE_MS,
-    MAX_BUY_IN, MIN_BUY_IN, Phase, SEAT_COUNT, SIDE_BET_MAX, SIDE_BET_MIN, TURN_MS,
+    BET_WINDOW_MS, BJ_BET_STEP, BUY_IN_STEP, CasinoTable, ChatMessage, GameKind, HandResult,
+    HandStatus, INSURANCE_MS, Phase, SEAT_COUNT, SIDE_BET_MIN, TableSettings,
 };
 use serde::Serialize;
 
@@ -139,21 +138,21 @@ pub struct TableView {
     pub shoe: Option<ShoeView>,
 }
 
-pub fn table_rules() -> TableRules {
+pub fn table_rules(settings: &TableSettings) -> TableRules {
     TableRules {
-        small_blind: HOLDEM_SMALL_BLIND,
-        big_blind: HOLDEM_BIG_BLIND,
-        min_buy_in: MIN_BUY_IN,
-        max_buy_in: MAX_BUY_IN,
+        small_blind: settings.small_blind,
+        big_blind: settings.big_blind,
+        min_buy_in: settings.min_buy_in,
+        max_buy_in: settings.max_buy_in,
         buy_in_step: BUY_IN_STEP,
-        min_bet: BJ_MIN_BET,
-        max_bet: BJ_MAX_BET,
+        min_bet: settings.min_bet,
+        max_bet: settings.max_bet,
         bet_step: BJ_BET_STEP,
         side_bet_min: SIDE_BET_MIN,
-        side_bet_max: SIDE_BET_MAX,
+        side_bet_max: settings.side_bet_max,
         insurance_ms: INSURANCE_MS,
         seat_count: SEAT_COUNT,
-        turn_ms: TURN_MS,
+        turn_ms: settings.turn_ms,
         bet_window_ms: BET_WINDOW_MS,
     }
 }
@@ -300,7 +299,7 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
     let minimum = if table.kind == GameKind::Holdem {
         1
     } else {
-        BJ_MIN_BET
+        table.settings.min_bet
     };
     let my = table.seat(my_seat);
     let ready_count = table
@@ -344,7 +343,7 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
         legal,
         messages: table.messages.clone(),
         history: table.history.clone(),
-        rules: table_rules(),
+        rules: table_rules(&table.settings),
         shoe: (table.kind == GameKind::Blackjack).then(|| {
             let remaining = round
                 .filter(|round| round.uses_shoe && active)

@@ -15,7 +15,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use mafia_remake::casino::{CasinoCommand, GameKind, TableView};
+use mafia_remake::casino::{CasinoCommand, GameKind, SettingsRequest, TableSettings, TableView};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
@@ -134,11 +134,43 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
         ..Default::default()
     };
     let holdem = hub
-        .create_table(GameKind::Holdem, "개발 홀덤", 0, binding.clone())
+        .create_table(
+            GameKind::Holdem,
+            "개발 홀덤",
+            0,
+            binding.clone(),
+            TableSettings::default(),
+        )
         .map_err(anyhow::Error::msg)?;
     let blackjack = hub
-        .create_table(GameKind::Blackjack, "개발 블랙잭", 0, binding)
+        .create_table(
+            GameKind::Blackjack,
+            "개발 블랙잭",
+            0,
+            binding.clone(),
+            TableSettings::default(),
+        )
         .map_err(anyhow::Error::msg)?;
+    // 방 설정 확인용 고액 테이블 (베팅 500~25,000).
+    let high_limit = TableSettings::build(
+        GameKind::Blackjack,
+        SettingsRequest {
+            min_bet: Some(500),
+            max_bet: Some(25_000),
+            min_buy_in: Some(10_000),
+            max_buy_in: Some(50_000),
+            ..Default::default()
+        },
+    )
+    .map_err(anyhow::Error::msg)?;
+    hub.create_table(
+        GameKind::Blackjack,
+        "개발 고액 블랙잭",
+        0,
+        binding,
+        high_limit,
+    )
+    .map_err(anyhow::Error::msg)?;
     let base = format!("http://localhost:{port}");
     println!("카지노 개발 서버 (Discord 연결 없음): {base}/casino/");
     for (id, name) in users {
