@@ -6,7 +6,7 @@ use crate::casino_hub::{
 };
 use axum::{
     Json, Router,
-    body::Body,
+    body::{Body, Bytes},
     extract::{
         Path as AxumPath, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -66,7 +66,26 @@ pub fn dealer_avatar_png() -> Option<&'static [u8]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_control, content_type_for, dealer_avatar_png};
+    use super::{ByteRange, byte_range, cache_control, content_type_for, dealer_avatar_png};
+
+    #[test]
+    fn media_byte_ranges_follow_rfc_7233() {
+        assert_eq!(byte_range(None, 100), ByteRange::Full);
+        assert_eq!(byte_range(Some("bytes=0-1"), 100), ByteRange::Part(0, 1));
+        assert_eq!(byte_range(Some("bytes=10-"), 100), ByteRange::Part(10, 99));
+        assert_eq!(byte_range(Some("bytes=-30"), 100), ByteRange::Part(70, 99));
+        assert_eq!(
+            byte_range(Some("bytes=90-500"), 100),
+            ByteRange::Part(90, 99)
+        );
+        assert_eq!(
+            byte_range(Some("bytes=100-"), 100),
+            ByteRange::Unsatisfiable
+        );
+        assert_eq!(byte_range(Some("bytes=5-2"), 100), ByteRange::Full);
+        assert_eq!(byte_range(Some("bytes=0-1,5-6"), 100), ByteRange::Full);
+        assert_eq!(byte_range(Some("items=0-1"), 100), ByteRange::Full);
+    }
 
     #[test]
     fn dealer_clips_have_video_mime_types() {
@@ -207,10 +226,14 @@ async fn casino_index(State(state): State<CasinoWebState>) -> Response {
 async fn casino_asset(
     State(state): State<CasinoWebState>,
     AxumPath(path): AxumPath<String>,
+    headers: HeaderMap,
 ) -> Response {
     let asset_path = format!("/{path}");
     if path.starts_with("assets/") || path.contains('.') {
-        if let Some(response) = try_serve_asset(&state, &asset_path) {
+        let range = headers
+            .get(header::RANGE)
+            .and_then(|value| value.to_str().ok());
+        if let Some(response) = try_serve_asset(&state, &asset_path, range) {
             return response;
         }
         return StatusCode::NOT_FOUND.into_response();
@@ -220,7 +243,7 @@ async fn casino_asset(
 }
 
 fn serve_asset(state: &CasinoWebState, asset_path: &str) -> Response {
-    try_serve_asset(state, asset_path).unwrap_or_else(|| {
+    try_serve_asset(state, asset_path, None).unwrap_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             "casino-web/dist가 없습니다. `cd casino-web && npm ci && npm run build` 후 다시 빌드하세요.",
@@ -229,19 +252,21 @@ fn serve_asset(state: &CasinoWebState, asset_path: &str) -> Response {
     })
 }
 
-fn try_serve_asset(state: &CasinoWebState, asset_path: &str) -> Option<Response> {
+fn try_serve_asset(
+    state: &CasinoWebState,
+    asset_path: &str,
+    range: Option<&str>,
+) -> Option<Response> {
     if let Some(dir) = state.static_dir.as_deref() {
         let file = Path::new(dir).join(asset_path.trim_start_matches('/'));
         if file.is_file() {
             if let Ok(body) = std::fs::read(&file) {
-                return Some(
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(header::CONTENT_TYPE, content_type_for(asset_path))
-                        .header(header::CACHE_CONTROL, cache_control(asset_path))
-                        .body(Body::from(body))
-                        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
-                );
+                return Some(asset_response(
+                    asset_path,
+                    content_type_for(asset_path),
+                    Bytes::from(body),
+                    range,
+                ));
             }
         }
     }
@@ -249,13 +274,87 @@ fn try_serve_asset(state: &CasinoWebState, asset_path: &str) -> Option<Response>
         .iter()
         .find(|asset| asset.path == asset_path)
         .map(|asset| {
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, asset.content_type)
-                .header(header::CACHE_CONTROL, cache_control(asset.path))
-                .body(Body::from(asset.body.to_vec()))
-                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+            asset_response(
+                asset.path,
+                asset.content_type,
+                Bytes::from_static(asset.body),
+                range,
+            )
         })
+}
+
+/// 요청한 바이트 범위. Safari(iOS·Discord 앱 포함)는 영상을 범위 요청으로만 재생한다.
+#[derive(Debug, PartialEq, Eq)]
+enum ByteRange {
+    /// 범위가 없거나 해석할 수 없음: 전체를 준다.
+    Full,
+    /// 시작~끝(포함).
+    Part(usize, usize),
+    /// 파일 밖을 가리킴: 416.
+    Unsatisfiable,
+}
+
+fn byte_range(range: Option<&str>, len: usize) -> ByteRange {
+    let Some(spec) = range.and_then(|value| value.trim().strip_prefix("bytes=")) else {
+        return ByteRange::Full;
+    };
+    // 여러 범위는 지원하지 않는다 (전체를 준다).
+    let Some((start, end)) = spec.split_once('-').filter(|_| !spec.contains(',')) else {
+        return ByteRange::Full;
+    };
+    if len == 0 {
+        return ByteRange::Unsatisfiable;
+    }
+    let (start, end) = match (start.trim(), end.trim()) {
+        ("", suffix) => match suffix.parse::<usize>() {
+            Ok(0) => return ByteRange::Unsatisfiable,
+            Ok(count) => (len.saturating_sub(count), len - 1),
+            Err(_) => return ByteRange::Full,
+        },
+        (start, end) => {
+            let Ok(start) = start.parse::<usize>() else {
+                return ByteRange::Full;
+            };
+            let end = if end.is_empty() {
+                len - 1
+            } else {
+                match end.parse::<usize>() {
+                    Ok(end) if end >= start => end.min(len - 1),
+                    _ => return ByteRange::Full,
+                }
+            };
+            (start, end)
+        }
+    };
+    if start >= len {
+        return ByteRange::Unsatisfiable;
+    }
+    ByteRange::Part(start, end)
+}
+
+fn asset_response(
+    asset_path: &str,
+    content_type: &str,
+    body: Bytes,
+    range: Option<&str>,
+) -> Response {
+    let len = body.len();
+    let builder = Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, cache_control(asset_path))
+        .header(header::ACCEPT_RANGES, "bytes");
+    let response = match byte_range(range, len) {
+        ByteRange::Full => builder.status(StatusCode::OK).body(Body::from(body)),
+        ByteRange::Part(start, end) => builder
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"))
+            .body(Body::from(body.slice(start..=end))),
+        ByteRange::Unsatisfiable => builder
+            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+            .header(header::CONTENT_RANGE, format!("bytes */{len}"))
+            .body(Body::empty()),
+    };
+    response.unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 fn content_type_for(path: &str) -> &'static str {
