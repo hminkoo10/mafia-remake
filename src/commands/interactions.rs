@@ -846,9 +846,13 @@ pub async fn handle_join(
         // 관전자 역할이 남은 채 참가하면 게임 중 모든 비공개 채널을 볼 수 있다.
         // 먼저 회수하고, 회수하지 못하면 참가시키지 않는다. 인터랙션의 멤버 정보는
         // 클릭 시점 스냅샷이라, 관전 등록 → 나가기(회수 실패) → 참가를 빠르게 누르면
-        // 역할이 있어도 안 보일 수 있다. 스냅샷을 믿지 말고 항상 회수한다(없는 역할
-        // 회수는 아무 일도 하지 않는다).
-        if let Some(spectator_role_id) = rec.spectator_role_id {
+        // 방금 준 역할이 안 보인다. 그래서 봇이 이번 모집에서 준 뒤 회수를 확인하지 못한
+        // 유저도 회수한다. 둘 다 아니면 회수 요청을 보내지 않는다: 봇이 관리할 수 없는
+        // 위치의 관전자 역할이면 없는 역할 회수도 403으로 거절돼 아무도 참가하지 못한다.
+        if let Some(spectator_role_id) = rec.spectator_role_id
+            && (member.roles.contains(&spectator_role_id)
+                || rec.spectator_role_granted.contains(&user_id))
+        {
             let member_id = member.user.id;
             let removed = crate::http_pool::with_fallback(ctx, |http| async move {
                 http.remove_member_role(guild_id, member_id, spectator_role_id, None)
@@ -864,6 +868,7 @@ pub async fn handle_join(
                 .await?;
                 return Ok(());
             }
+            rec.spectator_role_granted.remove(&user_id);
         }
         if !member.roles.contains(&rec.participant_role_id) {
             let role_id = rec.participant_role_id;
@@ -935,11 +940,14 @@ pub async fn handle_spectate(
         rec.spectator_names.insert(user_id, display_name(&member));
         if let Some(role_id) = rec.spectator_role_id {
             if !member.roles.contains(&role_id) {
-                let _ = crate::http_pool::with_fallback(ctx, |http| {
+                let added = crate::http_pool::with_fallback(ctx, |http| {
                     let member = member.clone();
                     async move { member.add_role(&http, role_id).await }
                 })
                 .await;
+                if added.is_ok() {
+                    rec.spectator_role_granted.insert(user_id);
+                }
             }
         }
     } else {
@@ -979,12 +987,12 @@ pub async fn handle_leave(
         return Ok(());
     }
     let user_id = component.user.id.get();
-    let (reply, role_to_remove) = if rec.joined_ids.remove(&user_id) {
+    let (reply, role_to_remove, spectator_role) = if rec.joined_ids.remove(&user_id) {
         rec.joined_names.remove(&user_id);
-        ("참가를 취소했습니다.", Some(rec.participant_role_id))
+        ("참가를 취소했습니다.", Some(rec.participant_role_id), false)
     } else if rec.spectator_ids.remove(&user_id) {
         rec.spectator_names.remove(&user_id);
-        ("관전 등록을 취소했습니다.", rec.spectator_role_id)
+        ("관전 등록을 취소했습니다.", rec.spectator_role_id, true)
     } else {
         drop(rec);
         send_component_private(ctx, component, "참가하거나 관전 등록한 상태가 아닙니다.").await?;
@@ -995,12 +1003,15 @@ pub async fn handle_leave(
     // 아무 일도 하지 않는다). 모집 잠금을 쥔 채 회수해야 뒤이은 참가·관전 처리가
     // 회수보다 먼저 끝나지 않는다.
     if let Some(role_id) = role_to_remove {
-        let user_id = component.user.id;
-        let _ = crate::http_pool::with_fallback(ctx, |http| async move {
-            http.remove_member_role(guild_id, user_id, role_id, None)
+        let member_id = component.user.id;
+        let removed = crate::http_pool::with_fallback(ctx, |http| async move {
+            http.remove_member_role(guild_id, member_id, role_id, None)
                 .await
         })
         .await;
+        if spectator_role && removed.is_ok() {
+            rec.spectator_role_granted.remove(&user_id);
+        }
     }
     let updated = rec.clone();
     drop(rec);

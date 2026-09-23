@@ -638,6 +638,7 @@ async fn protected_api_starts_ready_recruitment() {
         joined_names: HashMap::new(),
         spectator_ids: std::collections::HashSet::new(),
         spectator_names: HashMap::new(),
+        spectator_role_granted: Default::default(),
         accepting: true,
         cancelled: false,
         auto_start_players: None,

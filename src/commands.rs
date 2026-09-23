@@ -191,6 +191,7 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         joined_names: HashMap::new(),
         spectator_ids: HashSet::new(),
         spectator_names: HashMap::new(),
+        spectator_role_granted: Default::default(),
         accepting: true,
         cancelled: false,
         auto_start_players: None,

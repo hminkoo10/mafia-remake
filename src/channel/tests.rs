@@ -695,6 +695,7 @@ fn recruitment_fixture() -> Recruitment {
         joined_names: HashMap::new(),
         spectator_ids: HashSet::from([7]),
         spectator_names: HashMap::new(),
+        spectator_role_granted: Default::default(),
         accepting: true,
         cancelled: false,
         auto_start_players: None,

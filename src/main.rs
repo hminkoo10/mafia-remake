@@ -501,6 +501,9 @@ struct Recruitment {
     joined_names: HashMap<u64, String>,
     spectator_ids: HashSet<u64>,
     spectator_names: HashMap<u64, String>,
+    /// 이번 모집에서 봇이 관전자 역할을 준 뒤 회수를 확인하지 못한 유저. 인터랙션의 멤버
+    /// 정보는 클릭 시점 스냅샷이라 방금 준 역할이 안 보일 수 있으므로, 참가할 때 이 목록도 본다.
+    spectator_role_granted: HashSet<u64>,
     accepting: bool,
     cancelled: bool,
     /// 주최자가 자동시작 버튼으로 정한 인원. 참가자가 이 수에 도달하면 즉시 시작한다.
