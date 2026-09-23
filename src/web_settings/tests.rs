@@ -838,3 +838,17 @@ async fn full_connection_slots_drop_new_connections() {
     let _third_client = TcpStream::connect(addr).await.unwrap();
     assert!(accept_connection(&listener, &slots).await.is_some());
 }
+
+#[tokio::test]
+async fn oversized_content_length_is_rejected_without_panicking() {
+    // Content-Length가 usize::MAX여도 넘침으로 슬라이스가 뒤집히지 않고 거부된다.
+    let mut request: &[u8] =
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551615\r\n\r\nabc";
+    assert!(read_http_request(&mut request).await.is_err());
+    let mut request: &[u8] = b"POST / HTTP/1.1\r\nContent-Length: 200000\r\n\r\nabc";
+    assert!(read_http_request(&mut request).await.is_err());
+    // 짧게 끊긴 본문은 받은 만큼만 읽는다.
+    let mut request: &[u8] = b"POST /x HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc";
+    let parsed = read_http_request(&mut request).await.unwrap();
+    assert_eq!((parsed.path.as_str(), parsed.body.as_str()), ("/x", "abc"));
+}

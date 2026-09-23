@@ -1459,6 +1459,9 @@ pub(crate) struct HttpRequest {
     pub(crate) body: String,
 }
 
+/// 요청 하나(헤더+본문)의 최대 크기.
+const MAX_HTTP_REQUEST_BYTES: usize = 128 * 1024;
+
 pub(crate) async fn read_http_request<S>(stream: &mut S) -> Result<HttpRequest>
 where
     S: AsyncRead + Unpin,
@@ -1479,13 +1482,18 @@ where
             header_end = Some(index);
             let headers = String::from_utf8_lossy(&buffer[..index]);
             content_length = parse_content_length(&headers).unwrap_or(0);
+            // 본문 길이는 읽기 한도 안이어야 한다. 아주 큰 값(예: usize::MAX)을 그대로 더하면
+            // 넘침으로 범위가 뒤집혀 아래 슬라이스에서 패닉이 나고, panic=abort라 봇 전체가 죽는다.
+            if content_length > MAX_HTTP_REQUEST_BYTES {
+                bail!("요청이 너무 큽니다.");
+            }
         }
         if let Some(index) = header_end
-            && buffer.len() >= index + 4 + content_length
+            && buffer.len() >= index.saturating_add(4).saturating_add(content_length)
         {
             break;
         }
-        if buffer.len() > 128 * 1024 {
+        if buffer.len() > MAX_HTTP_REQUEST_BYTES {
             bail!("요청이 너무 큽니다.");
         }
     }
@@ -1500,8 +1508,8 @@ where
         .split_whitespace();
     let method = first_line.next().unwrap_or_default().to_string();
     let path = first_line.next().unwrap_or_default().to_string();
-    let body_start = index + 4;
-    let body_end = (body_start + content_length).min(buffer.len());
+    let body_start = (index + 4).min(buffer.len());
+    let body_end = body_start.saturating_add(content_length).min(buffer.len());
     let body = String::from_utf8_lossy(&buffer[body_start..body_end]).to_string();
     Ok(HttpRequest {
         method,
