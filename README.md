@@ -79,7 +79,8 @@ DISCORD_CLIENT_ID=your_client_id_here
 DISCORD_CLIENT_SECRET=your_client_secret_here
 
 # 본 서버 ID (봇이 여러 서버에 있으면 필수). 관리 명령은 이 서버에서만 받습니다.
-# 봇이 서버 하나에만 있으면 비워도 시작할 때 그 서버로 정합니다.
+# config.json의 home_guild_id보다 우선하고, 설정을 저장하면 config.json에도 기록됩니다.
+# 둘 다 비어 있고 봇이 서버 하나에만 있으면 시작할 때 그 서버로 정합니다.
 # HOME_GUILD_ID=your_home_guild_id_here
 
 # 웹 설정 서버 (선택, 기본값 사용 가능)
