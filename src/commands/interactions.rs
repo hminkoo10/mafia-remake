@@ -844,23 +844,25 @@ pub async fn handle_join(
     }
     if let Some(member) = component.member.clone() {
         // 관전자 역할이 남은 채 참가하면 게임 중 모든 비공개 채널을 볼 수 있다.
-        // 먼저 회수하고, 회수하지 못하면 참가시키지 않는다.
+        // 먼저 회수하고, 회수하지 못하면 참가시키지 않는다. 인터랙션의 멤버 정보는
+        // 클릭 시점 스냅샷이라, 관전 등록 → 나가기(회수 실패) → 참가를 빠르게 누르면
+        // 역할이 있어도 안 보일 수 있다. 스냅샷을 믿지 말고 항상 회수한다(없는 역할
+        // 회수는 아무 일도 하지 않는다).
         if let Some(spectator_role_id) = rec.spectator_role_id {
-            if member.roles.contains(&spectator_role_id) {
-                let removed = crate::http_pool::with_fallback(ctx, |http| {
-                    let member = member.clone();
-                    async move { member.remove_role(&http, spectator_role_id).await }
-                })
-                .await;
-                if removed.is_err() {
-                    send_component_private(
-                        ctx,
-                        component,
-                        "관전자 역할을 회수하지 못해 참가할 수 없습니다. 잠시 후 다시 시도하세요.",
-                    )
-                    .await?;
-                    return Ok(());
-                }
+            let member_id = member.user.id;
+            let removed = crate::http_pool::with_fallback(ctx, |http| async move {
+                http.remove_member_role(guild_id, member_id, spectator_role_id, None)
+                    .await
+            })
+            .await;
+            if removed.is_err() {
+                send_component_private(
+                    ctx,
+                    component,
+                    "관전자 역할을 회수하지 못해 참가할 수 없습니다. 잠시 후 다시 시도하세요.",
+                )
+                .await?;
+                return Ok(());
             }
         }
         if !member.roles.contains(&rec.participant_role_id) {
