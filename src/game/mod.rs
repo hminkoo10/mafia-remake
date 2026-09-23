@@ -1928,6 +1928,10 @@ fn assign_roles_balanced(
         let (user_id, name) = remaining.remove(index);
         assigned.push(Player::new(user_id, name, role));
     }
+    // 위에서 마피아팀 → 특수직 → 시민 순으로 배정했으므로 이대로 두면 플레이어 목록 순서
+    // (상태판, 투표 선택지, Activity 목록)만 보고도 앞쪽이 마피아인 걸 알 수 있다.
+    // 직업과도, 실제 ID와도 상관없는 순서로 다시 섞는다.
+    assigned.shuffle(&mut rng);
     assigned
 }
 

@@ -122,6 +122,42 @@ fn previous_mafia_keeps_a_reduced_mafia_weight() {
     );
 }
 
+/// 플레이어 목록 순서는 상태판·투표 선택지·Activity에 그대로 보인다. 배정 순서(마피아팀
+/// 먼저)가 남으면 첫 칸이 늘 마피아라 직업이 드러난다.
+#[test]
+fn player_order_does_not_reveal_the_mafia_team() {
+    let players = (1..=8)
+        .map(|user_id| (user_id, format!("P{user_id}")))
+        .collect::<Vec<_>>();
+    let trials = 400;
+    let mut first_is_mafia = 0;
+    for _ in 0..trials {
+        let game = MafiaGame::new_with_counts(
+            players.clone(),
+            GameCounts {
+                mafia_count: 2,
+                doctor_count: 1,
+                police_count: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        if game.players[0].role.is_mafia_team() {
+            first_is_mafia += 1;
+        }
+        // 순서를 섞어도 ID로 찾는 색인은 맞아야 한다.
+        for player in &game.players {
+            assert_eq!(game.get_player(player.user_id).unwrap().role, player.role);
+        }
+    }
+    // 8명 중 2명이 마피아라 기대값은 25%다.
+    let rate = first_is_mafia as f64 / trials as f64;
+    assert!(
+        (0.1..=0.45).contains(&rate),
+        "first seat was mafia in {rate:.3} of games"
+    );
+}
+
 #[test]
 fn base_inspector_count_is_assigned() {
     let game = MafiaGame::new_with_counts(
