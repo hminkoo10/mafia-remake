@@ -22,6 +22,8 @@ import {
   ShieldCheck,
   Spade,
   Users,
+  Video,
+  VideoOff,
   Volume2,
   VolumeX,
   Wallet,
@@ -30,7 +32,7 @@ import {
 import { CasinoApiError, fetchState, readLink, sendCommand, wsUrl } from "./api";
 import { setSoundEnabled, sfx, soundEnabled } from "./sounds";
 import { ChatMessages, TableChatPreview } from "./components/TableChat";
-import { DealerBackdrop } from "./components/DealerBackdrop";
+import { DealerBackdrop, hasDealerVideo } from "./components/DealerBackdrop";
 import type { DealerMood } from "./dealer-media";
 import { isStaleSnapshot, nextClockDelay, snapshotKey } from "./state-sync";
 import type { CasinoCommand, GameKind, SeatResult, StateResponse, TableRules, TableView } from "./types";
@@ -252,6 +254,13 @@ const dealt = (cards: string[], times: number[] | undefined, now: number) =>
 export default function Casino() {
   const appRef = useRef<HTMLDivElement>(null);
   const [fullscreen, setFullscreen] = useState<"native" | "expanded" | null>(null);
+  const [dealerVideo, setDealerVideo] = useState(() => {
+    try {
+      const saved = localStorage.getItem("casino-dealer-video");
+      if (saved !== null) return saved === "true";
+    } catch { /* Storage can be unavailable in embedded browsers. */ }
+    return !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  });
   const [{ token, table: linkTable }] = useState(readLink);
   const [tableId, setTableId] = useState<string | null>(linkTable);
   const [data, setData] = useState<StateResponse | null>(null);
@@ -776,6 +785,16 @@ export default function Casino() {
             </p>
           </div>
           <div className="heading-actions">
+            {hasDealerVideo(table.dealer.id) && <button
+              className="icon-button"
+              aria-label={dealerVideo ? "딜러 영상 끄기" : "딜러 영상 켜기"}
+              aria-pressed={dealerVideo}
+              title={dealerVideo ? "딜러 영상 끄기" : "딜러 영상 켜기"}
+              onClick={() => {
+                setDealerVideo(!dealerVideo);
+                try { localStorage.setItem("casino-dealer-video", String(!dealerVideo)); } catch { /* Optional preference. */ }
+              }}
+            >{dealerVideo ? <Video size={18} /> : <VideoOff size={18} />}</button>}
             <button className="icon-button" aria-label={fullscreen ? "전체화면 종료" : "전체화면"} title={fullscreen ? "전체화면 종료 (Esc)" : "전체화면"} onClick={() => void toggleFullscreen()}>
               {fullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
             </button>
@@ -830,6 +849,7 @@ export default function Casino() {
                 id={table.dealer.id}
                 name={table.dealer.name}
                 mood={dealerMood}
+                motionEnabled={dealerVideo}
                 poster={table.dealer.id === "sophia" ? `${import.meta.env.BASE_URL}dealers/sophia-table.png` : dealerPortrait(table.dealer.id)}
               />
               <div className="table-shade" />

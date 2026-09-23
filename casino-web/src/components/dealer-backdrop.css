@@ -31,22 +31,17 @@
   opacity: 1;
 }
 
-.dealer-backdrop-layer[data-video-active="true"] .dealer-backdrop-poster {
-  opacity: 0;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .dealer-backdrop-poster,
   .dealer-backdrop-media {
     transition: none;
   }
 
-  .dealer-backdrop-poster {
+  .dealer-backdrop-layer[data-reduced-motion="true"] .dealer-backdrop-poster {
     opacity: 1 !important;
   }
 
-  .dealer-backdrop-media,
-  .dealer-backdrop-media.is-active {
+  .dealer-backdrop-layer[data-reduced-motion="true"] .dealer-backdrop-media {
     opacity: 0 !important;
   }
 }

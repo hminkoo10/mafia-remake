@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { selectDealerClip } from "../src/dealer-media.ts";
+import { selectDealerClip, shouldFinishDealerGesture } from "../src/dealer-media.ts";
+
+test("a short card reveal does not cut a playing hand gesture; new actions still interrupt", () => {
+  assert.equal(shouldFinishDealerGesture("idle", "deal", true), true);
+  assert.equal(shouldFinishDealerGesture("idle", "flip", true), true);
+  assert.equal(shouldFinishDealerGesture("idle", "deal", false), false);
+  assert.equal(shouldFinishDealerGesture("flip", "deal", true), false);
+  assert.equal(shouldFinishDealerGesture("idle", "idle", true), false);
+});
 
 test("already preloaded deal/flip clips switch on each mood change", () => {
   const ready = { idle: true, deal: true, flip: true };

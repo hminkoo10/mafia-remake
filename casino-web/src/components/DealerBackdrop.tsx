@@ -1,17 +1,21 @@
 import { memo, useEffect, useRef, useState } from "react";
 import "./dealer-backdrop.css";
-import { selectDealerClip, type DealerMood } from "../dealer-media";
+import { selectDealerClip, shouldFinishDealerGesture, type DealerMood } from "../dealer-media";
 
 export interface DealerBackdropProps {
   id: string;
   name: string;
   mood: DealerMood;
   poster: string;
+  motionEnabled?: boolean;
 }
 
 const MOODS: DealerMood[] = ["idle", "deal", "flip"];
 declare const __DEALER_CLIPS__: string[];
 const availableClips = new Set(__DEALER_CLIPS__);
+export const hasDealerVideo = (id: string) => MOODS.some((mood) =>
+  availableClips.has(`${id}-${mood}.webm`) || availableClips.has(`${id}-${mood}.mp4`),
+);
 
 const mediaUrl = (id: string, mood: DealerMood, extension: "webm" | "mp4") =>
   `${import.meta.env.BASE_URL}dealers/${id}-${mood}.${extension}`;
@@ -19,17 +23,19 @@ const mediaUrl = (id: string, mood: DealerMood, extension: "webm" | "mp4") =>
 const prefersReducedMotion = () =>
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-function DealerBackdropInner({ id, name, mood, poster }: DealerBackdropProps) {
+function DealerBackdropInner({ id, name, mood, poster, motionEnabled }: DealerBackdropProps) {
   const videos = useRef<Partial<Record<DealerMood, HTMLVideoElement>>>({});
   const startedMood = useRef<DealerMood | null>(null);
   const [visibleMood, setVisibleMood] = useState<DealerMood | null>(null);
   const [ready, setReady] = useState<Partial<Record<DealerMood, boolean>>>({});
   const [failed, setFailed] = useState<Partial<Record<DealerMood, boolean>>>({});
+  const [ended, setEnded] = useState<Partial<Record<DealerMood, boolean>>>({});
   const [documentVisible, setDocumentVisible] = useState(() =>
     typeof document === "undefined" || document.visibilityState === "visible",
   );
   const [reducedMotion, setReducedMotion] = useState(prefersReducedMotion);
   const [posterFailed, setPosterFailed] = useState(false);
+  const motionAllowed = motionEnabled ?? !reducedMotion;
 
   useEffect(() => {
     let disposed = false;
@@ -57,14 +63,19 @@ function DealerBackdropInner({ id, name, mood, poster }: DealerBackdropProps) {
   }, []);
 
   useEffect(() => {
-    setVisibleMood((current) => selectDealerClip(mood, current, ready, failed));
-  }, [mood, ready, failed]);
+    setVisibleMood((current) => {
+      const video = current ? videos.current[current] : null;
+      const playing = Boolean(motionAllowed && video && !video.paused && !video.ended && current && !failed[current] && !ended[current]);
+      if (shouldFinishDealerGesture(mood, current, playing)) return current;
+      return selectDealerClip(mood, current, ready, failed);
+    });
+  }, [mood, ready, failed, ended, motionAllowed]);
 
   useEffect(() => {
     for (const video of Object.values(videos.current)) {
       if (!video) continue;
       const shouldPlay =
-        documentVisible && !reducedMotion && visibleMood !== null && video === videos.current[visibleMood];
+        documentVisible && motionAllowed && visibleMood !== null && video === videos.current[visibleMood];
 
       if (!shouldPlay) {
         video.pause();
@@ -72,14 +83,17 @@ function DealerBackdropInner({ id, name, mood, poster }: DealerBackdropProps) {
       }
 
       const shouldRestart = visibleMood === mood && (mood === "deal" || mood === "flip") && startedMood.current !== mood;
-      if (shouldRestart) video.currentTime = 0;
+      if (shouldRestart) {
+        video.currentTime = 0;
+        setEnded((current) => current[mood] ? { ...current, [mood]: false } : current);
+      }
       void video.play().catch(() => {
         // Autoplay rejection is not a missing-media failure; leave the ready frame visible.
       });
     }
     // idle을 거쳐 다시 같은 동작을 요청하면 새 동작으로 시작한다.
     startedMood.current = visibleMood;
-  }, [documentVisible, mood, reducedMotion, visibleMood]);
+  }, [documentVisible, mood, motionAllowed, visibleMood]);
 
   const markReady = (clipMood: DealerMood) => {
     setReady((current) => (current[clipMood] ? current : { ...current, [clipMood]: true }));
@@ -92,8 +106,8 @@ function DealerBackdropInner({ id, name, mood, poster }: DealerBackdropProps) {
   return (
     <div
       className="dealer-backdrop-layer"
-      data-reduced-motion={reducedMotion ? "true" : "false"}
-      data-video-active={visibleMood !== null && !reducedMotion ? "true" : "false"}
+      data-reduced-motion={!motionAllowed ? "true" : "false"}
+      data-video-active={visibleMood !== null && motionAllowed ? "true" : "false"}
       aria-label={`AI 딜러 ${name}`}
     >
       <img className="dealer-backdrop-poster" src={posterFailed ? `${import.meta.env.BASE_URL}dealer.png` : poster} alt={`테이블의 AI 딜러 ${name}`} onError={() => setPosterFailed(true)} />
@@ -104,14 +118,15 @@ function DealerBackdropInner({ id, name, mood, poster }: DealerBackdropProps) {
             if (video) videos.current[clipMood] = video;
             else delete videos.current[clipMood];
           }}
-          className={`dealer-backdrop-media ${visibleMood === clipMood && !reducedMotion ? "is-active" : ""}`}
+          className={`dealer-backdrop-media ${visibleMood === clipMood && motionAllowed ? "is-active" : ""}`}
           autoPlay={false}
           muted
-          loop
+          loop={clipMood === "idle"}
           playsInline
           preload="auto"
           aria-hidden="true"
           onCanPlay={() => markReady(clipMood)}
+          onEnded={() => setEnded((current) => ({ ...current, [clipMood]: true }))}
           onError={() => markFailed(clipMood)}
           data-ready={ready[clipMood] ? "true" : "false"}
           data-failed={failed[clipMood] ? "true" : "false"}

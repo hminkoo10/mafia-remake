@@ -1,6 +1,10 @@
 export type DealerMood = "idle" | "deal" | "flip";
 export type ClipFlags = Partial<Record<DealerMood, boolean>>;
 
+export function shouldFinishDealerGesture(requested: DealerMood, current: DealerMood | null, playing: boolean): boolean {
+  return requested === "idle" && current !== null && current !== "idle" && playing;
+}
+
 export function selectDealerClip(requested: DealerMood, current: DealerMood | null, ready: ClipFlags, failed: ClipFlags): DealerMood | null {
   const usable = (clip: DealerMood) => ready[clip] && !failed[clip];
   if (usable(requested)) return requested;
