@@ -17,7 +17,7 @@ use axum::{
 };
 use mafia_remake::casino::{CasinoCommand, GameKind, SettingsRequest, TableSettings, TableView};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,7 +66,73 @@ pub fn dealer_avatar_png() -> Option<&'static [u8]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ByteRange, byte_range, cache_control, content_type_for, dealer_avatar_png};
+    use super::{
+        ByteRange, byte_range, cache_control, content_type_for, dealer_avatar_png,
+        is_safe_asset_path, read_static_file, table_switch,
+    };
+
+    #[test]
+    fn asset_paths_cannot_leave_the_static_dir() {
+        assert!(is_safe_asset_path("dealers/sophia-idle.webm"));
+        assert!(is_safe_asset_path("assets/index.js"));
+        assert!(is_safe_asset_path("index.html"));
+        // GET /casino/..%2F..%2F.env 등: 퍼센트 디코딩 뒤의 값.
+        assert!(!is_safe_asset_path("../stats.json"));
+        assert!(!is_safe_asset_path("../../.env"));
+        assert!(!is_safe_asset_path("a/../../x"));
+        assert!(!is_safe_asset_path("assets/.."));
+        assert!(!is_safe_asset_path("./index.html"));
+        assert!(!is_safe_asset_path("..\\x"));
+        assert!(!is_safe_asset_path("assets\\..\\..\\config.json"));
+        assert!(!is_safe_asset_path("/etc/passwd"));
+        assert!(!is_safe_asset_path("index.html\0.png"));
+        assert!(!is_safe_asset_path(""));
+        #[cfg(windows)]
+        assert!(!is_safe_asset_path("C:/Windows/win.ini"));
+    }
+
+    #[test]
+    fn static_files_outside_the_dir_are_not_read() {
+        let base = std::env::temp_dir().join(format!(
+            "mafia-casino-static-test-{}-{}",
+            std::process::id(),
+            super::now_ms()
+        ));
+        let static_dir = base.join("dist");
+        std::fs::create_dir_all(static_dir.join("assets")).unwrap();
+        std::fs::write(static_dir.join("assets/app.js"), b"ok").unwrap();
+        std::fs::write(base.join("stats.json"), b"secret").unwrap();
+
+        assert_eq!(
+            read_static_file(&static_dir, "assets/app.js").as_deref(),
+            Some(&b"ok"[..])
+        );
+        assert_eq!(read_static_file(&static_dir, "../stats.json"), None);
+        assert_eq!(
+            read_static_file(&static_dir, "assets/../../stats.json"),
+            None
+        );
+        assert_eq!(read_static_file(&static_dir, "missing.js"), None);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn websocket_frames_only_switch_to_a_different_table() {
+        assert_eq!(
+            table_switch(Some("a"), r#"{"table":"b"}"#),
+            Some("b".to_string())
+        );
+        assert_eq!(
+            table_switch(None, r#"{"table":"a"}"#),
+            Some("a".to_string())
+        );
+        assert_eq!(table_switch(Some("a"), r#"{"table":"a"}"#), None);
+        assert_eq!(table_switch(Some("a"), "{}"), None);
+        assert_eq!(table_switch(None, "{}"), None);
+        assert_eq!(table_switch(Some("a"), r#"{"table":7}"#), None);
+        assert_eq!(table_switch(Some("a"), "not json"), None);
+    }
 
     #[test]
     fn media_byte_ranges_follow_rfc_7233() {
@@ -258,16 +324,13 @@ fn try_serve_asset(
     range: Option<&str>,
 ) -> Option<Response> {
     if let Some(dir) = state.static_dir.as_deref() {
-        let file = Path::new(dir).join(asset_path.trim_start_matches('/'));
-        if file.is_file() {
-            if let Ok(body) = std::fs::read(&file) {
-                return Some(asset_response(
-                    asset_path,
-                    content_type_for(asset_path),
-                    Bytes::from(body),
-                    range,
-                ));
-            }
+        if let Some(body) = read_static_file(Path::new(dir), asset_path.trim_start_matches('/')) {
+            return Some(asset_response(
+                asset_path,
+                content_type_for(asset_path),
+                Bytes::from(body),
+                range,
+            ));
         }
     }
     CASINO_ASSETS
@@ -281,6 +344,33 @@ fn try_serve_asset(
                 range,
             )
         })
+}
+
+/// `{*path}`는 퍼센트 디코딩된 값이라 `..%2F`로 `..`가 들어올 수 있다.
+/// 평범한 이름 조각만 허용한다 (`..`·`.`·루트·드라이브 접두사·백슬래시·NUL 거부).
+fn is_safe_asset_path(relative: &str) -> bool {
+    !relative.is_empty()
+        && !relative.contains(['\\', '\0'])
+        && Path::new(relative)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+}
+
+/// CASINO_STATIC_DIR 안의 파일만 읽는다. 심볼릭 링크 등으로 밖을 가리키면 거부한다.
+fn read_static_file(dir: &Path, relative: &str) -> Option<Vec<u8>> {
+    if !is_safe_asset_path(relative) {
+        return None;
+    }
+    let file = dir.join(relative);
+    if !file.is_file() {
+        return None;
+    }
+    let root = dir.canonicalize().ok()?;
+    let resolved = file.canonicalize().ok()?;
+    if !resolved.starts_with(&root) {
+        return None;
+    }
+    std::fs::read(&resolved).ok()
 }
 
 /// 요청한 바이트 범위. Safari(iOS·Discord 앱 포함)는 영상을 범위 요청으로만 재생한다.
@@ -517,6 +607,9 @@ async fn command_handler(
 
 // ------------------------------------------------------------ 웹소켓
 
+/// 카지노 웹소켓으로 받는 메시지·프레임의 최대 크기.
+const WS_MAX_MESSAGE_BYTES: usize = 16 * 1024;
+
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
     pub token: String,
@@ -533,7 +626,10 @@ async fn ws_handler(
         None => return (StatusCode::UNAUTHORIZED, session_expired_message()).into_response(),
     };
     let token = query.token.clone();
-    ws.on_upgrade(move |socket| handle_ws(socket, state, session, token, query.table))
+    // 클라이언트는 {"table": "<id>"}만 보낸다. 기본값(64MiB)으로 메모리를 쓰게 두지 않는다.
+    ws.max_message_size(WS_MAX_MESSAGE_BYTES)
+        .max_frame_size(WS_MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_ws(socket, state, session, token, query.table))
 }
 
 async fn handle_ws(
@@ -555,15 +651,14 @@ async fn handle_ws(
                 Err(_) => break,
             },
             incoming = socket.recv() => match incoming {
-                Some(Ok(Message::Text(text))) => {
-                    // {"table": "<id>"} 로 보는 테이블을 바꿀 수 있다.
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if let Some(id) = value.get("table").and_then(|v| v.as_str()) {
-                            current_table = Some(id.to_string());
-                        }
+                // {"table": "<id>"} 로 보는 테이블을 바꿀 수 있다. 바뀔 때만 새로 보낸다.
+                Some(Ok(Message::Text(text))) => match table_switch(current_table.as_deref(), &text) {
+                    Some(id) => {
+                        current_table = Some(id);
+                        true
                     }
-                    true
-                }
+                    None => false,
+                },
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                 Some(Ok(_)) => false,
             },
@@ -583,4 +678,12 @@ async fn handle_ws(
             break;
         }
     }
+}
+
+/// 웹소켓 텍스트 프레임이 {"table": "<id>"}로 다른 테이블을 요청하면 그 id.
+/// 지금 보는 테이블이거나 다른 프레임(`{}` 등)이면 None: 상태를 다시 만들지 않는다.
+fn table_switch(current: Option<&str>, text: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let id = value.get("table")?.as_str()?;
+    (current != Some(id)).then(|| id.to_string())
 }
