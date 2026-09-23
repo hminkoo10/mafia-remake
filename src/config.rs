@@ -38,7 +38,7 @@ pub struct BotConfig {
     /// 내신 쿠폰 1포인트당 코인(원).
     #[serde(default = "default_coupon_coins_per_point")]
     pub coupon_coins_per_point: i64,
-    /// 관리자 로그 채널 ID. 0이면 보내지 않는다 (코인 관리·쿠폰 발급·블랙리스트·초기화 기록).
+    /// 관리자 로그 채널 ID. 0이면 보내지 않는다 (코인 관리·코인 선물·쿠폰 발급·블랙리스트·초기화 기록).
     #[serde(default)]
     pub log_channel_id: u64,
     #[serde(default)]

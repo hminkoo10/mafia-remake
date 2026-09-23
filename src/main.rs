@@ -36,6 +36,44 @@ const PRIVATE_CHAT_ROLES: &[Role] = &[
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
 
+/// 진행 중인 판의 배팅 잠금: 판 키 → 유저별 배팅액. 코인은 서버와 상관없이 하나라서
+/// 모든 판의 잠금을 합쳐 본다. 판 시작 때 배팅을 확정하는 통계 쓰기 잠금 안에서 넣고,
+/// 정산은 같은 통계 쓰기 잠금 안에서 이 판의 잠금을 직접 풀었을 때만 한다. 코인 선물과
+/// 새 판의 배팅 확정도 통계 쓰기 잠금 안에서 읽으므로, 보유 코인은 항상 잠긴 배팅액 합
+/// 이상으로 남는다. 정산 없이 끝난 판(중지·정리·오류)은 게임을 목록에서 뺄 때 푼다. 중지가
+/// 먼저 풀었으면 이미 결과 발표 중이던 판도 배팅을 정산하지 않는다(중지된 판).
+type BetLocks = Arc<std::sync::Mutex<HashMap<String, HashMap<u64, i64>>>>;
+
+fn lock_game_bets(locks: &BetLocks, game_key: &str, bets: &HashMap<u64, i64>) {
+    if bets.is_empty() {
+        return;
+    }
+    locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(game_key.to_string(), bets.clone());
+}
+
+/// 이 판의 배팅 잠금을 푼다. 이 호출이 이 판의 잠금을 실제로 풀었으면 true.
+fn release_game_bets(locks: &BetLocks, game_key: &str) -> bool {
+    locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(game_key)
+        .is_some()
+}
+
+/// 진행 중인 모든 판에서 아직 정산되지 않은 이 유저의 배팅액 합.
+fn locked_bet(locks: &BetLocks, user_id: u64) -> i64 {
+    let locks = locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks
+        .values()
+        .filter_map(|bets| bets.get(&user_id))
+        .fold(0_i64, |sum, bet| sum.saturating_add((*bet).max(0)))
+}
+
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
 enum AnonymousNameMode {
     #[name = "동물"]
@@ -98,6 +136,8 @@ struct Data {
     stats: Arc<RwLock<stats::StatsFile>>,
     stats_path: Arc<PathBuf>,
     games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>>,
+    /// 진행 중인 판의 배팅 잠금 (코인 선물이 배팅액을 빼돌리지 못하게).
+    bet_locks: BetLocks,
     completed_replays: Arc<RwLock<VecDeque<Value>>>,
     completed_replays_path: Arc<PathBuf>,
     recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>>,
@@ -631,6 +671,7 @@ fn bot_commands() -> Vec<poise::Command<Data, Error>> {
         commands::show_my_info(),
         commands::claim_attendance(),
         commands::set_bet(),
+        commands::gift_coins(),
         commands::exchange_coupon(),
         commands::manage_coins(),
         commands::issue_coupons(),
@@ -656,6 +697,28 @@ fn bot_commands() -> Vec<poise::Command<Data, Error>> {
 #[cfg(test)]
 mod main_tests {
     use super::*;
+
+    #[test]
+    fn bet_locks_follow_each_game_until_released() {
+        let locks: BetLocks = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        lock_game_bets(&locks, "game-a", &HashMap::from([(7, 4_000), (8, 500)]));
+        lock_game_bets(&locks, "game-b", &HashMap::from([(7, 1_000)]));
+        // 코인은 서버와 상관없이 하나라서 모든 판의 배팅을 더한다.
+        assert_eq!(locked_bet(&locks, 7), 5_000);
+        assert_eq!(locked_bet(&locks, 8), 500);
+        assert_eq!(locked_bet(&locks, 9), 0);
+        // 판마다 따로 풀린다. 같은 서버에서 겹쳐 시작한 판도 서로의 잠금을 지우지 않는다.
+        assert!(!release_game_bets(&locks, "old-game"));
+        assert_eq!(locked_bet(&locks, 7), 5_000);
+        assert!(release_game_bets(&locks, "game-a"));
+        assert_eq!(locked_bet(&locks, 7), 1_000);
+        assert_eq!(locked_bet(&locks, 8), 0);
+        // 이미 풀린 판(중지가 먼저 푼 판)은 다시 풀리지 않는다 → 정산하지 않는다.
+        assert!(!release_game_bets(&locks, "game-a"));
+        // 배팅이 없는 판은 잠금을 남기지 않는다.
+        lock_game_bets(&locks, "game-c", &HashMap::new());
+        assert!(!release_game_bets(&locks, "game-c"));
+    }
 
     #[test]
     fn scientist_initial_replay_team_is_mafia() {
@@ -749,6 +812,7 @@ async fn main() -> Result<()> {
 
     // 공유 상태를 Discord 연결 전에 먼저 생성
     let games: Arc<DashMap<serenity::GuildId, Arc<RwLock<RunningGame>>>> = Arc::new(DashMap::new());
+    let bet_locks: BetLocks = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let completed_replays: Arc<RwLock<VecDeque<Value>>> = Arc::new(RwLock::new(loaded_replays));
     let recruitments: Arc<DashMap<serenity::GuildId, Arc<RwLock<Recruitment>>>> =
         Arc::new(DashMap::new());
@@ -817,6 +881,7 @@ async fn main() -> Result<()> {
         | serenity::GatewayIntents::GUILD_PRESENCES;
 
     let games_setup = games.clone();
+    let bet_locks_setup = bet_locks.clone();
     let completed_replays_setup = completed_replays.clone();
     let recruitments_setup = recruitments.clone();
     let recruitment_update_versions_setup = recruitment_update_versions.clone();
@@ -857,6 +922,7 @@ async fn main() -> Result<()> {
                     stats: stats_setup.clone(),
                     stats_path: stats_path_setup.clone(),
                     games: games_setup.clone(),
+                    bet_locks: bet_locks_setup.clone(),
                     completed_replays: completed_replays_setup.clone(),
                     completed_replays_path: completed_replays_path_setup.clone(),
                     recruitments: recruitments_setup.clone(),

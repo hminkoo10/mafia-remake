@@ -633,7 +633,7 @@ pub async fn show_blacklist(ctx: Context<'_>) -> Result<(), Error> {
     rename = "마피아로그채널",
     description_localized(
         "ko",
-        "관리자: 코인 관리·쿠폰 발급·블랙리스트·초기화 기록을 보낼 로그 채널을 설정합니다."
+        "관리자: 코인 관리·코인 선물·쿠폰 발급·블랙리스트·초기화 기록을 보낼 로그 채널을 설정합니다."
     )
 )]
 pub async fn set_log_channel(
@@ -653,7 +653,7 @@ pub async fn set_log_channel(
         "로그 채널을 해제했습니다.".to_string()
     } else {
         format!(
-            "로그 채널을 <#{channel_id}>로 설정했습니다. 코인 관리, 쿠폰 발급, 블랙리스트 변경, 리더보드 초기화 기록이 여기로 갑니다."
+            "로그 채널을 <#{channel_id}>로 설정했습니다. 코인 관리, 코인 선물, 쿠폰 발급, 블랙리스트 변경, 리더보드 초기화 기록이 여기로 갑니다."
         )
     };
     send_admin_log(

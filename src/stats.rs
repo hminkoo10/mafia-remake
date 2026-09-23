@@ -124,7 +124,7 @@ pub struct PlayerStats {
     /// 중지된 판이 이력에 남지 않아 다음 판에 같은 팀이 거의 그대로 재현된다.
     #[serde(default)]
     pub aborted_assignments: Vec<AbortedAssignmentItem>,
-    /// 보유 코인(원). 출석·배팅 정산·스타플레이어 상금·쿠폰 교환으로만 변한다.
+    /// 보유 코인(원). 출석·배팅 정산·스타플레이어 상금·쿠폰·코인 선물·카지노 바이인/캐시아웃으로 변한다.
     #[serde(default)]
     pub coins: i64,
     /// 스타플레이어로 뽑힌 횟수.

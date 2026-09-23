@@ -729,16 +729,24 @@ pub async fn announce_winner(
     let mut rating_log_chunks = Vec::new();
     let mut rank_change_chunks = Vec::new();
     if let Some((game_snapshot, initial_roles, elapsed_seconds, bets)) = record_payload {
+        let lock_game_key = running.read().await.activity_game_key.clone();
         let (recorded_rating_log, stats_snapshot) = {
             let mut stats_file = data.stats.write().await;
             // [배팅] 이 판을 기록하기 전의 전적으로 배율을 정해 정산한다.
-            bet_settlements = stats::settle_bets(
-                &mut stats_file,
-                &game_snapshot,
-                &initial_roles,
-                winner,
-                &bets,
-            );
+            // 이 통계 쓰기 잠금 안에서 배팅 잠금을 풀고 정산해 코인 선물과 순서가 엇갈리지 않게 한다.
+            // 발표 중에 /마피아중지·정리가 잠금을 먼저 풀었다면 중지된 판이므로 정산하지 않는다
+            // (그 사이 코인이 선물로 옮겨졌을 수 있다).
+            let owns_bets =
+                bets.is_empty() || crate::release_game_bets(&data.bet_locks, &lock_game_key);
+            if owns_bets {
+                bet_settlements = stats::settle_bets(
+                    &mut stats_file,
+                    &game_snapshot,
+                    &initial_roles,
+                    winner,
+                    &bets,
+                );
+            }
             let rating_log = stats::record_game_stats(
                 &mut stats_file,
                 &game_snapshot,

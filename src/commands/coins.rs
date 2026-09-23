@@ -1,4 +1,4 @@
-// commands/coins.rs — 코인: 출석·배팅·내신 쿠폰 명령어, 배팅 입력창, 스타플레이어 투표 처리
+// commands/coins.rs — 코인: 출석·배팅·선물·내신 쿠폰 명령어, 배팅 입력창, 스타플레이어 투표 처리
 
 use super::*;
 use crate::runner::game_result_display_name;
@@ -542,6 +542,103 @@ pub enum CoinAdminAction {
     Set,
     #[name = "조회"]
     View,
+}
+
+/// 내 코인을 다른 멤버에게 선물한다. 진행 중인 게임에 걸린 배팅액만큼은 남겨 둔다.
+#[poise::command(
+    slash_command,
+    rename = "코인선물",
+    description_localized("ko", "내 코인을 다른 멤버에게 선물합니다.")
+)]
+pub async fn gift_coins(
+    ctx: Context<'_>,
+    #[description = "코인을 받을 멤버"] 대상: serenity::User,
+    #[description = "선물할 금액(원)"]
+    #[min = 1]
+    금액: i64,
+) -> Result<(), Error> {
+    const TITLE: &str = "코인 선물";
+    if ctx.guild_id().is_none() {
+        reply_embed(
+            ctx,
+            "서버 안에서만 사용할 수 있습니다.",
+            TITLE,
+            serenity::Colour::RED,
+            true,
+        )
+        .await?;
+        return Ok(());
+    }
+    if 대상.bot {
+        reply_embed(
+            ctx,
+            "봇에게는 코인을 선물할 수 없습니다.",
+            TITLE,
+            serenity::Colour::RED,
+            true,
+        )
+        .await?;
+        return Ok(());
+    }
+    let sender = ctx.author();
+    let sender_id = sender.id.get();
+    let receiver_id = 대상.id.get();
+    let applied = {
+        let mut stats_file = ctx.data().stats.write().await;
+        // 판 시작(배팅 확정)과 정산도 이 통계 쓰기 잠금 안에서 배팅 잠금을 바꾸므로 끼어들 틈이 없다.
+        // 코인은 서버와 상관없이 하나라서 모든 서버의 판을 본다.
+        let locked = crate::locked_bet(&ctx.data().bet_locks, sender_id);
+        stats::gift_coins(
+            &mut stats_file,
+            sender_id,
+            &sender.name,
+            receiver_id,
+            &대상.name,
+            금액,
+            locked,
+        )
+        .map(|gift| (gift, stats_file.clone()))
+    };
+    let (gift, snapshot) = match applied {
+        Ok(applied) => applied,
+        Err(message) => {
+            reply_embed(ctx, message, TITLE, serenity::Colour::RED, true).await?;
+            return Ok(());
+        }
+    };
+    save_stats_snapshot(ctx.data(), snapshot).await;
+    eprintln!(
+        "coin gift: from={sender_id} to={receiver_id} amount={} sender_after={} receiver_after={}",
+        gift.amount, gift.sender_balance, gift.receiver_balance
+    );
+    let log_channel_id = ctx.data().config.read().await.log_channel_id;
+    send_admin_log(
+        ctx.http(),
+        log_channel_id,
+        TITLE,
+        format!(
+            "{} 님(`{sender_id}`)이 {} 님(`{receiver_id}`)에게 {}을 선물했습니다. 보낸 사람 남은 코인 {} / 받은 사람 코인 {}",
+            sender.name,
+            대상.name,
+            stats::coin_text(gift.amount),
+            stats::coin_text(gift.sender_balance),
+            stats::coin_text(gift.receiver_balance)
+        ),
+    )
+    .await;
+    reply_embed(
+        ctx,
+        format!(
+            "<@{sender_id}> 님이 <@{receiver_id}> 님에게 **{}**을 선물했습니다.\n보낸 분 남은 코인: {}",
+            stats::coin_text(gift.amount),
+            stats::coin_text(gift.sender_balance)
+        ),
+        TITLE,
+        serenity::Colour::GOLD,
+        false,
+    )
+    .await?;
+    Ok(())
 }
 
 /// 관리자: 유저 코인 지급·차감·설정·조회. 차감은 보유액까지만 되고 0원 아래로

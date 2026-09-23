@@ -317,27 +317,30 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         game
     };
     let initial_roles = game.players.iter().map(|p| (p.user_id, p.role)).collect();
-    // [배팅] 판 시작 시점의 설정값을 보유 코인 안에서 확정한다.
-    let bets = {
-        let stats_read = ctx.data().stats.read().await;
-        game.players
+    let activity_game_key = uuid::Uuid::new_v4().to_string();
+    // [배팅] 판 시작 시점의 설정값을 보유 코인 안에서 확정하고, 같은 통계 쓰기 잠금 안에서
+    // 배팅 잠금을 건다. 다른 서버의 진행 중인 판에 이미 잠긴 코인은 이 판의 배팅에 쓰지 않는다
+    // (보유 코인이 잠긴 배팅액 합보다 적어지지 않게). 코인 선물이 그 사이에 끼어들 수 없다.
+    let (bets, stats_snapshot) = {
+        let mut stats_file = ctx.data().stats.write().await;
+        let bets = game
+            .players
             .iter()
             .map(|player| {
-                (
-                    player.user_id,
-                    stats::effective_bet(stats_read.users.get(&player.user_id.to_string())),
-                )
+                let entry = stats_file.users.get(&player.user_id.to_string());
+                let free = (entry.map_or(0, |entry| entry.coins)
+                    - crate::locked_bet(&ctx.data().bet_locks, player.user_id))
+                .max(0);
+                (player.user_id, stats::effective_bet(entry).min(free))
             })
             .filter(|(_, bet)| *bet > 0)
-            .collect::<HashMap<u64, i64>>()
-    };
-    let stats_snapshot = {
-        let mut stats_file = ctx.data().stats.write().await;
+            .collect::<HashMap<u64, i64>>();
+        crate::lock_game_bets(&ctx.data().bet_locks, &activity_game_key, &bets);
         stats::record_role_selection(
             &mut stats_file,
             game.players.iter().map(|player| player.role),
         );
-        stats_file.clone()
+        (bets, stats_file.clone())
     };
     let stats_path = ctx.data().stats_path.clone();
     match tokio::task::spawn_blocking(move || stats::save_stats(&*stats_path, &stats_snapshot))
@@ -358,7 +361,7 @@ pub async fn start_game(ctx: Context<'_>) -> Result<(), Error> {
         started_at: Instant::now(),
         started_at_iso: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         ended_at_iso: None,
-        activity_game_key: uuid::Uuid::new_v4().to_string(),
+        activity_game_key,
         phase_deadline: None,
         initial_roles,
         memos: HashMap::new(),
@@ -493,6 +496,9 @@ pub async fn stop_game(ctx: Context<'_>) -> Result<(), Error> {
         return Ok(());
     };
     if let Some((_id, running)) = ctx.data().games.remove(&guild_id) {
+        // 중지된 판은 배팅을 정산하지 않는다. 결과 발표 중이던 판도 잠금이 먼저 풀리면 정산을 건너뛴다.
+        let game_key = running.read().await.activity_game_key.clone();
+        crate::release_game_bets(&ctx.data().bet_locks, &game_key);
         let roles = halt_running_game(&running).await;
         // 중지된 판의 역할 배정을 밸런싱 이력에 남긴다. 안 남기면 다음 판
         // 팀 배정이 중지 전과 같은 이력을 보고 같은 팀을 거의 그대로 다시 뽑는다.
@@ -589,6 +595,8 @@ pub async fn cleanup_stuck_game(ctx: Context<'_>) -> Result<(), Error> {
         return Ok(());
     };
     let cleaned_running_game = if let Some((_id, running)) = ctx.data().games.remove(&guild_id) {
+        let game_key = running.read().await.activity_game_key.clone();
+        crate::release_game_bets(&ctx.data().bet_locks, &game_key);
         halt_running_game(&running).await;
         cleanup_game(ctx.serenity_context(), ctx.data(), &running).await;
         true

@@ -1034,3 +1034,69 @@ fn coupon_redeem_is_single_use_and_checks_expiry() {
         Ok("2026-09-22".to_string())
     );
 }
+
+#[test]
+fn coin_gifts_move_coins_between_two_players_at_once() {
+    let mut stats = StatsFile::default();
+    claim_attendance(&mut stats, 1, "Alpha", 10_000, "2026-09-23");
+    let gift = gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 3_000, 0).unwrap();
+    assert_eq!(
+        gift,
+        CoinGift {
+            amount: 3_000,
+            sender_balance: 7_000,
+            receiver_balance: 3_000
+        }
+    );
+    assert_eq!(stats.users["1"].coins, 7_000);
+    assert_eq!(stats.users["2"].coins, 3_000);
+    assert_eq!(stats.users["2"].name, "Beta");
+    // 받은 코인을 다시 보낼 수 있고, 전부 보내면 0원이 된다.
+    gift_coins(&mut stats, 2, "Beta", 1, "Alpha", 3_000, 0).unwrap();
+    assert_eq!(
+        (stats.users["1"].coins, stats.users["2"].coins),
+        (10_000, 0)
+    );
+}
+
+#[test]
+fn coin_gifts_reject_bad_requests_without_touching_anyone() {
+    let mut stats = StatsFile::default();
+    claim_attendance(&mut stats, 1, "Alpha", 10_000, "2026-09-23");
+    let before = stats.clone();
+    for (to, amount, text) in [
+        (2, 0, "1원 이상"),
+        (2, -500, "1원 이상"),
+        (1, 1_000, "자기 자신"),
+        (2, 10_001, "보유 코인이 부족"),
+    ] {
+        let error = gift_coins(&mut stats, 1, "Alpha", to, "Beta", amount, 0).unwrap_err();
+        assert!(error.contains(text), "{error}");
+    }
+    // 코인이 없는 사람은 보낼 수 없고, 기록도 새로 생기지 않는다.
+    assert!(gift_coins(&mut stats, 3, "Gamma", 1, "Alpha", 100, 0).is_err());
+    assert_eq!(
+        serde_json::to_value(&stats).unwrap(),
+        serde_json::to_value(&before).unwrap()
+    );
+    assert!(!stats.users.contains_key("2") && !stats.users.contains_key("3"));
+}
+
+#[test]
+fn coin_gifts_keep_the_unsettled_game_bet() {
+    let mut stats = StatsFile::default();
+    claim_attendance(&mut stats, 1, "Alpha", 10_000, "2026-09-23");
+    // 진행 중인 게임에 4,000원이 걸려 있으면 6,000원까지만 보낼 수 있다.
+    let error = gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 6_001, 4_000).unwrap_err();
+    assert!(
+        error.contains("배팅 4,000원") && error.contains("6,000원까지만"),
+        "{error}"
+    );
+    assert_eq!(stats.users["1"].coins, 10_000);
+    let gift = gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 6_000, 4_000).unwrap();
+    assert_eq!(gift.sender_balance, 4_000, "배팅액은 정산까지 남는다");
+    // 받는 사람 코인이 넘치면 거부한다.
+    stats.users.get_mut("2").unwrap().coins = i64::MAX;
+    assert!(gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 1, 0).is_err());
+    assert_eq!(stats.users["1"].coins, 4_000);
+}

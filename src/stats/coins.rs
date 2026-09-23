@@ -1,4 +1,4 @@
-// stats/coins.rs — 코인: 출석, 배팅 정산, 스타플레이어 상금, 내신 쿠폰 교환
+// stats/coins.rs — 코인: 출석, 배팅 정산, 스타플레이어 상금, 내신 쿠폰 교환, 코인 선물
 
 use super::{
     INITIAL_RATING, PlayerStats, StatsFile, ensure_player_stats, player_won_game, rating_team_key,
@@ -291,6 +291,72 @@ pub fn reserve_coins(
     }
     entry.coins -= cost;
     Ok(entry.coins)
+}
+
+/// 코인 선물 결과.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoinGift {
+    pub amount: i64,
+    /// 보낸 사람의 남은 코인.
+    pub sender_balance: i64,
+    /// 받은 사람의 코인.
+    pub receiver_balance: i64,
+}
+
+/// 코인을 다른 유저에게 선물한다. 모든 검사를 먼저 하고, 통과하면 차감과 지급을 한 번에 한다
+/// (실패하면 두 사람 기록 모두 그대로). `locked`는 진행 중인 게임에 걸려 아직 정산되지 않은
+/// 보낸 사람의 배팅액이다. 그만큼은 남겨야 패배 정산을 피할 수 없다.
+pub fn gift_coins(
+    stats: &mut StatsFile,
+    from_id: u64,
+    from_name: &str,
+    to_id: u64,
+    to_name: &str,
+    amount: i64,
+    locked: i64,
+) -> Result<CoinGift, String> {
+    if amount <= 0 {
+        return Err("선물할 금액은 1원 이상이어야 합니다.".to_string());
+    }
+    if from_id == to_id {
+        return Err("자기 자신에게는 선물할 수 없습니다.".to_string());
+    }
+    let balance = stats
+        .users
+        .get(&from_id.to_string())
+        .map_or(0, |entry| entry.coins);
+    let locked = locked.max(0);
+    if amount > balance {
+        return Err(format!(
+            "보유 코인이 부족합니다. 선물 {} / 보유 {}",
+            coin_text(amount),
+            coin_text(balance)
+        ));
+    }
+    let available = (balance - locked).max(0);
+    if amount > available {
+        return Err(format!(
+            "진행 중인 게임에 배팅 {}이 걸려 있어 정산 전에는 {}까지만 선물할 수 있습니다.",
+            coin_text(locked),
+            coin_text(available)
+        ));
+    }
+    let receiver_before = stats
+        .users
+        .get(&to_id.to_string())
+        .map_or(0, |entry| entry.coins);
+    let receiver_balance = receiver_before
+        .checked_add(amount)
+        .ok_or_else(|| "받는 사람의 코인이 너무 많아 선물할 수 없습니다.".to_string())?;
+    let sender = ensure_player_stats(stats, from_id, from_name);
+    sender.coins -= amount;
+    let sender_balance = sender.coins;
+    ensure_player_stats(stats, to_id, to_name).coins = receiver_balance;
+    Ok(CoinGift {
+        amount,
+        sender_balance,
+        receiver_balance,
+    })
 }
 
 /// 예약했던 코인을 돌려준다 (쿠폰 발급 실패 시).

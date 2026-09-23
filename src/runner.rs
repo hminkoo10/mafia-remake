@@ -51,8 +51,15 @@ pub async fn game_loop(
         eprintln!("game loop failed; forcing cleanup: {error:?}");
     }
     cleanup_game(&ctx, &data, &running).await;
-    let guild_id = running.read().await.guild_id;
+    let (guild_id, game_key) = {
+        let running_read = running.read().await;
+        (
+            running_read.guild_id,
+            running_read.activity_game_key.clone(),
+        )
+    };
     remove_current_entry(&data.games, guild_id, &running);
+    crate::release_game_bets(&data.bet_locks, &game_key);
     result
 }
 
