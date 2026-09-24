@@ -1639,6 +1639,137 @@ fn saved_tables_without_settings_load_the_classic_limits() {
 }
 
 #[test]
+fn settings_change_applies_immediately_when_idle() {
+    let mut table = blackjack_table();
+    let settings = TableSettings::build(
+        GameKind::Blackjack,
+        SettingsRequest {
+            min_bet: Some(500),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(table.change_settings(settings, 0));
+    assert_eq!(table.settings, settings);
+    assert_eq!(table.pending_settings, None);
+}
+
+#[test]
+fn settings_change_waits_until_the_next_round() {
+    let mut table = blackjack_table();
+    sit(&mut table, 70, 0, 5_000, 0);
+    table
+        .start_with_deck(70, deck_from_top(&["As", "9c", "Kd", "7h", "5d"]), 0)
+        .unwrap();
+    let old = table.settings;
+    let next = TableSettings::build(
+        GameKind::Blackjack,
+        SettingsRequest {
+            min_bet: Some(500),
+            max_bet: Some(2_000),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!table.change_settings(next, 1));
+    assert_eq!(table.settings, old);
+    assert_eq!(table.pending_settings, Some(next));
+    table.round.as_mut().unwrap().phase = Phase::Complete;
+    act(&mut table, 70, CasinoCommand::Start, 2);
+    assert_eq!(table.settings, next);
+    assert_eq!(table.pending_settings, None);
+}
+
+#[test]
+fn queued_settings_apply_as_soon_as_the_round_ends() {
+    let mut table = blackjack_table();
+    sit(&mut table, 81, 0, 10_000, 0);
+    table
+        .start_with_deck(81, deck_from_top(&["9h", "As", "7d", "Kc"]), 0)
+        .unwrap();
+    act(
+        &mut table,
+        81,
+        CasinoCommand::Bet {
+            amount: 500,
+            pairs: 0,
+            plus3: 0,
+        },
+        100,
+    );
+    // 이 좌석(약 10,000칩)이 새 최소 베팅(20,000)을 못 걸어도 다음 시작을 기다리지 않는다.
+    let old = table.settings;
+    let next = TableSettings::build(
+        GameKind::Blackjack,
+        SettingsRequest {
+            min_bet: Some(20_000),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!table.change_settings(next, 150));
+    assert_eq!(table.settings, old);
+    let narration = table.narration.clone();
+    // 딜러 블랙잭이라 인슈어런스 결정 뒤 라운드가 끝난다.
+    act(&mut table, 81, CasinoCommand::Insure { accept: true }, 200);
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Complete);
+    assert_eq!(table.settings, next);
+    assert_eq!(table.pending_settings, None);
+    assert_ne!(table.narration, narration, "결과 안내는 그대로 남는다");
+    assert!(!table.narration.contains("방 설정이 바뀌었습니다"));
+    assert!(
+        table
+            .messages
+            .iter()
+            .any(|message| message.text.contains("방 설정이 바뀌었습니다"))
+    );
+}
+
+#[test]
+fn resetting_to_the_current_settings_cancels_the_queued_change() {
+    let mut table = blackjack_table();
+    sit(&mut table, 70, 0, 5_000, 0);
+    table
+        .start_with_deck(70, deck_from_top(&["As", "9c", "Kd", "7h", "5d"]), 0)
+        .unwrap();
+    let old = table.settings;
+    let next = TableSettings::build(
+        GameKind::Blackjack,
+        SettingsRequest {
+            min_bet: Some(500),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!table.change_settings(next, 1));
+    assert!(table.change_settings(old, 2));
+    assert_eq!(table.pending_settings, None);
+    assert_eq!(table.settings, old);
+}
+
+#[test]
+fn pending_settings_round_trip_and_old_json_default() {
+    let mut table = blackjack_table();
+    table.pending_settings = Some(
+        TableSettings::build(
+            GameKind::Blackjack,
+            SettingsRequest {
+                min_bet: Some(500),
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    let json = serde_json::to_value(&table).unwrap();
+    let loaded: CasinoTable = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(loaded.pending_settings, table.pending_settings);
+    let mut old_json = json;
+    old_json.as_object_mut().unwrap().remove("pending_settings");
+    let loaded_old: CasinoTable = serde_json::from_value(old_json).unwrap();
+    assert_eq!(loaded_old.pending_settings, None);
+}
+
+#[test]
 fn blackjack_bets_and_buy_ins_follow_the_table_settings() {
     let settings = TableSettings::build(
         GameKind::Blackjack,

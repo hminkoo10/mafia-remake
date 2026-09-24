@@ -158,6 +158,7 @@ export interface TableView {
   messages: ChatMessage[];
   history: HandResult[];
   rules: TableRules;
+  pending_rules?: TableRules | null;
   dealer: DealerView;
   shoe: { remaining: number; total: number; cut_at: number; shuffled_at: number; reshuffle_due: boolean } | null;
 }

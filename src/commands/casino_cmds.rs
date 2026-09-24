@@ -2,11 +2,14 @@
 // 웹훅 채팅·결과 안내), 채널 채팅 → 테이블 채팅.
 
 use super::*;
-use crate::casino_hub::{CasinoHub, TableBinding, personal_link, table_channel_name};
+use crate::casino_hub::{
+    CasinoHub, MAX_TABLES, PanelBinding, TableBinding, personal_link, table_channel_name,
+};
 use mafia_remake::casino::{
     CasinoEvent, ChatMessage, GameKind, HandResult, Phase, SettingsRequest, TableSettings,
     TableView, blackjack_value, signed_chips,
 };
+use poise::serenity_prelude::CacheHttp;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -293,8 +296,7 @@ pub async fn create_casino_table(
         .await?;
         return Ok(());
     };
-    let hub = ctx.data().casino.clone();
-    if hub.find_table(&이름).await.is_some() {
+    if ctx.data().casino.find_table(&이름).await.is_some() {
         reply_embed(
             ctx,
             "같은 이름의 테이블이 이미 있습니다.",
@@ -307,73 +309,26 @@ pub async fn create_casino_table(
     }
     // 채널 생성은 3초를 넘길 수 있으니 여기서부터 지연 응답으로 바꾼다.
     let deferred = defer_best_effort(ctx, "카지노테이블생성").await;
-    let serenity_ctx = ctx.serenity_context();
-    let category = source_category(serenity_ctx, ctx.channel_id()).await;
-    let channel_name = table_channel_name(&이름);
-    let Some(channel) = create_text_channel_safe(
-        serenity_ctx,
+    let message = match create_table_body(
+        ctx.serenity_context(),
+        ctx.data(),
         guild_id,
-        &channel_name,
-        vec![],
-        category,
-        "카지노 테이블 채널 생성",
-        0,
-        Some(format!(
-            "{} 테이블 · 웹에서 플레이, 채팅은 이 채널과 연결됩니다.",
-            종류.kind().value()
-        )),
+        ctx.channel_id(),
+        종류.kind(),
+        &이름,
+        ctx.author().id.get(),
+        &ctx.author().name,
+        settings,
+        false,
     )
     .await
-    else {
-        reply_embed(
-            ctx,
-            "테이블 채널을 만들지 못했습니다. 봇의 채널 관리 권한을 확인하세요.",
-            "카지노",
-            serenity::Colour::RED,
-            true,
-        )
-        .await?;
-        return Ok(());
+    {
+        Ok(message) => message,
+        Err(message) => {
+            reply_embed(ctx, message, "카지노", serenity::Colour::RED, true).await?;
+            return Ok(());
+        }
     };
-    let binding = TableBinding {
-        guild_id: guild_id.get(),
-        channel_id: channel.id.get(),
-        ..Default::default()
-    };
-    let table_id =
-        match hub.create_table(종류.kind(), &이름, ctx.author().id.get(), binding, settings) {
-            Ok(id) => id,
-            Err(message) => {
-                let _ = channel.delete(&serenity_ctx.http).await;
-                reply_embed(ctx, message, "카지노", serenity::Colour::RED, true).await?;
-                return Ok(());
-            }
-        };
-    hub.save().await;
-    refresh_table_status(serenity_ctx, ctx.data(), &table_id).await;
-    let log_channel_id = ctx.data().config.read().await.log_channel_id;
-    send_admin_log(
-        ctx.http(),
-        log_channel_id,
-        "카지노 테이블",
-        format!(
-            "{} 님이 {} 테이블 **{}**(<#{}>)을 만들었습니다. {}",
-            ctx.author().name,
-            종류.kind().value(),
-            이름,
-            channel.id.get(),
-            settings.summary(종류.kind())
-        ),
-    )
-    .await;
-    let message = format!(
-        "{} 테이블 **{}**을 만들었습니다. 채널: <#{}>\n방 설정: {}\n참가자는 `/카지노입장 테이블:{}` 으로 개인 링크를 받습니다.",
-        종류.kind().value(),
-        이름,
-        channel.id.get(),
-        settings.summary(종류.kind()),
-        이름
-    );
     if deferred {
         reply_embed(
             ctx,
@@ -411,8 +366,7 @@ pub async fn close_casino_table(
     if !require_manager(ctx).await? {
         return Ok(());
     }
-    let hub = ctx.data().casino.clone();
-    let Some((table_id, table)) = hub.find_table(&테이블).await else {
+    let Some((table_id, _)) = ctx.data().casino.find_table(&테이블).await else {
         reply_embed(
             ctx,
             "그 이름의 테이블이 없습니다.",
@@ -423,54 +377,26 @@ pub async fn close_casino_table(
         .await?;
         return Ok(());
     };
-    let name = table.read().await.name.clone();
-    let binding = hub.binding(&table_id);
-    let events = hub.close_table(&table_id).await;
-    let refunds = events
-        .iter()
-        .filter_map(|event| match event {
-            CasinoEvent::CashOut { name, amount, .. } => {
-                Some(format!("{name} {}원", format_number(*amount)))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if let Some(binding) = binding {
-        let channel_id = serenity::ChannelId::new(binding.channel_id);
-        let _ = send_channel_embed(
-            ctx.http(),
-            channel_id,
-            format!(
-                "테이블이 닫혔습니다. 남은 칩은 코인으로 돌아갔습니다.{}",
-                if refunds.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", refunds.join("\n"))
-                }
-            ),
-            "카지노 테이블 종료",
-            serenity::Colour::DARK_GREY,
-            vec![],
-        )
-        .await;
-        let _ = channel_id.delete(ctx.http()).await;
-    }
-    let log_channel_id = ctx.data().config.read().await.log_channel_id;
-    send_admin_log(
-        ctx.http(),
-        log_channel_id,
-        "카지노 테이블",
-        format!(
-            "{} 님이 테이블 **{name}**을 닫았습니다. 반환: {}",
-            ctx.author().name,
-            if refunds.is_empty() {
-                "없음".to_string()
-            } else {
-                refunds.join(", ")
-            }
-        ),
+    // 채널 알림·삭제·로그·패널 갱신이 3초를 넘길 수 있으니 여기서부터 지연 응답으로 바꾼다.
+    defer_best_effort(ctx, "카지노테이블닫기").await;
+    let Some((name, refunds)) = close_table_body(
+        ctx.serenity_context(),
+        ctx.data(),
+        &table_id,
+        &ctx.author().name,
     )
-    .await;
+    .await?
+    else {
+        reply_embed(
+            ctx,
+            "이미 닫힌 테이블입니다.",
+            "카지노",
+            serenity::Colour::RED,
+            true,
+        )
+        .await?;
+        return Ok(());
+    };
     reply_embed(
         ctx,
         format!(
@@ -615,17 +541,22 @@ pub async fn enter_casino(
     description_localized("ko", "내 코인과 테이블 상황을 봅니다.")
 )]
 pub async fn casino_status(ctx: Context<'_>) -> Result<(), Error> {
-    let hub = ctx.data().casino.clone();
-    let user = ctx.author();
-    let coins = hub.coins_of(user.id.get()).await;
-    let seated = hub.seated_table_of(user.id.get()).await;
+    let message = casino_status_text(ctx.data(), ctx.author().id).await;
+    reply_embed(ctx, message, "카지노", serenity::Colour::GOLD, true).await?;
+    Ok(())
+}
+
+pub async fn casino_status_text(data: &Data, user_id: serenity::UserId) -> String {
+    let hub = data.casino.clone();
+    let coins = hub.coins_of(user_id.get()).await;
+    let seated = hub.seated_table_of(user_id.get()).await;
     let seated_text = match seated {
         Some(id) => {
             let mut stack = None;
             if let Some(table) = hub.table(&id) {
                 let table = table.read().await;
                 if let Some(seat) = table
-                    .seat_index(user.id.get())
+                    .seat_index(user_id.get())
                     .and_then(|index| table.seats[index].as_ref())
                 {
                     stack = Some((table.name.clone(), seat.stack));
@@ -656,19 +587,11 @@ pub async fn casino_status(ctx: Context<'_>) -> Result<(), Error> {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    reply_embed(
-        ctx,
-        format!(
-            "보유 코인: **{}**\n{seated_text}\n하우스 누적: {}\n\n테이블\n{tables}",
-            stats::coin_text(coins),
-            stats::coin_text(hub.house.load(Ordering::Relaxed))
-        ),
-        "카지노",
-        serenity::Colour::GOLD,
-        true,
+    format!(
+        "보유 코인: **{}**\n{seated_text}\n하우스 누적: {}\n\n테이블\n{tables}",
+        stats::coin_text(coins),
+        stats::coin_text(hub.house.load(Ordering::Relaxed))
     )
-    .await?;
-    Ok(())
 }
 
 /// 개인 링크 안내문 (슬래시 명령과 상태 임베드 버튼이 같이 쓴다).
@@ -683,10 +606,1204 @@ async fn personal_entry_text(
     let token = hub.issue_session(user_id, display_name.to_string());
     let link = personal_link(&casino_base_url(data), &token, table_id);
     let coins = hub.coins_of(user_id).await;
+    let buy_in = match hub.table(table_id) {
+        Some(table) => {
+            let table = table.read().await;
+            format!(
+                "{}~{}원",
+                format_number(table.settings.min_buy_in),
+                format_number(table.settings.max_buy_in)
+            )
+        }
+        None => "5,000~20,000원".to_string(),
+    };
     format!(
-        "**{table_name}** 테이블 링크입니다.\n{link}\n\n⚠️ 이 링크는 **{display_name}** 님 전용이고 12시간 동안 유효합니다. 다른 사람과 공유하지 마세요.\n보유 코인: **{}** (바이인은 5,000~20,000원, 퇴장하면 남은 칩이 코인으로 돌아옵니다)",
-        stats::coin_text(coins)
+        "**{table_name}** 테이블 링크입니다.\n{link}\n\n⚠️ 이 링크는 **{display_name}** 님 전용이고 12시간 동안 유효합니다. 다른 사람과 공유하지 마세요.\n보유 코인: **{}** (바이인은 {buy_in}, 퇴장하면 남은 칩이 코인으로 돌아옵니다)",
+        stats::coin_text(coins),
     )
+}
+
+/// 카지노 패널 본문. 진행 단계 대신 진행 중/대기 중만 보여 줘서 자주 바뀌지 않게 한다.
+pub fn render_casino_panel(summaries: &[crate::casino_hub::TableSummary]) -> String {
+    if summaries.is_empty() {
+        return "버튼으로 테이블에 들어가거나 내 코인을 확인할 수 있습니다. 관리자는 테이블을 만들고, 설정을 바꾸고, 닫을 수 있습니다.\n\n열려 있는 테이블이 없습니다. 관리자는 아래 버튼으로 테이블을 만들 수 있습니다.".to_string();
+    }
+    let mut lines = vec![
+        "버튼으로 테이블에 들어가거나 내 코인을 확인할 수 있습니다. 관리자는 테이블을 만들고, 설정을 바꾸고, 닫을 수 있습니다.".to_string(),
+        format!("열린 테이블 ({}/{})", summaries.len(), MAX_TABLES),
+    ];
+    lines.extend(summaries.iter().map(|summary| {
+        format!(
+            "🎴 **{}** · {} · {} · {}/{}명 · {}{}",
+            summary.name,
+            summary.kind_text,
+            summary.stakes,
+            summary.seated,
+            summary.seat_count,
+            if summary.playing {
+                "진행 중"
+            } else {
+                "대기 중"
+            },
+            summary
+                .channel_id
+                .map_or(String::new(), |id| format!(" · <#{}>", id))
+        )
+    }));
+    lines.join("\n\n")
+}
+
+/// 패널 버튼. 공개 메시지라 custom_id에 유저 ID를 넣지 않는다. 관리 버튼은 누를 때마다 권한을 본다.
+pub fn panel_components() -> Vec<serenity::CreateActionRow> {
+    vec![
+        serenity::CreateActionRow::Buttons(vec![
+            serenity::CreateButton::new("casino_panel:enter")
+                .label("테이블 입장")
+                .emoji('🎰')
+                .style(serenity::ButtonStyle::Success),
+            serenity::CreateButton::new("casino_panel:me")
+                .label("내 정보")
+                .emoji('💰')
+                .style(serenity::ButtonStyle::Secondary),
+        ]),
+        serenity::CreateActionRow::Buttons(vec![
+            serenity::CreateButton::new("casino_panel:create_holdem")
+                .label("홀덤 테이블 만들기")
+                .style(serenity::ButtonStyle::Primary),
+            serenity::CreateButton::new("casino_panel:create_blackjack")
+                .label("블랙잭 테이블 만들기")
+                .style(serenity::ButtonStyle::Primary),
+            serenity::CreateButton::new("casino_panel:settings")
+                .label("테이블 설정")
+                .emoji('🔧')
+                .style(serenity::ButtonStyle::Secondary),
+            serenity::CreateButton::new("casino_panel:close")
+                .label("테이블 닫기")
+                .style(serenity::ButtonStyle::Danger),
+        ]),
+    ]
+}
+
+#[poise::command(
+    slash_command,
+    rename = "카지노패널",
+    description_localized(
+        "ko",
+        "관리자: 이 채널에 카지노 메인 패널(버튼으로 입장·테이블 관리)을 올립니다."
+    )
+)]
+pub async fn casino_panel(ctx: Context<'_>) -> Result<(), Error> {
+    // 권한 확인·메시지 게시·고정·저장이 3초를 넘길 수 있으니 먼저 (본인에게만 보이게) 미룬다.
+    if let Err(error) = ctx.defer_ephemeral().await {
+        eprintln!("failed to defer 카지노패널: {error:?}");
+    }
+    if !require_manager(ctx).await? {
+        return Ok(());
+    }
+    let Some(guild_id) = ctx.guild_id() else {
+        return Ok(());
+    };
+    let channel_id = ctx.channel_id();
+    let hub = ctx.data().casino.clone();
+    let summaries = hub.summaries().await;
+    let text = render_casino_panel(&summaries);
+    let message = channel_id
+        .send_message(
+            ctx.http(),
+            serenity::CreateMessage::new()
+                .embed(make_embed(text.clone(), "카지노", serenity::Colour::GOLD))
+                .components(panel_components()),
+        )
+        .await?;
+    let _ = message.pin(ctx.http()).await;
+    let replaced = hub.set_panel_with_text(
+        Some(PanelBinding {
+            guild_id: guild_id.get(),
+            channel_id: channel_id.get(),
+            message_id: message.id.get(),
+        }),
+        Some(text),
+    );
+    // 바꾸기 전 연결의 패널을 지운다. 동시에 두 번 올려도 고정된 패널이 하나만 남는다.
+    if let Some(old) = replaced
+        && old.message_id != message.id.get()
+    {
+        let _ = serenity::ChannelId::new(old.channel_id)
+            .delete_message(ctx.http(), serenity::MessageId::new(old.message_id))
+            .await;
+    }
+    hub.save().await;
+    // 올리는 동안 테이블이 바뀌었으면 바로 맞춘다 (같으면 아무 요청도 보내지 않는다).
+    refresh_casino_panel(ctx.serenity_context(), ctx.data()).await;
+    ctx.send(
+        poise::CreateReply::default()
+            .content("카지노 패널을 올렸습니다. 테이블이 바뀌면 자동으로 갱신됩니다.")
+            .ephemeral(true),
+    )
+    .await?;
+    Ok(())
+}
+
+/// 패널 본문이 바뀌었으면 패널 메시지를 고친다.
+pub async fn refresh_casino_panel(ctx: &serenity::Context, data: &Data) {
+    let hub = data.casino.clone();
+    let Some(binding) = hub.panel() else { return };
+    let text = render_casino_panel(&hub.summaries().await);
+    if hub.panel_text().as_deref() == Some(text.as_str()) {
+        return;
+    }
+    let channel_id = serenity::ChannelId::new(binding.channel_id);
+    let result = channel_id
+        .edit_message(
+            &ctx.http,
+            serenity::MessageId::new(binding.message_id),
+            serenity::EditMessage::new()
+                .embed(make_embed(text.clone(), "카지노", serenity::Colour::GOLD))
+                .components(panel_components()),
+        )
+        .await;
+    match result {
+        Ok(_) => hub.record_panel_text(binding.message_id, text),
+        // 패널 메시지나 채널이 지워졌으면 연결을 끊는다 (다시 올리려면 /카지노패널).
+        // 그 사이 새 패널이 올라왔으면 새 연결은 건드리지 않는다.
+        Err(serenity::Error::Http(http_error))
+            if http_error.status_code().map(|code| code.as_u16()) == Some(404) =>
+        {
+            if hub.clear_panel_if(binding.message_id) {
+                hub.save().await;
+            }
+        }
+        Err(error) => eprintln!("failed to refresh casino panel: {error:?}"),
+    }
+}
+
+/// 모달의 금액 칸. 비우면 None(기본값), 쉼표·공백·'원'은 무시한다.
+pub fn parse_amount(text: &str) -> Result<Option<i64>, String> {
+    let original = text.trim();
+    if original.is_empty() {
+        return Ok(None);
+    }
+    let value = original
+        .strip_suffix('원')
+        .unwrap_or(original)
+        .chars()
+        .filter(|ch| !matches!(ch, ',' | '_' | ' '))
+        .collect::<String>();
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(format!("숫자로 입력하세요: {text}"));
+    }
+    match value.parse::<i64>() {
+        Ok(amount) if amount <= 10_000_000_000 => Ok(Some(amount)),
+        _ => Err(format!("숫자로 입력하세요: {text}")),
+    }
+}
+
+/// "5000~20000" 꼴의 범위 칸. 숫자 하나만 쓰면 최소값만 정한다.
+pub fn parse_range(text: &str) -> Result<(Option<i64>, Option<i64>), String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok((None, None));
+    }
+    let tilde = trimmed.find('~');
+    let hyphen = trimmed.find('-').filter(|position| *position > 0);
+    let separator = match (tilde, hyphen) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(position), None) | (None, Some(position)) => Some(position),
+        (None, None) => None,
+    };
+    let Some(separator) = separator else {
+        return Ok((parse_amount(trimmed)?, None));
+    };
+    if trimmed[separator + 1..].contains('~') || trimmed[separator + 1..].contains('-') {
+        return Err("범위는 5000~20000처럼 입력하세요.".to_string());
+    }
+    let min = parse_amount(&trimmed[..separator])?;
+    let max = parse_amount(&trimmed[separator + 1..])?;
+    Ok((min, max))
+}
+
+fn modal_input(
+    label: &str,
+    custom_id: &str,
+    placeholder: &str,
+    max_length: u16,
+    required: bool,
+    value: Option<String>,
+) -> serenity::CreateInputText {
+    let mut input =
+        serenity::CreateInputText::new(serenity::InputTextStyle::Short, label, custom_id)
+            .placeholder(placeholder)
+            .max_length(max_length)
+            .required(required);
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        input = input.value(value);
+    }
+    input
+}
+
+pub fn create_table_modal(kind: GameKind) -> serenity::CreateModal {
+    let mut inputs = vec![serenity::CreateActionRow::InputText(
+        modal_input("이름", "name", "테이블 이름 (2~24자)", 24, true, None).min_length(2),
+    )];
+    match kind {
+        GameKind::Holdem => {
+            inputs.push(serenity::CreateActionRow::InputText(modal_input(
+                "빅 블라인드",
+                "big_blind",
+                "비우면 100 · 10~50,000 짝수, 스몰은 절반",
+                20,
+                false,
+                None,
+            )));
+            inputs.push(serenity::CreateActionRow::InputText(modal_input(
+                "바이인 범위",
+                "buy_in_range",
+                "예: 5000~20000 · 비우면 빅 블라인드 ×50~×200",
+                40,
+                false,
+                None,
+            )));
+        }
+        GameKind::Blackjack => {
+            inputs.push(serenity::CreateActionRow::InputText(modal_input(
+                "베팅 범위",
+                "bet_range",
+                "예: 100~5000 · 비우면 100~5,000",
+                40,
+                false,
+                None,
+            )));
+            inputs.push(serenity::CreateActionRow::InputText(modal_input(
+                "사이드베팅 최대",
+                "side_max",
+                "0이면 사이드베팅 없음 · 비우면 최대 베팅의 절반",
+                20,
+                false,
+                None,
+            )));
+            inputs.push(serenity::CreateActionRow::InputText(modal_input(
+                "바이인 범위",
+                "buy_in_range",
+                "예: 5000~20000 · 비우면 최소 베팅×50~최대 베팅×4",
+                40,
+                false,
+                None,
+            )));
+        }
+    }
+    inputs.push(serenity::CreateActionRow::InputText(modal_input(
+        "제한 시간(초)",
+        "turn_secs",
+        "10~120 · 비우면 30",
+        5,
+        false,
+        None,
+    )));
+    serenity::CreateModal::new(
+        format!("casino_create:{}", kind.key()),
+        match kind {
+            GameKind::Holdem => "홀덤 테이블 만들기",
+            GameKind::Blackjack => "블랙잭 테이블 만들기",
+        },
+    )
+    .components(inputs)
+}
+
+pub fn table_settings_modal(
+    table_id: &str,
+    kind: GameKind,
+    name: &str,
+    settings: TableSettings,
+) -> serenity::CreateModal {
+    let title = format!("{name} 설정").chars().take(45).collect::<String>();
+    let mut inputs = vec![serenity::CreateActionRow::InputText(
+        modal_input(
+            "이름",
+            "name",
+            "테이블 이름 (2~24자)",
+            24,
+            true,
+            Some(name.to_string()),
+        )
+        .min_length(2),
+    )];
+    let buy_in = format!("{}~{}", settings.min_buy_in, settings.max_buy_in);
+    match kind {
+        GameKind::Holdem => {
+            inputs.push(serenity::CreateActionRow::InputText(modal_input(
+                "빅 블라인드",
+                "big_blind",
+                "비우면 기본값 · 짝수",
+                20,
+                false,
+                Some(settings.big_blind.to_string()),
+            )));
+            inputs.push(serenity::CreateActionRow::InputText(modal_input(
+                "바이인 범위",
+                "buy_in_range",
+                "예: 5000~20000",
+                40,
+                false,
+                Some(buy_in),
+            )));
+        }
+        GameKind::Blackjack => {
+            inputs.push(serenity::CreateActionRow::InputText(modal_input(
+                "베팅 범위",
+                "bet_range",
+                "예: 100~5000",
+                40,
+                false,
+                Some(format!("{}~{}", settings.min_bet, settings.max_bet)),
+            )));
+            inputs.push(serenity::CreateActionRow::InputText(modal_input(
+                "사이드베팅 최대",
+                "side_max",
+                "0이면 사이드베팅 없음",
+                20,
+                false,
+                Some(settings.side_bet_max.to_string()),
+            )));
+            inputs.push(serenity::CreateActionRow::InputText(modal_input(
+                "바이인 범위",
+                "buy_in_range",
+                "예: 5000~20000",
+                40,
+                false,
+                Some(buy_in),
+            )));
+        }
+    }
+    inputs.push(serenity::CreateActionRow::InputText(modal_input(
+        "제한 시간(초)",
+        "turn_secs",
+        "10~120 · 비우면 기본값",
+        5,
+        false,
+        Some((settings.turn_ms / 1000).to_string()),
+    )));
+    serenity::CreateModal::new(format!("casino_settings:{table_id}"), title).components(inputs)
+}
+
+fn modal_text(modal: &serenity::ModalInteraction, id: &str) -> String {
+    modal_value(modal, id).unwrap_or_default()
+}
+
+fn settings_from_modal(
+    modal: &serenity::ModalInteraction,
+    kind: GameKind,
+) -> Result<TableSettings, String> {
+    let (min_bet, max_bet, big_blind) = match kind {
+        GameKind::Holdem => (None, None, parse_amount(&modal_text(modal, "big_blind"))?),
+        GameKind::Blackjack => {
+            let (min, max) = parse_range(&modal_text(modal, "bet_range"))?;
+            (min, max, None)
+        }
+    };
+    let (min_buy_in, max_buy_in) = parse_range(&modal_text(modal, "buy_in_range"))?;
+    let side_bet_max = match kind {
+        GameKind::Blackjack => parse_amount(&modal_text(modal, "side_max"))?,
+        GameKind::Holdem => None,
+    };
+    let turn_secs = parse_amount(&modal_text(modal, "turn_secs"))?;
+    TableSettings::build(
+        kind,
+        SettingsRequest {
+            min_bet,
+            max_bet,
+            big_blind,
+            min_buy_in,
+            max_buy_in,
+            side_bet_max,
+            turn_secs,
+        },
+    )
+}
+
+/// 권한 확인(HTTP)이 실패했을 때: 인터랙션에 답하지 않으면 "상호작용 실패"로 보이므로
+/// 거절 안내로 바꿔 답한다.
+fn permission_check_failed(error: Error) -> Option<String> {
+    eprintln!("casino panel permission check failed: {error:?}");
+    Some("권한을 확인하지 못했습니다. 잠시 후 다시 시도하세요.".to_string())
+}
+
+/// 카지노 패널에서 누른 사람에게만 보이는 안내 (제목 "카지노").
+async fn casino_component_private(
+    ctx: &serenity::Context,
+    component: &serenity::ComponentInteraction,
+    message: impl Into<String>,
+) -> serenity::Result<()> {
+    component
+        .create_response(
+            ctx,
+            serenity::CreateInteractionResponse::Message(
+                serenity::CreateInteractionResponseMessage::new()
+                    .ephemeral(true)
+                    .embed(make_embed(message, "카지노", serenity::Colour::RED)),
+            ),
+        )
+        .await
+}
+
+/// 카지노 모달 제출에 대한 본인 전용 안내 (제목 "카지노").
+async fn casino_modal_private(
+    ctx: &serenity::Context,
+    modal: &serenity::ModalInteraction,
+    message: impl Into<String>,
+) -> serenity::Result<()> {
+    modal
+        .create_response(
+            ctx,
+            serenity::CreateInteractionResponse::Message(
+                serenity::CreateInteractionResponseMessage::new()
+                    .ephemeral(true)
+                    .embed(make_embed(message, "카지노", serenity::Colour::RED)),
+            ),
+        )
+        .await
+}
+
+fn panel_select(
+    action: &str,
+    summaries: &[crate::casino_hub::TableSummary],
+    seated: Option<&str>,
+) -> serenity::CreateActionRow {
+    let options = summaries
+        .iter()
+        .map(|summary| {
+            let description = format!(
+                "{} · {} · {}/{}명{}",
+                summary.kind_text,
+                summary.stakes,
+                summary.seated,
+                summary.seat_count,
+                if seated == Some(summary.id.as_str()) {
+                    " · 앉아 있음"
+                } else {
+                    ""
+                }
+            );
+            serenity::CreateSelectMenuOption::new(
+                summary.name.chars().take(100).collect::<String>(),
+                summary.id.clone(),
+            )
+            .description(description.chars().take(100).collect::<String>())
+        })
+        .collect::<Vec<_>>();
+    serenity::CreateActionRow::SelectMenu(
+        serenity::CreateSelectMenu::new(
+            format!("casino_pick:{action}"),
+            serenity::CreateSelectMenuKind::String { options },
+        )
+        .placeholder("테이블을 선택하세요")
+        .min_values(1)
+        .max_values(1),
+    )
+}
+
+pub async fn handle_casino_panel(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    action: &str,
+) -> Result<()> {
+    if matches!(
+        action,
+        "create_holdem" | "create_blackjack" | "settings" | "close"
+    ) && let Some(message) = manager_denial(ctx, data, component.guild_id, component.user.id)
+        .await
+        .unwrap_or_else(permission_check_failed)
+    {
+        casino_component_private(ctx, component, message).await?;
+        return Ok(());
+    }
+    match action {
+        "enter" => {
+            let summaries = data.casino.summaries().await;
+            match summaries.as_slice() {
+                [] => {
+                    casino_component_private(ctx, component, "열려 있는 테이블이 없습니다.").await?
+                }
+                [summary] => {
+                    let name = summary.name.clone();
+                    let display_name = component
+                        .member
+                        .as_ref()
+                        .map(|member| member.display_name().to_string())
+                        .unwrap_or_else(|| component.user.name.clone());
+                    component
+                        .create_response(
+                            ctx,
+                            serenity::CreateInteractionResponse::Message(
+                                serenity::CreateInteractionResponseMessage::new()
+                                    .ephemeral(true)
+                                    .embed(make_embed(
+                                        personal_entry_text(
+                                            data,
+                                            &summary.id,
+                                            &name,
+                                            component.user.id.get(),
+                                            &display_name,
+                                        )
+                                        .await,
+                                        "카지노 입장",
+                                        serenity::Colour::DARK_GREEN,
+                                    )),
+                            ),
+                        )
+                        .await?;
+                }
+                _ => {
+                    let seated = data.casino.seated_table_of(component.user.id.get()).await;
+                    // 앉아 있는 테이블을 맨 위에 둔다.
+                    let mut summaries = summaries.clone();
+                    summaries.sort_by_key(|summary| seated.as_deref() != Some(summary.id.as_str()));
+                    component
+                        .create_response(
+                            ctx,
+                            serenity::CreateInteractionResponse::Message(
+                                serenity::CreateInteractionResponseMessage::new()
+                                    .ephemeral(true)
+                                    .embed(make_embed(
+                                        "입장할 테이블을 선택하세요.",
+                                        "카지노 입장",
+                                        serenity::Colour::GOLD,
+                                    ))
+                                    .components(vec![panel_select(
+                                        "enter",
+                                        &summaries,
+                                        seated.as_deref(),
+                                    )]),
+                            ),
+                        )
+                        .await?;
+                }
+            }
+        }
+        "me" => {
+            component
+                .create_response(
+                    ctx,
+                    serenity::CreateInteractionResponse::Message(
+                        serenity::CreateInteractionResponseMessage::new()
+                            .ephemeral(true)
+                            .embed(make_embed(
+                                casino_status_text(data, component.user.id).await,
+                                "카지노",
+                                serenity::Colour::GOLD,
+                            )),
+                    ),
+                )
+                .await?;
+        }
+        "create_holdem" | "create_blackjack" => {
+            let kind = if action == "create_holdem" {
+                GameKind::Holdem
+            } else {
+                GameKind::Blackjack
+            };
+            component
+                .create_response(
+                    ctx,
+                    serenity::CreateInteractionResponse::Modal(create_table_modal(kind)),
+                )
+                .await?;
+        }
+        "settings" | "close" => {
+            let summaries = data.casino.summaries().await;
+            if summaries.is_empty() {
+                casino_component_private(ctx, component, "열려 있는 테이블이 없습니다.").await?;
+            } else {
+                component
+                    .create_response(
+                        ctx,
+                        serenity::CreateInteractionResponse::Message(
+                            serenity::CreateInteractionResponseMessage::new()
+                                .ephemeral(true)
+                                .embed(make_embed(
+                                    "테이블을 선택하세요.",
+                                    "카지노",
+                                    serenity::Colour::GOLD,
+                                ))
+                                .components(vec![panel_select(action, &summaries, None)]),
+                        ),
+                    )
+                    .await?;
+            }
+        }
+        _ => ack_component(ctx, component).await,
+    }
+    Ok(())
+}
+
+pub async fn handle_casino_pick(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    action: &str,
+) -> Result<()> {
+    let Some(table_id) = selected_values(component).into_iter().next() else {
+        casino_component_private(ctx, component, "테이블을 선택하세요.").await?;
+        return Ok(());
+    };
+    if matches!(action, "settings" | "close")
+        && let Some(message) = manager_denial(ctx, data, component.guild_id, component.user.id)
+            .await
+            .unwrap_or_else(permission_check_failed)
+    {
+        casino_component_private(ctx, component, message).await?;
+        return Ok(());
+    }
+    match action {
+        "enter" => {
+            let Some(table) = data.casino.table(&table_id) else {
+                component
+                    .create_response(
+                        ctx,
+                        serenity::CreateInteractionResponse::UpdateMessage(
+                            serenity::CreateInteractionResponseMessage::new()
+                                .embed(make_embed(
+                                    "이미 닫힌 테이블입니다.",
+                                    "카지노",
+                                    serenity::Colour::RED,
+                                ))
+                                .components(Vec::new()),
+                        ),
+                    )
+                    .await?;
+                return Ok(());
+            };
+            let name = table.read().await.name.clone();
+            let display_name = component
+                .member
+                .as_ref()
+                .map(|member| member.display_name().to_string())
+                .unwrap_or_else(|| component.user.name.clone());
+            component
+                .create_response(
+                    ctx,
+                    serenity::CreateInteractionResponse::UpdateMessage(
+                        serenity::CreateInteractionResponseMessage::new()
+                            .embed(make_embed(
+                                personal_entry_text(
+                                    data,
+                                    &table_id,
+                                    &name,
+                                    component.user.id.get(),
+                                    &display_name,
+                                )
+                                .await,
+                                "카지노 입장",
+                                serenity::Colour::DARK_GREEN,
+                            ))
+                            .components(Vec::new()),
+                    ),
+                )
+                .await?;
+        }
+        "settings" => {
+            let Some(table) = data.casino.table(&table_id) else {
+                casino_component_private(ctx, component, "테이블을 찾을 수 없습니다.").await?;
+                return Ok(());
+            };
+            // 모달 응답(HTTP)을 기다리는 동안 테이블 잠금을 쥐지 않는다.
+            let modal = {
+                let table = table.read().await;
+                // 라운드가 끝나기를 기다리는 설정이 있으면 그 값에서 시작한다.
+                let settings = table.pending_settings.unwrap_or(table.settings);
+                table_settings_modal(&table_id, table.kind, &table.name, settings)
+            };
+            component
+                .create_response(ctx, serenity::CreateInteractionResponse::Modal(modal))
+                .await?;
+        }
+        "close" => {
+            let Some(table) = data.casino.table(&table_id) else {
+                casino_component_private(ctx, component, "이미 닫힌 테이블입니다.").await?;
+                return Ok(());
+            };
+            let name = table.read().await.name.clone();
+            component
+                .create_response(
+                    ctx,
+                    serenity::CreateInteractionResponse::UpdateMessage(
+                        serenity::CreateInteractionResponseMessage::new()
+                            .embed(make_embed(
+                                format!(
+                                    "**{name}** 테이블을 닫을까요? 앉아 있는 사람의 칩은 코인으로 돌아가고 채널이 삭제됩니다."
+                                ),
+                                "카지노 테이블 닫기",
+                                serenity::Colour::RED,
+                            ))
+                            .components(vec![serenity::CreateActionRow::Buttons(vec![
+                                serenity::CreateButton::new(format!(
+                                    "casino_close_confirm:{table_id}"
+                                ))
+                                .label("닫기")
+                                .style(serenity::ButtonStyle::Danger),
+                                serenity::CreateButton::new("casino_close_cancel")
+                                    .label("취소")
+                                    .style(serenity::ButtonStyle::Secondary),
+                            ])]),
+                    ),
+                )
+                .await?;
+        }
+        _ => ack_component(ctx, component).await,
+    }
+    Ok(())
+}
+
+async fn create_table_body(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: serenity::GuildId,
+    source_channel_id: serenity::ChannelId,
+    kind: GameKind,
+    name: &str,
+    created_by: u64,
+    created_by_name: &str,
+    settings: TableSettings,
+    panel_entry: bool,
+) -> std::result::Result<String, String> {
+    let hub = data.casino.clone();
+    // 채널을 만드는 동안 이름을 맡아 둔다 (동시에 만든 이름·바꾼 이름과 겹치지 않게).
+    // 개수 한도와 이름 길이도 여기서 먼저 확인해, 만들었다 지우는 채널이 생기지 않게 한다.
+    let reservation = hub.reserve_table_name(name).await?;
+    let category = source_category(ctx, source_channel_id).await;
+    let channel_name = table_channel_name(name);
+    let Some(channel) = create_text_channel_safe(
+        ctx,
+        guild_id,
+        &channel_name,
+        vec![],
+        category,
+        "카지노 테이블 채널 생성",
+        0,
+        Some(format!(
+            "{} 테이블 · 웹에서 플레이, 채팅은 이 채널과 연결됩니다.",
+            kind.value()
+        )),
+    )
+    .await
+    else {
+        return Err(
+            "테이블 채널을 만들지 못했습니다. 봇의 채널 관리 권한을 확인하세요.".to_string(),
+        );
+    };
+    let binding = TableBinding {
+        guild_id: guild_id.get(),
+        channel_id: channel.id.get(),
+        channel_name: Some(channel.name.clone()),
+        ..Default::default()
+    };
+    let table_id = match hub.create_table(kind, name, created_by, binding, settings) {
+        Ok(id) => id,
+        Err(message) => {
+            drop(reservation);
+            let _ = channel.delete(ctx).await;
+            return Err(message);
+        }
+    };
+    drop(reservation);
+    hub.save().await;
+    refresh_table_status(ctx, data, &table_id).await;
+    refresh_casino_panel(ctx, data).await;
+    let log_channel_id = data.config.read().await.log_channel_id;
+    send_admin_log(
+        ctx.http(),
+        log_channel_id,
+        "카지노 테이블",
+        format!(
+            "{created_by_name} 님이 {} 테이블 **{name}**(<#{}>)을 만들었습니다. {}",
+            kind.value(),
+            channel.id.get(),
+            settings.summary(kind)
+        ),
+    )
+    .await;
+    Ok(format!(
+        "{} 테이블 **{name}**을 만들었습니다. 채널: <#{}>\n방 설정: {}\n{}",
+        kind.value(),
+        channel.id.get(),
+        settings.summary(kind),
+        if panel_entry {
+            "참가자는 카지노 패널의 **테이블 입장** 버튼으로 개인 링크를 받습니다.".to_string()
+        } else {
+            format!("참가자는 `/카지노입장 테이블:{name}` 으로 개인 링크를 받습니다.")
+        }
+    ))
+}
+
+async fn close_table_body(
+    ctx: &serenity::Context,
+    data: &Data,
+    table_id: &str,
+    actor_name: &str,
+) -> Result<Option<(String, Vec<String>)>> {
+    let hub = data.casino.clone();
+    let Some(table) = hub.table(table_id) else {
+        return Ok(None);
+    };
+    let name = table.read().await.name.clone();
+    let binding = hub.binding(table_id);
+    let events = hub.close_table(table_id).await;
+    let refunds = events
+        .iter()
+        .filter_map(|event| match event {
+            CasinoEvent::CashOut { name, amount, .. } => {
+                Some(format!("{name} {}원", format_number(*amount)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if let Some(binding) = binding {
+        let channel_id = serenity::ChannelId::new(binding.channel_id);
+        let _ = send_channel_embed(
+            ctx.http(),
+            channel_id,
+            format!(
+                "테이블이 닫혔습니다. 남은 칩은 코인으로 돌아갔습니다.{}",
+                if refunds.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", refunds.join("\n"))
+                }
+            ),
+            "카지노 테이블 종료",
+            serenity::Colour::DARK_GREY,
+            vec![],
+        )
+        .await;
+        let _ = channel_id.delete(ctx.http()).await;
+    }
+    let log_channel_id = data.config.read().await.log_channel_id;
+    send_admin_log(
+        ctx.http(),
+        log_channel_id,
+        "카지노 테이블",
+        format!(
+            "{} 님이 테이블 **{name}**을 닫았습니다. 반환: {}",
+            actor_name,
+            if refunds.is_empty() {
+                "없음".to_string()
+            } else {
+                refunds.join(", ")
+            }
+        ),
+    )
+    .await;
+    refresh_casino_panel(ctx, data).await;
+    Ok(Some((name, refunds)))
+}
+
+pub async fn handle_casino_close_confirm(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    table_id: &str,
+) -> Result<()> {
+    if let Some(message) = manager_denial(ctx, data, component.guild_id, component.user.id)
+        .await
+        .unwrap_or_else(permission_check_failed)
+    {
+        casino_component_private(ctx, component, message).await?;
+        return Ok(());
+    }
+    component.defer(ctx).await?;
+    let result = close_table_body(ctx, data, table_id, &component.user.name).await?;
+    let message = match result {
+        Some((name, refunds)) => format!(
+            "테이블 **{name}**을 닫았습니다.{}",
+            if refunds.is_empty() {
+                String::new()
+            } else {
+                format!("\n칩 반환: {}", refunds.join(", "))
+            }
+        ),
+        None => "이미 닫힌 테이블입니다.".to_string(),
+    };
+    component
+        .edit_response(
+            ctx,
+            serenity::EditInteractionResponse::new()
+                .embed(make_embed(
+                    message,
+                    "카지노 테이블",
+                    serenity::Colour::DARK_GREEN,
+                ))
+                .components(Vec::new()),
+        )
+        .await?;
+    Ok(())
+}
+
+pub async fn handle_casino_close_cancel(
+    ctx: &serenity::Context,
+    component: &serenity::ComponentInteraction,
+) -> Result<()> {
+    component
+        .create_response(
+            ctx,
+            serenity::CreateInteractionResponse::UpdateMessage(
+                serenity::CreateInteractionResponseMessage::new()
+                    .embed(make_embed(
+                        "취소했습니다.",
+                        "카지노",
+                        serenity::Colour::DARK_GREY,
+                    ))
+                    .components(Vec::new()),
+            ),
+        )
+        .await?;
+    Ok(())
+}
+
+pub async fn handle_casino_create_submit(
+    ctx: &serenity::Context,
+    data: &Data,
+    modal: &serenity::ModalInteraction,
+    kind_key: &str,
+) -> Result<()> {
+    if let Some(message) = manager_denial(ctx, data, modal.guild_id, modal.user.id)
+        .await
+        .unwrap_or_else(permission_check_failed)
+    {
+        casino_modal_private(ctx, modal, message).await?;
+        return Ok(());
+    }
+    let kind = match kind_key {
+        "holdem" => GameKind::Holdem,
+        "blackjack" => GameKind::Blackjack,
+        _ => {
+            casino_modal_private(ctx, modal, "잘못된 테이블 종류입니다.").await?;
+            return Ok(());
+        }
+    };
+    let name = modal_text(modal, "name");
+    let settings = match settings_from_modal(modal, kind) {
+        Ok(settings) => settings,
+        Err(message) => {
+            casino_modal_private(ctx, modal, message).await?;
+            return Ok(());
+        }
+    };
+    let Some(guild_id) = modal.guild_id else {
+        casino_modal_private(ctx, modal, "서버 안에서만 사용할 수 있습니다.").await?;
+        return Ok(());
+    };
+    modal.defer_ephemeral(ctx).await?;
+    let response = create_table_body(
+        ctx,
+        data,
+        guild_id,
+        modal.channel_id,
+        kind,
+        &name,
+        modal.user.id.get(),
+        &modal.user.name,
+        settings,
+        true,
+    )
+    .await;
+    let (message, colour) = match response {
+        Ok(message) => (message, serenity::Colour::DARK_GREEN),
+        Err(message) => (message, serenity::Colour::RED),
+    };
+    modal
+        .edit_response(
+            ctx,
+            serenity::EditInteractionResponse::new().embed(make_embed(message, "카지노", colour)),
+        )
+        .await?;
+    Ok(())
+}
+
+pub async fn handle_casino_settings_submit(
+    ctx: &serenity::Context,
+    data: &Data,
+    modal: &serenity::ModalInteraction,
+    table_id: &str,
+) -> Result<()> {
+    if let Some(message) = manager_denial(ctx, data, modal.guild_id, modal.user.id)
+        .await
+        .unwrap_or_else(permission_check_failed)
+    {
+        casino_modal_private(ctx, modal, message).await?;
+        return Ok(());
+    }
+    let Some(table) = data.casino.table(table_id) else {
+        casino_modal_private(ctx, modal, "테이블을 찾을 수 없습니다.").await?;
+        return Ok(());
+    };
+    let (kind, old_name, effective) = {
+        let table = table.read().await;
+        // 라운드 끝을 기다리는 변경이 있으면 그것이 지금 정해진 설정이다.
+        (
+            table.kind,
+            table.name.clone(),
+            table.pending_settings.unwrap_or(table.settings),
+        )
+    };
+    let name = modal_text(modal, "name");
+    let settings = match settings_from_modal(modal, kind) {
+        Ok(settings) => settings,
+        Err(message) => {
+            casino_modal_private(ctx, modal, message).await?;
+            return Ok(());
+        }
+    };
+    modal.defer_ephemeral(ctx).await?;
+    let name = name.trim().to_string();
+    let renamed = if name == old_name {
+        Ok(false)
+    } else {
+        data.casino.rename_table(table_id, &name).await
+    };
+    let renamed = match renamed {
+        Ok(changed) => changed,
+        Err(message) => {
+            modal
+                .edit_response(
+                    ctx,
+                    serenity::EditInteractionResponse::new().embed(make_embed(
+                        message,
+                        "카지노",
+                        serenity::Colour::RED,
+                    )),
+                )
+                .await?;
+            return Ok(());
+        }
+    };
+    let mut notes = Vec::new();
+    if renamed {
+        notes.push(format!("이름을 **{name}**(으)로 바꿨습니다."));
+    }
+    // 채널 이름을 테이블 이름에 맞춘다. 봇이 마지막으로 정한 채널 이름(예전 저장본은 옛 테이블
+    // 이름에서 만든 이름)과 다를 때만 보내므로, 전에 제한에 걸려 못 바꾼 이름도 이번에 맞추고,
+    // 대소문자·공백만 달라 채널 이름이 그대로면 보내지 않는다.
+    let desired_channel = table_channel_name(&name);
+    let binding = data.casino.binding(table_id).filter(|binding| {
+        binding
+            .channel_name
+            .clone()
+            .unwrap_or_else(|| table_channel_name(&old_name))
+            != desired_channel
+    });
+    if let Some(binding) = binding {
+        // Discord는 채널 이름을 10분에 두 번까지만 바꾸게 한다. 넘으면 요청이 몇 분씩 멈추고
+        // 그동안 이 채널의 다른 요청(삭제 등)도 막히므로, 넘을 것 같으면 보내지 않는다.
+        if data.casino.take_channel_rename(binding.channel_id) {
+            match serenity::ChannelId::new(binding.channel_id)
+                .edit(ctx, serenity::EditChannel::new().name(&desired_channel))
+                .await
+            {
+                Ok(channel) => {
+                    data.casino.update_binding(table_id, |binding| {
+                        binding.channel_name = Some(channel.name.clone());
+                    });
+                    if !renamed {
+                        notes.push("채널 이름을 테이블 이름에 맞췄습니다.".to_string());
+                    }
+                }
+                Err(error) => {
+                    eprintln!("failed to rename casino table channel: {error:?}");
+                    notes.push(
+                        "채널 이름은 바꾸지 못했습니다. 나중에 설정 창을 다시 제출하면 다시 시도합니다."
+                            .to_string(),
+                    );
+                }
+            }
+        } else {
+            notes.push(
+                "채널 이름은 Discord 제한(10분에 두 번)으로 이번에는 바꾸지 않았습니다. 10분 뒤 설정 창을 다시 제출하면 맞춥니다."
+                    .to_string(),
+            );
+        }
+    }
+    let settings_changed = settings != effective;
+    let applied = if settings_changed {
+        match data.casino.update_settings(table_id, settings).await {
+            Ok(applied) => Some(applied),
+            Err(message) => {
+                modal
+                    .edit_response(
+                        ctx,
+                        serenity::EditInteractionResponse::new().embed(make_embed(
+                            message,
+                            "카지노",
+                            serenity::Colour::RED,
+                        )),
+                    )
+                    .await?;
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+    if notes.is_empty() && !settings_changed {
+        modal
+            .edit_response(
+                ctx,
+                serenity::EditInteractionResponse::new().embed(make_embed(
+                    "바뀐 내용이 없습니다.",
+                    "카지노",
+                    serenity::Colour::DARK_GREY,
+                )),
+            )
+            .await?;
+        return Ok(());
+    }
+    data.casino.save().await;
+    refresh_casino_panel(ctx, data).await;
+    let log_channel_id = data.config.read().await.log_channel_id;
+    // 채널 이름만 맞춘 경우는 기록하지 않는다.
+    if renamed || settings_changed {
+        let rename_log = if renamed {
+            format!(" 이름: {old_name} → {name}")
+        } else {
+            String::new()
+        };
+        let settings_log = if settings_changed {
+            format!(" 설정: {}", settings.summary(kind))
+        } else {
+            String::new()
+        };
+        send_admin_log(
+            ctx.http(),
+            log_channel_id,
+            "카지노 테이블",
+            format!(
+                "{} 님이 테이블 **{old_name}**을 바꿨습니다.{rename_log}{settings_log}",
+                modal.user.name,
+            ),
+        )
+        .await;
+    }
+    match applied {
+        Some(true) => notes.push(format!(
+            "방 설정을 적용했습니다: {}",
+            settings.summary(kind)
+        )),
+        Some(false) => notes.push(format!(
+            "라운드가 진행 중이라 이번 라운드가 끝나면 적용됩니다: {}",
+            settings.summary(kind)
+        )),
+        None => {}
+    }
+    modal
+        .edit_response(
+            ctx,
+            serenity::EditInteractionResponse::new().embed(make_embed(
+                notes.join("\n"),
+                "카지노",
+                serenity::Colour::DARK_GREEN,
+            )),
+        )
+        .await?;
+    Ok(())
 }
 
 /// 상태 임베드의 버튼 custom_id.
@@ -974,6 +2091,9 @@ pub async fn run_casino_relay(ctx: serenity::Context, data: Data) {
     let hub = data.casino.clone();
     let mut updates = hub.updates.subscribe();
     let mut last_refresh: HashMap<String, Instant> = HashMap::new();
+    // 패널은 3초에 한 번까지만 고친다. 그 사이에 바뀐 것은 다음 틱에 반영한다.
+    let mut last_panel_refresh: Option<Instant> = None;
+    let mut panel_dirty = false;
     let mut pending: HashSet<String> = HashSet::new();
     let mut flush = tokio::time::interval(Duration::from_millis(1_500));
     loop {
@@ -988,13 +2108,18 @@ pub async fn run_casino_relay(ctx: serenity::Context, data: Data) {
                 }
             }
             _ = flush.tick() => {
-                if pending.is_empty() { continue; }
                 let due = pending.iter().filter(|id| last_refresh.get(*id).is_none_or(|at| at.elapsed() >= Duration::from_millis(1_400))).cloned().collect::<Vec<_>>();
                 for table_id in due {
                     pending.remove(&table_id);
+                    panel_dirty = true;
                     if hub.binding(&table_id).is_none() { continue; }
                     refresh_table_status(&ctx, &data, &table_id).await;
                     last_refresh.insert(table_id, Instant::now());
+                }
+                if panel_dirty && last_panel_refresh.is_none_or(|at| at.elapsed() >= Duration::from_secs(3)) {
+                    panel_dirty = false;
+                    refresh_casino_panel(&ctx, &data).await;
+                    last_panel_refresh = Some(Instant::now());
                 }
             }
         }
@@ -1034,4 +2159,138 @@ pub async fn handle_casino_channel_message(data: &Data, message: &serenity::Mess
     hub.relay_chat_from_discord(&table_id, message.author.id.get(), &name, &text)
         .await;
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::casino_hub::TableSummary;
+
+    fn input_count(modal: serenity::CreateModal) -> (usize, String) {
+        let json = serde_json::to_value(modal).unwrap();
+        let count = json["components"].as_array().unwrap().len();
+        (count, json.to_string())
+    }
+
+    #[test]
+    fn parse_ranges_accept_common_formats() {
+        assert_eq!(
+            parse_range("5000~20000").unwrap(),
+            (Some(5000), Some(20000))
+        );
+        assert_eq!(
+            parse_range("5,000 ~ 20,000").unwrap(),
+            (Some(5000), Some(20000))
+        );
+        assert_eq!(
+            parse_range("5000-20000").unwrap(),
+            (Some(5000), Some(20000))
+        );
+        assert_eq!(parse_range("5000").unwrap(), (Some(5000), None));
+        assert_eq!(parse_range("").unwrap(), (None, None));
+    }
+
+    #[test]
+    fn parse_amount_rejects_invalid_or_huge_values() {
+        assert_eq!(parse_amount("5000원").unwrap(), Some(5000));
+        assert!(parse_amount("abc").is_err());
+        assert!(parse_range("1~2~3").is_err());
+        assert!(parse_range("-5").is_err());
+        assert!(parse_amount("10000000001").is_err());
+    }
+
+    #[test]
+    fn holdem_create_modal_has_four_nonempty_inputs() {
+        let (count, json) = input_count(create_table_modal(GameKind::Holdem));
+        assert_eq!(count, 4);
+        for id in ["name", "big_blind", "buy_in_range", "turn_secs"] {
+            assert!(json.contains(&format!("\"custom_id\":\"{id}\"")));
+        }
+        assert!(!json.contains("\"value\":\"\""));
+        assert!(json.contains("\"max_length\":24"));
+    }
+
+    #[test]
+    fn blackjack_create_modal_has_five_nonempty_inputs() {
+        let (count, json) = input_count(create_table_modal(GameKind::Blackjack));
+        assert_eq!(count, 5);
+        for id in ["name", "bet_range", "side_max", "buy_in_range", "turn_secs"] {
+            assert!(json.contains(&format!("\"custom_id\":\"{id}\"")));
+        }
+        assert!(!json.contains("\"value\":\"\""));
+    }
+
+    #[test]
+    fn settings_modals_prefill_without_empty_values() {
+        let settings = TableSettings::default();
+        let (holdem_count, holdem_json) = input_count(table_settings_modal(
+            "holdem-1",
+            GameKind::Holdem,
+            "홀덤",
+            settings,
+        ));
+        let (blackjack_count, blackjack_json) = input_count(table_settings_modal(
+            "blackjack-1",
+            GameKind::Blackjack,
+            "블랙잭",
+            settings,
+        ));
+        assert_eq!(holdem_count, 4);
+        assert_eq!(blackjack_count, 5);
+        assert!(!holdem_json.contains("\"value\":\"\""));
+        assert!(!blackjack_json.contains("\"value\":\"\""));
+        assert!(holdem_json.contains("casino_settings:holdem-1"));
+        assert!(blackjack_json.contains("casino_settings:blackjack-1"));
+    }
+
+    #[test]
+    fn panel_render_handles_empty_and_two_tables() {
+        assert!(render_casino_panel(&[]).contains("열려 있는 테이블이 없습니다."));
+        let summaries = vec![
+            TableSummary {
+                id: "h1".to_string(),
+                kind: GameKind::Holdem,
+                kind_text: "홀덤".to_string(),
+                name: "하이 롤러".to_string(),
+                seated: 2,
+                seat_count: 6,
+                playing: true,
+                phase_text: Some("베팅".to_string()),
+                channel_id: Some(100),
+                stakes: "블라인드 50/100".to_string(),
+            },
+            TableSummary {
+                id: "b1".to_string(),
+                kind: GameKind::Blackjack,
+                kind_text: "블랙잭".to_string(),
+                name: "블랙잭".to_string(),
+                seated: 1,
+                seat_count: 6,
+                playing: false,
+                phase_text: None,
+                channel_id: None,
+                stakes: "베팅 100~5,000".to_string(),
+            },
+        ];
+        let rendered = render_casino_panel(&summaries);
+        assert!(rendered.contains("열린 테이블 (2/12)"));
+        assert!(rendered.contains("진행 중") && rendered.contains("대기 중"));
+        assert!(rendered.contains("<#100>") && !rendered.contains("<#0>"));
+    }
+
+    #[test]
+    fn panel_components_use_only_static_custom_ids() {
+        let json = serde_json::to_string(&panel_components()).unwrap();
+        for id in [
+            "casino_panel:enter",
+            "casino_panel:me",
+            "casino_panel:create_holdem",
+            "casino_panel:create_blackjack",
+            "casino_panel:settings",
+            "casino_panel:close",
+        ] {
+            assert!(json.contains(id));
+        }
+        assert!(!json.contains("123456789"));
+    }
 }

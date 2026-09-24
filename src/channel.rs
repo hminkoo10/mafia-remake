@@ -1049,46 +1049,52 @@ fn home_guild_denial(home_guild_id: u64, guild_id: u64) -> Option<&'static str> 
 }
 
 pub async fn require_manager(ctx: Context<'_>) -> Result<bool, Error> {
-    let Some(guild_id) = ctx.guild_id() else {
-        reply_embed(
-            ctx,
-            "서버 안에서만 사용할 수 있습니다.",
-            "권한 오류",
-            serenity::Colour::RED,
-            true,
-        )
-        .await?;
-        return Ok(false);
+    let allowed = manager_denial(
+        ctx.serenity_context(),
+        ctx.data(),
+        ctx.guild_id(),
+        ctx.author().id,
+    )
+    .await?;
+    let Some(message) = allowed else {
+        return Ok(true);
+    };
+    reply_embed(ctx, message, "권한 오류", serenity::Colour::RED, true).await?;
+    Ok(false)
+}
+
+/// 관리 명령을 쓸 수 없으면 그 이유를 돌려준다 (슬래시 명령과 카지노 패널 버튼이 같이 쓴다).
+pub async fn manager_denial(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: Option<serenity::GuildId>,
+    user_id: serenity::UserId,
+) -> Result<Option<String>, Error> {
+    let Some(guild_id) = guild_id else {
+        return Ok(Some("서버 안에서만 사용할 수 있습니다.".to_string()));
     };
     let (manager_role, home_guild_id) = {
-        let config = ctx.data().config.read().await;
+        let config = data.config.read().await;
         (config.manager_role.clone(), config.home_guild_id)
     };
     // 본 서버가 아니면 역할을 보기 전에 막는다 (관리자 역할 이름도 알려 주지 않는다).
     if let Some(message) = home_guild_denial(home_guild_id, guild_id.get()) {
-        reply_embed(ctx, message, "권한 오류", serenity::Colour::RED, true).await?;
-        return Ok(false);
+        return Ok(Some(message.to_string()));
     }
-    let member = guild_id
-        .member(ctx.serenity_context(), ctx.author().id)
-        .await?;
-    let roles = guild_id.roles(ctx.serenity_context()).await?;
+    let member = guild_id.member(ctx, user_id).await?;
+    let roles = guild_id.roles(ctx).await?;
     let allowed = member.roles.iter().any(|role_id| {
         roles
             .get(role_id)
             .is_some_and(|role| role.name == manager_role)
     });
-    if !allowed {
-        reply_embed(
-            ctx,
-            format!("'{manager_role}' 역할을 가진 사람만 사용할 수 있습니다."),
-            "권한 오류",
-            serenity::Colour::RED,
-            true,
-        )
-        .await?;
+    if allowed {
+        Ok(None)
+    } else {
+        Ok(Some(format!(
+            "'{manager_role}' 역할을 가진 사람만 사용할 수 있습니다."
+        )))
     }
-    Ok(allowed)
 }
 
 #[cfg(test)]

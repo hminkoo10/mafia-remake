@@ -182,7 +182,7 @@ const blankTable = (): TableView => ({
   version: 0,
   button: -1,
   my_seat: -1,
-  narration: "열려 있는 테이블이 없어요. 관리자가 Discord에서 /카지노테이블생성 으로 열 수 있어요.",
+  narration: "열려 있는 테이블이 없어요. 관리자가 Discord 카지노 패널에서 열 수 있어요.",
   seats: Array(6).fill(null),
   round: null,
   legal: { poker: null, blackjack: null, can_bet: false, can_start: false, can_insure: false, insurance_cost: 0 },
@@ -1965,7 +1965,7 @@ export default function Casino() {
       <Dialog open={lobby} onOpenChange={setLobby}>
         <DialogContent className="noir-dialog">
           <DialogTitle>CASINO73 테이블</DialogTitle>
-          <DialogDescription>{tables.length ? "원하는 테이블을 선택하세요." : "열려 있는 테이블이 없습니다. 관리자가 Discord에서 /카지노테이블생성 으로 열 수 있어요."}</DialogDescription>
+          <DialogDescription>{tables.length ? "원하는 테이블을 선택하세요." : "열려 있는 테이블이 없습니다. 관리자가 Discord 카지노 패널에서 열 수 있어요."}</DialogDescription>
           {tables.map((t) => (
             <button
               key={t.id}

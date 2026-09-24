@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{RwLock, broadcast};
@@ -43,6 +44,17 @@ pub struct TableBinding {
     /// 여기까지의 핸드 결과를 채널에 알렸다 (history id).
     #[serde(default)]
     pub announced_result_id: Option<String>,
+    /// 봇이 마지막으로 정한 채널 이름. 테이블 이름과 어긋나면(이름 변경이 Discord 제한에
+    /// 걸렸던 경우 등) 다음 설정 제출 때 다시 맞춘다. 예전 저장본은 None.
+    #[serde(default)]
+    pub channel_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PanelBinding {
+    pub guild_id: u64,
+    pub channel_id: u64,
+    pub message_id: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +76,8 @@ struct CasinoFile {
     house: i64,
     #[serde(default)]
     tables: Vec<StoredTable>,
+    #[serde(default)]
+    panel: Option<PanelBinding>,
 }
 
 /// 테이블이 바뀌었다는 알림 (웹소켓 푸시·Discord 중계용).
@@ -85,6 +99,14 @@ pub struct CasinoHub {
     pub webhooks: DashMap<u64, serenity::Webhook>,
     /// 웹훅 채팅에 쓰는 참가자 아바타 URL 캐시 (user_id → url).
     pub avatars: DashMap<u64, String>,
+    pub panel: Mutex<Option<PanelBinding>>,
+    panel_text: Mutex<Option<String>>,
+    /// 테이블 이름 확인과 예약·이름 변경을 한 번에 하나씩 해 같은 이름이 둘 생기지 않게 한다.
+    names: tokio::sync::Mutex<()>,
+    /// 채널을 만드는 중이라 아직 테이블 목록에 없는 이름 (소문자).
+    reserved_names: Mutex<std::collections::HashSet<String>>,
+    /// 채널별 최근 이름 변경 시각 (Discord는 10분에 두 번까지만 허용한다).
+    channel_renames: Mutex<std::collections::HashMap<u64, Vec<Instant>>>,
     save_lock: tokio::sync::Mutex<()>,
 }
 
@@ -123,10 +145,18 @@ impl CasinoHub {
             updates,
             webhooks: DashMap::new(),
             avatars: DashMap::new(),
+            panel: Mutex::new(None),
+            panel_text: Mutex::new(None),
+            names: tokio::sync::Mutex::new(()),
+            reserved_names: Mutex::new(std::collections::HashSet::new()),
+            channel_renames: Mutex::new(std::collections::HashMap::new()),
             save_lock: tokio::sync::Mutex::new(()),
         };
         let file = load_file(&hub.path)?;
         hub.house.store(file.house, Ordering::Relaxed);
+        *hub.panel
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = file.panel;
         for stored in file.tables {
             let id = stored.table.id.clone();
             hub.bindings.insert(id.clone(), stored.binding);
@@ -162,6 +192,7 @@ impl CasinoHub {
         let file = CasinoFile {
             house: self.house.load(Ordering::Relaxed),
             tables,
+            panel: self.panel(),
         };
         let path = self.path.clone();
         match tokio::task::spawn_blocking(move || save_file(&path, &file)).await {
@@ -268,21 +299,135 @@ impl CasinoHub {
         binding: TableBinding,
         settings: TableSettings,
     ) -> Result<String, String> {
-        if self.tables.len() >= MAX_TABLES {
-            return Err(format!(
-                "테이블은 최대 {MAX_TABLES}개까지 만들 수 있습니다."
-            ));
-        }
+        self.check_new_table(name)?;
         let name = name.trim();
-        if name.chars().count() < 2 || name.chars().count() > 24 {
-            return Err("테이블 이름은 2~24자로 입력하세요.".to_string());
-        }
         let id = format!("{}-{}", kind.key(), short_id());
         let table =
             CasinoTable::new(id.clone(), kind, name, created_by, now_ms()).with_settings(settings);
         self.bindings.insert(id.clone(), binding);
         self.tables.insert(id.clone(), Arc::new(RwLock::new(table)));
         Ok(id)
+    }
+
+    /// 새 테이블을 만들 수 있는지 (개수 한도, 이름 길이). 채널을 만들기 전에도 부른다.
+    pub fn check_new_table(&self, name: &str) -> Result<(), String> {
+        if self.tables.len() >= MAX_TABLES {
+            return Err(format!(
+                "테이블은 최대 {MAX_TABLES}개까지 만들 수 있습니다."
+            ));
+        }
+        let count = name.trim().chars().count();
+        if !(2..=24).contains(&count) {
+            return Err("테이블 이름은 2~24자로 입력하세요.".to_string());
+        }
+        Ok(())
+    }
+
+    /// 다른 테이블이나 만드는 중인 테이블이 이 이름(대소문자 무시)을 쓰는지.
+    async fn name_taken(&self, name: &str, except_id: Option<&str>) -> bool {
+        let key = name.trim().to_lowercase();
+        if self
+            .reserved_names
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&key)
+        {
+            return true;
+        }
+        for (id, handle) in self.table_handles() {
+            if Some(id.as_str()) != except_id && handle.read().await.name.to_lowercase() == key {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 채널을 만드는 동안 이름을 맡아 둔다. 돌려받은 값을 버리면(테이블 등록 뒤) 풀린다.
+    /// 이름 잠금은 확인과 예약 사이에만 쥐어, 느린 채널 생성이 다른 생성·이름 변경을 막지 않는다.
+    pub async fn reserve_table_name(
+        self: &Arc<Self>,
+        name: &str,
+    ) -> Result<NameReservation, String> {
+        let _names = self.names.lock().await;
+        self.check_new_table(name)?;
+        // 만드는 중인 테이블도 개수에 넣는다 (동시에 만들어 한도를 넘긴 채널이 생기지 않게).
+        let reserved = self
+            .reserved_names
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len();
+        if self.tables.len() + reserved >= MAX_TABLES {
+            return Err(format!(
+                "테이블은 최대 {MAX_TABLES}개까지 만들 수 있습니다."
+            ));
+        }
+        if self.name_taken(name, None).await {
+            return Err("같은 이름의 테이블이 이미 있습니다.".to_string());
+        }
+        let key = name.trim().to_lowercase();
+        self.reserved_names
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key.clone());
+        Ok(NameReservation {
+            hub: self.clone(),
+            key,
+        })
+    }
+
+    /// 이 채널 이름을 지금 바꿔도 되는지 보고, 되면 기록한다. Discord는 채널 이름을 10분에
+    /// 두 번까지만 바꾸게 하고, 넘으면 요청이 몇 분씩 멈춰 같은 채널의 다른 요청(삭제 등)까지
+    /// 막는다. 그래서 넘을 것 같으면 아예 보내지 않는다.
+    pub fn take_channel_rename(&self, channel_id: u64) -> bool {
+        const WINDOW: Duration = Duration::from_secs(10 * 60);
+        let now = Instant::now();
+        let mut renames = self
+            .channel_renames
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let recent = renames.entry(channel_id).or_default();
+        recent.retain(|at| now.saturating_duration_since(*at) < WINDOW);
+        if recent.len() >= 2 {
+            return false;
+        }
+        recent.push(now);
+        true
+    }
+
+    pub async fn rename_table(&self, table_id: &str, new_name: &str) -> Result<bool, String> {
+        let _names = self.names.lock().await;
+        let name = new_name.trim();
+        if name.chars().count() < 2 || name.chars().count() > 24 {
+            return Err("테이블 이름은 2~24자로 입력하세요.".to_string());
+        }
+        if self.name_taken(name, Some(table_id)).await {
+            return Err("같은 이름의 테이블이 이미 있습니다.".to_string());
+        }
+        let Some(table) = self.table(table_id) else {
+            return Err("테이블을 찾을 수 없습니다.".to_string());
+        };
+        let mut table = table.write().await;
+        if table.name == name {
+            return Ok(false);
+        }
+        table.name = name.to_string();
+        table.version += 1;
+        drop(table);
+        self.notify(table_id);
+        Ok(true)
+    }
+
+    pub async fn update_settings(
+        &self,
+        table_id: &str,
+        settings: TableSettings,
+    ) -> Result<bool, String> {
+        let Some(table) = self.table(table_id) else {
+            return Err("테이블을 찾을 수 없습니다.".to_string());
+        };
+        let applied = table.write().await.change_settings(settings, now_ms());
+        self.notify(table_id);
+        Ok(applied)
     }
 
     /// 테이블을 닫고 모든 칩을 코인으로 돌려준다. 반환: 캐시아웃 목록.
@@ -393,17 +538,23 @@ impl CasinoHub {
                 .map_err(|message| CasinoError::new("INSUFFICIENT_COINS", message))?;
             reserved = *amount;
         }
-        let result =
-            table
-                .write()
-                .await
-                .apply_command(user_id, user_name, command, expected_version, now);
+        let (result, changed) = {
+            let mut table = table.write().await;
+            let version = table.version;
+            let result = table.apply_command(user_id, user_name, command, expected_version, now);
+            (result, table.version != version)
+        };
         let events = match result {
             Ok(events) => events,
             Err(error) => {
                 if reserved > 0 {
                     let mut stats_file = self.stats.write().await;
                     stats::refund_coins(&mut stats_file, user_id, user_name, reserved);
+                }
+                // 실패했어도 테이블이 바뀌었으면(예: 기다리던 방 설정 적용) 알리고 저장한다.
+                if changed {
+                    self.notify(table_id);
+                    self.save().await;
                 }
                 return Err(error);
             }
@@ -491,6 +642,74 @@ impl CasinoHub {
             .iter()
             .find(|entry| entry.value().channel_id == channel_id)
             .map(|entry| entry.key().clone())
+    }
+
+    pub fn panel(&self) -> Option<PanelBinding> {
+        self.panel
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// 새 패널 연결과 그 패널에 그린 본문을 한 번에 기록하고, 바뀌기 전 연결을 돌려준다.
+    /// 잠금 순서는 항상 panel → panel_text. 두 관리자가 동시에 패널을 올려도 돌려받은 옛
+    /// 패널을 지우면 고정된 패널이 하나만 남는다.
+    pub fn set_panel_with_text(
+        &self,
+        panel: Option<PanelBinding>,
+        text: Option<String>,
+    ) -> Option<PanelBinding> {
+        let mut current = self
+            .panel
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::mem::replace(&mut *current, panel);
+        *self
+            .panel_text
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = text;
+        previous
+    }
+
+    pub fn panel_text(&self) -> Option<String> {
+        self.panel_text
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// 패널이 아직 `message_id`를 가리킬 때만 연결을 끊는다. 갱신이 지워진 옛 패널을 고치다
+    /// 실패하는 동안 새 패널이 올라왔으면 새 연결은 그대로 둔다. 끊었으면 true.
+    pub fn clear_panel_if(&self, message_id: u64) -> bool {
+        let mut panel = self
+            .panel
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if panel.as_ref().map(|panel| panel.message_id) != Some(message_id) {
+            return false;
+        }
+        *panel = None;
+        // panel 잠금을 쥔 채로 지워, 그 사이 새 패널 본문이 끼어들지 않게 한다.
+        *self
+            .panel_text
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        true
+    }
+
+    /// 패널이 아직 `message_id`를 가리킬 때만 마지막으로 그린 본문을 기록한다.
+    pub fn record_panel_text(&self, message_id: u64, text: String) {
+        let panel = self
+            .panel
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if panel.as_ref().map(|panel| panel.message_id) == Some(message_id) {
+            // panel 잠금을 쥔 채로 써서, 확인과 기록 사이에 새 패널이 올라오지 못하게 한다.
+            *self
+                .panel_text
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(text);
+        }
     }
 }
 
@@ -624,6 +843,190 @@ mod tests {
         assert_eq!(public_host_of("http://localhost:8800"), None);
         assert_eq!(public_host_of("http://127.0.0.1:8800"), None);
         assert_eq!(public_host_of("not a url"), None);
+    }
+}
+
+#[cfg(test)]
+mod panel_tests {
+    use super::*;
+
+    fn temp_hub(name: &str) -> (CasinoHub, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "mafia-casino-hub-{name}-{}-{}",
+            std::process::id(),
+            mafia_remake::atomic_file::next_seq()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hub = CasinoHub::load(
+            dir.join("casino.json"),
+            Arc::new(RwLock::new(StatsFile::default())),
+            Arc::new(dir.join("stats.json")),
+        )
+        .unwrap();
+        (hub, dir)
+    }
+
+    #[tokio::test]
+    async fn renaming_rejects_duplicates_and_bad_lengths() {
+        let (hub, dir) = temp_hub("rename");
+        let table = |kind, name: &str| {
+            hub.create_table(
+                kind,
+                name,
+                1,
+                TableBinding::default(),
+                TableSettings::default(),
+            )
+            .unwrap()
+        };
+        let first = table(GameKind::Holdem, "하이롤러");
+        table(GameKind::Blackjack, "Lucky");
+
+        // 다른 테이블 이름은 대소문자만 달라도 못 쓴다.
+        assert!(hub.rename_table(&first, "lucky").await.is_err());
+        assert!(hub.rename_table(&first, "x").await.is_err());
+        assert!(hub.rename_table(&first, &"가".repeat(25)).await.is_err());
+        assert!(hub.rename_table("missing", "새 이름").await.is_err());
+        // 같은 이름은 바뀐 것이 없다.
+        assert_eq!(hub.rename_table(&first, "하이롤러").await, Ok(false));
+        assert_eq!(hub.rename_table(&first, "  새 이름 ").await, Ok(true));
+        let renamed = hub.table(&first).unwrap().read().await.name.clone();
+        assert_eq!(renamed, "새 이름");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reserved_name_blocks_creates_and_renames_until_released() {
+        let (hub, dir) = temp_hub("reserve");
+        let hub = Arc::new(hub);
+        let other = hub
+            .create_table(
+                GameKind::Holdem,
+                "하이롤러",
+                1,
+                TableBinding::default(),
+                TableSettings::default(),
+            )
+            .unwrap();
+        let reservation = hub.reserve_table_name(" VIP ").await.unwrap();
+        // 채널을 만드는 동안 같은 이름(대소문자 무시)은 예약도, 이름 변경도 안 된다.
+        assert!(hub.reserve_table_name("vip").await.is_err());
+        assert!(hub.rename_table(&other, "Vip").await.is_err());
+        assert!(hub.reserve_table_name("하이롤러").await.is_err());
+        assert!(hub.reserve_table_name("x").await.is_err());
+        drop(reservation);
+        assert_eq!(hub.rename_table(&other, "Vip").await, Ok(true));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn tables_being_created_count_toward_the_limit() {
+        let (hub, dir) = temp_hub("reserve-limit");
+        let hub = Arc::new(hub);
+        for index in 0..MAX_TABLES - 1 {
+            hub.create_table(
+                GameKind::Holdem,
+                &format!("테이블{index}"),
+                1,
+                TableBinding::default(),
+                TableSettings::default(),
+            )
+            .unwrap();
+        }
+        let last = hub.reserve_table_name("마지막").await.unwrap();
+        assert!(hub.reserve_table_name("하나 더").await.is_err());
+        drop(last);
+        assert!(hub.reserve_table_name("하나 더").await.is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn channel_renames_are_limited_to_two_per_channel() {
+        let (hub, dir) = temp_hub("renames");
+        assert!(hub.take_channel_rename(10));
+        assert!(hub.take_channel_rename(10));
+        assert!(!hub.take_channel_rename(10));
+        // 다른 채널은 따로 센다.
+        assert!(hub.take_channel_rename(11));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_stale_panel_refresh_does_not_clear_a_new_panel() {
+        let (hub, dir) = temp_hub("panel-race");
+        let panel = |message_id| PanelBinding {
+            guild_id: 1,
+            channel_id: 2,
+            message_id,
+        };
+        assert!(hub.set_panel_with_text(Some(panel(20)), None).is_none());
+        // 새 패널을 올리면 옛 연결을 돌려준다 (그 메시지를 지운다).
+        assert_eq!(
+            hub.set_panel_with_text(Some(panel(30)), None)
+                .map(|old| old.message_id),
+            Some(20)
+        );
+        // 옛 패널(20)을 고치다 404가 났어도 새 패널(30) 연결은 남는다.
+        assert!(!hub.clear_panel_if(20));
+        hub.record_panel_text(20, "old".to_string());
+        assert_eq!(hub.panel().unwrap().message_id, 30);
+        assert_eq!(hub.panel_text(), None);
+        hub.record_panel_text(30, "new".to_string());
+        assert_eq!(hub.panel_text().as_deref(), Some("new"));
+        assert!(hub.clear_panel_if(30));
+        assert!(hub.panel().is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn casino_files_from_before_the_panel_still_load() {
+        let (_, dir) = temp_hub("panel");
+        let path = dir.join("casino.json");
+        std::fs::write(&path, "{\"house\": 7, \"tables\": []}").unwrap();
+        let load = || {
+            CasinoHub::load(
+                path.clone(),
+                Arc::new(RwLock::new(StatsFile::default())),
+                Arc::new(dir.join("stats.json")),
+            )
+            .unwrap()
+        };
+        let hub = load();
+        assert!(hub.panel().is_none());
+        assert_eq!(hub.house.load(Ordering::Relaxed), 7);
+
+        // 패널 위치는 저장했다가 다시 불러온다.
+        hub.set_panel_with_text(
+            Some(PanelBinding {
+                guild_id: 1,
+                channel_id: 2,
+                message_id: 3,
+            }),
+            None,
+        );
+        hub.save().await;
+        let panel = load().panel().unwrap();
+        assert_eq!(
+            (panel.guild_id, panel.channel_id, panel.message_id),
+            (1, 2, 3)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+/// 채널을 만드는 동안 맡아 둔 테이블 이름. 버리면 풀린다.
+pub struct NameReservation {
+    hub: Arc<CasinoHub>,
+    key: String,
+}
+
+impl Drop for NameReservation {
+    fn drop(&mut self) {
+        self.hub
+            .reserved_names
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.key);
     }
 }
 

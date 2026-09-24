@@ -812,6 +812,7 @@ fn bot_commands() -> Vec<poise::Command<Data, Error>> {
         commands::redeem_coupon(),
         commands::list_coupons(),
         commands::create_casino_table(),
+        commands::casino_panel(),
         commands::close_casino_table(),
         commands::list_casino_tables(),
         commands::enter_casino(),

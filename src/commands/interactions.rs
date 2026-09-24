@@ -16,6 +16,12 @@ pub async fn handle_component(
         ["bet", guild] => handle_bet_open(ctx, data, component, parse_guild(guild)?).await?,
         ["starvote", guild] => handle_star_vote(ctx, data, component, parse_guild(guild)?).await?,
         ["casino_enter", table_id] => handle_casino_enter(ctx, data, component, table_id).await?,
+        ["casino_panel", action] => handle_casino_panel(ctx, data, component, action).await?,
+        ["casino_pick", action] => handle_casino_pick(ctx, data, component, action).await?,
+        ["casino_close_confirm", table_id] => {
+            handle_casino_close_confirm(ctx, data, component, table_id).await?
+        }
+        ["casino_close_cancel"] => handle_casino_close_cancel(ctx, component).await?,
         ["startnow", guild] => {
             handle_recruitment_finish(ctx, data, component, parse_guild(guild)?, false).await?
         }
@@ -132,6 +138,10 @@ pub async fn handle_modal(
         }
         ["lastwill", guild, user] => {
             handle_last_will_submit(ctx, data, modal, parse_guild(guild)?, user.parse()?).await?;
+        }
+        ["casino_create", kind] => handle_casino_create_submit(ctx, data, modal, kind).await?,
+        ["casino_settings", table_id] => {
+            handle_casino_settings_submit(ctx, data, modal, table_id).await?
         }
         _ => {}
     }

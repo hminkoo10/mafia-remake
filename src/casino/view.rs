@@ -133,6 +133,7 @@ pub struct TableView {
     pub messages: Vec<ChatMessage>,
     pub history: Vec<HandResult>,
     pub rules: TableRules,
+    pub pending_rules: Option<TableRules>,
     /// 현재 딜러 (이름·초상 id).
     pub dealer: DealerView,
     pub shoe: Option<ShoeView>,
@@ -344,6 +345,7 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
         messages: table.messages.clone(),
         history: table.history.clone(),
         rules: table_rules(&table.settings),
+        pending_rules: table.pending_settings.as_ref().map(table_rules),
         shoe: (table.kind == GameKind::Blackjack).then(|| {
             let remaining = round
                 .filter(|round| round.uses_shoe && active)

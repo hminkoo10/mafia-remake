@@ -726,6 +726,8 @@ pub struct CasinoTable {
     /// 방 설정 (베팅·블라인드·바이인 한도, 제한 시간).
     #[serde(default)]
     pub settings: TableSettings,
+    #[serde(default)]
+    pub pending_settings: Option<TableSettings>,
 }
 
 fn default_dealer_id() -> String {
@@ -793,6 +795,7 @@ impl CasinoTable {
             shoe_total: 0,
             shuffled_at: 0,
             settings: TableSettings::default(),
+            pending_settings: None,
         }
     }
 
@@ -843,6 +846,54 @@ impl CasinoTable {
         self.round
             .as_ref()
             .is_some_and(|round| round.phase != Phase::Complete)
+    }
+
+    /// 방 설정을 바꾼다. 라운드 중에는 블라인드·베팅 한도·마감 시각이 이미 정해져 있으므로
+    /// 기다렸다가 그 라운드가 끝날 때(`reconcile`) 적용한다. 지금 적용했으면(또는 기다리던
+    /// 변경을 취소해 지금 설정이 그대로 쓰이면) true.
+    pub fn change_settings(&mut self, settings: TableSettings, now: i64) -> bool {
+        if !self.playing() {
+            self.settings = settings;
+            self.pending_settings = None;
+            self.announce_settings(
+                format!("방 설정이 바뀌었습니다: {}", settings.summary(self.kind)),
+                now,
+            );
+            self.version += 1;
+            true
+        } else if settings == self.settings {
+            // 지금 설정으로 되돌렸다: 기다리던 변경만 취소한다.
+            if self.pending_settings.take().is_some() {
+                self.announce_settings("다음 라운드에 바꾸려던 방 설정을 취소했습니다.", now);
+                self.version += 1;
+            }
+            true
+        } else {
+            self.pending_settings = Some(settings);
+            self.announce_settings("이번 라운드가 끝나면 방 설정이 바뀝니다.", now);
+            self.version += 1;
+            false
+        }
+    }
+
+    /// 방 설정 안내는 딜러 채팅으로만 보낸다. 딜러 말풍선(인슈어런스 안내, 결과 등)을 덮으면
+    /// 플레이어가 지금 해야 할 일을 놓친다.
+    fn announce_settings(&mut self, text: impl Into<String>, now: i64) {
+        let dealer = self.dealer_profile().name.to_string();
+        self.push_message(dealer, text.into(), now, true, None);
+    }
+
+    /// 라운드가 끝났을 때 적용하지 못한 설정(예: 그 전에 저장된 파일)이 남아 있으면
+    /// 다음 라운드를 시작하기 전에 적용한다. 보통은 라운드가 끝날 때 `reconcile`이 적용한다.
+    fn apply_pending_settings(&mut self, now: i64) {
+        if let Some(next) = self.pending_settings.take() {
+            self.settings = next;
+            self.announce_settings(
+                format!("방 설정이 바뀌었습니다: {}", next.summary(self.kind)),
+                now,
+            );
+            self.version += 1;
+        }
     }
 
     pub fn seat_index(&self, user_id: u64) -> Option<usize> {
@@ -947,10 +998,19 @@ impl CasinoTable {
     }
 
     /// 라운드가 막 끝났으면 결과 이벤트를 만들고, 퇴장 대기 좌석을 정리한다.
-    fn reconcile(&mut self, was_playing: bool, events: &mut Vec<CasinoEvent>) {
+    /// 라운드 중에 바꾼 방 설정도 여기서 적용한다.
+    fn reconcile(&mut self, was_playing: bool, events: &mut Vec<CasinoEvent>, now: i64) {
         let just_completed = was_playing && !self.playing() && self.round.is_some();
         if !just_completed {
             return;
+        }
+        if let Some(next) = self.pending_settings.take() {
+            self.settings = next;
+            // 결과 안내(딜러 말풍선)는 그대로 두고 채팅으로만 알린다.
+            self.announce_settings(
+                format!("방 설정이 바뀌었습니다: {}", next.summary(self.kind)),
+                now,
+            );
         }
         // 베팅 없이 끝난 블랙잭 라운드처럼 기록이 없으면 이벤트도 없다 (예전 기록을 다시 보내지 않게).
         let round_id = self.round.as_ref().map(|round| round.id.clone());
@@ -1009,7 +1069,7 @@ impl CasinoTable {
                     }
                 }
                 self.version += 1;
-                self.reconcile(was_playing, &mut events);
+                self.reconcile(was_playing, &mut events, now);
             }
         }
         if !self.playing() {
@@ -1215,6 +1275,7 @@ impl CasinoTable {
                         if self.playing() {
                             return Err(CasinoError::invalid("이미 진행 중인 라운드입니다."));
                         }
+                        self.apply_pending_settings(now);
                         self.rotate_dealer_if_due(now);
                         let minimum = if self.kind == GameKind::Holdem {
                             1
@@ -1292,7 +1353,7 @@ impl CasinoTable {
                 }
             }
         }
-        self.reconcile(was_playing, &mut events);
+        self.reconcile(was_playing, &mut events, now);
         self.version += 1;
         Ok(events)
     }
@@ -1342,6 +1403,7 @@ impl CasinoTable {
         if self.playing() {
             return Err(CasinoError::invalid("이미 진행 중인 라운드입니다."));
         }
+        self.apply_pending_settings(now);
         let _ = index;
         match self.kind {
             GameKind::Holdem => start_poker(self, now, Some(deck))?,
