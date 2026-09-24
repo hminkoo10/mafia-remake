@@ -34,7 +34,10 @@
 .eyebrow .hand-now{margin-left:8px;color:#f2d16b;font-size:11px;letter-spacing:0;font-weight:600}
 
 /* 라운드 결과 배너: 다음 라운드가 시작되거나 닫을 때까지 테이블 위에 남는다 */
-.result-banner{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:5;min-width:260px;max-width:min(420px,90%);padding:16px 18px;border-radius:10px;background:#0b1712f2;border:1px solid #c8ab62;box-shadow:0 20px 60px #000c,0 0 0 4px #c8ab6222;color:#eee9d3;animation:deal-in .3s ease-out}
+/* 가운데 정렬은 translate 속성으로 둔다: transform을 쓰는 등장 애니메이션이 가운데 정렬을 덮으면
+   0.3초 동안 오른쪽 아래에 기울어져 떴다가 제자리로 튄다. 등장은 투명도와 scale만 쓴다. */
+.result-banner{position:absolute;left:50%;top:50%;translate:-50% -50%;z-index:5;min-width:260px;max-width:min(420px,90%);padding:16px 18px;border-radius:10px;background:#0b1712f2;border:1px solid #c8ab62;box-shadow:0 20px 60px #000c,0 0 0 4px #c8ab6222;color:#eee9d3;animation:result-in .26s ease-out both}
+@keyframes result-in{from{opacity:0;scale:.96}to{opacity:1;scale:1}}
 .result-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
 .result-head button{background:none;border:0;color:#a9b797;font-size:14px;padding:2px 6px}
 .result-banner ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
