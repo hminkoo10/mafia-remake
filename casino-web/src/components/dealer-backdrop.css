@@ -16,25 +16,60 @@
   object-fit: cover;
   object-position: center 22%;
   pointer-events: none;
-  /* 동작 영상(딜·플립)이 끝나 대기 영상으로 돌아갈 때 손 위치가 달라 보이지 않게 천천히 겹친다. */
-  transition: opacity 450ms ease;
 }
 
+/* 사진은 영상 아래에 깔린다. 영상이 완전히 떠오른 뒤에만 숨기고, 영상에서 돌아올 때는 바로 보인다.
+   (사진과 두 영상이 함께 반투명하게 겹치면 딜러가 이중으로 보이고 밝기가 출렁인다.) */
 .dealer-backdrop-poster {
-  opacity: 1;
+  z-index: 0;
+  visibility: visible;
+  transition: none;
 }
 
+.dealer-backdrop-layer[data-video-active="true"] .dealer-backdrop-poster {
+  visibility: hidden;
+  transition: visibility 0s linear 300ms;
+}
+
+/* 새 영상만 위에서 떠오르고, 이전 영상은 그 아래에서 불투명하게 남아 있다가 페이드가 끝나면 사라진다. */
 .dealer-backdrop-media {
+  z-index: 1;
   opacity: 0;
+  transition: opacity 0s linear 260ms;
 }
 
 .dealer-backdrop-media.is-active {
+  z-index: 2;
   opacity: 1;
+  transition: opacity 260ms ease-out;
+}
+
+/* 영상에서 사진으로 돌아갈 때는 영상이 천천히 사라진다 (아래 사진 한 장과만 겹친다). */
+.dealer-backdrop-media.is-leaving {
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 420ms ease;
+}
+
+/* 대기 영상이 없으면 사진이 아주 천천히 숨 쉬듯 움직인다. transform만 움직여 합성기에서 처리된다. */
+.dealer-backdrop-layer[data-breathe="true"] .dealer-backdrop-poster {
+  transform-origin: 50% 30%;
+  animation: dealer-breathe 7s ease-in-out infinite alternate;
+}
+
+@keyframes dealer-breathe {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.006);
+  }
 }
 
 /* 연출을 끄면(앱 버튼) 영상 대신 사진만 보인다. 전환 효과는 .casino-app.calm 규칙이 끈다. */
 .dealer-backdrop-layer[data-reduced-motion="true"] .dealer-backdrop-poster {
-  opacity: 1 !important;
+  visibility: visible !important;
+  animation: none;
 }
 
 .dealer-backdrop-layer[data-reduced-motion="true"] .dealer-backdrop-media {

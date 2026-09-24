@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { handResultText, handScore, handTone, potRaiseTo, tableDenoms } from "../src/table-helpers.ts";
+import { blackjackValue, handResultText, handScore, handTone, potRaiseTo, tableDenoms } from "../src/table-helpers.ts";
 
 test("the chip tray follows the table limits", () => {
   assert.deepEqual(tableDenoms({ min_bet: 100, max_bet: 5000, bet_step: 100 }), [100, 500, 1000, 2500, 5000]);
@@ -19,6 +19,28 @@ test("blackjack hand scores read like a live table", () => {
   assert.equal(handScore({ total: 21, soft: true, status: "stand" as const, result: null }, 2, false), "21", "스플릿 뒤 21은 블랙잭이 아니다");
   assert.equal(handScore({ total: 24, soft: false, status: "bust" as const, result: null }, 3, true), "BUST");
   assert.equal(handScore({ total: 24, soft: false, status: "bust" as const, result: "버스트" }, 3, true), "24");
+});
+
+test("blackjack totals match the server's blackjack_value", () => {
+  assert.deepEqual(blackjackValue([]), { total: 0, soft: false });
+  assert.deepEqual(blackjackValue(["As", "Kd"]), { total: 21, soft: true });
+  assert.deepEqual(blackjackValue(["As", "6h"]), { total: 17, soft: true });
+  assert.deepEqual(blackjackValue(["As", "6h", "9c"]), { total: 16, soft: false }, "A를 1로 센다");
+  assert.deepEqual(blackjackValue(["As", "Ad", "9c"]), { total: 21, soft: true });
+  assert.deepEqual(blackjackValue(["Th", "Qs", "5d"]), { total: 25, soft: false });
+  assert.deepEqual(blackjackValue(["2c", "3c", "4c", "5c", "6c"]), { total: 20, soft: false });
+  assert.deepEqual(blackjackValue(["Kd", "??"]), { total: 10, soft: false }, "뒷면은 세지 않는다");
+});
+
+test("a hand's score counts only the cards that have landed", () => {
+  // 히트한 카드가 날아가는 동안은 이전 합계, 놓이면 버스트.
+  const flying = blackjackValue(["Th", "6s"]);
+  assert.equal(handScore({ ...flying, status: "bust", result: null }, 2, true), "16");
+  const landed = blackjackValue(["Th", "6s", "9d"]);
+  assert.equal(handScore({ ...landed, status: "bust", result: null }, 3, true), "BUST");
+  // 두 번째 카드가 아직이면 블랙잭도 아직이다.
+  assert.equal(handScore({ ...blackjackValue(["As"]), status: "stand", result: null }, 1, true), "11");
+  assert.equal(handScore({ ...blackjackValue(["As", "Kd"]), status: "stand", result: null }, 2, true), "BJ");
 });
 
 test("hand results show the win or loss of that hand", () => {

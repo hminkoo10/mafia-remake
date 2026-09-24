@@ -38,6 +38,8 @@ export interface SeatView {
   side_notes: string[];
   hand_name: string | null;
   hand_cards: string[];
+  /** 쇼다운에서 이 좌석의 카드를 뒤집는 서버 시각 (0 = 없음). 그 전까지 웹은 뒷면으로 둔다. */
+  showdown_at?: number;
 }
 
 export interface RoundView {
@@ -56,6 +58,12 @@ export interface RoundView {
   reveal_until: number;
   board_reveal_at: number[];
   dealer_reveal_at: number[];
+  /** 딜러 홀 카드를 뒤집는 서버 시각 (0 = 없음). 정산 뒤에만 진짜 카드가 온다. */
+  dealer_flip_at?: number;
+  /** 플롭 세 장을 함께 뒤집는 서버 시각 (0 = 없음). 그 전까지 플롭은 뒷면으로 놓인다. */
+  board_flip_at?: number;
+  /** 이번 핸드에 버린 카드(번 카드)가 머크에 놓이는 시각. 카드 값은 오지 않는다. */
+  burn_at?: number[];
 }
 
 export interface PokerLegal {
@@ -96,6 +104,10 @@ export interface TableRules {
   seat_count: number;
   turn_ms: number;
   bet_window_ms: number;
+  /** 카드가 슈에서 날아가는 시간 (ms). reveal_at은 카드가 놓이는 시각이다. */
+  card_flight_ms?: number;
+  /** 카드를 뒤집는 연출 시간 (ms). */
+  card_flip_ms?: number;
 }
 
 export interface ChatMessage {
@@ -189,6 +201,11 @@ export interface StateResponse {
   me: CasinoMe;
   table: TableView | null;
   tables: TableSummary[];
+}
+
+/** 바뀐 것이 없을 때 웹소켓이 1초마다 보내는 신호: 시계 맞추기와 연결 확인에만 쓴다. */
+export interface Heartbeat {
+  server_time: number;
 }
 
 export type CasinoCommand =

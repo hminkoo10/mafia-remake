@@ -2,15 +2,55 @@
 // 브라우저 정책상 첫 사용자 입력 뒤에만 소리가 난다.
 
 let context: AudioContext | null = null;
+let noise: AudioBuffer | null = null;
+
+/**
+ * 오디오를 준비한다. AudioContext를 처음 만들 때 기기에 따라 수백 ms 동안 화면이 멈추므로,
+ * 카드를 나눠 주는 도중이 아니라 사용자가 처음 누른 직후(`installAudioUnlock`)에 만든다.
+ */
+export function unlockAudio() {
+  if (context) {
+    if (context.state === "suspended") void context.resume();
+    return;
+  }
+  const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!Ctor) return;
+  try {
+    context = new Ctor();
+  } catch {
+    context = null;
+  }
+}
+
+/** 첫 클릭·키 입력·터치 때 한 번 오디오를 준비한다. 되돌리는 함수를 준다. */
+export function installAudioUnlock(): () => void {
+  const events = ["pointerdown", "keydown", "touchstart"] as const;
+  const unlock = () => {
+    remove();
+    // 누른 동작의 화면 반응을 먼저 그리고 나서 만든다.
+    window.setTimeout(unlockAudio, 0);
+  };
+  const remove = () => events.forEach((name) => window.removeEventListener(name, unlock, true));
+  events.forEach((name) => window.addEventListener(name, unlock, { capture: true, passive: true }));
+  return remove;
+}
 
 function audio(): AudioContext | null {
-  if (!context) {
-    const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!Ctor) return null;
-    context = new Ctor();
-  }
+  // 아직 준비 전이면 이번 소리는 건너뛴다 (여기서 만들면 딜 도중에 화면이 멈춘다).
+  if (!context) return null;
   if (context.state === "suspended") void context.resume();
   return context;
+}
+
+/** 카드 스치는 소리에 쓰는 잡음. 한 번만 만들어 둔다. */
+function noiseBuffer(ctx: AudioContext): AudioBuffer {
+  if (noise && noise.sampleRate === ctx.sampleRate) return noise;
+  const length = Math.floor(ctx.sampleRate * 0.25);
+  const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+  noise = buffer;
+  return buffer;
 }
 
 export function soundEnabled(): boolean {
@@ -49,12 +89,8 @@ function tone(freq: number, duration: number, type: OscillatorType, peak: number
 function swish(duration: number, peak: number, delay = 0) {
   const ctx = audio();
   if (!ctx) return;
-  const length = Math.floor(ctx.sampleRate * duration);
-  const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
-  const data = buffer.getChannelData(0);
-  for (let i = 0; i < length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / length);
   const source = ctx.createBufferSource();
-  source.buffer = buffer;
+  source.buffer = noiseBuffer(ctx);
   const filter = ctx.createBiquadFilter();
   filter.type = "bandpass";
   filter.frequency.value = 1900;
@@ -64,7 +100,7 @@ function swish(duration: number, peak: number, delay = 0) {
   gain.gain.setValueAtTime(peak, start);
   gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
   source.connect(filter).connect(gain).connect(ctx.destination);
-  source.start(start);
+  source.start(start, 0, Math.min(duration, 0.25));
 }
 
 function guard(play: () => void) {
