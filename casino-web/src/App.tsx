@@ -29,7 +29,7 @@ import {
   Wallet,
   WifiOff,
 } from "lucide-react";
-import { CasinoApiError, fetchState, readLink, sendCommand, wsUrl } from "./api";
+import { CasinoApiError, CasinoNetworkError, fetchState, readLink, sendCommand, wsUrl } from "./api";
 import { confirmServerState, planServerClock, sampleServerTime, touchServerClock, useServerValue } from "./clock";
 import { installAudioUnlock, setSoundEnabled, sfx, soundEnabled, unlockAudio } from "./sounds";
 import { ChatMessages, TableChatPreview } from "./components/TableChat";
@@ -410,6 +410,8 @@ export default function Casino() {
     socketRef = useRef<WebSocket | null>(null),
     socketOpenRef = useRef(false),
     lastMessageAt = useRef(0),
+    lastActivityAt = useRef(Date.now()),
+    visibilityEpoch = useRef(0),
     connectRef = useRef<(() => void) | null>(null),
     hiddenState = useRef<Received | null>(null),
     hiddenHeartbeat = useRef<number | null>(null),
@@ -425,6 +427,7 @@ export default function Casino() {
   const socketAlive = () => socketOpenRef.current && Date.now() - lastMessageAt.current <= SOCKET_SILENCE_MS;
   /** 서버 상태를 받아들인다. key는 내용 비교용 키. */
   const accept = useCallback((value: StateResponse, key: string) => {
+    lastActivityAt.current = Date.now();
     const wanted = tableRef.current;
     // 보고 있던 테이블이 아직 있는데 다른 테이블 상태가 오면(전환 직후 늦은 푸시) 무시한다.
     if (value.table && wanted && value.table.id !== wanted && value.tables.some((t) => t.id === wanted)) return;
@@ -454,6 +457,7 @@ export default function Casino() {
    */
   const ingest = useCallback(
     (raw: string, receivedAt: number): StateResponse | null => {
+      lastActivityAt.current = Date.now();
       const serverTime = readServerTime(raw);
       if (serverTime !== null) sampleServerTime(serverTime, receivedAt);
       const key = rawStateKey(raw);
@@ -486,7 +490,7 @@ export default function Casino() {
     },
     [accept],
   );
-  const fail = useCallback((e: unknown) => {
+  const fail = useCallback((e: unknown, background = false) => {
     if (e instanceof CasinoApiError && e.status === 401) {
       setConnected(false);
       expiredRef.current = true;
@@ -497,6 +501,7 @@ export default function Casino() {
     }
     // 웹소켓으로 상태가 잘 오고 있으면 잠깐의 네트워크 오류로 버튼을 막거나 경고를 띄우지 않는다 (socketAlive는 ref만 읽는다).
     if (!(e instanceof CasinoApiError) && socketAlive()) return;
+    if (background && Date.now() - lastActivityAt.current < 10_000) return;
     setConnected(false);
     setError(e instanceof Error ? e.message : "연결을 확인해 주세요.");
   }, []);
@@ -509,11 +514,23 @@ export default function Casino() {
   const refresh = useCallback(async () => {
     if (!token || pendingRef.current || expiredRef.current || refreshingRef.current) return;
     refreshingRef.current = true;
+    const startedVisibility = visibilityEpoch.current;
     try {
-      const got = await fetchState(token, tableRef.current);
-      ingest(got.raw, got.receivedAt);
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const got = await fetchState(token, tableRef.current);
+          ingest(got.raw, got.receivedAt);
+          lastError = null;
+          break;
+        } catch (e) {
+          lastError = e;
+          if (!(e instanceof CasinoNetworkError) || attempt === 1) break;
+        }
+      }
+      if (lastError && startedVisibility === visibilityEpoch.current) fail(lastError, true);
     } catch (e) {
-      fail(e);
+      if (startedVisibility === visibilityEpoch.current) fail(e, true);
     } finally {
       refreshingRef.current = false;
       flushQueuedRefresh();
@@ -540,6 +557,7 @@ export default function Casino() {
       }
     }, POLL_MS);
     const wake = () => {
+      visibilityEpoch.current += 1;
       if (document.visibilityState !== "visible") return;
       // 숨어 있는 동안 받아 둔 마지막 상태를 먼저 그리고, 최신 상태를 다시 받는다.
       const buffered = hiddenState.current;
@@ -621,6 +639,7 @@ export default function Casino() {
         // 받은 시각은 JSON을 풀기 전에 단조 시계로 잰다 (시계 표본).
         const receivedAt = deviceNow();
         lastMessageAt.current = Date.now();
+        lastActivityAt.current = lastMessageAt.current;
         attempts = 0;
         if (typeof event.data !== "string") return;
         if (document.hidden) {
