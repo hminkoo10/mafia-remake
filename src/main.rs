@@ -817,6 +817,7 @@ fn bot_commands() -> Vec<poise::Command<Data, Error>> {
         commands::list_casino_tables(),
         commands::enter_casino(),
         commands::casino_status(),
+        commands::leave_casino_table(),
         commands::rating_log(),
         commands::show_rank_cutoffs(),
         commands::show_leaderboard(),

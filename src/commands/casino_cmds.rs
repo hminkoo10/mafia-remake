@@ -7,8 +7,8 @@ use crate::casino_hub::{
     table_channel_name, table_channel_overwrites,
 };
 use mafia_remake::casino::{
-    CasinoEvent, ChatMessage, GameKind, HandResult, Phase, SettingsRequest, TableSettings,
-    TableView, blackjack_value, signed_chips,
+    CasinoCommand, CasinoEvent, ChatMessage, GameKind, HandResult, Phase, SettingsRequest,
+    TableSettings, TableView, blackjack_value, signed_chips,
 };
 use poise::serenity_prelude::CacheHttp;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -545,6 +545,105 @@ pub async fn casino_status(ctx: Context<'_>) -> Result<(), Error> {
     let message = casino_status_text(ctx.data(), ctx.author().id).await;
     reply_embed(ctx, message, "카지노", serenity::Colour::GOLD, true).await?;
     Ok(())
+}
+
+#[poise::command(
+    slash_command,
+    rename = "카지노퇴장",
+    description_localized(
+        "ko",
+        "앉아 있는 카지노 테이블에서 나갑니다 (남은 칩은 코인으로 돌아옵니다)."
+    )
+)]
+pub async fn leave_casino_table(ctx: Context<'_>) -> Result<(), Error> {
+    // 퇴장은 코인 저장을 기다리므로 3초를 넘길 수 있다. 먼저 본인에게만 보이게 미룬다.
+    if let Err(error) = ctx.defer_ephemeral().await {
+        eprintln!("failed to defer 카지노퇴장: {error:?}");
+    }
+    let name = ctx
+        .author_member()
+        .await
+        .map(|member| member.display_name().to_string())
+        .unwrap_or_else(|| ctx.author().name.clone());
+    let (message, colour) = leave_table(ctx.data(), None, ctx.author().id.get(), &name).await;
+    reply_embed(ctx, message, "카지노 퇴장", colour, true).await?;
+    Ok(())
+}
+
+/// 테이블에서 나간다 (슬래시 명령과 상태 임베드의 "테이블 나가기" 버튼이 같이 쓴다).
+/// `table_id`가 있으면 그 테이블에 앉아 있을 때만 나간다. 핸드 중이면 핸드가 끝난 뒤 나간다.
+async fn leave_table(
+    data: &Data,
+    table_id: Option<&str>,
+    user_id: u64,
+    name: &str,
+) -> (String, serenity::Colour) {
+    let hub = data.casino.clone();
+    let Some(seated) = hub.seated_table_of(user_id).await else {
+        return (
+            "앉아 있는 테이블이 없습니다.".to_string(),
+            serenity::Colour::RED,
+        );
+    };
+    if table_id.is_some_and(|id| id != seated) {
+        return (
+            "이 테이블에 앉아 있지 않습니다. `/카지노상태`로 앉은 테이블을 확인하세요.".to_string(),
+            serenity::Colour::RED,
+        );
+    }
+    let table_name = match hub.table(&seated) {
+        Some(table) => {
+            let table = table.read().await;
+            let leaving = table
+                .seat_index(user_id)
+                .and_then(|index| table.seats[index].as_ref())
+                .is_some_and(|seat| seat.leaving);
+            if leaving {
+                return (
+                    format!(
+                        "**{}** 테이블에서 이미 퇴장 대기 중입니다. 핸드가 끝나면 남은 칩과 함께 나갑니다.",
+                        table.name
+                    ),
+                    serenity::Colour::GOLD,
+                );
+            }
+            table.name.clone()
+        }
+        None => seated.clone(),
+    };
+    match hub
+        .apply(&seated, user_id, name, &CasinoCommand::Leave, None)
+        .await
+    {
+        Ok(events) => {
+            let returned = events.iter().find_map(|event| match event {
+                CasinoEvent::CashOut {
+                    user_id: who,
+                    amount,
+                    ..
+                } if *who == user_id => Some(*amount),
+                _ => None,
+            });
+            match returned {
+                Some(amount) => (
+                    format!(
+                        "**{table_name}** 테이블에서 나왔습니다. 칩 **{}**이 코인으로 돌아갔습니다.
+보유 코인: **{}**",
+                        format_number(amount),
+                        stats::coin_text(hub.coins_of(user_id).await)
+                    ),
+                    serenity::Colour::DARK_GREEN,
+                ),
+                None => (
+                    format!(
+                        "**{table_name}** 테이블 퇴장을 예약했습니다. 지금 핸드가 끝나면 남은 칩과 함께 나갑니다."
+                    ),
+                    serenity::Colour::GOLD,
+                ),
+            }
+        }
+        Err(error) => (error.message, serenity::Colour::RED),
+    }
 }
 
 pub async fn casino_status_text(data: &Data, user_id: serenity::UserId) -> String {
@@ -1822,7 +1921,43 @@ fn status_components(table_id: &str) -> Vec<serenity::CreateActionRow> {
             .label("테이블 입장")
             .emoji('🎰')
             .style(serenity::ButtonStyle::Success),
+        serenity::CreateButton::new(casino_leave_custom_id(table_id))
+            .label("테이블 나가기")
+            .emoji('🚪')
+            .style(serenity::ButtonStyle::Danger),
     ])]
+}
+
+fn casino_leave_custom_id(table_id: &str) -> String {
+    format!("casino_leave:{table_id}")
+}
+
+/// "테이블 나가기" 버튼: 누른 사람이 이 테이블에 앉아 있으면 나가고, 결과는 본인에게만 보여 준다.
+pub async fn handle_casino_leave(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+    table_id: &str,
+) -> Result<()> {
+    // 퇴장은 코인 저장을 기다리므로 먼저 응답을 미룬다.
+    component.defer_ephemeral(&ctx.http).await?;
+    let name = component
+        .member
+        .as_ref()
+        .map(|member| member.display_name().to_string())
+        .unwrap_or_else(|| component.user.name.clone());
+    let (message, colour) = leave_table(data, Some(table_id), component.user.id.get(), &name).await;
+    component
+        .edit_response(
+            &ctx.http,
+            serenity::EditInteractionResponse::new().embed(make_embed(
+                message,
+                "카지노 퇴장",
+                colour,
+            )),
+        )
+        .await?;
+    Ok(())
 }
 
 /// "테이블 입장" 버튼: 누른 사람에게만 개인 링크를 보여준다.
@@ -2617,5 +2752,13 @@ mod tests {
             assert!(json.contains(id));
         }
         assert!(!json.contains("123456789"));
+    }
+
+    #[test]
+    fn table_status_has_enter_and_leave_buttons() {
+        let json = serde_json::to_string(&status_components("holdem-1")).unwrap();
+        assert!(json.contains("\"custom_id\":\"casino_enter:holdem-1\""));
+        assert!(json.contains("\"custom_id\":\"casino_leave:holdem-1\""));
+        assert!(json.contains("테이블 나가기"));
     }
 }
