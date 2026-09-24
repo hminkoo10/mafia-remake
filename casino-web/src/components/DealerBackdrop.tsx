@@ -1,13 +1,15 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import "./dealer-backdrop.css";
 import { chooseDealerLayer, DEALER_LAYERS, layerClip, type ClipFlags, type DealerLayer, type DealerMood, type LayerFlags } from "../dealer-media";
+import { type DealClip } from "../schedule";
+import { liveServerNow } from "../clock";
 
 export interface DealerBackdropProps {
   id: string;
   name: string;
   mood: DealerMood;
   /** 슈를 떠난 카드 수. 딜 중에 늘어나면 딜러가 다음 카드를 집는 동작을 이어 간다. */
-  gesture?: number;
+  deal: DealClip | null;
   /** 아직 뒤집을 카드가 남아 있는지. 쇼다운에서 뒤집는 동작이 끝나도 카드가 남았으면 다시 한다. */
   flipsAhead?: boolean;
   poster: string;
@@ -42,9 +44,10 @@ interface View {
   from: DealerLayer | null;
   restart: boolean;
   run: number;
+  dealKey?: string;
 }
 
-function DealerBackdropInner({ id, name, mood, gesture = 0, flipsAhead = false, poster, motionEnabled }: DealerBackdropProps) {
+function DealerBackdropInner({ id, name, mood, deal, flipsAhead = false, poster, motionEnabled }: DealerBackdropProps) {
   const layers = useMemo(() => DEALER_LAYERS.filter((layer) => hasClip(id, layerClip(layer))), [id]);
   const videos = useRef<Partial<Record<DealerLayer, HTMLVideoElement>>>({});
   // 층마다 한 번 만든 ref 콜백: 다시 그릴 때마다 붙였다 떼지 않는다.
@@ -64,7 +67,6 @@ function DealerBackdropInner({ id, name, mood, gesture = 0, flipsAhead = false, 
   const [view, setView] = useState<View>({ layer: null, from: null, restart: false, run: 0 });
   const viewRef = useRef(view);
   viewRef.current = view;
-  const lastGesture = useRef(gesture);
   const pauseTimers = useRef<Partial<Record<DealerLayer, number>>>({});
   const [documentVisible, setDocumentVisible] = useState(() =>
     typeof document === "undefined" || document.visibilityState === "visible",
@@ -109,8 +111,6 @@ function DealerBackdropInner({ id, name, mood, gesture = 0, flipsAhead = false, 
     const woke = awake && !wasAwake.current;
     if (!awake && wasAwake.current) sleptAt.current = clockNow();
     wasAwake.current = awake;
-    const newCard = gesture > lastGesture.current;
-    lastGesture.current = gesture;
     const current = viewRef.current;
     const video = current.layer ? videos.current[current.layer] : undefined;
     const duration = video?.duration ?? 0;
@@ -126,17 +126,26 @@ function DealerBackdropInner({ id, name, mood, gesture = 0, flipsAhead = false, 
         staleRun.current = current.run;
       }
     }
+    if (mood === "deal") return;
     const choice = chooseDealerLayer(mood, {
       current: current.layer,
       progress,
       ended,
-      newCard,
+      newCard: false,
       flipsAhead,
       usable,
     });
     if (choice.layer === current.layer && !choice.restart) return;
     setView({ layer: choice.layer, from: current.layer, restart: choice.restart, run: current.run + 1 });
-  }, [mood, gesture, flipsAhead, usable, endedTick, awake]);
+  }, [mood, flipsAhead, usable, endedTick, awake]);
+
+  useEffect(() => {
+    if (!deal || !awake) return;
+    const current = viewRef.current;
+    if (current.dealKey === deal.key && (current.layer === "deal" || current.layer === "deal2")) return;
+    const layer: DealerLayer = current.layer === "deal" && usable.deal2 ? "deal2" : usable.deal ? "deal" : "deal2";
+    setView({ layer, from: current.layer, restart: true, run: current.run + 1, dealKey: deal.key });
+  }, [deal, awake, usable]);
 
   // 재생: 보이는 층만 틀고, 바로 전 층은 겹쳐 바뀌는 동안 조금 더 움직이다 멈춘다.
   // 멈춘 동작 영상은 보이지 않을 때 처음으로 되감아 두어, 다음에 첫 프레임부터 바로 보인다.
@@ -153,7 +162,15 @@ function DealerBackdropInner({ id, name, mood, gesture = 0, flipsAhead = false, 
       }
       if (layer === active) {
         // 처음부터 다시 틀기는 이 실행에서 한 번만: 숨겼다 돌아와 이 효과가 다시 돌아도 되감지 않는다.
-        if (view.restart && restartApplied.current !== view.run && layer !== "idle" && video.currentTime > 0) video.currentTime = 0;
+        if (view.restart && restartApplied.current !== view.run && layer !== "idle") {
+          if (view.dealKey && deal?.key === view.dealKey) {
+            video.playbackRate = deal.rate;
+            video.currentTime = Math.min(0.867, Math.max(0, (liveServerNow() - deal.startAt) * deal.rate / 1000));
+          } else if (video.currentTime > 0) {
+            video.currentTime = 0;
+            video.playbackRate = 1;
+          }
+        }
         restartApplied.current = view.run;
         void video.play().catch(() => {
           // 자동 재생이 막혀도 영상 파일 문제는 아니다. 준비된 프레임을 그대로 둔다.

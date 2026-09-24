@@ -10,7 +10,6 @@ export type LayerFlags = Partial<Record<DealerLayer, boolean>>;
 
 export const DEALER_LAYERS: readonly DealerLayer[] = ["idle", "deal", "deal2", "flip", "flip2"];
 /** 딜 동작이 이만큼 진행됐으면 다음 카드 때 새 동작으로 이어 간다. */
-export const DEAL_RESTART_PROGRESS = 0.7;
 
 export const layerClip = (layer: DealerLayer): DealerMood => (layer === "deal2" ? "deal" : layer === "flip2" ? "flip" : layer);
 
@@ -55,7 +54,7 @@ export function chooseDealerLayer(requested: DealerMood, state: DealerLayerState
 
   if (requested === "deal") {
     if (current === "deal" || current === "deal2") {
-      if (live && !(state.newCard && state.progress >= DEAL_RESTART_PROGRESS)) return keep;
+      if (live) return keep;
       const other: DealerLayer = current === "deal" ? "deal2" : "deal";
       if (usable[other]) return start(other);
       if (usable[current]) return start(current);

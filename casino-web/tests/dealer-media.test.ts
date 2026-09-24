@@ -22,8 +22,8 @@ test("the dealer's hands keep moving while cards are still leaving the shoe", ()
   // 동작 중간에 온 카드는 지금 동작을 이어 간다.
   assert.deepEqual(chooseDealerLayer("deal", state({ current: "deal", progress: 0.4, newCard: true })), { layer: "deal", restart: false });
   // 동작이 70% 넘게 진행됐으면 다음 카드는 다른 딜 층에서 새로 시작해 겹쳐 바꾼다.
-  assert.deepEqual(chooseDealerLayer("deal", state({ current: "deal", progress: 0.75, newCard: true })), { layer: "deal2", restart: true });
-  assert.deepEqual(chooseDealerLayer("deal", state({ current: "deal2", progress: 0.9, newCard: true })), { layer: "deal", restart: true });
+  assert.deepEqual(chooseDealerLayer("deal", state({ current: "deal", progress: 0.75, newCard: true })), { layer: "deal", restart: false });
+  assert.deepEqual(chooseDealerLayer("deal", state({ current: "deal2", progress: 0.9, newCard: true })), { layer: "deal2", restart: false });
   // 동작이 끝났는데 아직 딜 중이면 멈춘 채 두지 않는다.
   assert.deepEqual(chooseDealerLayer("deal", state({ current: "deal", ended: true, progress: 1 })), { layer: "deal2", restart: true });
   // 두 번째 층이 없으면 같은 층을 처음부터.

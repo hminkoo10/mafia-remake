@@ -35,7 +35,7 @@ import { installAudioUnlock, setSoundEnabled, sfx, soundEnabled, unlockAudio } f
 import { ChatMessages, TableChatPreview } from "./components/TableChat";
 import { DealerBackdrop, hasDealerVideo } from "./components/DealerBackdrop";
 import { BoardCards, BurnPile, Countdown, DockCards, PlayingCard, SeatCards, TurnRing } from "./components/TableCards";
-import { cardsLeftShoe, cardTiming, dealerMoodAt, flipTimes, revealStage, secondsLeft, SHUFFLE_MS, tableEvents, type CardTiming } from "./schedule";
+import { cardTiming, dealClipAt, dealClipKey, dealerMoodAt, parseDealClipKey, flipTimes, revealStage, secondsLeft, SHUFFLE_MS, tableEvents, type CardTiming } from "./schedule";
 import { deviceNow, isStaleSnapshot, rawStateKey, readServerTime, shareStable, snapshotKey } from "./state-sync";
 import { ALL_DENOMS, blackjackValue, chipLabel, fmt, potRaiseTo, signed, tableDenoms } from "./table-helpers";
 import type { CasinoCommand, GameKind, SeatResult, SeatView, StateResponse, TableRules, TableView } from "./types";
@@ -304,7 +304,9 @@ const DealerStage = memo(function DealerStage({
   poster: string;
 }) {
   const mood = useServerValue((now) => dealerMoodAt(table.round, table.seats, timing, now));
-  const gesture = useServerValue((now) => cardsLeftShoe(table.round, table.seats, timing, now));
+  // 클립은 문자열 키로 구독한다 (객체는 매번 새로 만들어져 구독할 수 없다). 키가 바뀔 때만 다시 만든다.
+  const dealKey = useServerValue((now) => dealClipKey(dealClipAt(table.round, table.seats, timing, now)));
+  const deal = useMemo(() => parseDealClipKey(dealKey), [dealKey]);
   // 쇼다운에서 뒤집을 카드가 남아 있으면 뒤집는 동작이 끝나도 다시 한다.
   const flipsAhead = useServerValue((now) => flipTimes(table.round, table.seats).some((time) => time > now));
   return (
@@ -312,7 +314,7 @@ const DealerStage = memo(function DealerStage({
       id={table.dealer.id}
       name={table.dealer.name}
       mood={mood}
-      gesture={gesture}
+      deal={deal}
       flipsAhead={flipsAhead}
       poster={poster}
       motionEnabled={motion}

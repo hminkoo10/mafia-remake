@@ -4,11 +4,14 @@ import {
   cardsLeftShoe,
   cardTimes,
   cardTiming,
+  dealClipAt,
+  dealClipKey,
   dealerMoodAt,
   faceDown,
   FLIP_LEAD_MS,
   inPlayCount,
   landedCount,
+  parseDealClipKey,
   revealStage,
   secondsLeft,
   showdownAt,
@@ -99,11 +102,24 @@ test("with the contract spacing only one card is ever in the air", () => {
 
 test("the dealer keeps dealing until the last card leaves the shoe, then idles", () => {
   assert.equal(dealerMoodAt(deal, [player], timing, T0), "deal", "첫 카드 전 슈에 손을 뻗는다");
-  assert.equal(dealerMoodAt(deal, [player], timing, T0 + 1900), "deal");
-  assert.equal(dealerMoodAt(deal, [player], timing, T0 + 2450 - 420), "idle", "마지막 카드가 슈를 떠났다");
+  assert.equal(dealerMoodAt(deal, [player], timing, T0 + 1400), "deal");
+  assert.equal(dealerMoodAt(deal, [player], timing, T0 + 2450 - 420), "deal", "마지막 카드의 클립은 비행 중 계속 재생한다");
   assert.equal(dealerMoodAt(null, [], timing, T0), "idle");
   assert.equal(cardsLeftShoe(deal, [player], timing, T0 + 230), 1);
   assert.equal(cardsLeftShoe(deal, [player], timing, T0 + 2030), 4);
+});
+
+test("deal clips follow departures and accelerate to fit the next card", () => {
+  const clip = dealClipAt(deal, [player], timing, T0 + 300);
+  assert.ok(clip);
+  assert.ok(Math.abs(clip.rate - 917 / 600) < 0.01);
+  assert.equal(Math.round(clip.startAt + 500 / clip.rate), T0 + 230);
+  assert.equal(dealClipAt(deal, [player], timing, T0 + 450)?.key, clip.key);
+  const isolated = round({ board: ["As"], board_reveal_at: [T0 + 1000] });
+  const solo = dealClipAt(isolated, [], timing, T0 + 600);
+  assert.ok(solo);
+  assert.equal(solo.rate, 1);
+  assert.equal(dealClipAt(isolated, [], timing, T0 + 700)?.key, solo.key);
 });
 
 test("the dealer turns cards over around each flip time", () => {
@@ -122,11 +138,11 @@ test("the dealer turns cards over around each flip time", () => {
 test("after settlement the dealer turns the hole card over before drawing, without a cut-off deal gesture", () => {
   const flipAt = T0 + 5000;
   const settled = round({ ...deal, dealer: ["6c", "Td", "4s"], dealer_reveal_at: [T0 + 1250, T0 + 2450, flipAt + 1000], dealer_flip_at: flipAt, reveal: true, phase: "complete" });
-  assert.equal(dealerMoodAt(settled, [player], timing, flipAt - 700), "idle", "다음 일은 뒤집기다");
+  assert.equal(dealerMoodAt(settled, [player], timing, flipAt - 700), "idle", "다음 카드 클립 전에는 대기한다");
   assert.equal(dealerMoodAt(settled, [player], timing, flipAt - FLIP_LEAD_MS), "flip");
   // 뽑는 카드는 뒤집기 동작이 끝나 갈 때(+580) 슈를 떠난다: 동작을 끊지 않고 이어서 대기로 돌아간다.
   assert.equal(dealerMoodAt(settled, [player], timing, flipAt + 590), "flip");
-  assert.equal(dealerMoodAt(settled, [player], timing, flipAt + 600), "idle");
+  assert.equal(dealerMoodAt(settled, [player], timing, flipAt + 600), "deal");
   // 두 장 이상 뽑으면 두 번째 카드 전에는 다시 딜 동작이다.
   const twoDraws = round({ ...settled, dealer: ["6c", "5d", "2s", "9h"], dealer_reveal_at: [...settled.dealer_reveal_at, flipAt + 2000] });
   assert.equal(dealerMoodAt(twoDraws, [player], timing, flipAt + 700), "deal");
@@ -211,4 +227,16 @@ test("the dock says dealing until the first flip and never announces the showdow
   assert.equal(revealStage(runout, [second, folded, first], T0 + 6999), "dealing");
   assert.equal(revealStage(runout, [second, folded, first], T0 + 7000), "showdown");
   assert.equal(showdownAt(round(), [seat()]), 0, "정산 전에는 뒤집기 시각이 없다");
+});
+
+test("the deal clip is subscribed by a string key that round-trips", () => {
+  const clip = { key: "hand:0:0:1234", startAt: 1_000.5, rate: 1.53 };
+  const key = dealClipKey(clip);
+  assert.equal(typeof key, "string");
+  // 같은 클립은 늘 같은 키 (구독 값이 바뀌지 않아 다시 그리지 않는다).
+  assert.equal(dealClipKey({ ...clip }), key);
+  assert.deepEqual(parseDealClipKey(key), clip);
+  assert.equal(dealClipKey(null), null);
+  assert.equal(parseDealClipKey(null), null);
+  assert.equal(parseDealClipKey("garbage"), null);
 });

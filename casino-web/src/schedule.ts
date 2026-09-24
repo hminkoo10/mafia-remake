@@ -12,6 +12,8 @@ export const MIN_FLIGHT_MS = 120;
 export const FLIP_LEAD_MS = 300;
 /** 새 슈를 섞는 연출 길이. */
 export const SHUFFLE_MS = 2500;
+export const DEAL_CLIP_MS = 917;
+export const DEAL_RELEASE_MS = 500;
 
 export interface CardTiming {
   /** 슈에서 테이블까지 날아가는 시간. 연출을 끄면 0 (카드가 놓이는 순간 나타난다). */
@@ -69,6 +71,75 @@ export function cardTimes(round: RoundView | null | undefined, seats: Seats): nu
   return out;
 }
 
+export interface DealClip {
+  key: string;
+  startAt: number;
+  rate: number;
+}
+
+interface DealCard {
+  key: string;
+  departure: number;
+}
+
+function dealCards(round: RoundView | null | undefined, seats: Seats, timing: CardTiming): DealCard[] {
+  if (!round) return [];
+  const out: DealCard[] = [];
+  const push = (prefix: string, times: readonly number[] | undefined, count: number) => {
+    for (let i = 0; i < count; i++) {
+      const reveal = at(times, i);
+      if (reveal > 0) out.push({ key: `${prefix}:${i}:${reveal}`, departure: reveal - timing.flight });
+    }
+  };
+  push("board", round.board_reveal_at, round.board.length);
+  push("dealer", round.dealer_reveal_at, round.dealer.length);
+  push("burn", round.burn_at, round.burn_at?.length ?? 0);
+  seats.forEach((seat, seatIndex) => {
+    if (!seat) return;
+    push(`seat:${seatIndex}`, seat.cards_reveal_at, seat.cards.length);
+    seat.hands.forEach((hand, handIndex) => push(`hand:${seatIndex}:${handIndex}`, hand.reveal_at, hand.cards.length));
+  });
+  return out.sort((a, b) => a.departure - b.departure || a.key.localeCompare(b.key));
+}
+
+/** 현재 시각에 화면에 있어야 하는 딜러 deal 클립과 재생 속도. */
+export function dealClipAt(round: RoundView | null | undefined, seats: Seats, timing: CardTiming, now: number): DealClip | null {
+  const cards = dealCards(round, seats, timing);
+  let current: DealClip | null = null;
+  cards.forEach((card, index) => {
+    const next = cards[index + 1];
+    const gap = next ? next.departure - card.departure : 0;
+    const rate = gap > 0 ? Math.min(1.8, Math.max(1, DEAL_CLIP_MS / gap)) : 1;
+    const startAt = card.departure - DEAL_RELEASE_MS / rate;
+    const endAt = startAt + DEAL_CLIP_MS / rate;
+    if (startAt <= now && now < endAt) current = { key: card.key, startAt, rate };
+  });
+  return current;
+}
+
+/** 구독용 문자열 키 (useServerValue는 원시값만 받는다). */
+export const dealClipKey = (clip: DealClip | null): string | null =>
+  clip ? `${clip.startAt}|${clip.rate}|${clip.key}` : null;
+
+/** dealClipKey의 반대. 잘못된 키면 null. */
+export function parseDealClipKey(value: string | null): DealClip | null {
+  if (!value) return null;
+  const [startAt, rate, ...key] = value.split("|");
+  const start = Number(startAt),
+    speed = Number(rate);
+  if (!Number.isFinite(start) || !Number.isFinite(speed) || key.length === 0) return null;
+  return { key: key.join("|"), startAt: start, rate: speed };
+}
+
+function dealClipStarts(round: RoundView, seats: Seats, timing: CardTiming): number[] {
+  const cards = dealCards(round, seats, timing);
+  return cards.map((card, index) => {
+    const gap = cards[index + 1] ? cards[index + 1].departure - card.departure : 0;
+    const rate = gap > 0 ? Math.min(1.8, Math.max(1, DEAL_CLIP_MS / gap)) : 1;
+    return card.departure - DEAL_RELEASE_MS / rate;
+  });
+}
+
 /** 이번 라운드의 뒤집기 시각 (플롭, 딜러 홀 카드, 쇼다운). */
 export function flipTimes(round: RoundView | null | undefined, seats: Seats): number[] {
   if (!round) return [];
@@ -119,6 +190,7 @@ export function dealerMoodAt(round: RoundView | null | undefined, seats: Seats, 
   if (!round) return "idle";
   const flips = flipTimes(round, seats);
   if (flips.some((time) => now >= time - FLIP_LEAD_MS && now < time + timing.flip)) return "flip";
+  if (dealClipAt(round, seats, timing, now)) return "deal";
   const nextCard = Math.min(...cardTimes(round, seats).map((time) => time - timing.flight).filter((time) => time > now));
   if (!Number.isFinite(nextCard)) return "idle";
   const nextFlip = Math.min(...flips.map((time) => time - FLIP_LEAD_MS).filter((time) => time > now));
@@ -134,6 +206,7 @@ export function tableEvents(table: TableView | null | undefined, timing: CardTim
       if (time <= 0) continue;
       out.push(time - timing.flight, time);
     }
+    out.push(...dealClipStarts(round, table.seats, timing));
     for (const time of flipTimes(round, table.seats)) out.push(time - FLIP_LEAD_MS, time, time + timing.flip);
     for (const seat of table.seats) if (seat?.showdown_at && seat.showdown_at > 0) out.push(seat.showdown_at);
     const showdown = showdownAt(round, table.seats);

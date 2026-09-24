@@ -95,7 +95,10 @@ function subscribe(listener: Listener) {
   };
 }
 
-/** 서버 시각에서 뽑은 값(숫자·문자·불리언)을 구독한다. 값이 바뀔 때만 다시 그린다. */
+/**
+ * 서버 시각에서 뽑은 값(숫자·문자·불리언)을 구독한다. 값이 바뀔 때만 다시 그린다.
+ * 객체는 넘기지 않는다: 부를 때마다 새 객체면 React가 매번 바뀐 것으로 보고 끝없이 다시 그린다.
+ */
 export function useServerValue<T extends string | number | boolean | null>(select: (now: number, confirmedAt: number) => T): T {
   return useSyncExternalStore(subscribe, () => select(snapshot, confirmedTime.value));
 }

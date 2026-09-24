@@ -3,7 +3,7 @@
 ## 실제 카지노식 딜링·딜러 영상·웹 끊김 (2026-09-24 오후, Claude + Codex)
 
 - 사용자 요청: 딜러 영상이 부자연스럽고 흔들리며, 밝기와 선명도가 틀어졌다. 카드가 한꺼번에 나타났다. 웹도 끊기고 불안정했다.
-- 실제 카지노식 딜링을 적용했다. 슈에서 카드를 한 장씩 나눈다. 블랙잭은 600ms 간격, 홀덤 홀 카드는 520ms 간격이다. 카드 비행은 420ms, 히트 카드는 650ms 뒤 도착한다. 슈 옆 좌석인 seat 1이 first base이고 오른쪽에서 왼쪽으로 딜한다. 홀덤은 각 스트리트 전에 번 카드를 내고, 플랍은 뒷면으로 놓은 뒤 함께 뒤집는다. 딜러 홀 카드와 쇼다운 카드도 정해진 시간에 뒤집는다.
+- 실제 카지노식 딜링을 적용했다. 슈에서 카드를 한 장씩 나눈다. 블랙잭은 600ms 간격, 홀덤 홀 카드는 520ms 간격이다. 카드 비행은 420ms, 히트 카드는 누른 뒤 950ms에 도착한다. 슈 옆 좌석인 seat 1이 first base이고 오른쪽에서 왼쪽으로 딜한다. 홀덤은 각 스트리트 전에 번 카드를 내고, 플랍은 뒷면으로 놓은 뒤 함께 뒤집는다. 딜러 홀 카드와 쇼다운 카드도 정해진 시간에 뒤집는다.
 - 타이밍 상수는 `src/casino/table.rs`의 `CARD_FLIGHT_MS`, `DEAL_CARD_MS`, `HOLE_CARD_MS`, `DEAL_LEAD_MS`, `LAND_SETTLE_MS`, `DEALER_DRAW_MS`, `CARD_FLIP_MS`다. `cfg(test)`에서는 모두 0이다. 계약은 `reveal_at`이 카드 도착 시각이라는 것, 라운드 필드 `burn_at`, `board_flip_at`, `dealer_flip_at`, `reveal_until`, 좌석 필드 `showdown_at`을 사용하는 것이다. 규칙에는 `card_flight_ms`, `card_flip_ms`를 둔다. 커밋 `438c47b`.
 - 카드가 도착하기 전에는 결과를 숨긴다(`src/casino/view.rs`). `shown_phase`와 `Round.settled_from`으로 표시 단계가 뒤로 가지 않는다. 스택과 당첨금은 `Seat.pending_credit`/`pending_until` 및 0 미만을 막는 `visible_stack`으로 처리한다. 히스토리와 딜러 문구도 각각 공개 시각과 메시지 `at`을 따른다.
 - 하우스 합계는 hub의 `pending_house`로 보류하고 `reveal_until` 뒤 `tick_all`에서 적용한다. 테이블을 닫을 때는 즉시 적용한다. `house`와 함께 `casino.json`에 저장해 재시작해도 잃지 않는다. 블랙잭 공개 중에는 모든 라운드의 `turn=-1`, `deadline=0`, `legal.blackjack=null`로 보내 딜러 내추럴을 payload에서 미리 알 수 없게 했다. 인슈어런스·액션·시작은 `ensure_reveal_done` 뒤에만 된다.
