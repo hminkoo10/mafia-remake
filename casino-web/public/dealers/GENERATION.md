@@ -93,3 +93,10 @@ models/wan2.2_vae.safetensors
 - 대기는 `PLATE_REGION=eyes`: 얼굴·몸 모두 기준 장면이고 눈 깜빡임만 생성 프레임에서 가져온다(0~26프레임, `SETTLE=6`, `HOLD=40`으로 뒤에 기준 장면 1.7초). 2.79초, 1배속으로 약 2.8초에 한 번 깜빡인다.
 - 명령: `PLATE=anchor-hr.png process-dealer-clip.sh sophia-deal-hr.webm ... once 0 31 56.56`, `PLATE=... LEADIN=<딜 마지막 프레임> process-dealer-clip.sh sophia-reach-hr.webm ... reverse 0 26 56.56`, `PLATE=... PLATE_REGION=eyes SETTLE=6 HOLD=40 process-dealer-clip.sh sophia-idle-hr3.webm ... settle 0 27 56.56`.
 - 결과(얼굴 선명도·채도, 배경 변화): 대기 475~495·0.49·0.1 이하, 딜 330~546·0.49~0.52, 되돌리기 250~480·0.47~0.54 (이전 대기 100~330·0.42~0.52, 딜 105~330, 되돌리기 50~300). 이음새 0~1.5.
+
+## 얼굴 고정 (2026-09-25)
+
+사용자 요청: 얼굴 생김새가 달라지지 않게. 딜·되돌리기에서 고개를 숙이는 구간은 모델이 얼굴을 새로 그려 생김새가 조금씩 달라졌다.
+- `PLATE_HEAD=1`: 머리·얼굴·목(타원 + 목·옷깃)을 모든 프레임에서 기준 장면으로 고정하고, 팔·손·몸만 생성 프레임에서 가져온다. 이음새는 검은 옷깃에서 섞여 드러나지 않는다. 대신 카드를 놓을 때 고개를 숙이지 않고 카메라를 본다.
+- 명령: `PLATE=anchor-hr.png PLATE_HEAD=1 process-dealer-clip.sh sophia-deal-hr.webm ... once 0 31 56.56`, `PLATE=... PLATE_HEAD=1 LEADIN=<딜 마지막 프레임> process-dealer-clip.sh sophia-reach-hr.webm ... reverse 0 26 56.56`.
+- 결과: 딜·되돌리기의 모든 프레임에서 얼굴 밝기 98·채도 0.49·선명도 약 505로 일정(대기와 같다). 이음새 1.1~1.4.

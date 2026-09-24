@@ -75,6 +75,17 @@ def eyes_region(w, h):
     return ndimage.gaussian_filter(mask, 7 * sx)
 
 
+def fixed_head(w, h):
+    """PLATE_HEAD=1: 머리·얼굴·목을 모든 프레임에서 기준 장면으로 고정한다 (생성 모델이 얼굴을 다시 그려
+    생김새가 달라지지 않게). 목 아래 검은 옷에서 섞여 이음새가 드러나지 않는다."""
+    sx, sy = w / 1152, h / 768
+    yy, xx = np.mgrid[0:h, 0:w]
+    ellipse = ((xx - 578 * sx) / (118 * sx)) ** 2 + ((yy - 118 * sy) / (132 * sy)) ** 2 <= 1
+    mask = ellipse.astype(np.float32)
+    mask[int(170 * sy): int(262 * sy), int(528 * sx): int(630 * sx)] = 1  # 목·옷깃
+    return ndimage.gaussian_filter(mask, 10 * sx)
+
+
 def head_region(w, h):
     """얼굴 영역 (따로 색을 맞춘다: 생성 프레임은 얼굴이 기준 장면보다 어둡고 칙칙해진다)."""
     sx, sy = w / 1152, h / 768
@@ -125,6 +136,8 @@ def main():
         [FF, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", "24", "-i", "-", "-c:v", "ffv1", dst],
         stdin=subprocess.PIPE,
     )
+    if os.environ.get("PLATE_HEAD") == "1":
+        region = region * (1 - fixed_head(w, h))
     alpha = region[..., None]
     for matched in matched_frames:
         out = matched * alpha + plate * (1 - alpha)
