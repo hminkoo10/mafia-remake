@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)][string]$RuntimeRoot,
     # return: deal/flip의 마지막 프레임에서 이어 손을 슈 위 제자리로 돌린다 (-Reference로 그 프레임을 준다).
-    [ValidateSet('idle', 'deal', 'flip', 'return')][string]$Mood = 'deal',
+    # reach: 대기 자세에서 손을 슈에서 테이블 가운데로 가져간다. 거꾸로 틀어 되돌리기 영상으로 쓴다 (끝 장면이 대기 자세와 정확히 같다).
+    [ValidateSet('idle', 'deal', 'flip', 'return', 'reach')][string]$Mood = 'deal',
     [string]$OutputDirectory = '',
     [int]$Width = 768,
     [int]$Height = 512,
@@ -39,9 +40,10 @@ if (Test-Path -LiteralPath $taskOutput) { throw "Output already exists: $taskOut
 
 $taskScene = 'Locked-off tripod camera. One woman remains seated, same pose and face as the input photograph. A real rectangular wooden playing-card dispenser holds a visible stack of small white cards on the right side of the green table. Both of her bare forearms stay visible, attached to her small natural hands. Her head, hair, face, dress and the background stay still and unchanged. Soft diffuse lighting, balanced photographic exposure, detailed skin texture, neutral natural colors. Only a subtle hand gesture happens. '
 $taskMotion = @{
-    idle = 'She breathes gently and blinks once, looking calmly at the camera. Both hands remain resting on the green felt and the rectangular playing-card dispenser. Her head stays upright, mouth closed. Barely perceptible natural motion, ending in the same resting position.'
+    idle = 'She sits still and relaxed, looking calmly at the camera with a soft closed-mouth smile. Her eyes stay open; she blinks once, briefly and naturally, with both eyes together. Her right hand stays resting on the rectangular card dispenser and her left hand stays flat on the green felt. Only very subtle natural breathing. Her head stays upright and still.'
     deal = 'Using her own hand at image right, she pulls one small flat white playing card from the rectangular card dispenser. She smoothly slides this single playing card onto the green felt in front of herself, keeping her elbow close to her body. The other hand rests flat on the felt. She retracts her hand to its original position.'
     flip = 'Her own hand resting near the middle of the green felt makes a small controlled wrist turn, revealing the front of a single small rectangular playing card on the table. Then she rests her hand flat again. Her other hand remains on the rectangular card dispenser. Her head stays upright and still.'
+    reach = 'She lifts her empty right hand off the rectangular card dispenser and moves it low over the green felt to the middle of the table in front of her, where both of her hands come to rest together on the felt, and she lowers her gaze to the table. Nothing is in her hands. Smooth, natural, unhurried motion, ending at rest. Her face, shoulders and body stay the same.'
     return = 'She leaves the single playing card lying flat on the felt. Her empty right hand, fingers relaxed and open, holding nothing, moves back low over the felt until it rests on top of the rectangular card dispenser at image right, while she raises her head and looks calmly at the camera. Nothing is in her hands. Her left hand stays flat on the green felt. Her face, shoulders and body stay the same. Smooth, natural, unhurried motion, ending at rest.'
 }
 $taskInput = Join-Path $RuntimeRoot ('reference-' + [guid]::NewGuid().ToString('N') + '.png')

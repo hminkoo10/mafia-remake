@@ -82,6 +82,8 @@ export function chooseDealerLayer(requested: DealerMood, state: DealerLayerState
   // 대기로 돌아가거나 요청한 영상을 못 쓰면: 하던 동작은 끝까지, 끝났으면 대기 영상 → 사진.
   // 되돌리기 동작은 손이 슈에 닿는 순간(스케줄이 끝나는 순간) 대기 영상으로 넘긴다: 대기 영상도 손이 슈 위에 있어 이어진다.
   if (isGesture(current) && live && current !== "return") return keep;
-  if (usable.idle) return { layer: "idle", restart: false };
+  // 동작을 마치고 대기로 돌아올 때는 대기 영상을 처음부터 튼다: 모든 영상이 같은 대기 장면에서 시작·끝나므로
+  // 되돌리기 영상의 끝 장면과 대기 영상의 첫 장면이 그대로 이어진다.
+  if (usable.idle) return { layer: "idle", restart: isGesture(current) };
   return { layer: null, restart: false };
 }

@@ -26,6 +26,11 @@ export const hasDealerVideo = (id: string) => MOODS.some((mood) => hasClip(id, m
 const mediaUrl = (id: string, mood: DealerClip, extension: "webm" | "mp4") =>
   `${import.meta.env.BASE_URL}dealers/${id}-${mood}.${extension}`;
 
+/**
+ * 대기 영상 재생 속도: 1.7초짜리 영상을 천천히 틀어 눈 깜빡임이 약 2.9초에 한 번(사람과 비슷하게) 나온다.
+ * 대기 영상은 앞으로만 재생하고 끝이 첫 장면으로 섞여 들어가 반복해도 이음새가 없다.
+ */
+const IDLE_RATE = 0.6;
 /** 새 영상이 겹쳐 떠오르는 동안 이전 영상도 계속 움직인다 (CSS의 페이드 260ms보다 조금 길게). */
 const OUTGOING_MS = 280;
 /** 영상에서 사진으로 돌아갈 때 영상이 사라지는 시간 (CSS와 같게). */
@@ -169,16 +174,16 @@ function DealerBackdropInner({ id, name, mood, deal, flipsAhead = false, poster,
       }
       if (layer === active) {
         // 처음부터 다시 틀기는 이 실행에서 한 번만: 숨겼다 돌아와 이 효과가 다시 돌아도 되감지 않는다.
-        if (view.restart && restartApplied.current !== view.run && layer !== "idle") {
+        if (view.restart && restartApplied.current !== view.run) {
           if (view.dealKey && deal?.key === view.dealKey) {
             video.playbackRate = deal.rate;
             const clipMs = deal.kind === "return" ? RETURN_CLIP_MS : DEAL_CLIP_MS;
             video.currentTime = Math.min((clipMs - 50) / 1000, Math.max(0, (liveServerNow() - deal.startAt) * deal.rate / 1000));
           } else if (video.currentTime > 0) {
             video.currentTime = 0;
-            video.playbackRate = 1;
           }
         }
+        if (!view.dealKey) video.playbackRate = layer === "idle" ? IDLE_RATE : 1;
         restartApplied.current = view.run;
         void video.play().catch(() => {
           // 자동 재생이 막혀도 영상 파일 문제는 아니다. 준비된 프레임을 그대로 둔다.

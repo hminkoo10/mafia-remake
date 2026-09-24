@@ -4,9 +4,12 @@
 #   2) 삼각대 안정화: 카메라가 고정이므로 배경 기준으로 흔들림을 없앤다 (vidstab tripod)
 #   3) 시간 방향 잡음 제거 (hqdn3d, 공간은 건드리지 않음) → 톤 곡선 → 1536x1024 lanczos 확대 → CAS 선명도
 #   4) loop 모드: 앞으로 재생한 뒤 거꾸로 이어 붙인다 (끝점 프레임은 한 번만)
+#      settle 모드: 앞으로만 재생하고 마지막 SETTLE 프레임(기본 12) 동안 첫 프레임으로 서서히 섞는다.
+#        끝이 첫 프레임과 같아져 반복해도 이음새가 없다 (눈 깜빡임 같은 동작이 거꾸로 나오지 않는다).
+#      reverse 모드: 거꾸로 뒤집는다 (대기 자세에서 시작해 생성한 동작을 대기 자세로 끝나는 동작으로 쓸 때).
 #   5) 법정 범위로 자르고 VP9(CRF 24)·H.264(CRF 18) 인코딩, 첫 프레임을 포스터로
 # 사용 (출력 경로는 상대 경로로: ffmpeg 필터 인자에 C: 같은 콜론이 들어가면 깨진다):
-#   TONE="curves=master='...'" process-dealer-clip.sh <입력> <출력 이름> <loop|once> <시작 프레임> <끝 프레임> <목표 배경 밝기>
+#   TONE="curves=master='...'" process-dealer-clip.sh <입력> <출력 이름> <loop|once|settle|reverse> <시작 프레임> <끝 프레임> <목표 배경 밝기>
 # TONE은 dealer-luma-curve.py로 기준 프레임과 원본 사진에서 만든다.
 set -euo pipefail
 IN="$1"; OUT="$2"; MODE="$3"; START="$4"; END="$5"; TARGET="$6"
@@ -25,8 +28,29 @@ if [ "$MODE" = "loop" ]; then
   "$FF" -hide_banner -loglevel error -y -i "$WORK/up.mkv" -filter_complex \
     "[0:v]split[f][r];[r]reverse,trim=start_frame=1,setpts=PTS-STARTPTS[rv0];[rv0]reverse,trim=start_frame=1,reverse,setpts=PTS-STARTPTS[rv];[f][rv]concat=n=2:v=1,fps=24[out]" \
     -map "[out]" -c:v ffv1 "$WORK/final.mkv"
+elif [ "$MODE" = "settle" ]; then
+  K="${SETTLE:-12}"
+  N=$(( END - START ))
+  OFF=$(python -c "print(($N - $K) / 24)")
+  DUR=$(python -c "print($K / 24)")
+  "$FF" -hide_banner -loglevel error -y -i "$WORK/up.mkv" -filter_complex \
+    "[0:v]fps=24,settb=AVTB,split[a][b];[b]trim=end_frame=1,loop=loop=$(( K - 1 )):size=1:start=0,setpts=N/24/TB,fps=24,settb=AVTB[still];[a][still]xfade=transition=fade:duration=$DUR:offset=$OFF[out]" \
+    -map "[out]" -c:v ffv1 "$WORK/final.mkv"
+elif [ "$MODE" = "reverse" ]; then
+  "$FF" -hide_banner -loglevel error -y -i "$WORK/up.mkv" -vf "reverse,setpts=N/24/TB,fps=24" -c:v ffv1 "$WORK/final.mkv"
 else
   cp "$WORK/up.mkv" "$WORK/final.mkv"
+fi
+
+# LEADIN=<앞 영상의 마지막 프레임 PNG>: 처음 LEADIN_FRAMES(기본 8) 프레임 동안 그 장면에서 서서히 넘어온다.
+# 앞 영상에서 이어지는 영상(딜 → 되돌리기)의 이음새를 같은 장면에서 시작하게 한다.
+if [ -n "${LEADIN:-}" ]; then
+  LK="${LEADIN_FRAMES:-8}"
+  LDUR=$(python -c "print($LK / 24)")
+  "$FF" -hide_banner -loglevel error -y -loop 1 -framerate 24 -t "$LDUR" -i "$LEADIN" -i "$WORK/final.mkv" -filter_complex \
+    "[0:v]scale=1536:1024,format=yuv444p,fps=24,settb=AVTB[lead];[1:v]fps=24,settb=AVTB[clip];[lead][clip]xfade=transition=fade:duration=$LDUR:offset=0[out]" \
+    -map "[out]" -c:v ffv1 "$WORK/final-lead.mkv"
+  mv "$WORK/final-lead.mkv" "$WORK/final.mkv"
 fi
 
 CLAMP="format=yuv420p,lutyuv=y='clip(val,16,235)':u='clip(val,16,240)':v='clip(val,16,240)'"

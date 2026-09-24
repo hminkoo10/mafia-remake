@@ -33,8 +33,8 @@ test("the dealer's hands keep moving while cards are still leaving the shoe", ()
 test("a finished gesture falls back to idle instead of freezing, and a playing one is not cut", () => {
   assert.deepEqual(chooseDealerLayer("idle", state({ current: "deal", progress: 0.5 })), { layer: "deal", restart: false });
   assert.deepEqual(chooseDealerLayer("idle", state({ current: "flip", progress: 0.5 })), { layer: "flip", restart: false });
-  assert.deepEqual(chooseDealerLayer("idle", state({ current: "deal", ended: true })), { layer: "idle", restart: false });
-  assert.deepEqual(chooseDealerLayer("flip", state({ current: "flip", ended: true })), { layer: "idle", restart: false });
+  assert.deepEqual(chooseDealerLayer("idle", state({ current: "deal", ended: true })), { layer: "idle", restart: true });
+  assert.deepEqual(chooseDealerLayer("flip", state({ current: "flip", ended: true })), { layer: "idle", restart: true });
   assert.deepEqual(chooseDealerLayer("idle", state({ current: "idle" })), { layer: "idle", restart: false });
 });
 
@@ -47,7 +47,7 @@ test("without an idle clip a finished gesture returns to the still photo", () =>
 
 test("loading or missing clips keep a usable frame and never invent an unrelated move", () => {
   assert.deepEqual(chooseDealerLayer("flip", state({ current: "deal", usable: { deal: true } })), { layer: "deal", restart: false });
-  assert.deepEqual(chooseDealerLayer("deal", state({ current: "deal", usable: { idle: true } })), { layer: "idle", restart: false }, "딜 영상이 실패");
+  assert.deepEqual(chooseDealerLayer("deal", state({ current: "deal", usable: { idle: true } })), { layer: "idle", restart: true }, "딜 영상이 실패");
   assert.deepEqual(chooseDealerLayer("idle", state({ current: null, usable: { flip: true } })), { layer: null, restart: false });
   assert.deepEqual(chooseDealerLayer("deal", state({ current: null, usable: {} })), { layer: null, restart: false });
 });
@@ -63,8 +63,14 @@ test("a long showdown keeps the dealer turning cards while flips are still comin
   assert.deepEqual(chooseDealerLayer("flip", state({ current: "flip2", progress: 0.5, flipsAhead: true, usable: both })), { layer: "flip2", restart: false });
   assert.deepEqual(chooseDealerLayer("idle", state({ current: "flip2", progress: 0.5, usable: both })), { layer: "flip2", restart: false });
   // 마지막 카드까지 뒤집었으면 대기로 돌아간다.
-  assert.deepEqual(chooseDealerLayer("flip", state({ current: "flip2", ended: true, usable: both })), { layer: "idle", restart: false });
+  assert.deepEqual(chooseDealerLayer("flip", state({ current: "flip2", ended: true, usable: both })), { layer: "idle", restart: true });
   // 새 쇼다운은 첫 뒤집기 층부터 (없으면 두 번째 층).
   assert.deepEqual(chooseDealerLayer("flip", state({ current: "deal", progress: 0.4, usable: both })), { layer: "flip", restart: true });
   assert.deepEqual(chooseDealerLayer("flip", state({ current: "idle", usable: { idle: true, flip2: true } })), { layer: "flip2", restart: true });
+});
+
+test("coming back from the return gesture restarts the idle loop from its first frame", () => {
+  const usable = { idle: true, deal: true, deal2: true, return: true };
+  assert.deepEqual(chooseDealerLayer("idle", state({ current: "return", progress: 0.9, usable })), { layer: "idle", restart: true });
+  assert.deepEqual(chooseDealerLayer("idle", state({ current: "idle", usable })), { layer: "idle", restart: false });
 });

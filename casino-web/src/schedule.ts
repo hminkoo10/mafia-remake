@@ -23,12 +23,12 @@ export const DEAL_RELEASE_MS = 500;
 export const DEAL_PLACE_MS = 1167;
 
 /**
- * 되돌리기 영상(sophia-return, 24fps 34프레임 = 1.417초): 딜 영상의 마지막 자세(카드를 내려놓은 두 손)에서
- * 시작해 오른손을 슈 위로 되돌리고 고개를 든다. RETURN_REST_MS에 대기 영상·다음 딜 영상의 첫 자세
- * (오른손이 슈 위, 카메라를 봄)와 같아진다.
+ * 되돌리기 영상(sophia-return, 24fps 26프레임 = 1.083초): 딜 영상의 마지막 장면에서 서서히 넘어와 오른손을
+ * 슈 위로 되돌리고 고개를 든다. 대기 자세에서 손을 가운데로 가져가는 영상을 거꾸로 만든 것이라 끝 장면이
+ * 대기·딜 영상의 첫 장면과 같다. RETURN_REST_MS에 그 자세에 닿는다.
  */
-export const RETURN_CLIP_MS = 1417;
-export const RETURN_REST_MS = 1375;
+export const RETURN_CLIP_MS = 1083;
+export const RETURN_REST_MS = 1040;
 /** 되돌리기 재생 속도 범위: 다음 카드까지 시간이 짧으면 빨리, 길면(마지막 카드) 자연스럽게. */
 export const RETURN_MIN_RATE = 1;
 export const RETURN_MAX_RATE = 2.5;
