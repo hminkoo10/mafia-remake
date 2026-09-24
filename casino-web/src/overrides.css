@@ -97,11 +97,28 @@
 .betting-controls.evo .chip-options{justify-content:center;gap:12px}
 .betting-controls.evo .chip{width:46px;height:46px;font-size:11px}
 .betting-controls.evo .chip.chosen{transform:translateY(-6px);box-shadow:0 0 0 2px #dcc17a,0 8px 18px #000a}
-.bet-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:center}
-.bet-tools .bet-total{font-size:13px;color:#a9b797;margin-right:6px}
-.bet-tools .bet-total strong{color:#e6d4a4;font-size:15px;margin-left:4px}
-.bet-tools .bet-total small{color:#7d9174;font-size:11px}
-.bet-tools .gold-button{margin-left:auto}
+/* 베팅 도구: 합계, 베팅 고치기 버튼(되돌리기·지우기·다시 베팅·2배 베팅), 베팅 확정.
+   도구 칸이 좁으면 합계·확정을 한 줄에, 고치기 버튼을 그 아래 한 줄에 둔다. */
+.bet-tools{container-type:inline-size;min-width:0}
+.bet-tools-row{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"summary confirm" "edit edit";align-items:center;gap:8px 12px}
+@container (min-width:760px){.bet-tools-row{grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"summary edit confirm"}}
+.bet-summary{grid-area:summary;display:flex;flex-direction:column;gap:2px;min-width:0}
+.bet-summary .bet-total{font-size:14px;color:#b4c2a4;white-space:nowrap}
+.bet-summary .bet-total strong{margin-left:6px;font-size:21px;color:#f0dcaa;font-variant-numeric:tabular-nums}
+.bet-summary small{font-size:12px;color:#8fa383;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bet-edit{grid-area:edit;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.tool-button{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-width:0;min-height:40px;padding:0 10px;border:1px solid #5d6e49;border-radius:8px;background:#1d2a19;color:#e8ecdc;font-size:14px;font-weight:600;white-space:nowrap;box-shadow:inset 0 1px #ffffff0d}
+.tool-button svg{flex:none;color:#dcc387}
+.tool-button .x2{flex:none;padding:1px 5px;border-radius:4px;background:#dcc387;color:#1f2215;font-size:12px;line-height:1.3}
+.tool-button:hover:not(:disabled){filter:none;border-color:#c4a96c;background:#293922}
+.tool-button:disabled{opacity:.35}
+.bet-tools .confirm-bet{grid-area:confirm;min-height:46px;padding:0 20px;font-size:15px}
+/* 내 테이블 칩과 퇴장 버튼은 나란히 둔다. */
+.seated-dock .stack-info{display:grid;grid-template-columns:auto auto;column-gap:12px;align-items:center;text-align:right}
+.seated-dock .stack-info>small,.seated-dock .stack-info>strong{grid-column:1}
+.seated-dock .stack-info>strong{margin:2px 0 0}
+.stack-info>button.leave-button{grid-column:2;grid-row:1/3;display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:38px;margin:0;padding:0 14px;border:1px solid #80604a;border-radius:8px;background:#2c211acc;color:#f0cdb8;font-size:14px;font-weight:600;white-space:nowrap}
+.stack-info>button.leave-button:hover:not(:disabled){filter:none;border-color:#c0826a;background:#452a20}
 .bet-hint{margin:0;font-size:11px;color:#8fa383;text-align:center}
 .chip-stack{position:absolute;left:calc(100% - 4px);top:-4px;display:flex;flex-direction:column;align-items:center;gap:2px;background:none;border:0;padding:0;pointer-events:auto;cursor:default}
 .seat.occupied .chip-stack{pointer-events:auto}
@@ -412,22 +429,23 @@ html{scrollbar-gutter:stable}
   .is-fullscreen .seated-dock{gap:7px}
   .is-fullscreen .seated-dock .my-hand-row{min-height:52px}
   .is-fullscreen .seated-dock .my-cards{margin-top:4px}
-  .is-fullscreen .seated-dock .stack-info>strong{margin:2px 0;font-size:16px}
-  .is-fullscreen .poker-actions{position:relative;display:grid;grid-template-columns:1fr;grid-template-areas:"raise" "presets";align-items:center;gap:6px}
+  .is-fullscreen .seated-dock .stack-info>strong{margin:2px 0 0;font-size:18px}
+  /* 홀덤: 왼쪽에 레이즈 금액(슬라이더·빠른 선택), 오른쪽에 폴드·콜·레이즈 버튼. 서로 겹치지 않는다. */
+  .is-fullscreen .poker-actions{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"raise buttons" "presets buttons";align-items:center;gap:6px 14px}
   .is-fullscreen .raise-control{grid-area:raise}
   .is-fullscreen .raise-presets{grid-area:presets}
-  .is-fullscreen .seated-dock .action-buttons{position:absolute;left:50%;right:12px;bottom:8px;width:auto;min-height:44px;z-index:5;display:grid!important}
+  .is-fullscreen .seated-dock .action-buttons{grid-area:buttons;align-self:stretch;min-height:44px;display:grid!important}
   .is-fullscreen .raise-control{display:grid;grid-template-columns:auto minmax(90px,1fr) auto;gap:6px}
-  .is-fullscreen .raise-control>span{gap:4px;font-size:10px}
-  .is-fullscreen .raise-control strong{font-size:12px;min-width:32px}
-  .is-fullscreen .raise-control>button{padding:6px 7px;font-size:9px}
-  .is-fullscreen .raise-presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px}
-  .is-fullscreen .raise-presets button{min-width:0;padding:5px 2px;font-size:10px}
-  .is-fullscreen .raise-presets button b{display:block;font-size:9px}
-  .is-fullscreen .action-buttons{gap:4px}
-  .is-fullscreen .action-buttons button{min-width:0;padding:9px 5px;font-size:11px}
-  .is-fullscreen .blackjack-actions{gap:6px}
-  .is-fullscreen .blackjack-actions button{padding:9px 8px;font-size:12px}
+  .is-fullscreen .raise-control>span{gap:6px;font-size:13px}
+  .is-fullscreen .raise-control strong{font-size:15px;min-width:40px}
+  .is-fullscreen .raise-control>button{padding:7px 10px;font-size:12px}
+  .is-fullscreen .raise-presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+  .is-fullscreen .raise-presets button{min-width:0;padding:5px 4px;font-size:13px}
+  .is-fullscreen .raise-presets button b{display:block;font-size:12px}
+  .is-fullscreen .action-buttons{gap:6px}
+  .is-fullscreen .action-buttons button{min-width:0;min-height:46px;padding:0 8px;font-size:15px}
+  .is-fullscreen .blackjack-actions{gap:8px}
+  .is-fullscreen .blackjack-actions button{min-height:48px;padding:0 10px;font-size:16px}
   .is-fullscreen .betting-controls.evo{display:grid;grid-template-columns:auto auto minmax(0,1fr);align-items:center;gap:12px;width:100%}
   .is-fullscreen .bet-spots{gap:6px;padding:0}
   .is-fullscreen .bet-circle{width:64px;height:64px;padding-bottom:5px}
@@ -438,12 +456,10 @@ html{scrollbar-gutter:stable}
   .is-fullscreen .bet-circle small{font-size:8px}
   .is-fullscreen .betting-controls.evo .chip-options{gap:6px}
   .is-fullscreen .betting-controls.evo .chip{width:36px;height:36px;font-size:9px}
-  .is-fullscreen .bet-tools{gap:2px;justify-content:flex-end;flex-wrap:nowrap;white-space:nowrap}
-  .is-fullscreen .bet-tools .bet-total{font-size:11px;margin-right:2px}
-  .is-fullscreen .bet-tools .bet-total strong{font-size:13px}
-  .is-fullscreen .bet-tools .bet-total small{font-size:9px}
-  .is-fullscreen .bet-tools .text-button{font-size:10px;padding:4px}
-  .is-fullscreen .bet-tools .gold-button{padding:8px 10px;font-size:12px}
+  .is-fullscreen .bet-tools-row{gap:8px 10px}
+  .is-fullscreen .bet-summary .bet-total strong{font-size:19px}
+  .is-fullscreen .tool-button{min-height:38px}
+  .is-fullscreen .bet-tools .confirm-bet{min-height:44px;padding:0 16px}
   .is-fullscreen .bet-hint{display:none}
 }
 
@@ -462,14 +478,14 @@ html{scrollbar-gutter:stable}
   .is-fullscreen .seated-dock .my-cards{margin-top:4px}
   .is-fullscreen .poker-actions{gap:4px}
   .is-fullscreen .raise-control{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px}
-  .is-fullscreen .raise-control>span{font-size:10px;gap:4px}
+  .is-fullscreen .raise-control>span{font-size:12px;gap:4px}
   .is-fullscreen .raise-control>[data-slot=slider]{grid-column:1/-1;min-width:0;height:16px}
-  .is-fullscreen .raise-control>button{padding:4px 6px;font-size:9px}
-  .is-fullscreen .raise-presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px}
-  .is-fullscreen .raise-presets button{min-width:0;padding:4px 2px;font-size:9px}
-  .is-fullscreen .raise-presets button b{font-size:8px}
+  .is-fullscreen .raise-control>button{padding:5px 8px;font-size:12px}
+  .is-fullscreen .raise-presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px}
+  .is-fullscreen .raise-presets button{min-width:0;padding:4px 2px;font-size:12px}
+  .is-fullscreen .raise-presets button b{font-size:11px}
   .is-fullscreen .action-buttons{gap:5px}
-  .is-fullscreen .action-buttons button{min-height:40px;padding:7px 5px;font-size:11px}
+  .is-fullscreen .action-buttons button{min-height:44px;padding:0 5px;font-size:14px}
   .is-fullscreen .betting-controls.evo{display:grid;grid-template-columns:1fr;gap:4px;width:100%}
   .is-fullscreen .bet-spots{gap:6px;padding:0;align-items:center}
   .is-fullscreen .bet-circle{width:62px;height:62px;padding-bottom:4px}
@@ -480,11 +496,19 @@ html{scrollbar-gutter:stable}
   .is-fullscreen .bet-circle small{font-size:8px}
   .is-fullscreen .betting-controls.evo .chip-options{justify-content:center;gap:7px}
   .is-fullscreen .betting-controls.evo .chip{width:36px;height:36px;font-size:9px}
-  .is-fullscreen .bet-tools{gap:1px;justify-content:center;flex-wrap:nowrap;white-space:nowrap}
-  .is-fullscreen .bet-tools .bet-total{font-size:10px;margin-right:0}
-  .is-fullscreen .bet-tools .bet-total small{display:none}
-  .is-fullscreen .bet-tools .bet-total strong{font-size:12px}
-  .is-fullscreen .bet-tools .text-button{font-size:9px;padding:4px 2px}
-  .is-fullscreen .bet-tools .gold-button{min-height:40px;padding:7px 8px;font-size:11px}
+  .is-fullscreen .bet-tools-row{gap:5px 8px}
+  .is-fullscreen .bet-summary .bet-total strong{font-size:17px}
+  .is-fullscreen .bet-summary small{font-size:11px}
+  .is-fullscreen .tool-button{min-height:36px}
+  .is-fullscreen .bet-tools .confirm-bet{min-height:42px;padding:0 12px;font-size:14px}
   .is-fullscreen .bet-hint{display:none}
+}
+
+/* 휴대폰: 베팅 고치기 버튼 네 개가 한 줄에 들어가게 아이콘과 여백을 줄인다 (글자는 13px). */
+@media(max-width:760px){
+  .bet-edit{gap:4px}
+  .tool-button{gap:3px;padding:0 3px;font-size:13px}
+  .tool-button svg{width:14px;height:14px}
+  .tool-button .x2{padding:0 3px;font-size:11px}
+  .stack-info>button.leave-button{min-height:36px;padding:0 11px;font-size:13px}
 }

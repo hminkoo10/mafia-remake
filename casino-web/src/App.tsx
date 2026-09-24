@@ -11,18 +11,21 @@ import {
   Club,
   Copy,
   Diamond,
+  DoorOpen,
+  Eraser,
   Grid2X2,
   History,
-  LogOut,
   Maximize,
   Minimize,
   Music,
   Music2,
   Plus,
   RefreshCw,
+  RotateCcw,
   Send,
   ShieldCheck,
   Spade,
+  Undo2,
   Users,
   Video,
   VideoOff,
@@ -1620,8 +1623,8 @@ export default function Casino() {
                     <div className="stack-info">
                       <small>내 테이블 칩</small>
                       <strong>{fmt(me.stack)}</strong>
-                      <button aria-label="테이블 퇴장" disabled={disabled || me.leaving} onClick={() => void act({ action: "leave" })}>
-                        <LogOut size={13} />
+                      <button className="leave-button" aria-label="테이블 퇴장" disabled={disabled || me.leaving} onClick={() => void act({ action: "leave" })}>
+                        <DoorOpen size={16} />
                         {me.leaving ? "퇴장 대기" : "퇴장"}
                       </button>
                     </div>
@@ -1775,48 +1778,59 @@ export default function Casino() {
                         ))}
                       </div>
                       <div className="bet-tools">
-                        <span className="bet-total">
-                          합계 <strong>{fmt(grandTotal)}</strong>
-                          <small>
-                            {" "}
-                            / 메인 {fmt(tableRules.min_bet)}~{fmt(maxWager)}
-                            {sideBetsOpen ? ` · 사이드 최대 ${fmt(tableRules.side_bet_max)}` : ""}
-                          </small>
-                        </span>
-                        <button type="button" className="text-button" disabled={disabled || placements.length === 0} onClick={() => setPlacements((list) => list.slice(0, -1))}>
-                          되돌리기
-                        </button>
-                        <button type="button" className="text-button" disabled={disabled || placements.length === 0} onClick={() => setPlacements([])}>
-                          지우기
-                        </button>
-                        <button
-                          type="button"
-                          className="text-button"
-                          disabled={
-                            disabled || placements.length > 0 || lastPlacements.length === 0 || lastPlacements.reduce((s, p) => s + p.value, 0) > seatChips
-                          }
-                          onClick={() => setPlacements(lastPlacements)}
-                        >
-                          다시 베팅
-                        </button>
-                        <button
-                          type="button"
-                          className="text-button"
-                          disabled={disabled || placements.length === 0 || grandTotal * 2 > seatChips || stackTotal * 2 > tableRules.max_bet}
-                          onClick={() => setPlacements((list) => [...list, ...list])}
-                        >
-                          더블
-                        </button>
-                        <button
-                          className="gold-button"
-                          disabled={disabled || stackTotal < tableRules.min_bet || stackTotal > maxWager || !sidesValid || betSeconds <= 0}
-                          onClick={() => void lockBet()}
-                        >
-                          베팅 확정{" "}
-                          <span className="button-timer">
-                            <Countdown deadline={round?.deadline ?? 0} />s
-                          </span>
-                        </button>
+                        <div className="bet-tools-row">
+                          <div className="bet-summary">
+                            <span className="bet-total">
+                              합계 <strong>{fmt(grandTotal)}</strong>
+                            </span>
+                            <small>
+                              메인 {fmt(tableRules.min_bet)}~{fmt(maxWager)}
+                              {sideBetsOpen ? ` · 사이드 최대 ${fmt(tableRules.side_bet_max)}` : ""}
+                            </small>
+                          </div>
+                          <div className="bet-edit" role="group" aria-label="베팅 고치기">
+                            <button type="button" className="tool-button" disabled={disabled || placements.length === 0} onClick={() => setPlacements((list) => list.slice(0, -1))}>
+                              <Undo2 size={16} />
+                              되돌리기
+                            </button>
+                            <button type="button" className="tool-button" disabled={disabled || placements.length === 0} onClick={() => setPlacements([])}>
+                              <Eraser size={16} />
+                              지우기
+                            </button>
+                            <button
+                              type="button"
+                              className="tool-button"
+                              title="지난 판과 같은 칩을 다시 놓아요"
+                              disabled={
+                                disabled || placements.length > 0 || lastPlacements.length === 0 || lastPlacements.reduce((s, p) => s + p.value, 0) > seatChips
+                              }
+                              onClick={() => setPlacements(lastPlacements)}
+                            >
+                              <RotateCcw size={16} />
+                              다시 베팅
+                            </button>
+                            <button
+                              type="button"
+                              className="tool-button"
+                              title="놓은 칩을 모두 두 배로"
+                              disabled={disabled || placements.length === 0 || grandTotal * 2 > seatChips || stackTotal * 2 > tableRules.max_bet}
+                              onClick={() => setPlacements((list) => [...list, ...list])}
+                            >
+                              <b className="x2">×2</b>
+                              2배 베팅
+                            </button>
+                          </div>
+                          <button
+                            className="gold-button confirm-bet"
+                            disabled={disabled || stackTotal < tableRules.min_bet || stackTotal > maxWager || !sidesValid || betSeconds <= 0}
+                            onClick={() => void lockBet()}
+                          >
+                            베팅 확정{" "}
+                            <span className="button-timer">
+                              <Countdown deadline={round?.deadline ?? 0} />s
+                            </span>
+                          </button>
+                        </div>
                       </div>
                       <p className="bet-hint">
                         칩을 끌어서 베팅 자리에 놓거나, 칩을 고른 뒤 자리를 누르세요.{" "}
