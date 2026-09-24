@@ -24,7 +24,7 @@ $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 if ($RuntimeRoot -match '[^\x00-\x7F]' -or $OutputDirectory -match '[^\x00-\x7F]') {
     throw 'Use ASCII runtime/output paths for the native image loader, for example C:/temp/casino-local-video.'
 }
-$taskReference = if ($Reference) { [IO.Path]::GetFullPath($Reference) } else { Join-Path $PSScriptRoot '../public/dealers/sophia-table.png' }
+$taskReference = if ($Reference) { [IO.Path]::GetFullPath($Reference) } else { Join-Path $PSScriptRoot 'reference/sophia-table.png' }
 $taskCli = Join-Path $RuntimeRoot 'runtime/sd-cli.exe'
 $taskModel = Join-Path $RuntimeRoot 'models/FastWan2.2-TI2V-5B-q6_k.gguf'
 $taskText = Join-Path $RuntimeRoot 'models/umt5-xxl-encoder-Q4_K_M.gguf'
