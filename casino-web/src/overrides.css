@@ -113,6 +113,12 @@
 .chip-stack b{font-size:11px;color:#f0ddb1;background:#09221bce;border:1px solid #91815477;border-radius:10px;padding:1px 7px;white-space:nowrap}
 @keyframes spot-pulse{0%,100%{opacity:0}50%{opacity:1}}
 @media(max-width:760px){.chip-stack{left:calc(100% - 10px)}.chip-pile{width:34px;height:38px}.chip-coin{width:28px;height:28px;font-size:8px}.betting-controls.evo .chip{width:42px;height:42px}}
+/* 오른쪽 끝 두 좌석(첫 좌석 쪽)의 칩은 테이블 가운데 쪽(왼쪽)에 둔다: 왼쪽 끝 좌석과 대칭이고,
+   오른쪽에 두면 태블릿·휴대폰 폭에서 테이블 밖으로 넘쳐 잘린다. */
+.seat-3 .chip-stack,.seat-4 .chip-stack,.seat-5 .chip-stack{left:auto;right:calc(100% - 4px)}
+@media(max-width:760px){.seat-3 .chip-stack,.seat-4 .chip-stack,.seat-5 .chip-stack{right:calc(100% - 10px)}}
+/* 넘치는 것이 있어도 버튼 포커스 등으로 테이블이 가로로 스크롤되지 않게 한다 (hidden은 스크롤은 된다). */
+.game-table{overflow:clip}
 
 /* 테이블 연출: 딜러 숨결, 딜링 중 움직임, 말풍선, 칩 이동, 승자 강조, 차례 링, 팟 강조 */
 .dealer-backdrop,.game-table.dealing .dealer-backdrop{animation:none;transform:none}
