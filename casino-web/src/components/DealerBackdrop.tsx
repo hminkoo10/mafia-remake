@@ -27,10 +27,10 @@ const mediaUrl = (id: string, mood: DealerClip, extension: "webm" | "mp4") =>
   `${import.meta.env.BASE_URL}dealers/${id}-${mood}.${extension}`;
 
 /**
- * 대기 영상 재생 속도: 1.7초짜리 영상을 천천히 틀어 눈 깜빡임이 약 2.9초에 한 번(사람과 비슷하게) 나온다.
- * 대기 영상은 앞으로만 재생하고 끝이 첫 장면으로 섞여 들어가 반복해도 이음새가 없다.
+ * 대기 영상 재생 속도. 대기 영상(2.8초)은 선명한 기준 장면에 눈 깜빡임만 한 번 합성한 것이라
+ * 제 속도로 틀면 약 2.8초에 한 번 깜빡이고, 끝이 첫 장면과 같아 반복해도 이음새가 없다.
  */
-const IDLE_RATE = 0.6;
+const IDLE_RATE = 1;
 /** 새 영상이 겹쳐 떠오르는 동안 이전 영상도 계속 움직인다 (CSS의 페이드 260ms보다 조금 길게). */
 const OUTGOING_MS = 280;
 /** 영상에서 사진으로 돌아갈 때 영상이 사라지는 시간 (CSS와 같게). */
