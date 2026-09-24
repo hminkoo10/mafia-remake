@@ -1,5 +1,20 @@
 # 카지노 작업 인수인계 (2026-09-24 기준)
 
+## 실제 카지노식 딜링·딜러 영상·웹 끊김 (2026-09-24 오후, Claude + Codex)
+
+- 사용자 요청: 딜러 영상이 부자연스럽고 흔들리며, 밝기와 선명도가 틀어졌다. 카드가 한꺼번에 나타났다. 웹도 끊기고 불안정했다.
+- 실제 카지노식 딜링을 적용했다. 슈에서 카드를 한 장씩 나눈다. 블랙잭은 600ms 간격, 홀덤 홀 카드는 520ms 간격이다. 카드 비행은 420ms, 히트 카드는 650ms 뒤 도착한다. 슈 옆 좌석인 seat 1이 first base이고 오른쪽에서 왼쪽으로 딜한다. 홀덤은 각 스트리트 전에 번 카드를 내고, 플랍은 뒷면으로 놓은 뒤 함께 뒤집는다. 딜러 홀 카드와 쇼다운 카드도 정해진 시간에 뒤집는다.
+- 타이밍 상수는 `src/casino/table.rs`의 `CARD_FLIGHT_MS`, `DEAL_CARD_MS`, `HOLE_CARD_MS`, `DEAL_LEAD_MS`, `LAND_SETTLE_MS`, `DEALER_DRAW_MS`, `CARD_FLIP_MS`다. `cfg(test)`에서는 모두 0이다. 계약은 `reveal_at`이 카드 도착 시각이라는 것, 라운드 필드 `burn_at`, `board_flip_at`, `dealer_flip_at`, `reveal_until`, 좌석 필드 `showdown_at`을 사용하는 것이다. 규칙에는 `card_flight_ms`, `card_flip_ms`를 둔다. 커밋 `438c47b`.
+- 카드가 도착하기 전에는 결과를 숨긴다(`src/casino/view.rs`). `shown_phase`와 `Round.settled_from`으로 표시 단계가 뒤로 가지 않는다. 스택과 당첨금은 `Seat.pending_credit`/`pending_until` 및 0 미만을 막는 `visible_stack`으로 처리한다. 히스토리와 딜러 문구도 각각 공개 시각과 메시지 `at`을 따른다.
+- 하우스 합계는 hub의 `pending_house`로 보류하고 `reveal_until` 뒤 `tick_all`에서 적용한다. 테이블을 닫을 때는 즉시 적용한다. `house`와 함께 `casino.json`에 저장해 재시작해도 잃지 않는다. 블랙잭 공개 중에는 모든 라운드의 `turn=-1`, `deadline=0`, `legal.blackjack=null`로 보내 딜러 내추럴을 payload에서 미리 알 수 없게 했다. 인슈어런스·액션·시작은 `ensure_reveal_done` 뒤에만 된다.
+- 서버 안정화: 웹소켓은 버퍼된 업데이트를 하나로 합쳐 한 번만 다시 만들고, 같은 화면은 건너뛴다. 대신 `{"server_time":N}` 하트비트를 보낸다. 업데이트 wake 때도 하트비트를 보내 클라이언트가 공개 후 화면을 확인할 수 있다. 송신 타임아웃은 5초다. 250ms tick마다 보내지 않고 공개 시각을 넘을 때 `RevealTick`으로 한 번만 push한다. 저장기는 coalesce하고 종료 시 flush한다. 세션은 SHA-256 해시로 저장하고 state API는 gzip을 사용한다. 동시 베팅에서 발생하던 `STALE_STATE`는 call/raise만 버전 검사하도록 정리했다. 커밋 `438c47b`.
+- 웹은 `casino-web/src`에서 서버 시계 store를 React 밖의 `clock.ts`로 분리했다. 카드와 카운트다운만 예약 이벤트 때 다시 그린다. `schedule.ts`는 순수 타이밍 로직으로 만들고 테스트했다. `components/TableCards.tsx`가 카드 표시를 담당한다. 서버 시각을 확인하는 하트비트가 올 때까지 공개 UI를 유지하고, 블랙잭 dock은 히트 공개 중에도 행을 유지한다. 첫 제스처에서 audio context를 만들어 첫 카드의 663ms 지연을 없앴다. 숫자·시간 formatter를 캐시했고 번 카드 기울기가 두 번 적용되던 문제도 고쳤다. 커밋 `6960fc7`. 첫 좌석이 슈 옆(오른쪽)으로 옮겨 가면서 오른쪽 좌석의 칩이 태블릿·휴대폰에서 테이블 밖으로 넘치고, 결과 창을 닫으면 테이블이 가로로 24px 밀리던 문제는 오른쪽 절반 좌석의 칩을 가운데 쪽에 두고 `overflow:clip`으로 고쳤다(`bbc8f1f`, 390·800·1440px 스크린샷 확인).
+- 측정(headless Chrome, 1440×900, 3인 블랙잭, dev server): 이전 `perf-bj4`는 long task 합계 1,177ms, 최악 750ms, 100ms 초과 프레임 7개, p99 34.7ms였다. 이후 long task 0, 최악 프레임 34.8ms, p99 14.3ms다. 홀덤도 long task 0, 최악 프레임 48.6ms다. 카드 timeline과 스크린샷으로 번 → 뒷면 플랍 → 플립 → 턴/리버 순서를 확인했다.
+- 딜러 영상은 `casino-web/public/dealers/GENERATION.md`의 새 pipeline과 `casino-web/tools/process-dealer-clip.sh`로 만들었다. idle shake 1.91→0.83px, flicker 0.18→0.03, boil 3.02→1.46, clipped highlights 5.6%→0.01%로 줄었다. 모델은 원본 사진의 얼굴을 유지할 수 없어 새 클립은 모델이 안정화한 프레임의 얼굴을 썼다. 그래서 Sophia가 기존 still 사진과 다른 사람처럼 보인다. motion-off still을 video poster로 써서 영상과 맞췄다. 플립 동작이 없어 flip clip은 폐기했고, 플립 중에도 웹은 idle clip을 유지한다. 기존 사진은 `casino-web/tools/reference/`로 옮겼다. 커밋 `0a3d4dc`.
+- 구현은 Claude workflow agents가 서버와 웹을 별도 파일에서 병렬로 진행했다. lens reviewer와 skeptic이 검증했다. Codex가 Tier 2 후속 수정(서버 reveal, 웹 reveal/clock, 영상 통합·문서)을 했다. Claude가 update wake 하트비트, burn tilt, house total persistence, clippy, 측정과 커밋을 마무리했다.
+- 검증: Rust `271` lib + `157` bin + `3` + `3` 테스트 통과. 새 clippy warning 없음. 웹 `tsc`, Node 테스트 35개, build 통과.
+- 배포 후 확인할 것(사용자가 aarch64 빌드·배포): 실제 Discord에서 딜링 속도와 reveal 중 Discord status line 확인, 휴대폰에서 영상 확인(1536×1024 clips, idle webm 약 0.8MB, mp4 약 1.3MB). 다른 딜러 mia, hana, lina에는 아직 clip이 없다.
+
 ## 카지노 패널 (2026-09-24, Claude + Codex)
 
 - `/카지노패널`(관리자)이 채널에 고정 패널을 올린다. 버튼: 테이블 입장, 내 정보, 홀덤/블랙잭 테이블 만들기, 테이블 설정(이름·방 설정), 테이블 닫기(확인 후). 슬래시 명령은 그대로 둔다. 커밋 `e0aab76`, 설명은 README `### 카지노 패널`.
