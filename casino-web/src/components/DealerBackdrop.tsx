@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import "./dealer-backdrop.css";
-import { chooseDealerLayer, DEALER_LAYERS, layerClip, type ClipFlags, type DealerLayer, type DealerMood, type LayerFlags } from "../dealer-media";
-import { type DealClip } from "../schedule";
+import { chooseDealerLayer, DEALER_LAYERS, layerClip, type ClipFlags, type DealerClip, type DealerLayer, type DealerMood, type LayerFlags } from "../dealer-media";
+import { DEAL_CLIP_MS, RETURN_CLIP_MS, type DealClip } from "../schedule";
 import { liveServerNow } from "../clock";
 
 export interface DealerBackdropProps {
@@ -19,11 +19,11 @@ export interface DealerBackdropProps {
 const MOODS: DealerMood[] = ["idle", "deal", "flip"];
 declare const __DEALER_CLIPS__: string[];
 const availableClips = new Set(__DEALER_CLIPS__);
-const hasClip = (id: string, mood: DealerMood) =>
+const hasClip = (id: string, mood: DealerClip) =>
   availableClips.has(`${id}-${mood}.webm`) || availableClips.has(`${id}-${mood}.mp4`);
 export const hasDealerVideo = (id: string) => MOODS.some((mood) => hasClip(id, mood));
 
-const mediaUrl = (id: string, mood: DealerMood, extension: "webm" | "mp4") =>
+const mediaUrl = (id: string, mood: DealerClip, extension: "webm" | "mp4") =>
   `${import.meta.env.BASE_URL}dealers/${id}-${mood}.${extension}`;
 
 /** 새 영상이 겹쳐 떠오르는 동안 이전 영상도 계속 움직인다 (CSS의 페이드 260ms보다 조금 길게). */
@@ -142,8 +142,15 @@ function DealerBackdropInner({ id, name, mood, deal, flipsAhead = false, poster,
   useEffect(() => {
     if (!deal || !awake) return;
     const current = viewRef.current;
-    if (current.dealKey === deal.key && (current.layer === "deal" || current.layer === "deal2")) return;
-    const layer: DealerLayer = current.layer === "deal" && usable.deal2 ? "deal2" : usable.deal ? "deal" : "deal2";
+    if (current.dealKey === deal.key && current.layer !== null && current.layer !== "idle") return;
+    let layer: DealerLayer;
+    if (deal.kind === "return") {
+      // 되돌리기 영상이 없으면 내려놓은 자세 그대로 두었다가 다음 카드·대기로 넘어간다.
+      if (!usable.return) return;
+      layer = "return";
+    } else {
+      layer = current.layer === "deal" && usable.deal2 ? "deal2" : usable.deal ? "deal" : "deal2";
+    }
     setView({ layer, from: current.layer, restart: true, run: current.run + 1, dealKey: deal.key });
   }, [deal, awake, usable]);
 
@@ -165,7 +172,8 @@ function DealerBackdropInner({ id, name, mood, deal, flipsAhead = false, poster,
         if (view.restart && restartApplied.current !== view.run && layer !== "idle") {
           if (view.dealKey && deal?.key === view.dealKey) {
             video.playbackRate = deal.rate;
-            video.currentTime = Math.min(0.867, Math.max(0, (liveServerNow() - deal.startAt) * deal.rate / 1000));
+            const clipMs = deal.kind === "return" ? RETURN_CLIP_MS : DEAL_CLIP_MS;
+            video.currentTime = Math.min((clipMs - 50) / 1000, Math.max(0, (liveServerNow() - deal.startAt) * deal.rate / 1000));
           } else if (video.currentTime > 0) {
             video.currentTime = 0;
             video.playbackRate = 1;
@@ -195,7 +203,7 @@ function DealerBackdropInner({ id, name, mood, deal, flipsAhead = false, poster,
   }, [view, awake, layers]);
 
   const markReady = (layer: DealerLayer) => setReady((current) => (current[layer] ? current : { ...current, [layer]: true }));
-  const markFailed = (clip: DealerMood) => setFailed((current) => (current[clip] ? current : { ...current, [clip]: true }));
+  const markFailed = (clip: DealerClip) => setFailed((current) => (current[clip] ? current : { ...current, [clip]: true }));
   const videoLive = motionAllowed && view.layer !== null;
   // 대기 영상이 없거나 못 쓰면 사진이 아주 천천히 숨 쉬듯 움직인다 (연출을 켰을 때만).
   const breathe = motionAllowed && (!layers.includes("idle") || !!failed.idle);

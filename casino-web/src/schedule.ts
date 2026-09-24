@@ -12,8 +12,32 @@ export const MIN_FLIGHT_MS = 120;
 export const FLIP_LEAD_MS = 300;
 /** 새 슈를 섞는 연출 길이. */
 export const SHUFFLE_MS = 2500;
-export const DEAL_CLIP_MS = 917;
+/**
+ * 딜 영상(sophia-deal, 24fps 31프레임 = 1.292초): 12프레임(0.50초)에 카드가 슈에서 빠지고,
+ * 20~24프레임에 앞으로 가져와 25프레임에 펠트에 닿고, 28프레임(1.167초)에 내려놓는다.
+ * 카드가 슈를 떠나는 순간에 12프레임, 좌석에 놓이는 순간에 28프레임이 오도록 틀어서
+ * 카드를 꺼내고 내려놓는 동작 전체가 카드 비행과 맞는다.
+ */
+export const DEAL_CLIP_MS = 1292;
 export const DEAL_RELEASE_MS = 500;
+export const DEAL_PLACE_MS = 1167;
+
+/**
+ * 되돌리기 영상(sophia-return, 24fps 34프레임 = 1.417초): 딜 영상의 마지막 자세(카드를 내려놓은 두 손)에서
+ * 시작해 오른손을 슈 위로 되돌리고 고개를 든다. RETURN_REST_MS에 대기 영상·다음 딜 영상의 첫 자세
+ * (오른손이 슈 위, 카메라를 봄)와 같아진다.
+ */
+export const RETURN_CLIP_MS = 1417;
+export const RETURN_REST_MS = 1375;
+/** 되돌리기 재생 속도 범위: 다음 카드까지 시간이 짧으면 빨리, 길면(마지막 카드) 자연스럽게. */
+export const RETURN_MIN_RATE = 1;
+export const RETURN_MAX_RATE = 2.5;
+/** 뒤따르는 카드가 없을 때 되돌리기 속도. */
+export const RETURN_IDLE_RATE = 1.25;
+
+/** 영상 속 꺼내기→내려놓기 구간이 카드 비행 시간과 같아지는 재생 속도 (1~2배). */
+export const dealClipRate = (timing: CardTiming) =>
+  timing.flight > 0 ? Math.min(2, Math.max(1, (DEAL_PLACE_MS - DEAL_RELEASE_MS) / timing.flight)) : 1;
 
 export interface CardTiming {
   /** 슈에서 테이블까지 날아가는 시간. 연출을 끄면 0 (카드가 놓이는 순간 나타난다). */
@@ -75,6 +99,8 @@ export interface DealClip {
   key: string;
   startAt: number;
   rate: number;
+  /** deal: 카드를 꺼내 내려놓기, return: 손을 슈 위로 되돌리기. */
+  kind: "deal" | "return";
 }
 
 interface DealCard {
@@ -102,42 +128,58 @@ function dealCards(round: RoundView | null | undefined, seats: Seats, timing: Ca
   return out.sort((a, b) => a.departure - b.departure || a.key.localeCompare(b.key));
 }
 
-/** 현재 시각에 화면에 있어야 하는 딜러 deal 클립과 재생 속도. */
-export function dealClipAt(round: RoundView | null | undefined, seats: Seats, timing: CardTiming, now: number): DealClip | null {
+/** 카드마다의 딜 영상 구간과 그 뒤 되돌리기 구간. */
+interface DealSegment extends DealClip {
+  endAt: number;
+}
+
+function dealSegments(round: RoundView | null | undefined, seats: Seats, timing: CardTiming): DealSegment[] {
   const cards = dealCards(round, seats, timing);
-  let current: DealClip | null = null;
+  const rate = dealClipRate(timing);
+  const starts = cards.map((card) => card.departure - DEAL_RELEASE_MS / rate);
+  const out: DealSegment[] = [];
   cards.forEach((card, index) => {
-    const next = cards[index + 1];
-    const gap = next ? next.departure - card.departure : 0;
-    const rate = gap > 0 ? Math.min(1.8, Math.max(1, DEAL_CLIP_MS / gap)) : 1;
-    const startAt = card.departure - DEAL_RELEASE_MS / rate;
+    const startAt = starts[index];
     const endAt = startAt + DEAL_CLIP_MS / rate;
-    if (startAt <= now && now < endAt) current = { key: card.key, startAt, rate };
+    out.push({ key: card.key, startAt, rate, kind: "deal", endAt });
+    // 내려놓은 손을 다음 카드의 딜 영상이 시작하기 전에 슈 위로 되돌린다.
+    const next = index + 1 < starts.length ? starts[index + 1] : Infinity;
+    const window = next - endAt;
+    if (window <= 0) return;
+    const back = Number.isFinite(window)
+      ? Math.min(RETURN_MAX_RATE, Math.max(RETURN_MIN_RATE, RETURN_REST_MS / window))
+      : RETURN_IDLE_RATE;
+    out.push({ key: `${card.key}:return`, startAt: endAt, rate: back, kind: "return", endAt: Math.min(next, endAt + RETURN_REST_MS / back) });
   });
+  return out;
+}
+
+/** 현재 시각에 화면에 있어야 하는 딜러 영상(카드 딜 또는 되돌리기)과 재생 속도. 나중에 시작한 것이 이긴다. */
+export function dealClipAt(round: RoundView | null | undefined, seats: Seats, timing: CardTiming, now: number): DealClip | null {
+  let current: DealClip | null = null;
+  for (const segment of dealSegments(round, seats, timing)) {
+    if (segment.startAt <= now && now < segment.endAt) current = { key: segment.key, startAt: segment.startAt, rate: segment.rate, kind: segment.kind };
+  }
   return current;
 }
 
 /** 구독용 문자열 키 (useServerValue는 원시값만 받는다). */
 export const dealClipKey = (clip: DealClip | null): string | null =>
-  clip ? `${clip.startAt}|${clip.rate}|${clip.key}` : null;
+  clip ? `${clip.kind}|${clip.startAt}|${clip.rate}|${clip.key}` : null;
 
 /** dealClipKey의 반대. 잘못된 키면 null. */
 export function parseDealClipKey(value: string | null): DealClip | null {
   if (!value) return null;
-  const [startAt, rate, ...key] = value.split("|");
+  const [kind, startAt, rate, ...key] = value.split("|");
   const start = Number(startAt),
     speed = Number(rate);
-  if (!Number.isFinite(start) || !Number.isFinite(speed) || key.length === 0) return null;
-  return { key: key.join("|"), startAt: start, rate: speed };
+  if ((kind !== "deal" && kind !== "return") || !Number.isFinite(start) || !Number.isFinite(speed) || key.length === 0) return null;
+  return { kind, key: key.join("|"), startAt: start, rate: speed };
 }
 
-function dealClipStarts(round: RoundView, seats: Seats, timing: CardTiming): number[] {
-  const cards = dealCards(round, seats, timing);
-  return cards.map((card, index) => {
-    const gap = cards[index + 1] ? cards[index + 1].departure - card.departure : 0;
-    const rate = gap > 0 ? Math.min(1.8, Math.max(1, DEAL_CLIP_MS / gap)) : 1;
-    return card.departure - DEAL_RELEASE_MS / rate;
-  });
+/** 딜러 영상이 바뀌는 시각 (딜·되돌리기 시작과 끝): 시계가 이때 깨어 영상을 바꾼다. */
+function dealClipTimes(round: RoundView, seats: Seats, timing: CardTiming): number[] {
+  return dealSegments(round, seats, timing).flatMap((segment) => [segment.startAt, segment.endAt]);
 }
 
 /** 이번 라운드의 뒤집기 시각 (플롭, 딜러 홀 카드, 쇼다운). */
@@ -206,7 +248,7 @@ export function tableEvents(table: TableView | null | undefined, timing: CardTim
       if (time <= 0) continue;
       out.push(time - timing.flight, time);
     }
-    out.push(...dealClipStarts(round, table.seats, timing));
+    out.push(...dealClipTimes(round, table.seats, timing));
     for (const time of flipTimes(round, table.seats)) out.push(time - FLIP_LEAD_MS, time, time + timing.flip);
     for (const seat of table.seats) if (seat?.showdown_at && seat.showdown_at > 0) out.push(seat.showdown_at);
     const showdown = showdownAt(round, table.seats);

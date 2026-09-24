@@ -5,6 +5,10 @@ import {
   cardTimes,
   cardTiming,
   dealClipAt,
+  dealClipRate,
+  DEAL_CLIP_MS,
+  RETURN_IDLE_RATE,
+  RETURN_REST_MS,
   dealClipKey,
   dealerMoodAt,
   faceDown,
@@ -109,17 +113,24 @@ test("the dealer keeps dealing until the last card leaves the shoe, then idles",
   assert.equal(cardsLeftShoe(deal, [player], timing, T0 + 2030), 4);
 });
 
-test("deal clips follow departures and accelerate to fit the next card", () => {
+test("deal clips pull the card as it leaves the shoe and place it as it lands", () => {
   const clip = dealClipAt(deal, [player], timing, T0 + 300);
   assert.ok(clip);
-  assert.ok(Math.abs(clip.rate - 917 / 600) < 0.01);
-  assert.equal(Math.round(clip.startAt + 500 / clip.rate), T0 + 230);
+  // 꺼내기(0.50초)→내려놓기(1.167초) 구간이 비행 420ms와 같아지는 속도.
+  assert.ok(Math.abs(clip.rate - (1167 - 500) / 420) < 0.01);
+  const departure = T0 + 230;
+  // 12프레임(꺼내기)이 출발 순간에, 28프레임(내려놓기)이 착지 순간에 온다.
+  assert.equal(Math.round(clip.startAt + 500 / clip.rate), departure);
+  assert.equal(Math.round(clip.startAt + 1167 / clip.rate), departure + timing.flight);
   assert.equal(dealClipAt(deal, [player], timing, T0 + 450)?.key, clip.key);
+  // 모든 카드가 같은 속도: 따로 나가는 카드(히트 등)도 착지와 맞는다.
   const isolated = round({ board: ["As"], board_reveal_at: [T0 + 1000] });
   const solo = dealClipAt(isolated, [], timing, T0 + 600);
   assert.ok(solo);
-  assert.equal(solo.rate, 1);
+  assert.equal(solo.rate, clip.rate);
   assert.equal(dealClipAt(isolated, [], timing, T0 + 700)?.key, solo.key);
+  // 연출을 끄면(비행 0) 1배속.
+  assert.equal(dealClipRate({ flight: 0, flip: 600 }), 1);
 });
 
 test("the dealer turns cards over around each flip time", () => {
@@ -230,7 +241,7 @@ test("the dock says dealing until the first flip and never announces the showdow
 });
 
 test("the deal clip is subscribed by a string key that round-trips", () => {
-  const clip = { key: "hand:0:0:1234", startAt: 1_000.5, rate: 1.53 };
+  const clip = { key: "hand:0:0:1234", startAt: 1_000.5, rate: 1.53, kind: "deal" as const };
   const key = dealClipKey(clip);
   assert.equal(typeof key, "string");
   // 같은 클립은 늘 같은 키 (구독 값이 바뀌지 않아 다시 그리지 않는다).
@@ -239,4 +250,28 @@ test("the deal clip is subscribed by a string key that round-trips", () => {
   assert.equal(dealClipKey(null), null);
   assert.equal(parseDealClipKey(null), null);
   assert.equal(parseDealClipKey("garbage"), null);
+});
+
+test("after placing each card the dealer's hand returns to the shoe before the next card", () => {
+  const rate = dealClipRate(timing);
+  const departures = cardTimes(deal, [player]).map((time) => time - timing.flight).sort((a, b) => a - b);
+  const starts = departures.map((time) => time - 500 / rate);
+  const firstEnd = starts[0] + DEAL_CLIP_MS / rate;
+  // 첫 카드를 내려놓은 직후는 되돌리기, 다음 카드의 딜 영상이 시작하면 딜.
+  const back = dealClipAt(deal, [player], timing, firstEnd + 1);
+  if (firstEnd < starts[1]) {
+    assert.equal(back?.kind, "return");
+    assert.equal(back?.startAt, firstEnd);
+    // 다음 딜이 시작하기 전에 손이 슈에 닿는 속도 (범위 안에서).
+    assert.ok(firstEnd + RETURN_REST_MS / back!.rate <= starts[1] + 1 || back!.rate === 2.5);
+  }
+  assert.equal(dealClipAt(deal, [player], timing, starts[1] + 1)?.kind, "deal");
+  // 마지막 카드 뒤에는 자연스러운 속도로 되돌리고, 손이 슈에 닿으면 끝난다 (대기 영상으로).
+  const lastEnd = starts[starts.length - 1] + DEAL_CLIP_MS / rate;
+  const last = dealClipAt(deal, [player], timing, lastEnd + 1);
+  assert.equal(last?.kind, "return");
+  assert.equal(last?.rate, RETURN_IDLE_RATE);
+  assert.equal(dealClipAt(deal, [player], timing, lastEnd + RETURN_REST_MS / RETURN_IDLE_RATE + 1), null);
+  // 구독 키는 종류까지 담는다.
+  assert.equal(parseDealClipKey(dealClipKey(last))?.kind, "return");
 });

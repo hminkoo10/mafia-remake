@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import { readdirSync } from "node:fs";
 
 const dealerClips = readdirSync(new URL("./public/dealers/", import.meta.url))
-  .filter((file) => /^[a-z0-9-]+-(idle|deal|flip)\.(webm|mp4)$/.test(file));
+  .filter((file) => /^[a-z0-9-]+-(idle|deal|flip|return)\.(webm|mp4)$/.test(file));
 
 // 원본 noir.css는 기기의 '동작 줄이기'가 켜져 있으면 모든 애니메이션을 끈다. 원본 파일은 그대로 두고,
 // 빌드할 때 그 규칙만 앱의 연출 끄기(.casino-app.calm)에 묶는다. 연출은 화면의 버튼으로 끄고 켠다.

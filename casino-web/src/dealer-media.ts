@@ -4,14 +4,16 @@ export type DealerMood = "idle" | "deal" | "flip";
  * 영상 층. 딜 동작은 두 층(deal, deal2)을 번갈아 써서 다음 카드 동작을 겹쳐 이어 간다.
  * 뒤집는 동작도 두 층(flip, flip2)을 번갈아 써서, 쇼다운에서 뒤집을 카드가 남아 있으면 다음 동작으로 이어 간다.
  */
-export type DealerLayer = "idle" | "deal" | "deal2" | "flip" | "flip2";
-export type ClipFlags = Partial<Record<DealerMood, boolean>>;
+export type DealerLayer = "idle" | "deal" | "deal2" | "flip" | "flip2" | "return";
+/** 영상 파일 이름 (`<id>-<clip>.webm`). return은 카드를 내려놓은 손을 슈 위로 되돌리는 동작이다. */
+export type DealerClip = DealerMood | "return";
+export type ClipFlags = Partial<Record<DealerClip, boolean>>;
 export type LayerFlags = Partial<Record<DealerLayer, boolean>>;
 
-export const DEALER_LAYERS: readonly DealerLayer[] = ["idle", "deal", "deal2", "flip", "flip2"];
+export const DEALER_LAYERS: readonly DealerLayer[] = ["idle", "deal", "deal2", "flip", "flip2", "return"];
 /** 딜 동작이 이만큼 진행됐으면 다음 카드 때 새 동작으로 이어 간다. */
 
-export const layerClip = (layer: DealerLayer): DealerMood => (layer === "deal2" ? "deal" : layer === "flip2" ? "flip" : layer);
+export const layerClip = (layer: DealerLayer): DealerClip => (layer === "deal2" ? "deal" : layer === "flip2" ? "flip" : layer);
 
 export interface DealerLayerState {
   /** 지금 보이는 층. null이면 영상 없이 사진(포스터). */
@@ -78,7 +80,8 @@ export function chooseDealerLayer(requested: DealerMood, state: DealerLayerState
     }
   }
   // 대기로 돌아가거나 요청한 영상을 못 쓰면: 하던 동작은 끝까지, 끝났으면 대기 영상 → 사진.
-  if (isGesture(current) && live) return keep;
+  // 되돌리기 동작은 손이 슈에 닿는 순간(스케줄이 끝나는 순간) 대기 영상으로 넘긴다: 대기 영상도 손이 슈 위에 있어 이어진다.
+  if (isGesture(current) && live && current !== "return") return keep;
   if (usable.idle) return { layer: "idle", restart: false };
   return { layer: null, restart: false };
 }
