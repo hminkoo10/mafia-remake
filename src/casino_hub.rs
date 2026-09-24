@@ -767,6 +767,11 @@ impl CasinoHub {
         command: &CasinoCommand,
         expected_version: Option<u64>,
     ) -> Result<Vec<CasinoEvent>, CasinoError> {
+        let request_started = Instant::now();
+        let mut stats_wait = Duration::ZERO;
+        let mut table_wait = Duration::ZERO;
+        let mut save_stats_time = Duration::ZERO;
+        let mut save_time = Duration::ZERO;
         let table = self
             .table(table_id)
             .ok_or_else(|| CasinoError::new("NOT_FOUND", "테이블을 찾을 수 없습니다."))?;
@@ -791,7 +796,9 @@ impl CasinoHub {
                     return Err(CasinoError::invalid("이미 다른 테이블에 앉아 있습니다."));
                 }
             }
+            let table_wait_started = Instant::now();
             let rules = table.read().await.settings;
+            table_wait += table_wait_started.elapsed();
             if *amount < rules.min_buy_in || *amount > rules.max_buy_in {
                 return Err(CasinoError::invalid(format!(
                     "바이인은 {}~{} 칩입니다.",
@@ -799,13 +806,17 @@ impl CasinoHub {
                     format_chips(rules.max_buy_in)
                 )));
             }
+            let stats_wait_started = Instant::now();
             let mut stats_file = self.stats.write().await;
+            stats_wait += stats_wait_started.elapsed();
             stats::reserve_coins(&mut stats_file, user_id, user_name, *amount)
                 .map_err(|message| CasinoError::new("INSUFFICIENT_COINS", message))?;
             reserved = *amount;
         }
         let (result, changed) = {
+            let table_wait_started = Instant::now();
             let mut table = table.write().await;
+            table_wait += table_wait_started.elapsed();
             let version = table.version;
             let result = table.apply_command(user_id, user_name, command, expected_version, now);
             (result, table.version != version)
@@ -814,7 +825,9 @@ impl CasinoHub {
             Ok(events) => events,
             Err(error) => {
                 if reserved > 0 {
+                    let stats_wait_started = Instant::now();
                     let mut stats_file = self.stats.write().await;
+                    stats_wait += stats_wait_started.elapsed();
                     stats::refund_coins(&mut stats_file, user_id, user_name, reserved);
                 }
                 // 실패했어도 테이블이 바뀌었으면(예: 기다리던 방 설정 적용) 알리고 저장한다.
@@ -826,16 +839,32 @@ impl CasinoHub {
             }
         };
         if reserved > 0 {
+            let save_started = Instant::now();
             self.save_stats().await;
+            save_stats_time += save_started.elapsed();
         }
         self.apply_events(&events).await;
         self.notify(table_id);
         // 코인이 오간 변경(바이인·캐시아웃)은 좌석과 코인이 어긋나지 않게 바로 저장한다.
         // 나머지는 모아서 저장해 버튼 응답이 파일 쓰기를 기다리지 않게 한다.
+        // (백그라운드로 미루면 저장 순서가 뒤집혀 옛 코인 스냅샷이 새 것을 덮을 수 있다. 느리면 아래 로그에 남는다.)
         if reserved > 0 || moves_coins(&events) {
+            let save_started = Instant::now();
             self.save().await;
+            save_time += save_started.elapsed();
         } else {
             self.request_save();
+        }
+        if request_started.elapsed() >= Duration::from_secs(1) {
+            eprintln!(
+                "casino slow request: table_id={table_id} action={} total_ms={} stats_wait_ms={} table_wait_ms={} save_stats_ms={} save_ms={}",
+                casino_command_action(command),
+                request_started.elapsed().as_millis(),
+                stats_wait.as_millis(),
+                table_wait.as_millis(),
+                save_stats_time.as_millis(),
+                save_time.as_millis(),
+            );
         }
         Ok(events)
     }
@@ -862,6 +891,7 @@ impl CasinoHub {
     /// 상태가 그대로인 테이블은 예약된 공개 시각(연출 끝·결과 안내·당첨금)이 지났을 때만
     /// 한 번 `RevealTick`을 보낸다 (연출 중 250ms마다 전체 화면을 밀던 것을 대신한다).
     pub async fn tick_all(&self) -> Vec<String> {
+        let tick_started = Instant::now();
         let now = now_ms();
         self.flush_pending_house(None, now);
         let mut changed = Vec::new();
@@ -900,6 +930,13 @@ impl CasinoHub {
         } else if !changed.is_empty() {
             self.request_save();
         }
+        if tick_started.elapsed() >= Duration::from_millis(500) {
+            eprintln!(
+                "casino slow tick_all: total_ms={} changed_tables={}",
+                tick_started.elapsed().as_millis(),
+                changed.len()
+            );
+        }
         changed
     }
 
@@ -927,6 +964,21 @@ impl CasinoHub {
             .iter()
             .find(|entry| entry.value().channel_id == channel_id)
             .map(|entry| entry.key().clone())
+    }
+
+    /// Discord 채널 권한 동기화에 필요한 좌석 스냅샷을 락 밖으로 반환한다.
+    pub async fn table_channel_targets(&self, table_id: &str) -> Option<(u64, u64, BTreeSet<u64>)> {
+        let binding = self.binding(table_id)?;
+        let table = self.table(table_id)?;
+        let seated = table
+            .read()
+            .await
+            .seats
+            .iter()
+            .flatten()
+            .map(|seat| seat.user_id)
+            .collect();
+        Some((binding.guild_id, binding.channel_id, seated))
     }
 
     pub fn panel(&self) -> Option<PanelBinding> {
@@ -966,21 +1018,6 @@ impl CasinoHub {
     /// 패널이 아직 `message_id`를 가리킬 때만 연결을 끊는다. 갱신이 지워진 옛 패널을 고치다
     /// 실패하는 동안 새 패널이 올라왔으면 새 연결은 그대로 둔다. 끊었으면 true.
     pub fn clear_panel_if(&self, message_id: u64) -> bool {
-    /// Discord 채널 권한 동기화에 필요한 좌석 스냅샷을 락 밖으로 반환한다.
-    pub async fn table_channel_targets(&self, table_id: &str) -> Option<(u64, u64, BTreeSet<u64>)> {
-        let binding = self.binding(table_id)?;
-        let table = self.table(table_id)?;
-        let seated = table
-            .read()
-            .await
-            .seats
-            .iter()
-            .flatten()
-            .map(|seat| seat.user_id)
-            .collect();
-        Some((binding.guild_id, binding.channel_id, seated))
-    }
-
         let mut panel = self
             .panel
             .lock()
@@ -1146,6 +1183,31 @@ mod tests {
         assert_eq!(public_host_of("http://127.0.0.1:8800"), None);
         assert_eq!(public_host_of("not a url"), None);
     }
+
+    #[test]
+    fn table_channel_overwrites_are_private_and_include_seated_players() {
+        let overwrites = table_channel_overwrites(10, 20, &BTreeSet::from([30, 40]));
+        assert_eq!(overwrites.len(), 4);
+        assert!(
+            overwrites[0]
+                .deny
+                .contains(serenity::Permissions::VIEW_CHANNEL)
+        );
+        assert!(
+            overwrites[1]
+                .allow
+                .contains(serenity::Permissions::MANAGE_WEBHOOKS)
+        );
+        assert!(
+            overwrites[2]
+                .allow
+                .contains(serenity::Permissions::SEND_MESSAGES)
+        );
+        assert_eq!(
+            overwrites[2].kind,
+            serenity::PermissionOverwriteType::Member(serenity::UserId::new(30))
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1183,31 +1245,6 @@ mod panel_tests {
         };
         let first = table(GameKind::Holdem, "하이롤러");
         table(GameKind::Blackjack, "Lucky");
-
-    #[test]
-    fn table_channel_overwrites_are_private_and_include_seated_players() {
-        let overwrites = table_channel_overwrites(10, 20, &BTreeSet::from([30, 40]));
-        assert_eq!(overwrites.len(), 4);
-        assert!(
-            overwrites[0]
-                .deny
-                .contains(serenity::Permissions::VIEW_CHANNEL)
-        );
-        assert!(
-            overwrites[1]
-                .allow
-                .contains(serenity::Permissions::MANAGE_WEBHOOKS)
-        );
-        assert!(
-            overwrites[2]
-                .allow
-                .contains(serenity::Permissions::SEND_MESSAGES)
-        );
-        assert_eq!(
-            overwrites[2].kind,
-            serenity::PermissionOverwriteType::Member(serenity::UserId::new(30))
-        );
-    }
 
         // 다른 테이블 이름은 대소문자만 달라도 못 쓴다.
         assert!(hub.rename_table(&first, "lucky").await.is_err());

@@ -2,7 +2,8 @@
 // Discord Activity와 같은 axum 서버에 얹힌다 (/casino/...).
 
 use crate::casino_hub::{
-    CasinoMe, CasinoSession, SharedHub, TableSummary, now_ms, session_expired_message,
+    CasinoMe, CasinoSession, SharedHub, TableSummary, casino_command_action, now_ms,
+    session_expired_message,
 };
 use axum::{
     Json, Router,
@@ -19,7 +20,7 @@ use mafia_remake::casino::{CasinoCommand, GameKind, SettingsRequest, TableSettin
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tower_http::compression::CompressionLayer;
 
@@ -690,7 +691,18 @@ async fn state_handler(
         Ok(session) => session,
         Err(response) => return response,
     };
-    Json(build_state(&state, &session, query.table.as_deref()).await).into_response()
+    let started = Instant::now();
+    let build_started = Instant::now();
+    let response = build_state(&state, &session, query.table.as_deref()).await;
+    let build_ms = build_started.elapsed().as_millis();
+    if started.elapsed() >= Duration::from_secs(1) {
+        eprintln!(
+            "casino slow request: endpoint=state total_ms={} table_id={} apply_ms=0 save_ms=0 build_state_ms={build_ms}",
+            started.elapsed().as_millis(),
+            query.table.as_deref().unwrap_or("none")
+        );
+    }
+    Json(response).into_response()
 }
 
 // ------------------------------------------------------------ 명령
@@ -712,6 +724,8 @@ async fn command_handler(
         Ok(session) => session,
         Err(response) => return response,
     };
+    let started = Instant::now();
+    let apply_started = Instant::now();
     let result = state
         .hub
         .apply(
@@ -722,9 +736,31 @@ async fn command_handler(
             request.version,
         )
         .await;
+    let apply_ms = apply_started.elapsed().as_millis();
     match result {
-        Ok(_) => Json(build_state(&state, &session, Some(&request.table_id)).await).into_response(),
+        Ok(_) => {
+            let build_started = Instant::now();
+            let response = build_state(&state, &session, Some(&request.table_id)).await;
+            let build_ms = build_started.elapsed().as_millis();
+            if started.elapsed() >= Duration::from_secs(1) && apply_ms < 1_000 {
+                eprintln!(
+                    "casino slow request: endpoint=command total_ms={} table_id={} action={} apply_ms={apply_ms} save_ms=0 build_state_ms={build_ms}",
+                    started.elapsed().as_millis(),
+                    request.table_id,
+                    casino_command_action(&request.command),
+                );
+            }
+            Json(response).into_response()
+        }
         Err(error) => {
+            if started.elapsed() >= Duration::from_secs(1) && apply_ms < 1_000 {
+                eprintln!(
+                    "casino slow request: endpoint=command total_ms={} table_id={} action={} apply_ms={apply_ms} save_ms=0 build_state_ms=0",
+                    started.elapsed().as_millis(),
+                    request.table_id,
+                    casino_command_action(&request.command),
+                );
+            }
             let status = match error.code {
                 "STALE_STATE" => StatusCode::CONFLICT,
                 "NOT_FOUND" => StatusCode::NOT_FOUND,
@@ -839,7 +875,15 @@ async fn handle_ws(
             // 세션이 사라졌으면(만료) 연결을 끊어 클라이언트가 새 링크를 받게 한다.
             break;
         }
+        let build_started = Instant::now();
         let payload = build_state(&state, &session, current_table.as_deref()).await;
+        if build_started.elapsed() >= Duration::from_millis(500) {
+            eprintln!(
+                "casino slow websocket build_state: total_ms={} table_id={}",
+                build_started.elapsed().as_millis(),
+                current_table.as_deref().unwrap_or("none")
+            );
+        }
         // 요청한 테이블이 없어져 다른 테이블을 보냈으면 이제 그 테이블의 알림을 따른다.
         current_table = payload.table.as_ref().map(|table| table.id.clone());
         let Ok(snapshot) = serde_json::to_string(&(&payload.me, &payload.table, &payload.tables))
