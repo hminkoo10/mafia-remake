@@ -400,7 +400,7 @@ html{scrollbar-gutter:stable}
 .is-fullscreen .play-layout{flex:1;min-height:0}
 .is-fullscreen .table-column{min-height:0;overflow:visible}
 .is-fullscreen .game-table{flex:1 1 auto;min-height:440px;height:auto}
-.is-fullscreen .action-dock{max-height:190px;margin-top:8px;padding:8px 12px;overflow:hidden}
+.is-fullscreen .action-dock{height:210px;max-height:none;margin-top:8px;padding:8px 12px;overflow:visible}
 .is-fullscreen .table-footer{display:none}
 .is-fullscreen .side-panel{min-height:0;overflow:hidden}
 .is-fullscreen .chat-messages{height:auto;min-height:0;flex:1;overflow-y:auto}
@@ -408,7 +408,26 @@ html{scrollbar-gutter:stable}
 /* 데스크톱 베팅 독은 베팅 자리, 칩, 확정 도구를 한 줄로 배치한다. */
 @media(min-width:1024px){
   .is-fullscreen .table-column .game-table{height:auto;min-height:440px}
-  .is-fullscreen .action-dock:has(.betting-controls){max-height:190px}
+  .is-fullscreen .action-dock:has(.betting-controls){height:210px}
+  .is-fullscreen .seated-dock{gap:7px}
+  .is-fullscreen .seated-dock .my-hand-row{min-height:52px}
+  .is-fullscreen .seated-dock .my-cards{margin-top:4px}
+  .is-fullscreen .seated-dock .stack-info>strong{margin:2px 0;font-size:16px}
+  .is-fullscreen .poker-actions{position:relative;display:grid;grid-template-columns:1fr;grid-template-areas:"raise" "presets";align-items:center;gap:6px}
+  .is-fullscreen .raise-control{grid-area:raise}
+  .is-fullscreen .raise-presets{grid-area:presets}
+  .is-fullscreen .seated-dock .action-buttons{position:absolute;left:50%;right:12px;bottom:8px;width:auto;min-height:44px;z-index:5;display:grid!important}
+  .is-fullscreen .raise-control{display:grid;grid-template-columns:auto minmax(90px,1fr) auto;gap:6px}
+  .is-fullscreen .raise-control>span{gap:4px;font-size:10px}
+  .is-fullscreen .raise-control strong{font-size:12px;min-width:32px}
+  .is-fullscreen .raise-control>button{padding:6px 7px;font-size:9px}
+  .is-fullscreen .raise-presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px}
+  .is-fullscreen .raise-presets button{min-width:0;padding:5px 2px;font-size:10px}
+  .is-fullscreen .raise-presets button b{display:block;font-size:9px}
+  .is-fullscreen .action-buttons{gap:4px}
+  .is-fullscreen .action-buttons button{min-width:0;padding:9px 5px;font-size:11px}
+  .is-fullscreen .blackjack-actions{gap:6px}
+  .is-fullscreen .blackjack-actions button{padding:9px 8px;font-size:12px}
   .is-fullscreen .betting-controls.evo{display:grid;grid-template-columns:auto auto minmax(0,1fr);align-items:center;gap:12px;width:100%}
   .is-fullscreen .bet-spots{gap:6px;padding:0}
   .is-fullscreen .bet-circle{width:64px;height:64px;padding-bottom:5px}
@@ -435,8 +454,22 @@ html{scrollbar-gutter:stable}
   .is-fullscreen .page-heading{top:4px;right:11px}
   .is-fullscreen .heading-actions{position:absolute;top:0;right:0}
   .is-fullscreen .play-layout{grid-template-columns:1fr;gap:0}
-  .is-fullscreen .game-table{min-height:380px}
-  .is-fullscreen .action-dock{max-height:none;overflow:visible;padding:6px 8px;gap:5px}
+  .is-fullscreen .game-table{min-height:500px}
+  .is-fullscreen .action-dock{height:280px;max-height:none;overflow:visible;padding:6px 8px;gap:5px}
+  .is-fullscreen .action-dock:not(.seated-dock){justify-content:center}
+  .is-fullscreen .seated-dock{gap:5px}
+  .is-fullscreen .seated-dock .my-hand-row{min-height:48px}
+  .is-fullscreen .seated-dock .my-cards{margin-top:4px}
+  .is-fullscreen .poker-actions{gap:4px}
+  .is-fullscreen .raise-control{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px}
+  .is-fullscreen .raise-control>span{font-size:10px;gap:4px}
+  .is-fullscreen .raise-control>[data-slot=slider]{grid-column:1/-1;min-width:0;height:16px}
+  .is-fullscreen .raise-control>button{padding:4px 6px;font-size:9px}
+  .is-fullscreen .raise-presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px}
+  .is-fullscreen .raise-presets button{min-width:0;padding:4px 2px;font-size:9px}
+  .is-fullscreen .raise-presets button b{font-size:8px}
+  .is-fullscreen .action-buttons{gap:5px}
+  .is-fullscreen .action-buttons button{min-height:40px;padding:7px 5px;font-size:11px}
   .is-fullscreen .betting-controls.evo{display:grid;grid-template-columns:1fr;gap:4px;width:100%}
   .is-fullscreen .bet-spots{gap:6px;padding:0;align-items:center}
   .is-fullscreen .bet-circle{width:62px;height:62px;padding-bottom:4px}
@@ -452,6 +485,6 @@ html{scrollbar-gutter:stable}
   .is-fullscreen .bet-tools .bet-total small{display:none}
   .is-fullscreen .bet-tools .bet-total strong{font-size:12px}
   .is-fullscreen .bet-tools .text-button{font-size:9px;padding:4px 2px}
-  .is-fullscreen .bet-tools .gold-button{padding:7px 8px;font-size:11px}
+  .is-fullscreen .bet-tools .gold-button{min-height:40px;padding:7px 8px;font-size:11px}
   .is-fullscreen .bet-hint{display:none}
 }
