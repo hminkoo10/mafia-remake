@@ -3,14 +3,14 @@
 
 use super::*;
 use crate::casino_hub::{
-    CasinoHub, MAX_TABLES, PanelBinding, TableBinding, personal_link, table_channel_name,
+    CasinoHub, MAX_TABLES, PanelBinding, TableBinding, UpdateKind, personal_link,
+    table_channel_name,
 };
 use mafia_remake::casino::{
     CasinoEvent, ChatMessage, GameKind, HandResult, Phase, SettingsRequest, TableSettings,
     TableView, blackjack_value, signed_chips,
 };
 use poise::serenity_prelude::CacheHttp;
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, poise::ChoiceParameter)]
@@ -548,6 +548,7 @@ pub async fn casino_status(ctx: Context<'_>) -> Result<(), Error> {
 
 pub async fn casino_status_text(data: &Data, user_id: serenity::UserId) -> String {
     let hub = data.casino.clone();
+    let now = crate::casino_hub::now_ms();
     let coins = hub.coins_of(user_id.get()).await;
     let seated = hub.seated_table_of(user_id.get()).await;
     let seated_text = match seated {
@@ -559,7 +560,8 @@ pub async fn casino_status_text(data: &Data, user_id: serenity::UserId) -> Strin
                     .seat_index(user_id.get())
                     .and_then(|index| table.seats[index].as_ref())
                 {
-                    stack = Some((table.name.clone(), seat.stack));
+                    // 웹 화면처럼, 카드를 다 열기 전에는 이번 라운드 당첨금을 빼고 보여 준다.
+                    stack = Some((table.name.clone(), seat.visible_stack(now)));
                 }
             }
             match stack {
@@ -590,7 +592,8 @@ pub async fn casino_status_text(data: &Data, user_id: serenity::UserId) -> Strin
     format!(
         "보유 코인: **{}**\n{seated_text}\n하우스 누적: {}\n\n테이블\n{tables}",
         stats::coin_text(coins),
-        stats::coin_text(hub.house.load(Ordering::Relaxed))
+        // 아직 카드를 여는 중인 라운드의 하우스 손익은 결과가 공개된 뒤에 더해 보여 준다.
+        stats::coin_text(hub.visible_house().await)
     )
 }
 
@@ -2015,15 +2018,59 @@ async fn relay_chat_to_channel(
     }
 }
 
-/// 상태 임베드를 갱신하고, 새 핸드 결과가 있으면 알린다.
-pub async fn refresh_table_status(ctx: &serenity::Context, data: &Data, table_id: &str) {
+/// 상태 임베드가 웹 화면보다 먼저 결과를 보여 주지 않게, 아직 착지하거나 뒤집히지 않은
+/// 카드(딜러 홀 카드·드로, 보드, 쇼다운 카드, 블랙잭 히트)를 가린다. 화면 상태는 정산되면
+/// 뒤집을 시각과 함께 카드를 미리 보내므로, 그 시각 전에는 여기서 "??"로 되돌린다.
+/// 연출이 끝나면 결과 안내가 공개되며 임베드를 다시 그린다.
+///
+/// 가린 카드 중 가장 먼저 드러나는 시각을 돌려준다 (가린 카드가 없으면 None). 중계는 그 시각이
+/// 지난 뒤 공개 시각 알림(`RevealTick`)이 오면 임베드를 다시 그려 "??"를 걷어 낸다.
+fn hide_unrevealed_cards(view: &mut TableView, now: i64) -> Option<i64> {
+    const HIDDEN: &str = "??";
+    let mut next_reveal: Option<i64> = None;
+    // 화면 상태가 이미 가려 보낸 카드("??")는 그 시각이 지나도 그대로라 세지 않는다.
+    let mut hide = |card: &mut String, shown_at: i64| {
+        if shown_at > now && card != HIDDEN {
+            *card = HIDDEN.to_string();
+            next_reveal = Some(next_reveal.map_or(shown_at, |at| at.min(shown_at)));
+        }
+    };
+    if let Some(round) = view.round.as_mut() {
+        for (index, card) in round.dealer.iter_mut().enumerate() {
+            let landed_at = round.dealer_reveal_at.get(index).copied().unwrap_or(0);
+            let flipped_at = if index == 1 { round.dealer_flip_at } else { 0 };
+            hide(card, landed_at.max(flipped_at));
+        }
+        for (index, card) in round.board.iter_mut().enumerate() {
+            let landed_at = round.board_reveal_at.get(index).copied().unwrap_or(0);
+            let flipped_at = if index < 3 { round.board_flip_at } else { 0 };
+            hide(card, landed_at.max(flipped_at));
+        }
+    }
+    for seat in view.seats.iter_mut().flatten() {
+        for card in &mut seat.cards {
+            hide(card, seat.showdown_at);
+        }
+        for hand in &mut seat.hands {
+            for (card, at) in hand.cards.iter_mut().zip(&hand.reveal_at) {
+                hide(card, *at);
+            }
+        }
+    }
+    next_reveal
+}
+
+/// 상태 임베드를 갱신하고, 새 핸드 결과가 있으면 알린다. 임베드에서 가린 카드 중 가장 먼저
+/// 드러나는 시각을 돌려준다 (없으면 None).
+pub async fn refresh_table_status(
+    ctx: &serenity::Context,
+    data: &Data,
+    table_id: &str,
+) -> Option<i64> {
     let hub = data.casino.clone();
-    let Some(binding) = hub.binding(table_id) else {
-        return;
-    };
-    let Some(view) = hub.view_for(table_id, None).await else {
-        return;
-    };
+    let binding = hub.binding(table_id)?;
+    let (mut view, now) = hub.view_now(table_id, None).await?;
+    let next_reveal = hide_unrevealed_cards(&mut view, now);
     let channel_id = serenity::ChannelId::new(binding.channel_id);
     relay_chat_to_channel(ctx, &hub, table_id, binding.guild_id, channel_id).await;
     if let Some(result) = view.history.first() {
@@ -2063,7 +2110,7 @@ pub async fn refresh_table_status(ctx: &serenity::Context, data: &Data, table_id
             )
             .await;
         if edited.is_ok() {
-            return;
+            return next_reveal;
         }
     }
     match channel_id
@@ -2084,6 +2131,7 @@ pub async fn refresh_table_status(ctx: &serenity::Context, data: &Data, table_id
         }
         Err(error) => eprintln!("failed to post casino status for {table_id}: {error:?}"),
     }
+    next_reveal
 }
 
 /// 테이블 변경 알림을 받아 채널을 갱신하는 작업. 임베드 갱신은 테이블당 1.5초로 묶는다.
@@ -2095,12 +2143,24 @@ pub async fn run_casino_relay(ctx: serenity::Context, data: Data) {
     let mut last_panel_refresh: Option<Instant> = None;
     let mut panel_dirty = false;
     let mut pending: HashSet<String> = HashSet::new();
+    // 테이블별로 마지막 임베드가 가린 카드 중 가장 먼저 드러나는 시각.
+    let mut masked_until: HashMap<String, i64> = HashMap::new();
     let mut flush = tokio::time::interval(Duration::from_millis(1_500));
     loop {
         tokio::select! {
             update = updates.recv() => {
                 match update {
-                    Ok(update) => { pending.insert(update.table_id); }
+                    // 공개 시각 알림은 화면용이다. 새로 공개된 채팅·결과가 있거나, 지난 임베드에서
+                    // "??"로 가린 카드(히트·딜러 드로·보드 등)가 그 사이 드러났을 때만 채널을 고친다
+                    // (같은 내용으로 상태 임베드를 다시 고치지 않게).
+                    Ok(update) => {
+                        let unmasked = masked_until
+                            .get(&update.table_id)
+                            .is_some_and(|at| *at <= crate::casino_hub::now_ms());
+                        if update.kind == UpdateKind::Changed || unmasked || hub.has_relay_work(&update.table_id).await {
+                            pending.insert(update.table_id);
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         for entry in hub.tables.iter() { pending.insert(entry.key().clone()); }
                     }
@@ -2113,7 +2173,10 @@ pub async fn run_casino_relay(ctx: serenity::Context, data: Data) {
                     pending.remove(&table_id);
                     panel_dirty = true;
                     if hub.binding(&table_id).is_none() { continue; }
-                    refresh_table_status(&ctx, &data, &table_id).await;
+                    match refresh_table_status(&ctx, &data, &table_id).await {
+                        Some(at) => masked_until.insert(table_id.clone(), at),
+                        None => masked_until.remove(&table_id),
+                    };
                     last_refresh.insert(table_id, Instant::now());
                 }
                 if panel_dirty && last_panel_refresh.is_none_or(|at| at.elapsed() >= Duration::from_secs(3)) {
@@ -2165,6 +2228,157 @@ pub async fn handle_casino_channel_message(data: &Data, message: &serenity::Mess
 mod tests {
     use super::*;
     use crate::casino_hub::TableSummary;
+
+    #[test]
+    fn status_embed_hides_cards_until_they_are_revealed() {
+        use mafia_remake::casino::{CasinoCommand, CasinoTable, table_view};
+        let mut table = CasinoTable::new("t", GameKind::Holdem, "상태", 1, 0);
+        for (user, seat) in [(1, 0), (2, 1)] {
+            table
+                .apply_command(
+                    user,
+                    "손님",
+                    &CasinoCommand::Join {
+                        seat,
+                        amount: 10_000,
+                        name: format!("손님{user}"),
+                    },
+                    None,
+                    0,
+                )
+                .unwrap();
+        }
+        let mut deck = [
+            "Kh", "Qd", "Kc", "Qs", "2c", "7h", "8d", "9s", "3c", "Jd", "4c", "5h",
+        ]
+        .iter()
+        .map(|card| card.to_string())
+        .collect::<Vec<_>>();
+        deck.reverse();
+        table.start_with_deck(1, deck, 1_000).unwrap();
+        // 헤즈업: 버튼(스몰)이 콜, 빅이 체크하면 플롭이 나간다.
+        for (user, command, at) in [
+            (1, CasinoCommand::Call, 100_000),
+            (2, CasinoCommand::Check, 100_100),
+        ] {
+            table
+                .apply_command(user, "손님", &command, None, at)
+                .unwrap();
+        }
+        let flip_at = table.round.as_ref().unwrap().board_flip_at;
+        assert!(flip_at > 100_100);
+        let mut early = table_view(&table, None, 100_100);
+        hide_unrevealed_cards(&mut early, 100_100);
+        assert_eq!(early.round.as_ref().unwrap().board, vec!["??"; 3]);
+        let mut late = table_view(&table, None, flip_at);
+        hide_unrevealed_cards(&mut late, flip_at);
+        assert_eq!(late.round.as_ref().unwrap().board, vec!["7h", "8d", "9s"]);
+        // 끝까지 체크해 쇼다운으로 간다. 쇼다운 카드도 뒤집는 시각 전에는 가린다.
+        for street in 1..=3 {
+            let at = 100_000 + street * 100_000;
+            for (user, offset) in [(2, 0), (1, 100)] {
+                table
+                    .apply_command(user, "손님", &CasinoCommand::Check, None, at + offset)
+                    .unwrap();
+            }
+        }
+        let settled_at = 400_100;
+        let mut settled = table_view(&table, None, settled_at);
+        let flips = settled
+            .seats
+            .iter()
+            .flatten()
+            .map(|seat| seat.showdown_at)
+            .collect::<Vec<_>>();
+        assert!(flips.iter().all(|at| *at > settled_at), "{flips:?}");
+        hide_unrevealed_cards(&mut settled, settled_at);
+        assert!(
+            settled
+                .seats
+                .iter()
+                .flatten()
+                .all(|seat| seat.cards.iter().all(|card| card == "??"))
+        );
+        let last_flip = flips.iter().copied().max().unwrap();
+        let mut shown = table_view(&table, None, last_flip);
+        hide_unrevealed_cards(&mut shown, last_flip);
+        assert_eq!(shown.seats[1].as_ref().unwrap().cards, vec!["Kh", "Kc"]);
+    }
+
+    fn blackjack_with_deck(cards: &[&str], bet: i64) -> mafia_remake::casino::CasinoTable {
+        use mafia_remake::casino::{CasinoCommand, CasinoTable};
+        let mut table = CasinoTable::new("b", GameKind::Blackjack, "블랙잭", 1, 0);
+        table
+            .apply_command(
+                1,
+                "손님",
+                &CasinoCommand::Join {
+                    seat: 0,
+                    amount: 10_000,
+                    name: "손님1".to_string(),
+                },
+                None,
+                0,
+            )
+            .unwrap();
+        let mut deck = cards
+            .iter()
+            .map(|card| card.to_string())
+            .collect::<Vec<_>>();
+        deck.reverse();
+        table.start_with_deck(1, deck, 1_000).unwrap();
+        table
+            .apply_command(
+                1,
+                "손님",
+                &CasinoCommand::Bet {
+                    amount: bet,
+                    pairs: 0,
+                    plus3: 0,
+                },
+                None,
+                1_100,
+            )
+            .unwrap();
+        table
+    }
+
+    /// 봇 바이너리의 테스트는 엔진을 실제 연출 시간으로 돌린다. 히트한 카드가 착지하기 전에 그린
+    /// 임베드는 그 카드를 가리고, 착지 시각을 알려 줘서 중계가 그 뒤 공개 알림에 다시 그리게 한다.
+    #[test]
+    fn status_embed_reports_when_a_masked_card_lands() {
+        use mafia_remake::casino::{CasinoCommand, table_view};
+        // 딜: 나 2h, 딜러 9c, 나 3h, 딜러 7d. 히트 4h.
+        let mut table = blackjack_with_deck(&["2h", "9c", "3h", "7d", "4h", "Td"], 100);
+        let dealt = table.round.as_ref().unwrap().reveal_until;
+        table
+            .apply_command(1, "손님", &CasinoCommand::Hit, None, dealt)
+            .unwrap();
+        let landing = table.seat(0).unwrap().hands[0].reveal_at[2];
+        assert!(landing > dealt);
+        let mut early = table_view(&table, None, dealt);
+        assert_eq!(hide_unrevealed_cards(&mut early, dealt), Some(landing));
+        assert_eq!(early.seats[0].as_ref().unwrap().hands[0].cards[2], "??");
+        // 착지한 뒤에 다시 그리면 가릴 것이 없다 (딜러 홀 카드는 화면 상태가 이미 가려 보낸다).
+        let mut late = table_view(&table, None, landing);
+        assert_eq!(hide_unrevealed_cards(&mut late, landing), None);
+        assert_eq!(late.seats[0].as_ref().unwrap().hands[0].cards[2], "4h");
+    }
+
+    #[test]
+    fn status_line_keeps_the_play_phase_until_the_dealer_flips() {
+        use mafia_remake::casino::table_view;
+        // 딜러 내추럴 (업카드 T): 딜하자마자 정산되지만 카드는 아직 날아가는 중이다.
+        let table = blackjack_with_deck(&["9h", "Td", "7c", "As"], 500);
+        let round = table.round.as_ref().unwrap();
+        assert_eq!(round.phase, Phase::Complete);
+        let flip_at = round.dealer_flip_at;
+        assert!(flip_at > 1_100 && flip_at < round.reveal_until);
+        let status = render_table_status(&table_view(&table, None, 1_100), "https://casino");
+        assert!(status.contains("단계: **플레이 중**"), "{status}");
+        let status = render_table_status(&table_view(&table, None, flip_at), "https://casino");
+        assert!(status.contains("단계: **라운드 종료**"), "{status}");
+    }
 
     fn input_count(modal: serenity::CreateModal) -> (usize, String) {
         let json = serde_json::to_value(modal).unwrap();

@@ -2,9 +2,9 @@
 
 use super::cards::{CasinoError, PokerRank, draw, poker_rank, shuffled_deck};
 use super::table::{
-    CasinoTable, DEAL_CARD_MS, GameKind, HandResult, Payout, Phase, Round, SEAT_COUNT,
-    SETTLE_PAUSE_MS, SHOWDOWN_STEP_MS, STREET_PAUSE_MS, Seat, SeatResult, format_chips, new_id,
-    signed_chips,
+    CARD_FLIP_MS, CasinoTable, DEAL_LEAD_MS, GameKind, HOLE_CARD_MS, HandResult, LAND_SETTLE_MS,
+    Payout, Phase, Round, SEAT_COUNT, SETTLE_PAUSE_MS, SHOWDOWN_STEP_MS, STREET_PAUSE_MS, Seat,
+    SeatResult, format_chips, new_id, signed_chips,
 };
 use serde::Serialize;
 
@@ -102,6 +102,7 @@ pub(super) fn start_poker(
         seat.folded = false;
         seat.acted_at = None;
         seat.checked = false;
+        seat.clear_pending_credit();
     }
     table.button = table.next_seat(table.button, |seat| seat.in_hand);
     let count = table
@@ -140,26 +141,33 @@ pub(super) fn start_poker(
         pot: 0,
         reveal: false,
         reveal_until,
+        settled_from: None,
         board_reveal_at,
+        board_flip_at: 0,
+        burn_at: Vec::new(),
         dealer_reveal_at,
         dealer_flip_at,
         showdown_reveal_at,
     };
-    // 홀 카드는 버튼 왼쪽부터 한 장씩 시간차를 두고 나눈다.
-    let mut at = now;
+    // 홀 카드는 버튼 왼쪽부터 한 장씩 두 바퀴 나눈다. `reveal_at`은 착지 시각이고, 착지 간격이
+    // 비행 시간보다 길어 공중에는 한 장씩만 난다.
+    let mut next_at = now + DEAL_LEAD_MS;
+    let mut last_at = now;
     for _ in 0..2 {
         let mut index = table.button;
         for _ in 0..count {
             index = table.next_seat(index, |seat| seat.in_hand);
             let card = draw(&mut round.deck)?;
-            at += DEAL_CARD_MS;
+            last_at = next_at;
+            next_at += HOLE_CARD_MS;
             if let Some(seat) = table.seat_mut(index) {
                 seat.cards.push(card);
-                seat.cards_reveal_at.push(at);
+                seat.cards_reveal_at.push(last_at);
             }
         }
     }
-    round.reveal_until = at + DEAL_CARD_MS;
+    round.reveal_until = last_at + LAND_SETTLE_MS;
+    let dealt_until = round.reveal_until;
     if let Some(seat) = table.seat_mut(small) {
         commit(seat, rules.small_blind);
     }
@@ -168,21 +176,25 @@ pub(super) fn start_poker(
     }
     round.turn = table.next_seat(big, actionable);
     table.round = Some(round);
-    table.say("카드를 나눠드렸어요. 첫 번째 베팅을 시작합니다.", now);
+    table.say_at(
+        "카드를 나눠드렸어요. 첫 번째 베팅을 시작합니다.",
+        now,
+        dealt_until,
+    );
     advance(table, big, now)
 }
 
+/// 팟 몫을 기록한다. 칩은 연출 시각이 정해진 뒤 `settle_poker`가 한꺼번에 스택에 넣는다.
 fn award(
-    table: &mut CasinoTable,
+    table: &CasinoTable,
     awards: &mut Vec<(u64, Payout)>,
     index: usize,
     value: i64,
     label: &str,
 ) {
-    let Some(seat) = table.seats[index].as_mut() else {
+    let Some(seat) = table.seats[index].as_ref() else {
         return;
     };
-    seat.stack += value;
     if let Some((_, payout)) = awards
         .iter_mut()
         .find(|(user_id, _)| *user_id == seat.user_id)
@@ -308,6 +320,7 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
         let round = table.round.as_mut().expect("round exists");
         round.pot = pot;
         round.reveal = reveal;
+        round.settled_from = Some(round.phase);
         round.phase = Phase::Complete;
         round.turn = -1;
         round.deadline = 0;
@@ -332,6 +345,16 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
         }
         round.id.clone()
     };
+    // 딴 칩은 스택에 바로 넣되, 화면에는 쇼다운 연출이 끝난 뒤에 드러난다.
+    let settled_until = table.round.as_ref().expect("round exists").reveal_until;
+    for (user_id, payout) in &awards {
+        let seat = table
+            .seat_index(*user_id)
+            .and_then(|index| table.seats[index].as_mut());
+        if let Some(seat) = seat {
+            seat.credit_after(payout.amount, settled_until, now);
+        }
+    }
     // 참가한 모든 좌석의 순손익. 진 사람도 족보(쇼다운) 또는 "폴드"로 남긴다.
     let results = participants
         .iter()
@@ -386,10 +409,11 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
         })
         .collect::<Vec<_>>()
         .join(" · ");
+    // 결과 안내는 쇼다운 카드가 모두 공개된 뒤에 뜬다.
     if summary.is_empty() {
-        table.say("핸드가 종료되었습니다.", now);
+        table.say_at("핸드가 종료되었습니다.", now, settled_until);
     } else {
-        table.say(summary.clone(), now);
+        table.say_at(summary.clone(), now, settled_until);
     }
     table.remember(HandResult {
         id: round_id,
@@ -440,30 +464,42 @@ fn advance(table: &mut CasinoTable, from: i32, now: i64) -> Result<(), CasinoErr
         seat.acted_at = None;
         seat.checked = false;
     }
-    let phase = {
+    let (phase, opened_at) = {
         let round = table.round.as_mut().expect("round exists");
         round.current_bet = 0;
         round.min_raise = rules.big_blind;
-        // 스트리트마다 한 장을 버린다.
+        // 실제 카지노처럼 베팅이 끝나고 잠깐 뜸을 들인 뒤 한 장을 뒷면으로 버리고(번),
+        // 플롭은 세 장을 뒷면으로 한 장씩 놓았다가 함께 뒤집는다. 턴·리버는 앞면으로 놓는다.
+        let burn_at = round.reveal_base(now) + STREET_PAUSE_MS;
         draw(&mut round.deck)?;
-        let count = if round.phase == Phase::Preflop { 3 } else { 1 };
-        // 베팅이 끝나고 잠깐 뜸을 들인 뒤 한 장씩 연다.
-        let mut at = round.reveal_base(now) + STREET_PAUSE_MS;
+        round.burn_at.push(burn_at);
+        let flop = round.phase == Phase::Preflop;
+        let count = if flop { 3 } else { 1 };
+        let mut at = burn_at;
         for _ in 0..count {
+            at += HOLE_CARD_MS;
             let card = draw(&mut round.deck)?;
             round.board.push(card);
             round.board_reveal_at.push(at);
-            at += DEAL_CARD_MS;
         }
-        round.reveal_until = at;
+        round.reveal_until = if flop {
+            round.board_flip_at = at + LAND_SETTLE_MS;
+            round.board_flip_at + CARD_FLIP_MS
+        } else {
+            at + LAND_SETTLE_MS
+        };
         round.phase = match round.board.len() {
             3 => Phase::Flop,
             4 => Phase::Turn,
             _ => Phase::River,
         };
-        round.phase
+        (round.phase, round.reveal_until)
     };
-    table.say(format!("{} 카드가 열렸어요.", phase.value()), now);
+    table.say_at(
+        format!("{} 카드가 열렸어요.", phase.value()),
+        now,
+        opened_at,
+    );
     let button = table.button;
     if funded.len() <= 1 {
         return advance(table, button, now);

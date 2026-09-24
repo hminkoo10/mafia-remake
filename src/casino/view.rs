@@ -5,7 +5,7 @@ use super::cards::{best_hand, blackjack_value};
 use super::holdem::PokerLegal;
 use super::table::{
     BET_WINDOW_MS, BJ_BET_STEP, BUY_IN_STEP, CasinoTable, ChatMessage, GameKind, HandResult,
-    HandStatus, INSURANCE_MS, Phase, SEAT_COUNT, SIDE_BET_MIN, TableSettings,
+    HandStatus, INSURANCE_MS, Phase, Round, SEAT_COUNT, SIDE_BET_MIN, TableSettings, live_timing,
 };
 use serde::Serialize;
 
@@ -13,7 +13,7 @@ use serde::Serialize;
 pub struct HandView {
     pub id: String,
     pub cards: Vec<String>,
-    /// 카드별 등장 시각 (클라이언트가 이 시각까지 카드를 숨기고 딜 애니메이션을 낸다).
+    /// 카드별 착지 시각. 클라이언트는 `reveal_at - card_flight_ms`에 슈에서 카드를 날린다.
     pub reveal_at: Vec<i64>,
     pub bet: i64,
     pub total: i64,
@@ -37,8 +37,11 @@ pub struct SeatView {
     pub sit_out: bool,
     pub leaving: bool,
     pub cards: Vec<String>,
-    /// 홀 카드별 등장 시각.
+    /// 홀 카드별 착지 시각.
     pub cards_reveal_at: Vec<i64>,
+    /// 홀덤 쇼다운에서 이 좌석의 카드를 뒤집는 시각 (0이면 없음). 핸드가 정산된 뒤에만
+    /// 값과 함께 보내고, 클라이언트는 이 시각까지 "??"로 두었다가 뒤집는다.
+    pub showdown_at: i64,
     pub hands: Vec<HandView>,
     /// 블랙잭 사이드베팅·인슈어런스.
     pub side_pairs: i64,
@@ -68,8 +71,16 @@ pub struct RoundView {
     pub reveal: bool,
     /// 카드 연출이 끝나는 시각. 그 전에는 액션 버튼을 숨기고 결과도 띄우지 않는다.
     pub reveal_until: i64,
+    /// 보드 카드별 착지 시각 (플롭은 뒷면으로 놓인다).
     pub board_reveal_at: Vec<i64>,
+    /// 플롭 세 장을 함께 뒤집는 시각 (플롭 전·블랙잭은 0).
+    pub board_flip_at: i64,
+    /// 이번 핸드의 번 카드 착지 시각 (카드 값은 보내지 않는다).
+    pub burn_at: Vec<i64>,
+    /// 딜러 카드별 착지 시각 (블랙잭).
     pub dealer_reveal_at: Vec<i64>,
+    /// 딜러 홀 카드를 뒤집는 시각. 라운드가 정산된 뒤에만 실제 카드와 함께 보낸다 (0이면 없음).
+    pub dealer_flip_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,6 +118,10 @@ pub struct TableRules {
     pub seat_count: usize,
     pub turn_ms: i64,
     pub bet_window_ms: i64,
+    /// 카드가 슈에서 착지까지 나는 시간 (실제 값). `reveal_at - card_flight_ms`에 날리기 시작한다.
+    pub card_flight_ms: i64,
+    /// 카드 뒤집기 애니메이션 길이 (실제 값).
+    pub card_flip_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -155,6 +170,69 @@ pub fn table_rules(settings: &TableSettings) -> TableRules {
         seat_count: SEAT_COUNT,
         turn_ms: settings.turn_ms,
         bet_window_ms: BET_WINDOW_MS,
+        card_flight_ms: live_timing::CARD_FLIGHT_MS,
+        card_flip_ms: live_timing::CARD_FLIP_MS,
+    }
+}
+
+/// 라운드가 정산되어(쇼다운·딜러 공개가 확정되어) 더 정할 것이 없는지. 이때부터는 가려 둔
+/// 카드를 뒤집을 시각과 함께 미리 보내 클라이언트가 제 시계로 뒤집게 한다.
+fn settled_reveal(round: &Round) -> bool {
+    round.reveal && round.phase == Phase::Complete
+}
+
+/// `now`까지 펠트에 놓여 앞면이 보이는 보드 카드 (플롭은 함께 뒤집힌 뒤부터).
+fn landed_board(round: &Round, now: i64) -> Vec<String> {
+    round
+        .board
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            let landed = round
+                .board_reveal_at
+                .get(*index)
+                .is_none_or(|at| *at <= now);
+            let flipped = *index >= 3 || round.board_flip_at <= now;
+            landed && flipped
+        })
+        .map(|(_, card)| card.clone())
+        .collect()
+}
+
+/// 화면에 보여 줄 라운드 단계. 엔진은 결과가 정해지는 순간 라운드를 끝내지만(딜러 내추럴,
+/// 마지막 참가자의 버스트, 올인 런아웃, 폴드 승리), 그 결과를 만든 카드가 아직 놓이는 중이면
+/// 정산 전 단계로 보여 준다: 블랙잭은 딜러가 홀 카드를 뒤집기 전까지 "플레이 중", 홀덤은
+/// 연출이 끝나기 전까지 지금 앞면으로 놓인 보드에 맞는 스트리트 (마지막 베팅 스트리트, 런아웃은
+/// 카드가 놓이는 대로 넘어간다). 웹 화면·테이블 목록·Discord 상태가 모두 이 값을 쓴다.
+pub fn shown_phase(kind: GameKind, round: &Round, now: i64) -> Phase {
+    if round.phase != Phase::Complete || now >= round.reveal_until {
+        return round.phase;
+    }
+    match kind {
+        GameKind::Blackjack if round.reveal && now < round.dealer_flip_at => Phase::Playing,
+        GameKind::Blackjack => round.phase,
+        GameKind::Holdem => {
+            let landed = match landed_board(round, now).len() {
+                0..=2 => Phase::Preflop,
+                3 => Phase::Flop,
+                4 => Phase::Turn,
+                _ => Phase::River,
+            };
+            match round.settled_from {
+                Some(settled) if phase_rank(settled) > phase_rank(landed) => settled,
+                _ => landed,
+            }
+        }
+    }
+}
+
+fn phase_rank(phase: Phase) -> u8 {
+    match phase {
+        Phase::Preflop => 0,
+        Phase::Flop => 1,
+        Phase::Turn => 2,
+        Phase::River => 3,
+        _ => 0,
     }
 }
 
@@ -166,8 +244,8 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
     let my_seat = viewer
         .and_then(|viewer| table.seat_index(viewer))
         .map_or(-1, |index| index as i32);
-    let reveal = round.is_some_and(|round| round.reveal);
     let reveal_done = round.is_none_or(|round| now >= round.reveal_until);
+    let settled = round.is_some_and(settled_reveal);
     let showdown_at = |index: usize| -> i64 {
         round
             .and_then(|round| round.showdown_reveal_at.get(index).copied())
@@ -180,25 +258,42 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
         .map(|(index, seat)| {
             let seat = seat.as_ref()?;
             let mine = viewer == Some(seat.user_id);
-            let shown = mine || (reveal && !seat.folded && showdown_at(index) <= now);
-            let (hand_name, hand_cards) =
-                if table.kind == GameKind::Holdem && !seat.cards.is_empty() && reveal_done && shown
-                {
-                    let mut all = seat.cards.clone();
-                    if let Some(round) = round {
-                        all.extend(round.board.iter().cloned());
+            // 다른 사람의 홀 카드는 쇼다운이 정산된 뒤에만, 폴드하지 않은 경쟁자의 것만
+            // 뒤집을 시각과 함께 보낸다. 그 전에는 어떤 시각에도 "??"다.
+            let contender = settled
+                && table.kind == GameKind::Holdem
+                && seat.in_hand
+                && !seat.folded
+                && !seat.cards.is_empty();
+            let shown = mine || contender;
+            let hole_landed = seat.cards_reveal_at.iter().all(|at| *at <= now);
+            // 족보 이름: 내 좌석은 내 카드와 이미 펠트에 놓여 뒤집힌 보드로 (스트리트 연출
+            // 중에도 앞 스트리트의 족보를 유지한다), 다른 경쟁자는 쇼다운 연출이 끝난 뒤에.
+            let hand_source = match round {
+                Some(round) if table.kind == GameKind::Holdem && !seat.cards.is_empty() => {
+                    if mine && hole_landed {
+                        Some(landed_board(round, now))
+                    } else if contender && reveal_done {
+                        Some(round.board.clone())
+                    } else {
+                        None
                     }
+                }
+                _ => None,
+            };
+            let (hand_name, hand_cards) = hand_source
+                .and_then(|board| {
+                    let mut all = seat.cards.clone();
+                    all.extend(board);
                     best_hand(&all)
-                        .map(|best| (Some(best.name), best.cards))
-                        .unwrap_or((None, Vec::new()))
-                } else {
-                    (None, Vec::new())
-                };
+                })
+                .map_or((None, Vec::new()), |best| (Some(best.name), best.cards));
             Some(SeatView {
                 seat: index,
                 user_id: seat.user_id,
                 name: seat.name.clone(),
-                stack: seat.stack,
+                // 이번 라운드 당첨금은 카드가 다 놓인 뒤에 스택에 보인다.
+                stack: seat.visible_stack(now),
                 mine,
                 bet: seat.bet,
                 total: seat.total,
@@ -229,6 +324,7 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
                     })
                     .collect(),
                 cards_reveal_at: seat.cards_reveal_at.clone(),
+                showdown_at: if contender { showdown_at(index) } else { 0 },
                 hands: seat
                     .hands
                     .iter()
@@ -264,38 +360,62 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
             })
         })
         .collect::<Vec<_>>();
-    let round_view = round.map(|round| RoundView {
-        id: round.id.clone(),
-        phase: round.phase,
-        phase_text: round.phase.value().to_string(),
-        board: round.board.clone(),
-        dealer: round
-            .dealer
-            .iter()
-            .enumerate()
-            .map(|(index, card)| {
-                if index == 0 || (round.reveal && now >= round.dealer_flip_at) {
-                    card.clone()
-                } else {
-                    "??".to_string()
-                }
-            })
-            .collect(),
-        dealer_total: (round.reveal && now >= round.reveal_until)
-            .then(|| blackjack_value(&round.dealer).0),
-        turn: round.turn,
-        hand: round.hand,
-        deadline: round.deadline,
-        current_bet: round.current_bet,
-        pot: if table.kind == GameKind::Holdem && active {
-            table.seats.iter().flatten().map(|seat| seat.total).sum()
-        } else {
-            round.pot
-        },
-        reveal: round.reveal,
-        reveal_until: round.reveal_until,
-        board_reveal_at: round.board_reveal_at.clone(),
-        dealer_reveal_at: round.dealer_reveal_at.clone(),
+    let round_view = round.map(|round| {
+        let phase = shown_phase(table.kind, round, now);
+        RoundView {
+            id: round.id.clone(),
+            phase,
+            phase_text: phase.value().to_string(),
+            board: round.board.clone(),
+            // 딜러 홀 카드는 라운드가 정산되기 전에는 어떤 시각에도 "??"다. 정산된 뒤에는 실제
+            // 카드와 뒤집을 시각(`dealer_flip_at`)을 함께 보내 클라이언트가 제 시계로 뒤집는다.
+            dealer: round
+                .dealer
+                .iter()
+                .enumerate()
+                .map(|(index, card)| {
+                    if index == 0 || settled_reveal(round) {
+                        card.clone()
+                    } else {
+                        "??".to_string()
+                    }
+                })
+                .collect(),
+            dealer_total: (round.reveal && now >= round.reveal_until)
+                .then(|| blackjack_value(&round.dealer).0),
+            turn: if table.kind == GameKind::Blackjack && !reveal_done {
+                -1
+            } else {
+                round.turn
+            },
+            hand: if table.kind == GameKind::Blackjack && !reveal_done {
+                0
+            } else {
+                round.hand
+            },
+            deadline: if table.kind == GameKind::Blackjack && !reveal_done {
+                0
+            } else {
+                round.deadline
+            },
+            current_bet: round.current_bet,
+            pot: if table.kind == GameKind::Holdem && active {
+                table.seats.iter().flatten().map(|seat| seat.total).sum()
+            } else {
+                round.pot
+            },
+            reveal: round.reveal,
+            reveal_until: round.reveal_until,
+            board_reveal_at: round.board_reveal_at.clone(),
+            board_flip_at: round.board_flip_at,
+            burn_at: round.burn_at.clone(),
+            dealer_reveal_at: round.dealer_reveal_at.clone(),
+            dealer_flip_at: if table.kind == GameKind::Blackjack && settled_reveal(round) {
+                round.dealer_flip_at
+            } else {
+                0
+            },
+        }
     });
     let minimum = if table.kind == GameKind::Holdem {
         1
@@ -303,33 +423,38 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
         table.settings.min_bet
     };
     let my = table.seat(my_seat);
+    let insurance_cost = my.map_or(0, |seat| seat.hands.first().map_or(0, |hand| hand.bet) / 2);
+    // 스택 검사는 화면에 보이는 스택으로 한다: 아직 드러나면 안 되는 당첨금으로 "시작"·
+    // "인슈어런스"가 먼저 켜지면 결과가 샌다.
     let ready_count = table
         .seats
         .iter()
         .flatten()
-        .filter(|seat| !seat.sit_out && !seat.leaving && seat.stack >= minimum)
+        .filter(|seat| !seat.sit_out && !seat.leaving && seat.visible_stack(now) >= minimum)
         .count();
     let legal = LegalView {
         poker: (table.kind == GameKind::Holdem)
             .then(|| table.poker_legal_for(my_seat))
             .flatten(),
-        blackjack: (table.kind == GameKind::Blackjack)
+        blackjack: (table.kind == GameKind::Blackjack && reveal_done)
             .then(|| table.blackjack_legal_for(my_seat))
             .flatten(),
         can_bet: table.kind == GameKind::Blackjack
             && round.is_some_and(|round| round.phase == Phase::Betting)
             && my.is_some_and(|seat| !seat.in_hand && !seat.sit_out && !seat.leaving),
+        // 지난 라운드의 카드를 다 연 뒤에만 시작할 수 있다 (엔진도 그 전에는 거절한다).
         can_start: !active
-            && my.is_some_and(|seat| !seat.sit_out && !seat.leaving && seat.stack >= minimum)
+            && reveal_done
+            && my.is_some_and(|seat| {
+                !seat.sit_out && !seat.leaving && seat.visible_stack(now) >= minimum
+            })
             && ready_count >= if table.kind == GameKind::Holdem { 2 } else { 1 },
         can_insure: table.kind == GameKind::Blackjack
             && round.is_some_and(|round| round.phase == Phase::Insurance)
             && my.is_some_and(|seat| {
-                seat.in_hand
-                    && !seat.insurance_decided
-                    && seat.stack >= seat.hands.first().map_or(0, |hand| hand.bet) / 2
+                seat.in_hand && !seat.insurance_decided && seat.visible_stack(now) >= insurance_cost
             }),
-        insurance_cost: my.map_or(0, |seat| seat.hands.first().map_or(0, |hand| hand.bet) / 2),
+        insurance_cost,
     };
     TableView {
         id: table.id.clone(),
@@ -338,20 +463,48 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
         version: table.version,
         button: table.button,
         my_seat,
-        narration: table.narration.clone(),
+        // 결과 안내·채팅·기록은 그 결과를 만든 카드가 다 놓인 뒤에 보인다.
+        narration: table.narration_at(now).to_string(),
         seats,
         round: round_view,
         legal,
-        messages: table.messages.clone(),
-        history: table.history.clone(),
+        messages: table
+            .messages
+            .iter()
+            .filter(|message| message.at <= now)
+            .cloned()
+            .collect(),
+        history: table.visible_history(now).to_vec(),
         rules: table_rules(&table.settings),
         pending_rules: table.pending_settings.as_ref().map(table_rules),
         shoe: (table.kind == GameKind::Blackjack).then(|| {
-            let remaining = round
+            let mut remaining = round
                 .filter(|round| round.uses_shoe && active)
                 .map_or(table.shoe.len(), |round| round.deck.len());
+            // 카드를 나누는 중에는 아직 착지하지 않은 카드를 슈에 남은 것으로 센다. 그러지 않으면
+            // 카운터가 딜러가 몇 장을 뽑을지(곧 결과를) 먼저 알려 준다.
+            let revealing = round.filter(|round| round.uses_shoe && now < round.reveal_until);
+            if let Some(round) = revealing {
+                let pending = |times: &[i64]| times.iter().filter(|at| **at > now).count();
+                remaining += pending(&round.dealer_reveal_at)
+                    + pending(&round.board_reveal_at)
+                    + pending(&round.burn_at)
+                    + table
+                        .seats
+                        .iter()
+                        .flatten()
+                        .map(|seat| {
+                            pending(&seat.cards_reveal_at)
+                                + seat
+                                    .hands
+                                    .iter()
+                                    .map(|hand| pending(&hand.reveal_at))
+                                    .sum::<usize>()
+                        })
+                        .sum::<usize>();
+            }
             ShoeView {
-                remaining,
+                remaining: remaining.min(table.shoe_total),
                 total: table.shoe_total,
                 cut_at: table.shoe_cut,
                 shuffled_at: table.shuffled_at,

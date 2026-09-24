@@ -1130,6 +1130,8 @@ async fn main() -> Result<()> {
             )
         },
     )?);
+    // casino.json은 변경마다 기다려 쓰지 않고 모아서 쓴다 (코인이 오가는 변경은 바로 쓴다).
+    casino_hub.start_saver();
     let casino_base_url = casino_hub::casino_base_url(
         &web_host,
         activity_port,
@@ -1348,6 +1350,9 @@ async fn main() -> Result<()> {
     let mut client = serenity::ClientBuilder::new(token, intents)
         .framework(framework)
         .await?;
-    client.start().await?;
+    let result = client.start().await;
+    // 봇이 멈추기 전에 아직 쓰지 않은 카지노 상태를 저장한다.
+    casino_hub.flush_pending_save().await;
+    result?;
     Ok(())
 }

@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Component, Path};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+use tower_http::compression::CompressionLayer;
 
 include!(concat!(env!("OUT_DIR"), "/casino_static.rs"));
 
@@ -30,9 +32,14 @@ pub struct CasinoWebState {
 }
 
 pub fn casino_router(state: CasinoWebState) -> Router {
-    Router::new()
+    // 상태 JSON(수십 KB, 반복이 많다)은 gzip으로 줄여 휴대폰에서의 왕복을 빠르게 한다.
+    // 웹소켓 업그레이드와 범위 요청으로 받는 영상은 압축하지 않는다.
+    let api = Router::new()
         .route("/casino/api/state", get(state_handler))
         .route("/casino/api/command", post(command_handler))
+        .layer(CompressionLayer::new());
+    Router::new()
+        .merge(api)
         .route("/casino/api/ws", get(ws_handler))
         .route("/casino", get(casino_index))
         .route("/casino/", get(casino_index))
@@ -67,9 +74,128 @@ pub fn dealer_avatar_png() -> Option<&'static [u8]> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ByteRange, byte_range, cache_control, content_type_for, dealer_avatar_png,
-        is_safe_asset_path, read_static_file, table_switch,
+        ByteRange, byte_range, cache_control, content_type_for, dealer_avatar_png, drain_updates,
+        heartbeat, is_safe_asset_path, read_static_file, table_switch,
     };
+    use crate::casino_hub::{CasinoUpdate, UpdateKind};
+
+    #[test]
+    fn buffered_updates_are_drained_into_one_rebuild() {
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(8);
+        let update = |id: &str| CasinoUpdate {
+            table_id: id.to_string(),
+            kind: UpdateKind::RevealTick,
+        };
+        for id in ["b", "a", "c"] {
+            sender.send(update(id)).unwrap();
+        }
+        // 쌓인 알림을 한 번에 비우고, 보는 테이블 알림이 섞여 있었는지만 본다.
+        assert_eq!(drain_updates(&mut receiver, Some("a")), Some(true));
+        assert_eq!(drain_updates(&mut receiver, Some("a")), Some(false));
+        sender.send(update("b")).unwrap();
+        assert_eq!(drain_updates(&mut receiver, Some("a")), Some(false));
+        // 보는 테이블이 없으면 모든 알림이 관계있다.
+        sender.send(update("b")).unwrap();
+        assert_eq!(drain_updates(&mut receiver, None), Some(true));
+        drop(sender);
+        assert_eq!(drain_updates(&mut receiver, Some("a")), None);
+    }
+
+    #[test]
+    fn lagged_receivers_rebuild_once() {
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(2);
+        for id in ["x", "y", "z", "w"] {
+            sender
+                .send(CasinoUpdate {
+                    table_id: id.to_string(),
+                    kind: UpdateKind::Changed,
+                })
+                .unwrap();
+        }
+        // 밀려서 놓친 알림이 있으면 무엇이 바뀌었는지 모르므로 다시 만든다.
+        assert_eq!(drain_updates(&mut receiver, Some("a")), Some(true));
+    }
+
+    #[tokio::test]
+    async fn state_api_is_gzipped_on_request_and_carries_the_timing_rules() {
+        use crate::casino_hub::{CasinoHub, TableBinding};
+        use mafia_remake::casino::{GameKind, TableSettings};
+        use std::sync::Arc;
+
+        let dir = std::env::temp_dir().join(format!(
+            "mafia-casino-web-gzip-{}-{}",
+            std::process::id(),
+            mafia_remake::atomic_file::next_seq()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let hub = Arc::new(
+            CasinoHub::load(
+                dir.join("casino.json"),
+                Arc::new(tokio::sync::RwLock::new(
+                    mafia_remake::stats::StatsFile::default(),
+                )),
+                Arc::new(dir.join("stats.json")),
+            )
+            .unwrap(),
+        );
+        hub.create_table(
+            GameKind::Blackjack,
+            "압축",
+            1,
+            TableBinding::default(),
+            TableSettings::default(),
+        )
+        .unwrap();
+        let token = hub.issue_session(5, "손님".to_string());
+        let router = super::casino_router(super::CasinoWebState {
+            hub,
+            static_dir: None,
+        });
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let url = format!("http://{address}/casino/api/state");
+        let client = reqwest::Client::new();
+
+        let gzipped = client
+            .get(&url)
+            .bearer_auth(&token)
+            .header("accept-encoding", "gzip")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(gzipped.status(), 200);
+        assert_eq!(
+            gzipped
+                .headers()
+                .get("content-encoding")
+                .and_then(|value| value.to_str().ok()),
+            Some("gzip")
+        );
+
+        let plain = client.get(&url).bearer_auth(&token).send().await.unwrap();
+        assert!(plain.headers().get("content-encoding").is_none());
+        let body: serde_json::Value = plain.json().await.unwrap();
+        assert_eq!(body["me"]["user_id"], "5");
+        let rules = &body["table"]["rules"];
+        assert!(rules["card_flight_ms"].as_i64().unwrap() > 0);
+        assert!(rules["card_flip_ms"].as_i64().unwrap() > 0);
+
+        // 해시로만 저장한 세션도 토큰 원문으로 찾고, 틀린 토큰은 거절한다.
+        let rejected = client.get(&url).bearer_auth("wrong").send().await.unwrap();
+        assert_eq!(rejected.status(), 401);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn heartbeats_carry_only_the_server_time() {
+        let value: serde_json::Value = serde_json::from_str(&heartbeat(1_234)).unwrap();
+        assert_eq!(value, serde_json::json!({ "server_time": 1_234 }));
+    }
 
     #[test]
     fn asset_paths_cannot_leave_the_static_dir() {
@@ -213,6 +339,7 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
         Arc::new(tokio::sync::RwLock::new(stats)),
         Arc::new(stats_path),
     )?);
+    hub.start_saver();
     let binding = TableBinding {
         guild_id: 0,
         channel_id: 0,
@@ -538,12 +665,16 @@ async fn build_state(
         .filter(|id| hub.tables.contains_key(id))
         .or_else(|| me.seated_table.clone())
         .or_else(|| tables.first().map(|summary| summary.id.clone()));
-    let table = match table_id {
-        Some(id) => hub.view_for(&id, Some(session.user_id)).await,
-        None => None,
+    // 화면의 공개 판정과 server_time은 같은 시각 하나를 쓴다.
+    let (table, server_time) = match table_id {
+        Some(id) => match hub.view_now(&id, Some(session.user_id)).await {
+            Some((view, now)) => (Some(view), now),
+            None => (None, now_ms()),
+        },
+        None => (None, now_ms()),
     };
     StateResponse {
-        server_time: now_ms(),
+        server_time,
         me,
         table,
         tables,
@@ -609,6 +740,8 @@ async fn command_handler(
 
 /// 카지노 웹소켓으로 받는 메시지·프레임의 최대 크기.
 const WS_MAX_MESSAGE_BYTES: usize = 16 * 1024;
+/// 느린 연결에 보내기가 이만큼 막히면 연결을 끊는다 (클라이언트가 다시 붙는다).
+const WS_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
@@ -632,6 +765,34 @@ async fn ws_handler(
         .on_upgrade(move |socket| handle_ws(socket, state, session, token, query.table))
 }
 
+/// 바뀐 게 없는 주기에 보내는 하트비트: 시계 맞춤·연결 확인용으로 서버 시각만 담는다
+/// (`me`가 없으니 클라이언트는 전체 상태가 아님을 안다).
+fn heartbeat(server_time: i64) -> String {
+    serde_json::json!({ "server_time": server_time }).to_string()
+}
+
+/// 이 알림이 지금 보는 테이블과 관계있는지 (보는 테이블이 없으면 모두).
+fn concerns(current: Option<&str>, table_id: &str) -> bool {
+    current.is_none_or(|id| id == table_id)
+}
+
+/// 쌓여 있는 알림을 모두 비운다. 관계있는 알림이 있었으면 Some(true), 채널이 닫혔으면 None.
+/// 느린 연결에서 알림마다 전체 상태를 하나씩 보내며 밀리지 않고, 한 번만 다시 만든다.
+fn drain_updates(
+    updates: &mut tokio::sync::broadcast::Receiver<crate::casino_hub::CasinoUpdate>,
+    current: Option<&str>,
+) -> Option<bool> {
+    let mut relevant = false;
+    loop {
+        match updates.try_recv() {
+            Ok(update) => relevant |= concerns(current, &update.table_id),
+            Err(TryRecvError::Lagged(_)) => relevant = true,
+            Err(TryRecvError::Empty) => return Some(relevant),
+            Err(TryRecvError::Closed) => return None,
+        }
+    }
+}
+
 async fn handle_ws(
     mut socket: WebSocket,
     state: CasinoWebState,
@@ -641,41 +802,64 @@ async fn handle_ws(
 ) {
     let mut updates = state.hub.updates.subscribe();
     let mut interval = tokio::time::interval(Duration::from_secs(1));
+    // 느려서 놓친 주기를 몰아서 보내지 않는다.
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut current_table = table;
+    // 마지막으로 보낸 화면 (me·table·tables 직렬화). 같으면 전체 대신 하트비트만 보낸다.
+    let mut last_sent: Option<String> = None;
     loop {
-        let send_now = tokio::select! {
-            _ = interval.tick() => true,
-            update = updates.recv() => match update {
-                Ok(update) => current_table.as_deref().is_none_or(|id| id == update.table_id),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
-                Err(_) => break,
+        // 1초 주기, 보는 테이블의 알림, 테이블 전환 요청 중 하나로 깬다.
+        tokio::select! {
+            _ = interval.tick() => {},
+            update = updates.recv() => {
+                let first = match update {
+                    Ok(update) => concerns(current_table.as_deref(), &update.table_id),
+                    Err(RecvError::Lagged(_)) => true,
+                    Err(RecvError::Closed) => break,
+                };
+                match drain_updates(&mut updates, current_table.as_deref()) {
+                    Some(rest) if first || rest => {}
+                    Some(_) => continue,
+                    None => break,
+                }
             },
             incoming = socket.recv() => match incoming {
                 // {"table": "<id>"} 로 보는 테이블을 바꿀 수 있다. 바뀔 때만 새로 보낸다.
                 Some(Ok(Message::Text(text))) => match table_switch(current_table.as_deref(), &text) {
                     Some(id) => {
                         current_table = Some(id);
-                        true
                     }
-                    None => false,
+                    None => continue,
                 },
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                Some(Ok(_)) => false,
+                Some(Ok(_)) => continue,
             },
         };
-        if !send_now {
-            continue;
-        }
-        if state.hub.sessions.get(&session_token).is_none() {
-            // 세션이 사라졌으면(만료·재시작) 연결을 끊어 클라이언트가 새 링크를 받게 한다.
+        if state.hub.session(&session_token).is_none() {
+            // 세션이 사라졌으면(만료) 연결을 끊어 클라이언트가 새 링크를 받게 한다.
             break;
         }
         let payload = build_state(&state, &session, current_table.as_deref()).await;
-        let Ok(json) = serde_json::to_string(&payload) else {
+        // 요청한 테이블이 없어져 다른 테이블을 보냈으면 이제 그 테이블의 알림을 따른다.
+        current_table = payload.table.as_ref().map(|table| table.id.clone());
+        let Ok(snapshot) = serde_json::to_string(&(&payload.me, &payload.table, &payload.tables))
+        else {
             continue;
         };
-        if socket.send(Message::Text(json.into())).await.is_err() {
-            break;
+        // 화면이 그대로면 하트비트만 보낸다. 알림(공개 시각이 지남 등)으로 깼을 때도 보낸다:
+        // 클라이언트는 하트비트의 server_time으로 "이 시각까지 화면이 그대로"임을 확인하고 연출을 끝낸다.
+        let text = if last_sent.as_deref() == Some(snapshot.as_str()) {
+            heartbeat(payload.server_time)
+        } else {
+            let Ok(json) = serde_json::to_string(&payload) else {
+                continue;
+            };
+            last_sent = Some(snapshot);
+            json
+        };
+        match tokio::time::timeout(WS_SEND_TIMEOUT, socket.send(Message::Text(text.into()))).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) | Err(_) => break,
         }
     }
 }

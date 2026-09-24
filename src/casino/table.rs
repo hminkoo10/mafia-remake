@@ -11,13 +11,47 @@ use serde::{Deserialize, Serialize};
 pub const SEAT_COUNT: usize = 6;
 /// 액션 제한시간.
 pub const TURN_MS: i64 = 30_000;
-/// 연출용 시간차 (ms). 카드는 이 간격으로 한 장씩 열리고, 그동안 액션은 막힌다.
-/// 테스트에서는 0으로 두어 게임 흐름을 즉시 검증한다.
-pub const DEAL_CARD_MS: i64 = if cfg!(test) { 0 } else { 380 };
-pub const STREET_PAUSE_MS: i64 = if cfg!(test) { 0 } else { 900 };
-pub const SHOWDOWN_STEP_MS: i64 = if cfg!(test) { 0 } else { 800 };
-pub const DEALER_DRAW_MS: i64 = if cfg!(test) { 0 } else { 900 };
-pub const SETTLE_PAUSE_MS: i64 = if cfg!(test) { 0 } else { 700 };
+/// 실제 연출 시간 (ms). 카드의 `reveal_at`은 카드가 펠트에 착지하는 시각이고, 클라이언트는
+/// 그보다 `CARD_FLIGHT_MS` 먼저 슈에서 카드를 날리기 시작한다. 착지 간격이 비행 시간보다 길어
+/// 공중에는 항상 카드가 한 장뿐이다. 웹 규칙(`TableRules`)과 불변식 테스트는 이 실제 값을 쓴다.
+pub mod live_timing {
+    /// 슈에서 펠트까지 카드가 나는 시간.
+    pub const CARD_FLIGHT_MS: i64 = 420;
+    /// 딜·히트를 시작한 뒤 첫 카드가 착지하기까지 (첫 비행은 +230ms에 시작해 푸시 지연을 흡수한다).
+    pub const DEAL_LEAD_MS: i64 = 650;
+    /// 블랙잭 딜의 착지 간격.
+    pub const DEAL_CARD_MS: i64 = 600;
+    /// 홀덤 카드(홀 카드·번 카드·보드)의 착지 간격.
+    pub const HOLE_CARD_MS: i64 = 520;
+    /// 마지막 카드가 착지한 뒤 액션을 다시 받기까지.
+    pub const LAND_SETTLE_MS: i64 = 250;
+    /// 딜러 드로 간격 (뒤집기 600ms + 비행).
+    pub const DEALER_DRAW_MS: i64 = 1_000;
+    /// 카드 뒤집기 애니메이션 길이 (클라이언트도 같은 값을 쓴다).
+    pub const CARD_FLIP_MS: i64 = 600;
+    /// 베팅이 끝난 뒤 다음 스트리트의 번 카드가 착지하기까지.
+    pub const STREET_PAUSE_MS: i64 = 900;
+    /// 쇼다운에서 좌석별 카드를 뒤집는 간격.
+    pub const SHOWDOWN_STEP_MS: i64 = 800;
+    /// 정산 전후의 뜸 (딜러가 홀 카드를 뒤집기 전, 마지막 공개 뒤 결과까지).
+    pub const SETTLE_PAUSE_MS: i64 = 700;
+}
+
+/// 테스트에서는 연출 시간을 0으로 두어 게임 흐름을 즉시 검증한다.
+const fn staged(live: i64) -> i64 {
+    if cfg!(test) { 0 } else { live }
+}
+
+pub const CARD_FLIGHT_MS: i64 = staged(live_timing::CARD_FLIGHT_MS);
+pub const DEAL_LEAD_MS: i64 = staged(live_timing::DEAL_LEAD_MS);
+pub const DEAL_CARD_MS: i64 = staged(live_timing::DEAL_CARD_MS);
+pub const HOLE_CARD_MS: i64 = staged(live_timing::HOLE_CARD_MS);
+pub const LAND_SETTLE_MS: i64 = staged(live_timing::LAND_SETTLE_MS);
+pub const DEALER_DRAW_MS: i64 = staged(live_timing::DEALER_DRAW_MS);
+pub const CARD_FLIP_MS: i64 = staged(live_timing::CARD_FLIP_MS);
+pub const STREET_PAUSE_MS: i64 = staged(live_timing::STREET_PAUSE_MS);
+pub const SHOWDOWN_STEP_MS: i64 = staged(live_timing::SHOWDOWN_STEP_MS);
+pub const SETTLE_PAUSE_MS: i64 = staged(live_timing::SETTLE_PAUSE_MS);
 /// 블랙잭 베팅창.
 pub const BET_WINDOW_MS: i64 = 15_000;
 /// 라운드가 없는 상태에서 이 시간 동안 아무 행동이 없으면 자동 퇴장(칩 반환).
@@ -439,6 +473,14 @@ pub struct Seat {
     /// 사이드베팅·인슈어런스 결과 설명 (이번 라운드).
     #[serde(default)]
     pub side_notes: Vec<String>,
+    /// 이번 라운드에 딴 칩 중 아직 화면에 보이면 안 되는 몫. 실제 스택(`stack`)에는 이미
+    /// 들어 있고, 화면만 `pending_until`까지 이만큼 뺀 스택을 보여 준다 (카드가 다 놓이기 전에
+    /// 결과가 새지 않게). 다음 라운드를 시작할 때 비운다.
+    #[serde(default)]
+    pub pending_credit: i64,
+    /// `pending_credit`이 화면에 드러나는 시각 (그 칩을 만든 연출이 끝나는 시각).
+    #[serde(default)]
+    pub pending_until: i64,
 }
 
 impl Seat {
@@ -457,6 +499,8 @@ impl Seat {
             side_won: 0,
             side_paid: 0,
             side_notes: Vec::new(),
+            pending_credit: 0,
+            pending_until: 0,
             bet: 0,
             total: 0,
             folded: false,
@@ -468,6 +512,35 @@ impl Seat {
             sit_out: false,
             missed: 0,
             last_seen: now,
+        }
+    }
+
+    /// 딴 칩을 스택에 넣고, `until`까지는 화면에 보이지 않게 보류한다. 이미 드러난 이전
+    /// 보류분은 다시 숨기지 않는다 (히트마다 사이드베팅 당첨금이 사라졌다 나타나지 않게).
+    pub(super) fn credit_after(&mut self, amount: i64, until: i64, now: i64) {
+        if amount <= 0 {
+            return;
+        }
+        self.stack += amount;
+        if now >= self.pending_until {
+            self.pending_credit = 0;
+        }
+        self.pending_credit += amount;
+        self.pending_until = self.pending_until.max(until);
+    }
+
+    /// 라운드를 시작할 때 지난 라운드의 보류분을 비운다.
+    pub(super) fn clear_pending_credit(&mut self) {
+        self.pending_credit = 0;
+        self.pending_until = 0;
+    }
+
+    /// `now`에 화면에 보여 줄 스택 (아직 드러나면 안 되는 당첨금을 뺀 값).
+    pub fn visible_stack(&self, now: i64) -> i64 {
+        if now < self.pending_until {
+            (self.stack - self.pending_credit).max(0)
+        } else {
+            self.stack.max(0)
         }
     }
 
@@ -529,10 +602,20 @@ pub struct Round {
     /// 연출이 끝나는 시각. 그 전에는 액션을 받지 않는다.
     #[serde(default)]
     pub reveal_until: i64,
-    /// 보드 카드가 열리는 시각 (보드와 같은 순서).
+    /// 라운드가 정산될 때의 엔진 단계 (홀덤). 정산 뒤 카드가 놓이는 동안 화면 단계가 이보다 앞으로 되돌아가지 않게 한다.
+    #[serde(default)]
+    pub settled_from: Option<Phase>,
+    /// 보드 카드가 착지하는 시각 (보드와 같은 순서). 플롭 세 장은 뒷면으로 놓였다가
+    /// `board_flip_at`에 함께 뒤집히고, 턴·리버는 앞면으로 놓인다.
     #[serde(default)]
     pub board_reveal_at: Vec<i64>,
-    /// 딜러 카드가 놓이는 시각 (블랙잭).
+    /// 플롭 세 장을 함께 뒤집는 시각 (플롭 전에는 0).
+    #[serde(default)]
+    pub board_flip_at: i64,
+    /// 이번 핸드에서 뒷면으로 버린 번 카드가 착지한 시각 (스트리트마다 한 장, 값은 보내지 않는다).
+    #[serde(default)]
+    pub burn_at: Vec<i64>,
+    /// 딜러 카드가 착지하는 시각 (블랙잭).
     #[serde(default)]
     pub dealer_reveal_at: Vec<i64>,
     /// 딜러의 뒤집힌 카드가 공개되는 시각 (블랙잭 정산).
@@ -660,6 +743,14 @@ impl CasinoCommand {
     pub fn is_chat(&self) -> bool {
         matches!(self, Self::Chat { .. })
     }
+
+    /// 보낸 사람이 본 테이블 상태가 최신이어야 뜻이 맞는 명령. 콜 금액과 레이즈 목표는 그 사이
+    /// 다른 사람의 베팅으로 바뀔 수 있다. 나머지(베팅·입장·퇴장·시작·블랙잭 액션 등)는 다른
+    /// 사람의 동작과 상관없이 같은 뜻이고 규칙 검사가 막아 주므로, 여러 명이 동시에 누를 때
+    /// 늦은 사람의 명령을 STALE_STATE로 거절하지 않는다 (마감 직전 자동 확정 베팅이 사라지던 문제).
+    pub fn needs_current_state(&self) -> bool {
+        matches!(self, Self::Call | Self::Raise { .. })
+    }
 }
 
 /// 명령·시간 초과 처리로 생긴, 엔진 밖에서 처리해야 할 일.
@@ -682,6 +773,8 @@ pub enum CasinoEvent {
     RoundSettled {
         result: HandResult,
         house_delta: i64,
+        reveal_until: i64,
+        table_id: String,
     },
 }
 
@@ -728,7 +821,21 @@ pub struct CasinoTable {
     pub settings: TableSettings,
     #[serde(default)]
     pub pending_settings: Option<TableSettings>,
+    /// 딜러 안내 예약: 결과 안내는 카드가 다 놓인 뒤에야 화면에 뜬다. 첫 항목은 지금 보이는
+    /// 안내이고, 뒤로 갈수록 나중에 뜰 안내다 (`narration`은 가장 마지막 안내).
+    #[serde(default)]
+    pub narrations: Vec<Narration>,
 }
+
+/// 딜러 안내 한 줄과 그 안내가 화면에 뜨는 시각.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Narration {
+    pub at: i64,
+    pub text: String,
+}
+
+/// 안내 예약이 이보다 길어지면 오래된 것부터 버린다.
+const NARRATION_LIMIT: usize = 16;
 
 fn default_dealer_id() -> String {
     DEALERS[0].id.to_string()
@@ -796,6 +903,7 @@ impl CasinoTable {
             shuffled_at: 0,
             settings: TableSettings::default(),
             pending_settings: None,
+            narrations: Vec::new(),
         }
     }
 
@@ -877,10 +985,10 @@ impl CasinoTable {
     }
 
     /// 방 설정 안내는 딜러 채팅으로만 보낸다. 딜러 말풍선(인슈어런스 안내, 결과 등)을 덮으면
-    /// 플레이어가 지금 해야 할 일을 놓친다.
-    fn announce_settings(&mut self, text: impl Into<String>, now: i64) {
+    /// 플레이어가 지금 해야 할 일을 놓친다. `at`은 채팅에 뜨는 시각.
+    fn announce_settings(&mut self, text: impl Into<String>, at: i64) {
         let dealer = self.dealer_profile().name.to_string();
-        self.push_message(dealer, text.into(), now, true, None);
+        self.push_message(dealer, text.into(), at, true, None);
     }
 
     /// 라운드가 끝났을 때 적용하지 못한 설정(예: 그 전에 저장된 파일)이 남아 있으면
@@ -938,10 +1046,88 @@ impl CasinoTable {
 
     /// 딜러 안내. 안내문을 갱신하고 채팅에도 남긴다 (이름은 현재 딜러).
     pub(super) fn say(&mut self, text: impl Into<String>, now: i64) {
+        self.say_at(text, now, now);
+    }
+
+    /// `at`에 화면에 뜨는 딜러 안내. 결과처럼 카드가 다 놓인 뒤에야 참이 되는 안내는
+    /// 그 시각을 `at`으로 준다. 그때까지 화면(안내·채팅·Discord 중계)은 이전 안내를 유지한다.
+    pub(super) fn say_at(&mut self, text: impl Into<String>, now: i64, at: i64) {
         let text = text.into();
-        self.narration = text.clone();
+        let at = at.max(now);
+        if self.narrations.is_empty() {
+            // 예전 저장본: 지금 보이는 안내를 첫 항목으로 둔다.
+            self.narrations.push(Narration {
+                at: i64::MIN,
+                text: self.narration.clone(),
+            });
+        }
+        // 화면에 뜨는 시각 순으로 둔다 (같은 시각이면 나중에 한 말이 뒤). 예약된 결과 안내 뒤에
+        // 바로 한 말(채팅 답 등)이 있어도, 결과 시각이 되면 결과가 보인다. 정렬은 안정적이라
+        // 같은 시각의 순서가 유지된다 (예전 저장본은 넣은 순서일 수 있어 먼저 정렬한다).
+        self.narrations.sort_by_key(|entry| entry.at);
+        let position = self.narrations.partition_point(|entry| entry.at <= at);
+        self.narrations.insert(
+            position,
+            Narration {
+                at,
+                text: text.clone(),
+            },
+        );
+        // 지금 직전까지 보이던 안내보다 먼저 뜬 항목은 다시 보일 일이 없다.
+        if let Some(visible) = self.narrations.iter().rposition(|entry| entry.at < now) {
+            self.narrations.drain(..visible);
+        }
+        let overflow = self.narrations.len().saturating_sub(NARRATION_LIMIT);
+        if overflow > 0 {
+            self.narrations.drain(..overflow);
+        }
+        // 저장되는 안내는 가장 늦게 뜨는 안내다.
+        self.narration = self
+            .narrations
+            .last()
+            .map_or_else(|| text.clone(), |entry| entry.text.clone());
         let dealer = self.dealer_profile().name.to_string();
-        self.push_message(dealer, text, now, true, None);
+        self.push_message(dealer, text, at, true, None);
+    }
+
+    /// `now`에 화면에 보이는 딜러 안내: 이미 시각이 된 안내 중 가장 늦게 뜬 것 (같은 시각이면
+    /// 나중에 한 말). 목록 순서에 기대지 않는다 (예전 저장본은 넣은 순서일 수 있다).
+    pub fn narration_at(&self, now: i64) -> &str {
+        self.narrations
+            .iter()
+            .filter(|entry| entry.at <= now)
+            // max_by_key는 같은 값이면 마지막 항목을 준다.
+            .max_by_key(|entry| entry.at)
+            .or_else(|| self.narrations.iter().min_by_key(|entry| entry.at))
+            .map_or(self.narration.as_str(), |entry| entry.text.as_str())
+    }
+
+    /// `now`에 화면에 보이는 핸드 기록. 이번 라운드의 결과는 연출이 끝난 뒤에 보인다.
+    pub fn visible_history(&self, now: i64) -> &[HandResult] {
+        let hide_latest = self.round.as_ref().is_some_and(|round| {
+            now < round.reveal_until
+                && self
+                    .history
+                    .first()
+                    .is_some_and(|result| result.id == round.id)
+        });
+        &self.history[usize::from(hide_latest)..]
+    }
+
+    /// `after < t <= until` 사이에 화면에 새로 드러나는 것(연출 끝, 딜러 홀 카드 뒤집기와 함께
+    /// 바뀌는 단계, 예약된 안내·채팅, 보류된 당첨금)이 있는지. 허브가 이 시각에 한 번만 화면을
+    /// 다시 밀어 준다.
+    pub fn reveals_between(&self, after: i64, until: i64) -> bool {
+        let crossed = |at: i64| after < at && at <= until;
+        self.round.as_ref().is_some_and(|round| {
+            crossed(round.reveal_until) || (round.reveal && crossed(round.dealer_flip_at))
+        }) || self.messages.iter().any(|message| crossed(message.at))
+            || self.narrations.iter().any(|entry| crossed(entry.at))
+            || self
+                .seats
+                .iter()
+                .flatten()
+                .any(|seat| crossed(seat.pending_until))
     }
 
     fn push_message(
@@ -997,19 +1183,67 @@ impl CasinoTable {
         }
     }
 
-    /// 라운드가 막 끝났으면 결과 이벤트를 만들고, 퇴장 대기 좌석을 정리한다.
-    /// 라운드 중에 바꾼 방 설정도 여기서 적용한다.
+    /// 퇴장 대기 좌석 중 진행 중인 라운드에 들지 않은 좌석의 칩을 돌려준다. 하나라도 비웠으면
+    /// true. 지난 라운드의 카드를 여는 중에는 부르지 않는다 (당첨금이 코인으로 먼저 새지 않게).
+    fn cash_out_leavers(&mut self, events: &mut Vec<CasinoEvent>) -> bool {
+        let playing = self.playing();
+        let mut any = false;
+        for index in 0..SEAT_COUNT {
+            let leaving = self.seats[index]
+                .as_ref()
+                .is_some_and(|seat| seat.leaving && !(playing && seat.in_hand));
+            if leaving {
+                self.cash_out(index, events);
+                any = true;
+            }
+        }
+        any
+    }
+
+    /// 정산 기록의 하우스 손익 = 플레이어 순손익의 반대 (사이드베팅·인슈어런스 포함).
+    /// 홀덤은 플레이어끼리 주고받으므로 0이다.
+    fn house_delta(&self, result: &HandResult) -> i64 {
+        if self.kind == GameKind::Blackjack {
+            -result.results.iter().map(|entry| entry.net).sum::<i64>()
+        } else {
+            0
+        }
+    }
+
+    /// 아직 카드를 여는 중인 이번 라운드가 하우스에 더한 손익. 하우스 누적을 보여 줄 때 빼서
+    /// 결과가 카드보다 먼저 새지 않게 한다 (실제 누적 값은 그대로다).
+    pub fn unrevealed_house_delta(&self, now: i64) -> i64 {
+        let Some(round) = self
+            .round
+            .as_ref()
+            .filter(|round| round.phase == Phase::Complete && now < round.reveal_until)
+        else {
+            return 0;
+        };
+        self.history
+            .first()
+            .filter(|result| result.id == round.id)
+            .map_or(0, |result| self.house_delta(result))
+    }
+
+    /// 라운드가 막 끝났으면 결과 이벤트를 만들고, 퇴장 대기 좌석을 정리한다 (카드를 여는
+    /// 중이면 연출이 끝난 뒤 `tick`이 정리한다). 라운드 중에 바꾼 방 설정도 여기서 적용한다.
     fn reconcile(&mut self, was_playing: bool, events: &mut Vec<CasinoEvent>, now: i64) {
         let just_completed = was_playing && !self.playing() && self.round.is_some();
         if !just_completed {
             return;
         }
+        let revealed_at = self
+            .round
+            .as_ref()
+            .map_or(now, |round| round.reveal_until.max(now));
         if let Some(next) = self.pending_settings.take() {
             self.settings = next;
-            // 결과 안내(딜러 말풍선)는 그대로 두고 채팅으로만 알린다.
+            // 결과 안내(딜러 말풍선)는 그대로 두고 채팅으로만 알린다. 결과보다 먼저 뜨지 않게
+            // 카드를 다 연 뒤에 보인다.
             self.announce_settings(
                 format!("방 설정이 바뀌었습니다: {}", next.summary(self.kind)),
-                now,
+                revealed_at,
             );
         }
         // 베팅 없이 끝난 블랙잭 라운드처럼 기록이 없으면 이벤트도 없다 (예전 기록을 다시 보내지 않게).
@@ -1020,21 +1254,16 @@ impl CasinoTable {
             .filter(|result| Some(&result.id) == round_id.as_ref())
             .cloned();
         if let Some(result) = settled {
-            // 하우스 손익 = 플레이어 순손익의 반대 (사이드베팅·인슈어런스 포함).
-            let house_delta = if self.kind == GameKind::Blackjack {
-                -result.results.iter().map(|entry| entry.net).sum::<i64>()
-            } else {
-                0
-            };
+            let house_delta = self.house_delta(&result);
             events.push(CasinoEvent::RoundSettled {
                 result,
                 house_delta,
+                reveal_until: self.round.as_ref().map_or(now, |round| round.reveal_until),
+                table_id: self.id.clone(),
             });
         }
-        for index in 0..SEAT_COUNT {
-            if self.seats[index].as_ref().is_some_and(|seat| seat.leaving) {
-                self.cash_out(index, events);
-            }
+        if !self.is_revealing(now) {
+            self.cash_out_leavers(events);
         }
     }
 
@@ -1071,6 +1300,11 @@ impl CasinoTable {
                 self.version += 1;
                 self.reconcile(was_playing, &mut events, now);
             }
+        }
+        // 카드를 여는 동안 미뤄 둔 퇴장: 연출이 끝나면 남은 칩을 돌려준다 (버전이 올라 허브가
+        // 알리고 저장한다).
+        if !self.playing() && !self.is_revealing(now) && self.cash_out_leavers(&mut events) {
+            self.version += 1;
         }
         if !self.playing() {
             for index in 0..SEAT_COUNT {
@@ -1109,9 +1343,9 @@ impl CasinoTable {
         events
     }
 
-    /// 명령을 적용한다. `expected_version`이 있고 현재 버전과 다르면(채팅 제외)
-    /// STALE_STATE로 거부한다. 바이인 코인 차감·좌석 중복(다른 테이블) 검사는
-    /// 호출자가 먼저 한다.
+    /// 명령을 적용한다. 최신 상태가 필요한 명령(`needs_current_state`)은 `expected_version`이
+    /// 현재 버전과 다르면 STALE_STATE로 거부한다. 바이인 코인 차감·좌석 중복(다른 테이블)
+    /// 검사는 호출자가 먼저 한다.
     pub fn apply_command(
         &mut self,
         actor: u64,
@@ -1121,15 +1355,14 @@ impl CasinoTable {
         now: i64,
     ) -> Result<Vec<CasinoEvent>, CasinoError> {
         let mut events = Vec::new();
-        if !command.is_chat() {
-            if let Some(expected) = expected_version {
-                if expected != self.version {
-                    return Err(CasinoError::new(
-                        "STALE_STATE",
-                        "테이블 상태가 바뀌었습니다. 현재 상태를 확인한 후 다시 선택해 주세요.",
-                    ));
-                }
-            }
+        if command.needs_current_state()
+            && let Some(expected) = expected_version
+            && expected != self.version
+        {
+            return Err(CasinoError::new(
+                "STALE_STATE",
+                "테이블 상태가 바뀌었습니다. 현재 상태를 확인한 후 다시 선택해 주세요.",
+            ));
         }
         let was_playing = self.playing();
         let seat_index = self.seat_index(actor);
@@ -1222,7 +1455,9 @@ impl CasinoTable {
                 }
                 match command {
                     CasinoCommand::Leave => {
-                        let in_hand = self.playing()
+                        // 끝난 핸드라도 카드를 여는 중이면 퇴장을 예약한다: 지금 칩을 돌려주면
+                        // 아직 가려 둔 당첨금이 코인으로 먼저 샌다 (연출이 끝나면 `tick`이 정리한다).
+                        let in_hand = (self.playing() || self.is_revealing(now))
                             && self.seats[index].as_ref().is_some_and(|seat| seat.in_hand);
                         if in_hand {
                             if let Some(seat) = self.seats[index].as_mut() {
@@ -1275,6 +1510,8 @@ impl CasinoTable {
                         if self.playing() {
                             return Err(CasinoError::invalid("이미 진행 중인 라운드입니다."));
                         }
+                        // 지난 라운드의 카드를 다 열기 전에는 새 라운드를 시작하지 않는다.
+                        self.ensure_reveal_done(now)?;
                         self.apply_pending_settings(now);
                         self.rotate_dealer_if_due(now);
                         let minimum = if self.kind == GameKind::Holdem {
@@ -1292,6 +1529,8 @@ impl CasinoTable {
                             GameKind::Holdem => start_poker(self, now, None)?,
                             GameKind::Blackjack => start_blackjack(self, now, None)?,
                         }
+                        // 지난 라운드 뒤 아직 정리되지 않은 퇴장 대기 좌석 (새 라운드에는 들지 않는다).
+                        self.cash_out_leavers(&mut events);
                     }
                     CasinoCommand::Bet {
                         amount,
@@ -1311,6 +1550,7 @@ impl CasinoTable {
                                 "블랙잭 테이블에서만 쓸 수 있습니다.",
                             ));
                         }
+                        self.ensure_reveal_done(now)?;
                         insurance_decision(self, index, *accept, now)?;
                     }
                     CasinoCommand::Fold
@@ -1403,13 +1643,16 @@ impl CasinoTable {
         if self.playing() {
             return Err(CasinoError::invalid("이미 진행 중인 라운드입니다."));
         }
+        self.ensure_reveal_done(now)?;
         self.apply_pending_settings(now);
         let _ = index;
         match self.kind {
             GameKind::Holdem => start_poker(self, now, Some(deck))?,
             GameKind::Blackjack => start_blackjack(self, now, Some(deck))?,
         }
+        let mut events = Vec::new();
+        self.cash_out_leavers(&mut events);
         self.version += 1;
-        Ok(Vec::new())
+        Ok(events)
     }
 }
