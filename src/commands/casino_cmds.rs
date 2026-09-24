@@ -1870,6 +1870,17 @@ pub async fn handle_casino_enter(
 
 // ------------------------------------------------------------ Discord 중계
 
+/// 이 웹훅으로는 다시 보내도 실패하는 오류인지 (토큰 없음, 지워진 웹훅, 권한 없음).
+fn webhook_unusable(error: &serenity::Error) -> bool {
+    match error {
+        serenity::Error::Model(serenity::ModelError::NoTokenSet) => true,
+        serenity::Error::Http(serenity::HttpError::UnsuccessfulRequest(response)) => {
+            matches!(response.status_code.as_u16(), 401 | 403 | 404)
+        }
+        _ => false,
+    }
+}
+
 /// 테이블 채널의 웹훅 (없으면 만든다).
 async fn casino_webhook(
     ctx: &serenity::Context,
@@ -1879,35 +1890,37 @@ async fn casino_webhook(
     if let Some(webhook) = hub.webhooks.get(&channel_id.get()) {
         return Some(webhook.clone());
     }
-    let existing = channel_id
-        .webhooks(&ctx.http)
-        .await
-        .ok()
-        .and_then(|webhooks| {
-            webhooks
-                .into_iter()
-                .find(|webhook| webhook.name.as_deref() == Some("Mafia Casino"))
-        });
+    // 토큰이 있는 웹훅만 쓸 수 있다. Discord는 다른 앱(예전에 보조 봇 토큰으로 만든 웹훅)의 토큰을 목록에서
+    // 빼고 주므로, 그런 웹훅으로 보내면 NoTokenSet으로 매번 실패한다. 그런 옛 웹훅은 지우고 새로 만든다.
+    let mut existing = None;
+    if let Ok(webhooks) = channel_id.webhooks(&ctx.http).await {
+        for webhook in webhooks {
+            if webhook.name.as_deref() != Some("Mafia Casino") {
+                continue;
+            }
+            if webhook.token.is_some() && existing.is_none() {
+                existing = Some(webhook);
+            } else if webhook.token.is_none() {
+                let _ = ctx
+                    .http
+                    .delete_webhook(webhook.id, Some("토큰을 읽을 수 없는 카지노 웹훅 교체"))
+                    .await;
+            }
+        }
+    }
     // 웹훅의 기본 아바타는 딜러(소피아) 얼굴. 참가자 메시지는 보낼 때 avatar_url로 바꾼다.
     let avatar = crate::casino_web::dealer_avatar_png()
         .map(|png| serenity::CreateAttachment::bytes(png.to_vec(), "sophia.png"));
     let mut webhook = match existing {
         Some(webhook) => webhook,
         None => {
-            let avatar = avatar.clone();
-            match crate::http_pool::with_fallback(ctx, |http| {
-                let avatar = avatar.clone();
-                async move {
-                    let mut builder = serenity::CreateWebhook::new("Mafia Casino")
-                        .audit_log_reason("카지노 테이블 채팅 웹훅 생성");
-                    if let Some(avatar) = avatar.as_ref() {
-                        builder = builder.avatar(avatar);
-                    }
-                    channel_id.create_webhook(&http, builder).await
-                }
-            })
-            .await
-            {
+            // 메인 봇으로만 만든다: 보조 봇 소유 웹훅은 재시작 뒤 목록에서 토큰이 빠진다.
+            let mut builder = serenity::CreateWebhook::new("Mafia Casino")
+                .audit_log_reason("카지노 테이블 채팅 웹훅 생성");
+            if let Some(avatar) = avatar.as_ref() {
+                builder = builder.avatar(avatar);
+            }
+            match channel_id.create_webhook(&ctx.http, builder).await {
                 Ok(webhook) => webhook,
                 Err(error) => {
                     eprintln!(
@@ -2008,6 +2021,10 @@ async fn relay_chat_to_channel(
                 "failed to relay casino chat to channel {}: {error:?}",
                 channel_id.get()
             );
+            // 웹훅이 지워졌거나 토큰이 없으면 다음 중계 때 다시 찾거나 만든다 (같은 오류를 계속 내지 않게).
+            if webhook_unusable(&error) {
+                hub.webhooks.remove(&channel_id.get());
+            }
             break;
         }
         last_seq = message.seq;
@@ -2312,6 +2329,16 @@ pub async fn handle_casino_channel_message(data: &Data, message: &serenity::Mess
 mod tests {
     use super::*;
     use crate::casino_hub::TableSummary;
+
+    #[test]
+    fn a_webhook_without_token_is_replaced_not_retried() {
+        // 보조 봇이 만든 웹훅은 목록에서 토큰이 빠져 NoTokenSet이 난다: 캐시에서 빼고 새로 만들어야 한다.
+        assert!(webhook_unusable(&serenity::Error::Model(
+            serenity::ModelError::NoTokenSet
+        )));
+        // 일시적인 오류(예: 요청 형식)는 같은 웹훅을 계속 쓴다.
+        assert!(!webhook_unusable(&serenity::Error::Other("timeout")));
+    }
 
     #[test]
     fn status_embed_hides_cards_until_they_are_revealed() {
