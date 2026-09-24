@@ -182,16 +182,32 @@ video.dealer-backdrop{position:absolute;width:100%;height:100%;object-fit:cover;
 .chat-message p{overflow-wrap:anywhere}
 .playing-card{will-change:auto}
 
-.casino-app:fullscreen{width:100%;height:100%;overflow:auto;background:#101612}
-.casino-app.expanded-screen{position:fixed;inset:0;z-index:100;overflow:auto;background:#101612}
+.casino-app:fullscreen{width:100%;height:100%;overflow:hidden;background:#101612}
+.casino-app.expanded-screen{position:fixed;inset:0;z-index:100;overflow:hidden;background:#101612}
 .is-fullscreen .rail{display:none}
 .is-fullscreen .workspace{margin-left:0;max-width:none;padding:18px 24px}
 .is-fullscreen .breadcrumb{display:none}
-.is-fullscreen .page-heading{margin-bottom:14px}
+.is-fullscreen .workspace{height:calc(100dvh - 64px);display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.is-fullscreen .page-heading{position:absolute;top:8px;right:24px;z-index:10;margin:0}
+.is-fullscreen .page-heading>div:first-child{display:none}
+.is-fullscreen .heading-actions button:not(.icon-button){display:none}
+.is-fullscreen .heading-actions{gap:5px}
+.is-fullscreen .heading-actions button{padding:7px}
+.is-fullscreen .error-slot{flex:0 0 auto}
+.is-fullscreen .play-layout{flex:1;min-height:0;grid-template-columns:minmax(0,1fr) 288px}
+.is-fullscreen .table-column{display:flex;flex-direction:column;min-height:0}
 .is-fullscreen .topbar{height:64px}
 .is-fullscreen .game-nav[data-slot]{height:64px!important}
-.is-fullscreen .game-table{max-height:none;min-height:500px;height:calc(100dvh - 240px);aspect-ratio:auto}
-.is-fullscreen .chat-messages{height:calc(100dvh - 350px);min-height:250px}
+.is-fullscreen .game-table{flex:1;min-height:0;height:auto;aspect-ratio:auto}
+.is-fullscreen .action-dock{flex:0 0 auto;margin-top:8px;padding:10px 14px;gap:10px}
+.is-fullscreen .action-dock h2{margin:3px 0;font-size:13px}
+.is-fullscreen .action-dock p{font-size:11px}
+.is-fullscreen .side-panel{min-height:0;overflow:hidden}
+.is-fullscreen .chat-messages{height:auto;min-height:0;flex:1}
+@media(min-width:1024px){
+  .table-column{display:flex;flex-direction:column;min-height:0}
+  .table-column .game-table{height:clamp(300px,calc(100dvh - 455px),730px);aspect-ratio:auto}
+}
 @media(max-width:760px){
   .page-heading{flex-direction:column;align-items:stretch;gap:12px}
   .dealer-backdrop-poster,.dealer-backdrop-media{height:auto;aspect-ratio:3/2;object-fit:cover;object-position:center top}
@@ -203,8 +219,12 @@ video.dealer-backdrop{position:absolute;width:100%;height:100%;object-fit:cover;
   .heading-actions{gap:5px;flex-wrap:nowrap;justify-content:flex-end}
   .heading-actions button{padding:9px}
   .is-fullscreen .workspace{padding:16px 11px}
-  .is-fullscreen .game-table{height:calc(100dvh - 220px);min-height:535px}
-  .is-fullscreen .chat-messages{height:320px}
+  .is-fullscreen .workspace{height:calc(100dvh - 72px);padding:8px 11px}
+  .is-fullscreen .play-layout{grid-template-columns:1fr;gap:0}
+  .is-fullscreen .side-panel{display:none}
+  .is-fullscreen .game-table{min-height:0}
+  .is-fullscreen .action-dock{max-height:300px;overflow:auto;padding:8px 10px}
+  .is-fullscreen .heading-actions{position:fixed;top:77px;right:11px}
 }
 
 /* 칩 단위별 색: .chip-coin 기본색이 원본의 단위 색을 덮지 않도록 다시 지정하고, 고액 칩을 추가한다. */
@@ -365,4 +385,70 @@ html{scrollbar-gutter:stable}
 @media(max-width:760px){
   .game-table.blackjack .seat-5 .seat-cards.bj-seat-hands{left:calc(50% - 26px)}
   .game-table.blackjack .occupied.mine.seat-5 .seat-cards.bj-seat-hands{left:calc(50% - 50px)}
+}
+
+/* 전체 화면은 상단을 얇게 유지하고, 테이블과 독이 남은 높이를 나눠 쓴다. */
+.is-fullscreen .topbar{height:44px;padding:0 24px;gap:0}
+.is-fullscreen .topbar .brand,.is-fullscreen .topbar .game-nav{display:none}
+.is-fullscreen .topbar .top-right{margin-left:0}
+.is-fullscreen .topbar .practice-label,.is-fullscreen .topbar .profile{display:none}
+.is-fullscreen .workspace{height:calc(100dvh - 44px);padding:8px 24px;overflow:hidden}
+.is-fullscreen .page-heading{top:4px;right:24px}
+.is-fullscreen .play-layout{flex:1;min-height:0}
+.is-fullscreen .table-column{min-height:0;overflow:visible}
+.is-fullscreen .game-table{flex:1 1 auto;min-height:440px;height:auto}
+.is-fullscreen .action-dock{max-height:190px;margin-top:8px;padding:8px 12px;overflow:hidden}
+.is-fullscreen .table-footer{display:none}
+.is-fullscreen .side-panel{min-height:0;overflow:hidden}
+.is-fullscreen .chat-messages{height:auto;min-height:0;flex:1;overflow-y:auto}
+
+/* 데스크톱 베팅 독은 베팅 자리, 칩, 확정 도구를 한 줄로 배치한다. */
+@media(min-width:1024px){
+  .is-fullscreen .table-column .game-table{height:auto;min-height:440px}
+  .is-fullscreen .action-dock:has(.betting-controls){max-height:190px}
+  .is-fullscreen .betting-controls.evo{display:grid;grid-template-columns:auto auto minmax(0,1fr);align-items:center;gap:12px;width:100%}
+  .is-fullscreen .bet-spots{gap:6px;padding:0}
+  .is-fullscreen .bet-circle{width:64px;height:64px;padding-bottom:5px}
+  .is-fullscreen .bet-circle.main{width:72px;height:72px}
+  .is-fullscreen .bet-circle-label{top:7px;font-size:8px}
+  .is-fullscreen .bet-circle .chip-pile{width:29px;height:30px}
+  .is-fullscreen .bet-circle b{font-size:10px}
+  .is-fullscreen .bet-circle small{font-size:8px}
+  .is-fullscreen .betting-controls.evo .chip-options{gap:6px}
+  .is-fullscreen .betting-controls.evo .chip{width:36px;height:36px;font-size:9px}
+  .is-fullscreen .bet-tools{gap:2px;justify-content:flex-end;flex-wrap:nowrap;white-space:nowrap}
+  .is-fullscreen .bet-tools .bet-total{font-size:11px;margin-right:2px}
+  .is-fullscreen .bet-tools .bet-total strong{font-size:13px}
+  .is-fullscreen .bet-tools .bet-total small{font-size:9px}
+  .is-fullscreen .bet-tools .text-button{font-size:10px;padding:4px}
+  .is-fullscreen .bet-tools .gold-button{padding:8px 10px;font-size:12px}
+  .is-fullscreen .bet-hint{display:none}
+}
+
+/* 휴대폰에서는 독의 세 요소와 확정 버튼이 같은 화면 안에 남도록 줄인다. */
+@media(max-width:760px){
+  .is-fullscreen .topbar{height:44px;padding:0 11px}
+  .is-fullscreen .workspace{height:calc(100dvh - 44px);padding:8px 11px}
+  .is-fullscreen .page-heading{top:4px;right:11px}
+  .is-fullscreen .heading-actions{position:absolute;top:0;right:0}
+  .is-fullscreen .play-layout{grid-template-columns:1fr;gap:0}
+  .is-fullscreen .game-table{min-height:380px}
+  .is-fullscreen .action-dock{max-height:none;overflow:visible;padding:6px 8px;gap:5px}
+  .is-fullscreen .betting-controls.evo{display:grid;grid-template-columns:1fr;gap:4px;width:100%}
+  .is-fullscreen .bet-spots{gap:6px;padding:0;align-items:center}
+  .is-fullscreen .bet-circle{width:62px;height:62px;padding-bottom:4px}
+  .is-fullscreen .bet-circle.main{width:72px;height:72px}
+  .is-fullscreen .bet-circle-label{top:7px;font-size:8px}
+  .is-fullscreen .bet-circle .chip-pile{width:28px;height:29px}
+  .is-fullscreen .bet-circle b{font-size:10px}
+  .is-fullscreen .bet-circle small{font-size:8px}
+  .is-fullscreen .betting-controls.evo .chip-options{justify-content:center;gap:7px}
+  .is-fullscreen .betting-controls.evo .chip{width:36px;height:36px;font-size:9px}
+  .is-fullscreen .bet-tools{gap:1px;justify-content:center;flex-wrap:nowrap;white-space:nowrap}
+  .is-fullscreen .bet-tools .bet-total{font-size:10px;margin-right:0}
+  .is-fullscreen .bet-tools .bet-total small{display:none}
+  .is-fullscreen .bet-tools .bet-total strong{font-size:12px}
+  .is-fullscreen .bet-tools .text-button{font-size:9px;padding:4px 2px}
+  .is-fullscreen .bet-tools .gold-button{padding:7px 8px;font-size:11px}
+  .is-fullscreen .bet-hint{display:none}
 }
