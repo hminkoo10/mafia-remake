@@ -13,6 +13,7 @@ use mafia_remake::system_random;
 use poise::serenity_prelude as serenity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -115,6 +116,63 @@ pub enum UpdateKind {
     /// 상태는 그대로이고, 예약해 둔 공개 시각(연출 끝·결과 안내·당첨금)이 지났다.
     /// 웹 화면만 다시 보내면 되고, Discord 상태 임베드는 새로 중계할 것이 있을 때만 고친다.
     RevealTick,
+}
+
+/// 카지노 테이블 채널의 기본 권한과 착석자 권한을 계산한다.
+pub fn table_channel_overwrites(
+    everyone_role_id: u64,
+    bot_user_id: u64,
+    seated_user_ids: &BTreeSet<u64>,
+) -> Vec<serenity::PermissionOverwrite> {
+    let chat = serenity::Permissions::SEND_MESSAGES | serenity::Permissions::READ_MESSAGE_HISTORY;
+    let bot = serenity::Permissions::VIEW_CHANNEL
+        | chat
+        | serenity::Permissions::EMBED_LINKS
+        | serenity::Permissions::MANAGE_WEBHOOKS
+        | serenity::Permissions::MANAGE_CHANNELS;
+    let mut overwrites = vec![
+        serenity::PermissionOverwrite {
+            allow: serenity::Permissions::empty(),
+            deny: serenity::Permissions::VIEW_CHANNEL,
+            kind: serenity::PermissionOverwriteType::Role(serenity::RoleId::new(everyone_role_id)),
+        },
+        serenity::PermissionOverwrite {
+            allow: bot,
+            deny: serenity::Permissions::empty(),
+            kind: serenity::PermissionOverwriteType::Member(serenity::UserId::new(bot_user_id)),
+        },
+    ];
+    overwrites.extend(
+        seated_user_ids
+            .iter()
+            .map(|user_id| serenity::PermissionOverwrite {
+                allow: serenity::Permissions::VIEW_CHANNEL | chat,
+                deny: serenity::Permissions::empty(),
+                kind: serenity::PermissionOverwriteType::Member(serenity::UserId::new(*user_id)),
+            }),
+    );
+    overwrites
+}
+
+pub fn casino_command_action(command: &CasinoCommand) -> &'static str {
+    match command {
+        CasinoCommand::Join { .. } => "join",
+        CasinoCommand::Leave => "leave",
+        CasinoCommand::Start => "start",
+        CasinoCommand::Resume => "resume",
+        CasinoCommand::Chat { .. } => "chat",
+        CasinoCommand::Fold => "fold",
+        CasinoCommand::Check => "check",
+        CasinoCommand::Call => "call",
+        CasinoCommand::Raise { .. } => "raise",
+        CasinoCommand::Bet { .. } => "bet",
+        CasinoCommand::Insure { .. } => "insure",
+        CasinoCommand::Hit => "hit",
+        CasinoCommand::Stand => "stand",
+        CasinoCommand::Double => "double",
+        CasinoCommand::Split => "split",
+        CasinoCommand::Surrender => "surrender",
+    }
 }
 
 /// 테이블이 바뀌었다는 알림 (웹소켓 푸시·Discord 중계용).
@@ -908,6 +966,21 @@ impl CasinoHub {
     /// 패널이 아직 `message_id`를 가리킬 때만 연결을 끊는다. 갱신이 지워진 옛 패널을 고치다
     /// 실패하는 동안 새 패널이 올라왔으면 새 연결은 그대로 둔다. 끊었으면 true.
     pub fn clear_panel_if(&self, message_id: u64) -> bool {
+    /// Discord 채널 권한 동기화에 필요한 좌석 스냅샷을 락 밖으로 반환한다.
+    pub async fn table_channel_targets(&self, table_id: &str) -> Option<(u64, u64, BTreeSet<u64>)> {
+        let binding = self.binding(table_id)?;
+        let table = self.table(table_id)?;
+        let seated = table
+            .read()
+            .await
+            .seats
+            .iter()
+            .flatten()
+            .map(|seat| seat.user_id)
+            .collect();
+        Some((binding.guild_id, binding.channel_id, seated))
+    }
+
         let mut panel = self
             .panel
             .lock()
@@ -1055,7 +1128,9 @@ pub type SharedHub = Arc<CasinoHub>;
 
 #[cfg(test)]
 mod tests {
-    use super::public_host_of;
+    use super::{public_host_of, table_channel_overwrites};
+    use poise::serenity_prelude as serenity;
+    use std::collections::BTreeSet;
 
     #[test]
     fn public_host_is_taken_from_the_settings_url() {
@@ -1108,6 +1183,31 @@ mod panel_tests {
         };
         let first = table(GameKind::Holdem, "하이롤러");
         table(GameKind::Blackjack, "Lucky");
+
+    #[test]
+    fn table_channel_overwrites_are_private_and_include_seated_players() {
+        let overwrites = table_channel_overwrites(10, 20, &BTreeSet::from([30, 40]));
+        assert_eq!(overwrites.len(), 4);
+        assert!(
+            overwrites[0]
+                .deny
+                .contains(serenity::Permissions::VIEW_CHANNEL)
+        );
+        assert!(
+            overwrites[1]
+                .allow
+                .contains(serenity::Permissions::MANAGE_WEBHOOKS)
+        );
+        assert!(
+            overwrites[2]
+                .allow
+                .contains(serenity::Permissions::SEND_MESSAGES)
+        );
+        assert_eq!(
+            overwrites[2].kind,
+            serenity::PermissionOverwriteType::Member(serenity::UserId::new(30))
+        );
+    }
 
         // 다른 테이블 이름은 대소문자만 달라도 못 쓴다.
         assert!(hub.rename_table(&first, "lucky").await.is_err());

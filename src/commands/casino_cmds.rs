@@ -4,13 +4,14 @@
 use super::*;
 use crate::casino_hub::{
     CasinoHub, MAX_TABLES, PanelBinding, TableBinding, UpdateKind, personal_link,
-    table_channel_name,
+    table_channel_name, table_channel_overwrites,
 };
 use mafia_remake::casino::{
     CasinoEvent, ChatMessage, GameKind, HandResult, Phase, SettingsRequest, TableSettings,
     TableView, blackjack_value, signed_chips,
 };
 use poise::serenity_prelude::CacheHttp;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, poise::ChoiceParameter)]
@@ -1379,7 +1380,7 @@ async fn create_table_body(
         ctx,
         guild_id,
         &channel_name,
-        vec![],
+        table_channel_overwrites(guild_id.get(), data.bot_user_id.get(), &BTreeSet::new()),
         category,
         "카지노 테이블 채널 생성",
         0,
@@ -2135,6 +2136,72 @@ pub async fn refresh_table_status(
 }
 
 /// 테이블 변경 알림을 받아 채널을 갱신하는 작업. 임베드 갱신은 테이블당 1.5초로 묶는다.
+async fn sync_table_channel_permissions(
+    ctx: &serenity::Context,
+    data: &Data,
+    table_id: &str,
+    last_seated: &mut HashMap<u64, BTreeSet<u64>>,
+) {
+    let Some((guild_id, channel_id, seated)) = data.casino.table_channel_targets(table_id).await
+    else {
+        return;
+    };
+    if last_seated.get(&channel_id) == Some(&seated) {
+        return;
+    }
+    let desired = table_channel_overwrites(guild_id, data.bot_user_id.get(), &seated);
+    let Ok(channel) = serenity::ChannelId::new(channel_id)
+        .to_channel(&ctx.http)
+        .await
+    else {
+        eprintln!("failed to fetch casino channel permissions: channel_id={channel_id}");
+        return;
+    };
+    let Some(channel) = channel.guild() else {
+        eprintln!("casino table channel is not a guild channel: channel_id={channel_id}");
+        return;
+    };
+    let mut success = true;
+    for overwrite in &desired {
+        if channel
+            .permission_overwrites
+            .iter()
+            .find(|current| current.kind == overwrite.kind)
+            != Some(overwrite)
+        {
+            if let Err(error) = serenity::ChannelId::new(channel_id)
+                .create_permission(&ctx.http, overwrite.clone())
+                .await
+            {
+                eprintln!(
+                    "failed to apply casino channel permission: channel_id={channel_id} kind={:?} error={error:?}",
+                    overwrite.kind
+                );
+                success = false;
+            }
+        }
+    }
+    for current in &channel.permission_overwrites {
+        if let serenity::PermissionOverwriteType::Member(user_id) = current.kind
+            && !desired.iter().any(|item| item.kind == current.kind)
+        {
+            if let Err(error) = serenity::ChannelId::new(channel_id)
+                .delete_permission(&ctx.http, current.kind)
+                .await
+            {
+                eprintln!(
+                    "failed to remove casino channel permission: channel_id={channel_id} user_id={} error={error:?}",
+                    user_id.get()
+                );
+                success = false;
+            }
+        }
+    }
+    if success {
+        last_seated.insert(channel_id, seated);
+    }
+}
+
 pub async fn run_casino_relay(ctx: serenity::Context, data: Data) {
     let hub = data.casino.clone();
     let mut updates = hub.updates.subscribe();
@@ -2145,6 +2212,16 @@ pub async fn run_casino_relay(ctx: serenity::Context, data: Data) {
     let mut pending: HashSet<String> = HashSet::new();
     // 테이블별로 마지막 임베드가 가린 카드 중 가장 먼저 드러나는 시각.
     let mut masked_until: HashMap<String, i64> = HashMap::new();
+    let mut last_channel_seated: HashMap<u64, BTreeSet<u64>> = HashMap::new();
+    // DashMap 가드를 await 너머로 쥐지 않도록 테이블 id만 먼저 모은다.
+    let table_ids: Vec<String> = hub
+        .bindings
+        .iter()
+        .map(|entry| entry.key().clone())
+        .collect();
+    for table_id in &table_ids {
+        sync_table_channel_permissions(&ctx, &data, table_id, &mut last_channel_seated).await;
+    }
     let mut flush = tokio::time::interval(Duration::from_millis(1_500));
     loop {
         tokio::select! {
@@ -2154,6 +2231,13 @@ pub async fn run_casino_relay(ctx: serenity::Context, data: Data) {
                     // "??"로 가린 카드(히트·딜러 드로·보드 등)가 그 사이 드러났을 때만 채널을 고친다
                     // (같은 내용으로 상태 임베드를 다시 고치지 않게).
                     Ok(update) => {
+                        sync_table_channel_permissions(
+                            &ctx,
+                            &data,
+                            &update.table_id,
+                            &mut last_channel_seated,
+                        )
+                        .await;
                         let unmasked = masked_until
                             .get(&update.table_id)
                             .is_some_and(|at| *at <= crate::casino_hub::now_ms());
