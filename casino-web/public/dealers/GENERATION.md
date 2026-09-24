@@ -100,3 +100,23 @@ models/wan2.2_vae.safetensors
 - `PLATE_HEAD=1`: 머리·얼굴·목(타원 + 목·옷깃)을 모든 프레임에서 기준 장면으로 고정하고, 팔·손·몸만 생성 프레임에서 가져온다. 이음새는 검은 옷깃에서 섞여 드러나지 않는다. 대신 카드를 놓을 때 고개를 숙이지 않고 카메라를 본다.
 - 명령: `PLATE=anchor-hr.png PLATE_HEAD=1 process-dealer-clip.sh sophia-deal-hr.webm ... once 0 31 56.56`, `PLATE=... PLATE_HEAD=1 LEADIN=<딜 마지막 프레임> process-dealer-clip.sh sophia-reach-hr.webm ... reverse 0 26 56.56`.
 - 결과: 딜·되돌리기의 모든 프레임에서 얼굴 밝기 98·채도 0.49·선명도 약 505로 일정(대기와 같다). 이음새 1.1~1.4.
+
+## 카드를 내려놓는 되돌리기 (2026-09-25)
+
+사용자 지적: 카드를 놓고 손이 돌아갈 때, 손이 테이블에 닿자마자 역재생처럼 튕겨 돌아간다.
+- 원인: 되돌리기 영상은 손을 뻗는 영상(`reach`)을 거꾸로 튼 것이라 카드 위에 손을 얹는 순간이 없었다. 처음 8프레임 동안 딜 영상의 마지막 장면에서 크로스페이드해 팔이 두 겹으로 보였고, 곧바로 손이 되감기듯 움직였다.
+- 새 영상은 두 생성 영상을 잇는다.
+  - 앞 4프레임은 되돌리기 생성 영상(`sophia-return-hr2.webm`, 딜 원본 30프레임에서 시작) 0~3프레임이다. 카드 위에 손을 얹은 채 내려놓는 동작이다.
+  - 3프레임 동안 손을 뻗는 영상(`sophia-reach-hr.webm`) 28프레임으로 섞는다. 두 영상 모두 손이 멈춰 있는 장면이라 겹침이 거의 없다.
+  - 그 뒤 손을 뻗는 영상 28→3프레임을 거꾸로 쓴다. 손을 들어 펠트 위로 낮게 슈까지 가져가고, 속도는 천천히 시작해 천천히 멈춘다.
+- 원본 조립:
+  ```text
+  ffmpeg -i sophia-return-hr2.webm -i sophia-reach-hr.webm -filter_complex "[0:v]trim=end_frame=4,setpts=N/24/TB,fps=24,settb=AVTB,format=yuv444p[a];[1:v]trim=start_frame=3:end_frame=29,reverse,setpts=N/24/TB,fps=24,settb=AVTB,format=yuv444p[b];[a][b]xfade=transition=fade:duration=0.125:offset=0.041667[out]" -map "[out]" -c:v ffv1 place-return-src3.mkv
+  ```
+- 후처리:
+  ```text
+  TONE=<기존 영상과 같은 톤 커브> PLATE=anchor-hr.png PLATE_HEAD=1 LEADIN=<딜 영상 마지막 프레임> LEADIN_FRAMES=2 LEADOUT=<대기 영상 첫 프레임> LEADOUT_FRAMES=3 process-dealer-clip.sh place-return-src3.mkv sophia-return once 0 27 56.56
+  ```
+  - `LEADOUT`(새 옵션): 마지막 프레임들을 대기 장면으로 섞어 끝 장면이 대기 영상의 첫 장면과 같게 한다.
+- 결과: 27프레임, 1.125초. 모든 프레임에서 얼굴 밝기 98·채도 0.50·선명도 약 499로 일정하다. 이음새(평균 휘도 차)는 딜 끝→되돌리기 1.66, 되돌리기 끝→대기 1.42다. 웹은 `RETURN_CLIP_MS=1125`, `RETURN_REST_MS=1083`을 쓴다. 카드 사이에서는 약 2.5배속으로 튼다.
+- 참고: 앞 영상(`sophia-return-hr2`)을 끝까지 쓰면 팔이 어깨 높이로 크게 돌아가고, 끝 자세도 대기 자세와 달라 쓰지 않았다.

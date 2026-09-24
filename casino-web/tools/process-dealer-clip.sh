@@ -69,6 +69,18 @@ if [ -n "${LEADIN:-}" ]; then
   mv "$WORK/final-lead.mkv" "$WORK/final.mkv"
 fi
 
+# LEADOUT=<다음 영상의 첫 프레임 PNG>: 마지막 LEADOUT_FRAMES(기본 8) 프레임 동안 그 장면으로 서서히 넘어간다.
+# 앞으로 재생하는 동작(카드를 놓고 손을 슈로 되돌리기)이 대기 장면과 정확히 같은 장면에서 끝나게 한다.
+if [ -n "${LEADOUT:-}" ]; then
+  OK="${LEADOUT_FRAMES:-8}"
+  ODUR=$(python -c "print($OK / 24)")
+  # LEADIN과 같은 방식으로 거꾸로 뒤집어 앞쪽에서 섞은 뒤 다시 뒤집는다 (프레임 수·색 범위가 그대로다).
+  "$FF" -hide_banner -loglevel error -y -loop 1 -framerate 24 -t "$ODUR" -i "$LEADOUT" -i "$WORK/final.mkv" -filter_complex \
+    "[0:v]scale=1536:1024,format=yuv444p,fps=24,settb=AVTB[tail];[1:v]reverse,fps=24,settb=AVTB[clip];[tail][clip]xfade=transition=fade:duration=$ODUR:offset=0,reverse[out]" \
+    -map "[out]" -c:v ffv1 "$WORK/final-out.mkv"
+  mv "$WORK/final-out.mkv" "$WORK/final.mkv"
+fi
+
 CLAMP="format=yuv420p,lutyuv=y='clip(val,16,235)':u='clip(val,16,240)':v='clip(val,16,240)'"
 "$FF" -hide_banner -loglevel error -y -i "$WORK/final.mkv" -vf "$CLAMP" -c:v libvpx-vp9 -crf 24 -b:v 0 -g 240 -row-mt 1 -deadline good -cpu-used 1 -an "$OUT.webm"
 "$FF" -hide_banner -loglevel error -y -i "$WORK/final.mkv" -vf "$CLAMP" -c:v libx264 -crf 18 -preset slow -tune film -g 240 -pix_fmt yuv420p -movflags +faststart -an "$OUT.mp4"
