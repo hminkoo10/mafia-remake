@@ -1,8 +1,20 @@
 // 효과음: 외부 파일 없이 Web Audio로 합성한다 (카드 딜, 칩, 베팅 확정, 내 차례, 승/패).
 // 브라우저 정책상 첫 사용자 입력 뒤에만 소리가 난다.
 
+import { MUSIC_BPM, MUSIC_CYCLE_BEATS, MUSIC_LOOK_AHEAD_SECONDS, MUSIC_MASTER_GAIN, musicNotesForCycle, notesInWindow, type MusicNote } from "./music";
+
 let context: AudioContext | null = null;
 let noise: AudioBuffer | null = null;
+let musicMaster: GainNode | null = null;
+let musicTimer: number | null = null;
+let musicCycle = 0;
+let musicNextBeat = 0;
+let musicHidden = false;
+let musicPreference = readMusicPreference();
+
+function readMusicPreference(): boolean {
+  try { return localStorage.getItem("noir-music") !== "0"; } catch { return true; }
+}
 
 /**
  * 오디오를 준비한다. AudioContext를 처음 만들 때 기기에 따라 수백 ms 동안 화면이 멈추므로,
@@ -23,12 +35,12 @@ export function unlockAudio() {
 }
 
 /** 첫 클릭·키 입력·터치 때 한 번 오디오를 준비한다. 되돌리는 함수를 준다. */
-export function installAudioUnlock(): () => void {
+export function installAudioUnlock(onUnlock?: () => void): () => void {
   const events = ["pointerdown", "keydown", "touchstart"] as const;
   const unlock = () => {
     remove();
     // 누른 동작의 화면 반응을 먼저 그리고 나서 만든다.
-    window.setTimeout(unlockAudio, 0);
+    window.setTimeout(() => { unlockAudio(); onUnlock?.(); }, 0);
   };
   const remove = () => events.forEach((name) => window.removeEventListener(name, unlock, true));
   events.forEach((name) => window.addEventListener(name, unlock, { capture: true, passive: true }));
@@ -67,7 +79,58 @@ export function setSoundEnabled(enabled: boolean) {
   } catch {
     // 저장이 막혀 있어도 이번 세션에서는 동작한다.
   }
+  updateMusicGain();
 }
+
+export function musicEnabled(): boolean { return musicPreference; }
+export function setMusicEnabled(enabled: boolean) { musicPreference = enabled; try { localStorage.setItem("noir-music", enabled ? "1" : "0"); } catch {} syncMusic(); }
+function updateMusicGain() { if (!musicMaster || !context) return; const target = musicPreference && soundEnabled() ? MUSIC_MASTER_GAIN : 0; const now = context.currentTime; musicMaster.gain.cancelScheduledValues(now); musicMaster.gain.setTargetAtTime(target, now, 0.04); }
+/** 배경음악 음 하나. 음마다 짧게 살다 멈추는 노드를 만든다 (다른 곳에서 쥐고 있지 않는다). */
+function musicNote(ctx: AudioContext, note: MusicNote, start: number) {
+  const master = musicMaster;
+  if (!master) return;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.exponentialRampToValueAtTime(note.gain, start + (note.kind === "bass" ? 0.025 : 0.08));
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + note.duration);
+  gain.connect(master);
+  if (note.kind === "shaker") {
+    const source = ctx.createBufferSource();
+    const filter = ctx.createBiquadFilter();
+    source.buffer = noiseBuffer(ctx);
+    filter.type = "highpass";
+    filter.frequency.setValueAtTime(3600, start);
+    source.connect(filter).connect(gain);
+    source.start(start, 0, Math.min(note.duration, 0.25));
+    source.stop(start + note.duration + 0.02);
+    return;
+  }
+  const frequency = note.frequency ?? 220;
+  const osc = ctx.createOscillator();
+  osc.type = note.kind === "vibe" ? "triangle" : "sine";
+  osc.frequency.setValueAtTime(frequency, start);
+  osc.connect(gain);
+  osc.start(start);
+  osc.stop(start + note.duration + 0.03);
+  if (note.kind === "chord" || note.kind === "vibe") {
+    // 전기 피아노·비브라폰처럼 치는 순간에만 밝은 배음이 났다가 빨리 사라진다 (사인파만이면 오르간처럼 밋밋하다).
+    const bell = ctx.createOscillator();
+    const bellGain = ctx.createGain();
+    bell.type = "sine";
+    bell.frequency.setValueAtTime(frequency * (note.kind === "vibe" ? 4 : 2), start);
+    bellGain.gain.setValueAtTime(0.0001, start);
+    bellGain.gain.exponentialRampToValueAtTime(note.gain * 0.35, start + 0.012);
+    bellGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.55);
+    bell.connect(bellGain).connect(master);
+    bell.start(start);
+    bell.stop(start + 0.6);
+  }
+}
+function scheduleMusic() { musicTimer = null; if (musicHidden || !musicPreference || !soundEnabled()) return; const ctx = audio(); if (!ctx || !musicMaster) return; const spb = 60 / MUSIC_BPM; const horizon = ctx.currentTime + MUSIC_LOOK_AHEAD_SECONDS; while (musicNextBeat * spb < horizon) { const cycleStart = musicCycle * MUSIC_CYCLE_BEATS; const from = musicNextBeat - cycleStart; const to = from + MUSIC_LOOK_AHEAD_SECONDS / spb; for (const note of notesInWindow(musicNotesForCycle(musicCycle), from, to)) musicNote(ctx, note, (cycleStart + note.beat) * spb + 0.02); musicNextBeat += MUSIC_LOOK_AHEAD_SECONDS / spb; if (musicNextBeat >= (musicCycle + 1) * MUSIC_CYCLE_BEATS) musicCycle += 1; } musicTimer = window.setTimeout(scheduleMusic, 100); }
+export function startMusic() { const ctx = audio(); if (!ctx || !musicPreference || !soundEnabled() || musicHidden) return; if (!musicMaster) { musicMaster = ctx.createGain(); const filter = ctx.createBiquadFilter(); filter.type = "lowpass"; filter.frequency.setValueAtTime(2200, ctx.currentTime); musicMaster.connect(filter).connect(ctx.destination); } if (musicTimer === null) { musicNextBeat = ctx.currentTime / (60 / MUSIC_BPM); musicCycle = Math.floor(musicNextBeat / MUSIC_CYCLE_BEATS); updateMusicGain(); scheduleMusic(); } }
+export function stopMusic() { if (musicTimer !== null) window.clearTimeout(musicTimer); musicTimer = null; updateMusicGain(); }
+export function syncMusic() { if (musicPreference && soundEnabled() && !musicHidden) startMusic(); else stopMusic(); }
+export function installMusicVisibility(): () => void { const change = () => { musicHidden = document.hidden; syncMusic(); }; document.addEventListener("visibilitychange", change); return () => document.removeEventListener("visibilitychange", change); }
 
 function tone(freq: number, duration: number, type: OscillatorType, peak: number, delay = 0, slideTo?: number) {
   const ctx = audio();

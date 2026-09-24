@@ -16,6 +16,8 @@ import {
   LogOut,
   Maximize,
   Minimize,
+  Music,
+  Music2,
   Plus,
   RefreshCw,
   Send,
@@ -31,7 +33,7 @@ import {
 } from "lucide-react";
 import { CasinoApiError, CasinoNetworkError, fetchState, readLink, sendCommand, wsUrl } from "./api";
 import { confirmServerState, planServerClock, sampleServerTime, touchServerClock, useServerValue } from "./clock";
-import { installAudioUnlock, setSoundEnabled, sfx, soundEnabled, unlockAudio } from "./sounds";
+import { installAudioUnlock, installMusicVisibility, musicEnabled, setMusicEnabled, setSoundEnabled, sfx, soundEnabled, syncMusic, unlockAudio } from "./sounds";
 import { ChatMessages, TableChatPreview } from "./components/TableChat";
 import { DealerBackdrop, hasDealerVideo } from "./components/DealerBackdrop";
 import { BoardCards, BurnPile, Countdown, DockCards, PlayingCard, SeatCards, TurnRing } from "./components/TableCards";
@@ -387,7 +389,8 @@ export default function Casino() {
     [flights, setFlights] = useState<Flight[]>([]),
     [winners, setWinners] = useState<number[]>([]),
     [potBump, setPotBump] = useState(false),
-    [sound, setSound] = useState(soundEnabled);
+    [sound, setSound] = useState(soundEnabled),
+    [music, setMusic] = useState(musicEnabled);
   const [pending, setPending] = useState(false),
     [connected, setConnected] = useState(false),
     [expired, setExpired] = useState(!token),
@@ -773,7 +776,11 @@ export default function Casino() {
   }, [table.id, table.dealer.id]);
 
   // 효과음용 오디오는 첫 클릭 때 미리 준비한다 (딜 도중에 만들면 화면이 멈춘다).
-  useEffect(() => installAudioUnlock(), []);
+  useEffect(() => {
+    const removeUnlock = installAudioUnlock(syncMusic);
+    const removeVisibility = installMusicVisibility();
+    return () => { removeUnlock(); removeVisibility(); };
+  }, []);
   useEffect(() => {
     const change = () => setFullscreen((current) => document.fullscreenElement === appRef.current ? "native" : current === "native" ? null : current);
     const escape = (event: KeyboardEvent) => {
@@ -1295,9 +1302,23 @@ export default function Casino() {
                   unlockAudio();
                   sfx.chip();
                 }
+                syncMusic();
               }}
             >
               {sound ? <Bell size={18} /> : <BellOff size={18} />}
+            </button>
+            <button
+              className="icon-button"
+              aria-label={music ? "배경음악 끄기" : "배경음악 켜기"}
+              title={music ? "배경음악 끄기" : "배경음악 켜기"}
+              onClick={() => {
+                const next = !music;
+                setMusicEnabled(next);
+                setMusic(next);
+                if (next) unlockAudio();
+              }}
+            >
+              {music ? <Music size={18} /> : <Music2 size={18} />}
             </button>
             <button
               className="icon-button"
