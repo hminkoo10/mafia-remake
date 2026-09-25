@@ -519,3 +519,7 @@ html{scrollbar-gutter:stable}
 .is-fullscreen .panel-tabs>[data-slot=tabs-content]{display:flex;flex-direction:column;flex:1 1 0;min-height:0;overflow-y:auto}
 .is-fullscreen .panel-tabs .chat-messages{flex:1 1 0;min-height:60px}
 .is-fullscreen .panel-tabs .chat-form,.is-fullscreen .panel-tabs .chat-notice{flex:none}
+
+/* 라운드 사이 안내 줄의 버튼들 (홀덤 "내 카드 보여주기" + 라운드 시작/초대). */
+.action-row .row-buttons{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+@media(max-width:760px){.action-row .row-buttons{flex:1 1 100%}.action-row .row-buttons>button{flex:1}}

@@ -36,6 +36,8 @@ pub struct SeatView {
     pub in_hand: bool,
     pub sit_out: bool,
     pub leaving: bool,
+    /// 홀덤: 핸드가 끝난 뒤 본인이 골라 카드를 보여 줬다.
+    pub shown: bool,
     pub cards: Vec<String>,
     /// 홀 카드별 착지 시각.
     pub cards_reveal_at: Vec<i64>,
@@ -93,6 +95,8 @@ pub struct LegalView {
     pub can_insure: bool,
     /// 인슈어런스 비용 (베팅의 절반).
     pub insurance_cost: i64,
+    /// 홀덤: 끝난 핸드의 내 카드를 모두에게 보여 줄 수 있다 (쇼다운에서 이미 공개된 카드는 제외).
+    pub can_show: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -265,7 +269,10 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
                 && seat.in_hand
                 && !seat.folded
                 && !seat.cards.is_empty();
-            let shown = mine || contender;
+            // 핸드가 끝난 뒤 본인이 골라 보여 준 카드 (연출이 끝난 뒤에만 고를 수 있다).
+            let volunteered =
+                table.kind == GameKind::Holdem && seat.shown && !seat.cards.is_empty();
+            let shown = mine || contender || volunteered;
             let hole_landed = seat.cards_reveal_at.iter().all(|at| *at <= now);
             // 족보 이름: 내 좌석은 내 카드와 이미 펠트에 놓여 뒤집힌 보드로 (스트리트 연출
             // 중에도 앞 스트리트의 족보를 유지한다), 다른 경쟁자는 쇼다운 연출이 끝난 뒤에.
@@ -273,7 +280,7 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
                 Some(round) if table.kind == GameKind::Holdem && !seat.cards.is_empty() => {
                     if mine && hole_landed {
                         Some(landed_board(round, now))
-                    } else if contender && reveal_done {
+                    } else if (contender || volunteered) && reveal_done {
                         Some(round.board.clone())
                     } else {
                         None
@@ -301,6 +308,7 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
                 in_hand: seat.in_hand,
                 sit_out: seat.sit_out,
                 leaving: seat.leaving,
+                shown: volunteered,
                 side_pairs: seat.side_pairs,
                 side_plus3: seat.side_plus3,
                 insurance: seat.insurance,
@@ -455,6 +463,14 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
                 seat.in_hand && !seat.insurance_decided && seat.visible_stack(now) >= insurance_cost
             }),
         insurance_cost,
+        can_show: table.kind == GameKind::Holdem
+            && !active
+            && reveal_done
+            && my.is_some_and(|seat| {
+                !seat.cards.is_empty()
+                    && !seat.shown
+                    && !(round.is_some_and(|round| round.reveal) && seat.in_hand && !seat.folded)
+            }),
     };
     TableView {
         id: table.id.clone(),

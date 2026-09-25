@@ -96,6 +96,7 @@ pub(super) fn start_poker(
         seat.in_hand = !seat.sit_out && !seat.leaving && seat.stack > 0;
         seat.cards.clear();
         seat.cards_reveal_at.clear();
+        seat.shown = false;
         seat.hands.clear();
         seat.bet = 0;
         seat.total = 0;

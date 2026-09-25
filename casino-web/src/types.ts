@@ -28,6 +28,8 @@ export interface SeatView {
   in_hand: boolean;
   sit_out: boolean;
   leaving: boolean;
+  /** 홀덤: 핸드가 끝난 뒤 본인이 골라 카드를 보여 줬다. */
+  shown?: boolean;
   cards: string[];
   cards_reveal_at: number[];
   hands: HandView[];
@@ -87,6 +89,8 @@ export interface LegalView {
   can_start: boolean;
   can_insure: boolean;
   insurance_cost: number;
+  /** 홀덤: 끝난 핸드의 내 카드를 모두에게 보여 줄 수 있다. */
+  can_show?: boolean;
 }
 
 export interface TableRules {
@@ -213,6 +217,7 @@ export type CasinoCommand =
   | { action: "leave" }
   | { action: "start" }
   | { action: "resume" }
+  | { action: "show" }
   | { action: "chat"; message: string }
   | { action: "fold" }
   | { action: "check" }

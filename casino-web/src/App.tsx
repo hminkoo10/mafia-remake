@@ -12,6 +12,7 @@ import {
   Copy,
   Diamond,
   DoorOpen,
+  Eye,
   Eraser,
   Grid2X2,
   History,
@@ -413,7 +414,6 @@ export default function Casino() {
     refreshRef = useRef<() => Promise<void>>(async () => {}),
     tableRef = useRef<string | null>(linkTable),
     pendingRef = useRef(false),
-    expiredRef = useRef(!token),
     chatSendingRef = useRef(false),
     /** 보내는 중에 더 쓴 메시지는 차례로 보낸다. */
     chatQueue = useRef<string[]>([]),
@@ -421,6 +421,7 @@ export default function Casino() {
     /** 한글 조합 중에 Enter를 누르면 조합이 끝난 뒤 보낸다 (조합 중 글자가 입력칸에 남거나 잘리지 않게). */
     chatSubmitAfterCompose = useRef(false),
     chatComposedAt = useRef(0),
+    expiredRef = useRef(!token),
     socketRef = useRef<WebSocket | null>(null),
     socketOpenRef = useRef(false),
     lastMessageAt = useRef(0),
@@ -1113,7 +1114,6 @@ export default function Casino() {
     [token, ingest, fail, flushQueuedRefresh],
   );
 
-  const disabled = pending || !connected;
   /**
    * 채팅은 게임 명령과 따로 보낸다: 게임 버튼을 누르는 중에도 보낼 수 있고, 보내는 동안 입력칸을 잠그지 않아
    * 포커스가 풀리지 않는다. 입력칸은 바로 비우고 메시지를 대기열에 넣어 차례로 보낸다. 서버의 연속 전송 간격
@@ -1167,6 +1167,7 @@ export default function Casino() {
     [drainChat],
   );
 
+  const disabled = pending || !connected;
   /** 카드를 나누거나 여는 동안에는 게임 버튼을 그대로 두고 누르지만 못하게 한다 (독 높이가 바뀌지 않는다). */
   const busy = disabled || revealing;
   const openJoin = (seat?: number) => {
@@ -1921,16 +1922,25 @@ export default function Casino() {
                                     : "칩이 부족합니다. 퇴장 후 다시 참여해 주세요."}
                         </p>
                       </div>
-                      {table.legal.can_start && !stage ? (
-                        <button className="gold-button" disabled={busy} onClick={() => void act({ action: "start" })}>
-                          라운드 시작
-                        </button>
-                      ) : (
-                        <button className="secondary-button" onClick={() => void invite()}>
-                          <Copy size={15} />
-                          초대 명령 복사
-                        </button>
-                      )}
+                      <div className="row-buttons">
+                        {/* 홀덤: 폴드로 끝나 가려진 내 카드를 원하면 모두에게 보여 준다. */}
+                        {kind === "holdem" && !stage && (table.legal.can_show || me.shown) && (
+                          <button className="secondary-button" disabled={busy || me.shown} onClick={() => void act({ action: "show" })}>
+                            <Eye size={15} />
+                            {me.shown ? "카드 공개함" : "내 카드 보여주기"}
+                          </button>
+                        )}
+                        {table.legal.can_start && !stage ? (
+                          <button className="gold-button" disabled={busy} onClick={() => void act({ action: "start" })}>
+                            라운드 시작
+                          </button>
+                        ) : (
+                          <button className="secondary-button" onClick={() => void invite()}>
+                            <Copy size={15} />
+                            초대 명령 복사
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </>

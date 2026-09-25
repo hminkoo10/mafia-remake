@@ -2068,6 +2068,60 @@ fn holdem_winner_is_shown_the_pot_it_collects() {
     assert_eq!((loser.won, loser.paid), (0, 0));
 }
 
+#[test]
+fn holdem_player_may_show_cards_after_a_hand_ends_without_showdown() {
+    let mut table = holdem_table();
+    sit(&mut table, 96, 0, 10_000, 0);
+    sit(&mut table, 97, 1, 10_000, 0);
+    act(&mut table, 96, CasinoCommand::Start, 0);
+    let turn = table.round.as_ref().unwrap().turn;
+    let folder = table.seat(turn).unwrap().user_id;
+    let winner = if folder == 96 { 97 } else { 96 };
+    let winner_seat = table.seat_index(winner).unwrap();
+    // 핸드 중에는 보여 줄 수 없다.
+    assert!(
+        table
+            .apply_command(winner, "P", &CasinoCommand::Show, None, 50)
+            .is_err()
+    );
+    act(&mut table, folder, CasinoCommand::Fold, 100);
+    let hidden = table_view(&table, Some(folder), 200);
+    let seat = hidden.seats[winner_seat].as_ref().unwrap();
+    assert!(
+        seat.cards.iter().all(|card| card == "??"),
+        "폴드로 끝나면 이긴 카드는 가려져 있다"
+    );
+    assert!(table_view(&table, Some(winner), 200).legal.can_show);
+
+    act(&mut table, winner, CasinoCommand::Show, 300);
+    let shown = table_view(&table, Some(folder), 400);
+    let seat = shown.seats[winner_seat].as_ref().unwrap();
+    assert!(seat.shown);
+    assert_eq!(seat.cards, table.seats[winner_seat].as_ref().unwrap().cards);
+    assert!(
+        table
+            .messages
+            .iter()
+            .any(|message| message.text.contains("카드를 보여 줬어요"))
+    );
+    assert!(!table_view(&table, Some(winner), 400).legal.can_show);
+    assert!(
+        table
+            .apply_command(winner, "P", &CasinoCommand::Show, None, 500)
+            .is_err(),
+        "두 번 보여 줄 수 없다"
+    );
+    // 폴드한 사람도 원하면 보여 줄 수 있다.
+    assert!(table_view(&table, Some(folder), 400).legal.can_show);
+
+    // 다음 핸드가 시작되면 다시 가려진다.
+    act(&mut table, winner, CasinoCommand::Start, 600);
+    let next = table_view(&table, Some(folder), 700);
+    let seat = next.seats[winner_seat].as_ref().unwrap();
+    assert!(!seat.shown);
+    assert!(seat.cards.iter().all(|card| card == "??"));
+}
+
 // ------------------------------------------------------------ 딜 연출 시각·공개 시점
 
 #[test]

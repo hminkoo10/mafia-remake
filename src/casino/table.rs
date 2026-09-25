@@ -484,6 +484,9 @@ pub struct Seat {
     /// `pending_credit`이 화면에 드러나는 시각 (그 칩을 만든 연출이 끝나는 시각).
     #[serde(default)]
     pub pending_until: i64,
+    /// 홀덤: 핸드가 끝난 뒤 본인이 골라 홀 카드를 모두에게 보여 줬다 (다음 핸드를 시작하면 지운다).
+    #[serde(default)]
+    pub shown: bool,
 }
 
 impl Seat {
@@ -504,6 +507,7 @@ impl Seat {
             side_notes: Vec::new(),
             pending_credit: 0,
             pending_until: 0,
+            shown: false,
             bet: 0,
             total: 0,
             folded: false,
@@ -713,6 +717,8 @@ pub enum CasinoCommand {
     Leave,
     Start,
     Resume,
+    /// 홀덤: 끝난 핸드의 내 홀 카드를 모두에게 보여 준다 (폴드로 끝나 쇼다운이 없었을 때 등).
+    Show,
     Chat {
         message: String,
     },
@@ -1503,6 +1509,31 @@ impl CasinoTable {
                             self.cash_out(index, &mut events);
                             self.say(format!("{name}님, 다음 테이블에서 만나요."), now);
                         }
+                    }
+                    CasinoCommand::Show => {
+                        if self.kind != GameKind::Holdem {
+                            return Err(CasinoError::invalid(
+                                "홀덤에서만 카드를 보여 줄 수 있습니다.",
+                            ));
+                        }
+                        if self.playing() {
+                            return Err(CasinoError::invalid(
+                                "핸드가 끝난 뒤에 카드를 보여 줄 수 있습니다.",
+                            ));
+                        }
+                        self.ensure_reveal_done(now)?;
+                        let showdown = self.round.as_ref().is_some_and(|round| round.reveal);
+                        let seat = self.seats[index].as_mut().expect("seat exists");
+                        if seat.cards.is_empty() {
+                            return Err(CasinoError::invalid("보여 줄 카드가 없습니다."));
+                        }
+                        // 쇼다운까지 간 카드는 이미 모두에게 보인다.
+                        if seat.shown || (showdown && seat.in_hand && !seat.folded) {
+                            return Err(CasinoError::invalid("이미 공개된 카드입니다."));
+                        }
+                        seat.shown = true;
+                        let name = seat.name.clone();
+                        self.say(format!("{name}님이 카드를 보여 줬어요."), now);
                     }
                     CasinoCommand::Resume => {
                         let seat = self.seats[index].as_mut().expect("seat exists");

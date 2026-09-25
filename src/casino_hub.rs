@@ -160,6 +160,7 @@ pub fn casino_command_action(command: &CasinoCommand) -> &'static str {
         CasinoCommand::Leave => "leave",
         CasinoCommand::Start => "start",
         CasinoCommand::Resume => "resume",
+        CasinoCommand::Show => "show",
         CasinoCommand::Chat { .. } => "chat",
         CasinoCommand::Fold => "fold",
         CasinoCommand::Check => "check",
