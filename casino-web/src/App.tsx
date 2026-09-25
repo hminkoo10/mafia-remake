@@ -835,7 +835,6 @@ export default function Casino() {
     const current = which === "pairs" ? pairsTotal : plus3Total;
     return current + value <= tableRules.side_bet_max;
   };
-  const canPlaceChip = (value: number) => canPlaceAt(spot, value);
   const placeChip = (value: number = chip, which: BetSpot = spot) => {
     if (!table.legal.can_bet || disabled || !canPlaceAt(which, value)) return;
     sfx.chip();
@@ -1765,13 +1764,14 @@ export default function Casino() {
                             className={`chip chip-${v} ${chip === v ? "chosen" : ""}`}
                             disabled={disabled || !placeableAnywhere(v)}
                             {...chipDrag(v)}
+                            // 칩을 누르면 고르기만 한다. 베팅은 자리를 누르거나 칩을 끌어다 놓을 때만 올라간다.
                             onClick={() => {
                               if (suppressClick.current) return;
                               setChip(v);
-                              if (canPlaceChip(v)) placeChip(v);
                             }}
                             aria-label={`${fmt(v)} 칩`}
-                            title={`${fmt(v)} 칩 · 누르면 ${SPOT_LABEL[spot]}에 놓고, 끌어서 원하는 자리에 놓을 수 있어요`}
+                            aria-pressed={chip === v}
+                            title={`${fmt(v)} 칩 · 누른 뒤 베팅 자리를 누르거나, 끌어서 원하는 자리에 놓아요`}
                           >
                             {chipLabel(v)}
                           </button>
