@@ -404,7 +404,8 @@ export default function Casino() {
     [placements, setPlacements] = useState<Placement[]>([]),
     [lastPlacements, setLastPlacements] = useState<Placement[]>([]),
     [raise, setRaise] = useState(200),
-    [chat, setChat] = useState("");
+    [chat, setChat] = useState(""),
+    [chatSending, setChatSending] = useState(false);
   const stateRef = useRef<StateResponse | null>(null),
     snapshotRef = useRef(""),
     refreshingRef = useRef(false),
@@ -413,6 +414,13 @@ export default function Casino() {
     tableRef = useRef<string | null>(linkTable),
     pendingRef = useRef(false),
     expiredRef = useRef(!token),
+    chatSendingRef = useRef(false),
+    /** 보내는 중에 더 쓴 메시지는 차례로 보낸다. */
+    chatQueue = useRef<string[]>([]),
+    lastChatAt = useRef(0),
+    /** 한글 조합 중에 Enter를 누르면 조합이 끝난 뒤 보낸다 (조합 중 글자가 입력칸에 남거나 잘리지 않게). */
+    chatSubmitAfterCompose = useRef(false),
+    chatComposedAt = useRef(0),
     socketRef = useRef<WebSocket | null>(null),
     socketOpenRef = useRef(false),
     lastMessageAt = useRef(0),
@@ -1106,6 +1114,59 @@ export default function Casino() {
   );
 
   const disabled = pending || !connected;
+  /**
+   * 채팅은 게임 명령과 따로 보낸다: 게임 버튼을 누르는 중에도 보낼 수 있고, 보내는 동안 입력칸을 잠그지 않아
+   * 포커스가 풀리지 않는다. 입력칸은 바로 비우고 메시지를 대기열에 넣어 차례로 보낸다. 서버의 연속 전송 간격
+   * (0.7초)을 지켜 보내고, 그래도 너무 빠르다고 거절되면 잠시 뒤 다시 보낸다. 실패하면 남은 글을 입력칸에 되돌린다.
+   */
+  const drainChat = useCallback(async () => {
+    if (chatSendingRef.current || !token) return;
+    chatSendingRef.current = true;
+    setChatSending(true);
+    const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+    try {
+      while (chatQueue.current.length) {
+        const current = stateRef.current?.table;
+        if (!current) break;
+        const text = chatQueue.current[0];
+        try {
+          const gap = lastChatAt.current + 750 - Date.now();
+          if (gap > 0) await wait(gap);
+          let sent;
+          try {
+            sent = await sendCommand(token, current.id, null, { action: "chat", message: text });
+          } catch (first) {
+            if (!(first instanceof CasinoApiError && first.code === "CHAT_TOO_FAST")) throw first;
+            await wait(800);
+            sent = await sendCommand(token, current.id, null, { action: "chat", message: text });
+          }
+          lastChatAt.current = Date.now();
+          chatQueue.current.shift();
+          ingest(sent.raw, sent.receivedAt);
+        } catch (e) {
+          const rest = chatQueue.current.splice(0).join(" ");
+          setChat((value) => (value ? value : rest));
+          if (e instanceof CasinoApiError && e.status === 401) fail(e);
+          else toast.error(e instanceof Error ? e.message : "메시지를 보내지 못했습니다. 다시 보내 주세요.");
+          break;
+        }
+      }
+    } finally {
+      chatSendingRef.current = false;
+      setChatSending(false);
+    }
+  }, [token, ingest, fail]);
+  const sendChat = useCallback(
+    (raw: string) => {
+      const text = raw.trim();
+      if (!text) return;
+      chatQueue.current.push(text);
+      setChat("");
+      void drainChat();
+    },
+    [drainChat],
+  );
+
   /** 카드를 나누거나 여는 동안에는 게임 버튼을 그대로 두고 누르지만 못하게 한다 (독 높이가 바뀌지 않는다). */
   const busy = disabled || revealing;
   const openJoin = (seat?: number) => {
@@ -1968,9 +2029,11 @@ export default function Casino() {
                 <ChatMessages key={table.id} messages={table.messages} dealerName={table.dealer.name} />
                 <form
                   className="chat-form"
-                  onSubmit={async (e) => {
+                  onSubmit={(e) => {
                     e.preventDefault();
-                    if (await act({ action: "chat", message: chat })) setChat("");
+                    // 조합이 끝나며 막 보낸 글을 브라우저가 뒤따르는 Enter로 한 번 더 제출하지 않게 한다.
+                    if (Date.now() - chatComposedAt.current < 300) return;
+                    sendChat(chat);
                   }}
                 >
                   <input
@@ -1979,9 +2042,21 @@ export default function Casino() {
                     maxLength={240}
                     value={chat}
                     onChange={(e) => setChat(e.target.value)}
-                    disabled={!me || disabled}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && e.nativeEvent.isComposing) {
+                        e.preventDefault();
+                        chatSubmitAfterCompose.current = true;
+                      }
+                    }}
+                    onCompositionEnd={(e) => {
+                      if (!chatSubmitAfterCompose.current) return;
+                      chatSubmitAfterCompose.current = false;
+                      chatComposedAt.current = Date.now();
+                      sendChat(e.currentTarget.value);
+                    }}
+                    disabled={!me}
                   />
-                  <button type="submit" aria-label="메시지 보내기" disabled={!me || disabled || !chat.trim()}>
+                  <button type="submit" aria-label="메시지 보내기" aria-busy={chatSending} disabled={!me || !chat.trim()}>
                     <Send size={17} />
                   </button>
                 </form>

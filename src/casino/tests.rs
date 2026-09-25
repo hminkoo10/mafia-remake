@@ -1180,7 +1180,7 @@ fn join_and_chat_are_validated() {
         None,
         1_500,
     );
-    assert!(too_fast.is_err());
+    assert_eq!(too_fast.unwrap_err().code, "CHAT_TOO_FAST");
     assert!(
         table
             .messages
@@ -1190,6 +1190,15 @@ fn join_and_chat_are_validated() {
     assert!(
         table.messages.last().unwrap().dealer,
         "인사에는 소피아가 답한다"
+    );
+    // 제한 간격(0.7초)이 지나면 이어 쓴 메시지를 받는다.
+    act(
+        &mut table,
+        90,
+        CasinoCommand::Chat {
+            message: "이어서".into(),
+        },
+        1_700,
     );
     let before = table.next_message_seq;
     table.relay_chat(99, "디스코드유저", "  채널에서 보냄  ", 2_000);

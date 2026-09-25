@@ -324,7 +324,8 @@ pub fn dealer_profile(id: &str) -> DealerProfile {
         .unwrap_or(DEALERS[0])
 }
 const HISTORY_LIMIT: usize = 20;
-const CHAT_COOLDOWN_MS: i64 = 1_500;
+/// 같은 사람의 채팅 간격. 짧게 이어 쓰는 대화는 받고, 도배만 막는다 (웹은 이 오류를 받으면 한 번 다시 보낸다).
+const CHAT_COOLDOWN_MS: i64 = 700;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1421,7 +1422,10 @@ impl CasinoTable {
                     .copied()
                     .unwrap_or(i64::MIN / 2);
                 if now - last < CHAT_COOLDOWN_MS {
-                    return Err(CasinoError::invalid("잠시 후 다시 전송해 주세요."));
+                    return Err(CasinoError::new(
+                        "CHAT_TOO_FAST",
+                        "잠시 후 다시 전송해 주세요.",
+                    ));
                 }
                 let text = message.trim();
                 if text.is_empty() || text.chars().count() > 240 {
