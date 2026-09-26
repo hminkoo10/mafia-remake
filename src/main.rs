@@ -525,6 +525,7 @@ mod embed;
 mod http_pool;
 mod runner;
 mod stock_hub;
+mod stock_web;
 
 async fn event_handler(
     ctx: &serenity::Context,
@@ -1175,6 +1176,7 @@ async fn main() -> Result<()> {
     let casino_router = casino_web::casino_router(casino_web::CasinoWebState {
         hub: casino_hub.clone(),
         static_dir: std::env::var("CASINO_STATIC_DIR").ok(),
+        stocks: Some(stock_market.clone()),
     });
     let activity_state = activity::ActivityState::new(
         games.clone(),

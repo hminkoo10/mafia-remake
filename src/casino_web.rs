@@ -30,6 +30,8 @@ include!(concat!(env!("OUT_DIR"), "/casino_static.rs"));
 pub struct CasinoWebState {
     pub hub: SharedHub,
     pub static_dir: Option<String>,
+    /// 웹 증권 화면(?view=stocks)이 쓰는 주식 시장. 없으면 증권 API가 503을 준다.
+    pub stocks: Option<crate::stock_hub::SharedStocks>,
 }
 
 pub fn casino_router(state: CasinoWebState) -> Router {
@@ -41,6 +43,7 @@ pub fn casino_router(state: CasinoWebState) -> Router {
         .layer(CompressionLayer::new());
     Router::new()
         .merge(api)
+        .merge(crate::stock_web::stock_routes())
         .route("/casino/api/ws", get(ws_handler))
         .route("/casino", get(casino_index))
         .route("/casino/", get(casino_index))
@@ -151,6 +154,7 @@ mod tests {
         let router = super::casino_router(super::CasinoWebState {
             hub,
             static_dir: None,
+            stocks: None,
         });
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -314,8 +318,9 @@ mod tests {
 
 // ------------------------------------------------------------ 개발 모드
 
-/// `mafia --casino-dev`: Discord 연결 없이 카지노 웹만 띄운다 (UI 개발·점검용).
-/// 테스트 계정 3개(각 50,000코인)와 홀덤·블랙잭 테이블 하나씩을 만들고 개인 링크를 출력한다.
+/// `mafia --casino-dev`: Discord 연결 없이 카지노·증권 웹만 띄운다 (UI 개발·점검용).
+/// 테스트 계정 3개(각 3,000,000코인: 회사 설립까지 해 볼 수 있게)와 홀덤·블랙잭 테이블을 만들고,
+/// 6시간치를 미리 돌린 주식 시장과 함께 개인 링크를 출력한다.
 pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
     use crate::casino_hub::{CasinoHub, TableBinding, personal_link};
 
@@ -325,7 +330,11 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
         .unwrap_or(8811);
     let state_path = workspace_root.join("casino-dev.json");
     let stats_path = workspace_root.join("casino-dev-stats.json");
+    let stocks_path = workspace_root.join("stocks-dev.json");
     let _ = std::fs::remove_file(&state_path);
+    // 통계 파일을 새로 만들므로 주식 시장도 새로 연다 (지난 장부가 새 코인에 다시 반영되지 않게).
+    let _ = std::fs::remove_file(&stocks_path);
+    let _ = std::fs::remove_file(workspace_root.join("stocks-dev-candles.json"));
     let users = [
         (1001u64, "테스터A"),
         (1002u64, "테스터B"),
@@ -333,14 +342,21 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
     ];
     let mut stats = mafia_remake::stats::StatsFile::default();
     for (id, name) in users {
-        crate::stats::refund_coins(&mut stats, id, name, 50_000);
+        crate::stats::refund_coins(&mut stats, id, name, 3_000_000);
     }
+    let stats_path = Arc::new(stats_path);
     let hub: SharedHub = Arc::new(CasinoHub::load(
         state_path,
         Arc::new(tokio::sync::RwLock::new(stats)),
-        Arc::new(stats_path),
+        stats_path.clone(),
     )?);
     hub.start_saver();
+    let stocks = Arc::new(crate::stock_hub::StockHub::load(
+        stocks_path,
+        hub.stats.clone(),
+        stats_path,
+    )?);
+    warm_up_dev_market(&stocks).await;
     let binding = TableBinding {
         guild_id: 0,
         channel_id: 0,
@@ -393,6 +409,7 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
             "{name} (블랙잭): {}",
             personal_link(&base, &token, &blackjack)
         );
+        println!("{name} (증권): {base}/casino/{token}?view=stocks");
     }
     let ticker = hub.clone();
     tokio::spawn(async move {
@@ -402,13 +419,80 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
             ticker.tick_all().await;
         }
     });
+    let stock_ticker = stocks.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            stock_ticker.tick().await;
+            // Discord가 없으니 알릴 뉴스는 버린다 (웹은 시장 상태의 뉴스를 읽는다).
+            let _ = stock_ticker.take_news();
+        }
+    });
     let router = casino_router(CasinoWebState {
         hub,
         static_dir: std::env::var("CASINO_STATIC_DIR").ok(),
+        stocks: Some(stocks),
     });
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+/// 개발 서버: 차트·뉴스가 비어 있지 않게 6시간 전에 연 시장을 지금까지 돌린다.
+/// 회사 화면 점검용으로 테스터C는 상장사(달빛게임즈)를, 테스터B는 공모 청약 중인 회사(별하늘푸드)를 갖는다.
+async fn warm_up_dev_market(stocks: &crate::stock_hub::StockHub) {
+    use mafia_remake::stocks::{HOUR_MS, MINUTE_MS, Sector, StockMarket, StockRules};
+    use rand::SeedableRng;
+
+    let rules = StockRules::default();
+    let now = now_ms();
+    let start = now - 6 * HOUR_MS;
+    {
+        let mut market = stocks.market.write().await;
+        *market = StockMarket::new(start, &rules);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(73);
+        let mut at = start;
+        let mut run_to = |market: &mut StockMarket, at: &mut i64, until: i64| {
+            while *at < until {
+                *at = (*at + 10 * MINUTE_MS).min(until);
+                market.tick(*at, &rules, &mut rng);
+            }
+        };
+        run_to(&mut market, &mut at, start + HOUR_MS);
+        let listed = market.found_company(
+            1003,
+            "테스터C",
+            "달빛게임즈",
+            Sector::Game,
+            2_000_000,
+            at,
+            &rules,
+        );
+        run_to(&mut market, &mut at, start + 2 * HOUR_MS);
+        if let Ok(code) = &listed
+            && market.start_ipo(1003, code, 7_500, 200, at, &rules).is_ok()
+        {
+            let _ = market.subscribe(1001, "테스터A", code, 150, at);
+            let _ = market.subscribe(1002, "테스터B", code, 100, at);
+        }
+        run_to(&mut market, &mut at, start + 3 * HOUR_MS);
+        let offering = market.found_company(
+            1002,
+            "테스터B",
+            "별하늘푸드",
+            Sector::Retail,
+            1_500_000,
+            at,
+            &rules,
+        );
+        run_to(&mut market, &mut at, now - 20 * MINUTE_MS);
+        if let Ok(code) = &offering {
+            let _ = market.start_ipo(1002, code, 6_000, 100, at, &rules);
+        }
+        run_to(&mut market, &mut at, now);
+    }
+    stocks.recover().await;
 }
 
 // ------------------------------------------------------------ 정적 페이지
@@ -605,7 +689,7 @@ fn cache_control(path: &str) -> &'static str {
 
 // ------------------------------------------------------------ 인증
 
-fn bearer_token(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<String> {
     headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -614,7 +698,11 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn error_response(status: StatusCode, code: &str, message: impl Into<String>) -> Response {
+pub(crate) fn error_response(
+    status: StatusCode,
+    code: &str,
+    message: impl Into<String>,
+) -> Response {
     (
         status,
         Json(serde_json::json!({ "error": { "code": code, "message": message.into() } })),
@@ -622,7 +710,7 @@ fn error_response(status: StatusCode, code: &str, message: impl Into<String>) ->
         .into_response()
 }
 
-fn session_or_error(
+pub(crate) fn session_or_error(
     state: &CasinoWebState,
     token: Option<String>,
 ) -> Result<CasinoSession, Response> {

@@ -1,0 +1,825 @@
+// stock_web.rs — 웹 증권 화면(HTS) API. 카지노 개인 링크 세션을 같이 쓴다 (/casino/<토큰>?view=stocks).
+// 코인이 오가는 작업은 모두 StockHub(transact)를 거치므로 Discord 명령과 같은 규칙·장부를 쓴다.
+
+use crate::casino_web::{CasinoWebState, bearer_token, error_response, session_or_error};
+use crate::stock_hub::{Need, StockHub, now_ms};
+use axum::{
+    Json, Router,
+    extract::{Query, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use mafia_remake::stocks::{
+    AccountView, Candle, CompanyDetail, CompanyStatus, MarketSummary, NewsItem, Sector, Side,
+    StockMarket, format_amount,
+};
+use serde::{Deserialize, Serialize};
+use tower_http::compression::CompressionLayer;
+
+pub fn stock_routes() -> Router<CasinoWebState> {
+    Router::new()
+        .route("/casino/api/stocks/state", get(state_handler))
+        .route("/casino/api/stocks/candles", get(candles_handler))
+        .route("/casino/api/stocks/order", post(order_handler))
+        .route("/casino/api/stocks/cancel", post(cancel_handler))
+        .route("/casino/api/stocks/subscribe", post(subscribe_handler))
+        .route("/casino/api/stocks/unsubscribe", post(unsubscribe_handler))
+        .route("/casino/api/stocks/company", post(company_handler))
+        .layer(CompressionLayer::new())
+}
+
+// ------------------------------------------------------------ 상태
+
+#[derive(Debug, Serialize)]
+pub struct SectorView {
+    pub key: Sector,
+    pub name: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StockRulesView {
+    pub enabled: bool,
+    pub day_ms: i64,
+    pub fee_ppm: i64,
+    pub tax_ppm: i64,
+    pub limit_bp: i64,
+    pub found_min_capital: i64,
+    pub found_fee_bp: i64,
+    pub ipo_fee_bp: i64,
+    pub listing_min_equity: i64,
+    pub lockup_days: i64,
+    pub max_companies: i64,
+    pub sectors: Vec<SectorView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StockMe {
+    /// JS 숫자로는 정밀도가 모자라 문자열로 보낸다.
+    pub user_id: String,
+    pub name: String,
+    /// 주식에 쓸 수 있는 코인 (진행 중인 마피아 판에 걸린 배팅은 뺀다).
+    pub coins: i64,
+}
+
+/// 청약 중인 공모.
+#[derive(Debug, Serialize)]
+pub struct OfferingView {
+    pub code: String,
+    pub name: String,
+    pub sector: &'static str,
+    pub player: bool,
+    pub founder_name: Option<String>,
+    pub price: i64,
+    pub shares: i64,
+    pub opens_at: i64,
+    pub closes_at: i64,
+    pub min_fill_bp: i64,
+    /// 지금까지 들어온 청약 수량.
+    pub requested: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StockState {
+    pub server_time: i64,
+    pub me: StockMe,
+    pub market: MarketSummary,
+    pub selected: Option<CompanyDetail>,
+    /// 고른 종목의 최근 뉴스·공시.
+    pub selected_news: Vec<NewsItem>,
+    pub account: AccountView,
+    /// 시장 전체의 최근 뉴스 (새것부터).
+    pub news: Vec<NewsItem>,
+    pub offerings: Vec<OfferingView>,
+    /// 내가 대표인 회사 (상세).
+    pub my_companies: Vec<CompanyDetail>,
+    pub rules: StockRulesView,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StateQuery {
+    #[serde(default)]
+    pub code: Option<String>,
+}
+
+fn unavailable() -> Response {
+    error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "NO_MARKET",
+        "주식 시장이 열려 있지 않습니다.",
+    )
+}
+
+fn invalid(message: String) -> Response {
+    error_response(StatusCode::BAD_REQUEST, "INVALID", message)
+}
+
+async fn build_state(stocks: &StockHub, user: u64, name: &str, code: Option<&str>) -> StockState {
+    let (rules, _) = stocks.rules().await;
+    let coins = stocks.coins_of(user).await;
+    let now = now_ms();
+    let market = stocks.market.read().await;
+    let summary = market.market_summary(now, &rules);
+    let selected_code = code
+        .and_then(|query| market.find_company(query))
+        .map(|company| company.code.clone())
+        .or_else(|| {
+            summary
+                .companies
+                .first()
+                .map(|company| company.code.clone())
+        });
+    let selected_news = selected_code
+        .as_deref()
+        .map(|code| {
+            market
+                .news
+                .iter()
+                .rev()
+                .filter(|item| item.code.as_deref() == Some(code))
+                .take(20)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let offerings = market
+        .companies
+        .values()
+        .filter_map(|company| match &company.status {
+            CompanyStatus::Subscription(offering) => Some(OfferingView {
+                code: company.code.clone(),
+                name: company.name.clone(),
+                sector: company.sector.name(),
+                player: company.is_player(),
+                founder_name: market.summary_of(company, now).founder_name,
+                price: offering.price,
+                shares: offering.shares,
+                opens_at: offering.opens_at,
+                closes_at: offering.closes_at,
+                min_fill_bp: offering.min_fill_bp,
+                requested: market
+                    .subscriptions
+                    .iter()
+                    .filter(|subscription| subscription.code == company.code)
+                    .map(|subscription| subscription.qty)
+                    .sum(),
+            }),
+            _ => None,
+        })
+        .collect();
+    let my_companies = market
+        .companies
+        .values()
+        .filter(|company| company.founder() == Some(user) && company.status.is_active())
+        .filter_map(|company| market.company_detail(&company.code, now, &rules))
+        .collect();
+    StockState {
+        server_time: now,
+        me: StockMe {
+            user_id: user.to_string(),
+            name: name.to_string(),
+            coins,
+        },
+        selected: selected_code.and_then(|code| market.company_detail(&code, now, &rules)),
+        selected_news,
+        account: market.account_view(user, now),
+        news: market.news.iter().rev().take(40).cloned().collect(),
+        offerings,
+        my_companies,
+        market: summary,
+        rules: StockRulesView {
+            enabled: rules.enabled,
+            day_ms: rules.day_ms(),
+            fee_ppm: rules.fee_ppm,
+            tax_ppm: rules.tax_ppm,
+            limit_bp: rules.limit_bp,
+            found_min_capital: rules.found_min_capital,
+            found_fee_bp: rules.found_fee_bp,
+            ipo_fee_bp: rules.ipo_fee_bp,
+            listing_min_equity: rules.listing_min_equity,
+            lockup_days: rules.lockup_days,
+            max_companies: rules.max_companies,
+            sectors: Sector::ALL
+                .iter()
+                .map(|sector| SectorView {
+                    key: *sector,
+                    name: sector.name(),
+                })
+                .collect(),
+        },
+    }
+}
+
+async fn state_handler(
+    State(state): State<CasinoWebState>,
+    headers: HeaderMap,
+    Query(query): Query<StateQuery>,
+) -> Response {
+    let session = match session_or_error(&state, bearer_token(&headers)) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(stocks) = state.stocks.as_ref() else {
+        return unavailable();
+    };
+    Json(
+        build_state(
+            stocks,
+            session.user_id,
+            &session.name,
+            query.code.as_deref(),
+        )
+        .await,
+    )
+    .into_response()
+}
+
+// ------------------------------------------------------------ 봉
+
+#[derive(Debug, Deserialize)]
+pub struct CandleQuery {
+    /// 종목 코드, 또는 종합지수는 `INDEX` (100배 정수).
+    pub code: String,
+    /// `minute`(실제 1분) 또는 `day`(게임 하루).
+    #[serde(default)]
+    pub range: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CandleResponse {
+    code: String,
+    range: &'static str,
+    candles: Vec<Candle>,
+}
+
+async fn candles_handler(
+    State(state): State<CasinoWebState>,
+    headers: HeaderMap,
+    Query(query): Query<CandleQuery>,
+) -> Response {
+    if let Err(response) = session_or_error(&state, bearer_token(&headers)) {
+        return response;
+    }
+    let Some(stocks) = state.stocks.as_ref() else {
+        return unavailable();
+    };
+    let market = stocks.market.read().await;
+    let series = if query.code == "INDEX" {
+        Some(&market.candles.index)
+    } else {
+        market.candles.series.get(&query.code)
+    };
+    let day = query.range.as_deref() == Some("day");
+    let candles = series
+        .map(|series| {
+            if day {
+                series.day.iter().copied().collect()
+            } else {
+                series.minute.iter().copied().collect()
+            }
+        })
+        .unwrap_or_default();
+    Json(CandleResponse {
+        code: query.code,
+        range: if day { "day" } else { "minute" },
+        candles,
+    })
+    .into_response()
+}
+
+// ------------------------------------------------------------ 주문·청약
+
+/// 작업 결과와 새 화면 상태 (한 번 더 불러오지 않아도 되게).
+#[derive(Debug, Serialize)]
+struct ActionResponse<T: Serialize> {
+    result: T,
+    message: String,
+    state: StockState,
+}
+
+async fn respond<T: Serialize>(
+    stocks: &StockHub,
+    user: u64,
+    name: &str,
+    code: Option<&str>,
+    result: T,
+    message: String,
+) -> Response {
+    let state = build_state(stocks, user, name, code).await;
+    Json(ActionResponse {
+        result,
+        message,
+        state,
+    })
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OrderBody {
+    pub code: String,
+    pub side: Side,
+    pub qty: i64,
+    /// 지정가 (없으면 시장가).
+    #[serde(default)]
+    pub price: Option<i64>,
+}
+
+async fn order_handler(
+    State(state): State<CasinoWebState>,
+    headers: HeaderMap,
+    Json(body): Json<OrderBody>,
+) -> Response {
+    let session = match session_or_error(&state, bearer_token(&headers)) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(stocks) = state.stocks.as_ref() else {
+        return unavailable();
+    };
+    let result = stocks
+        .order(
+            session.user_id,
+            &session.name,
+            &body.code,
+            body.side,
+            body.qty,
+            body.price,
+        )
+        .await;
+    match result {
+        Ok(result) => {
+            let side = body.side.label();
+            let resting = result.resting.map(|_| result.resting_qty);
+            let limit = format_amount(result.limit.unwrap_or_default());
+            let message = match (result.filled, resting) {
+                (0, Some(qty)) => format!("{side} {qty}주를 {limit}에 호가에 걸었습니다"),
+                (0, None) => format!("{side} 주문이 체결되지 않았습니다"),
+                (filled, None) => format!(
+                    "{filled}주 {side} 체결 (평균 {})",
+                    format_amount(result.avg_price)
+                ),
+                (filled, Some(qty)) => format!(
+                    "{filled}주 {side} 체결 (평균 {}), 남은 {qty}주는 호가에 걸었습니다",
+                    format_amount(result.avg_price)
+                ),
+            };
+            respond(
+                stocks,
+                session.user_id,
+                &session.name,
+                Some(&body.code),
+                result,
+                message,
+            )
+            .await
+        }
+        Err(message) => invalid(message),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CancelBody {
+    pub order_id: u64,
+    /// 화면에서 보고 있던 종목 (새 상태에 그대로 싣는다).
+    #[serde(default)]
+    pub code: Option<String>,
+}
+
+async fn cancel_handler(
+    State(state): State<CasinoWebState>,
+    headers: HeaderMap,
+    Json(body): Json<CancelBody>,
+) -> Response {
+    let session = match session_or_error(&state, bearer_token(&headers)) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(stocks) = state.stocks.as_ref() else {
+        return unavailable();
+    };
+    match stocks.cancel(session.user_id, body.order_id).await {
+        Ok(()) => {
+            respond(
+                stocks,
+                session.user_id,
+                &session.name,
+                body.code.as_deref(),
+                (),
+                "주문을 취소했습니다".to_string(),
+            )
+            .await
+        }
+        Err(message) => invalid(message),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubscribeBody {
+    pub code: String,
+    #[serde(default)]
+    pub qty: i64,
+}
+
+async fn subscribe_handler(
+    State(state): State<CasinoWebState>,
+    headers: HeaderMap,
+    Json(body): Json<SubscribeBody>,
+) -> Response {
+    let session = match session_or_error(&state, bearer_token(&headers)) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(stocks) = state.stocks.as_ref() else {
+        return unavailable();
+    };
+    let (user, name) = (session.user_id, session.name.as_str());
+    let (code, qty) = (body.code.as_str(), body.qty);
+    let result = stocks
+        .transact(
+            user,
+            |market, _| market.subscription_cost(code, qty).map(Need::Exactly),
+            |market, _, _, now| market.subscribe(user, name, code, qty, now),
+        )
+        .await;
+    match result {
+        Ok(deposit) => {
+            let message = format!("{qty}주 청약 (증거금 {})", format_amount(deposit));
+            respond(stocks, user, name, Some(code), deposit, message).await
+        }
+        Err(message) => invalid(message),
+    }
+}
+
+async fn unsubscribe_handler(
+    State(state): State<CasinoWebState>,
+    headers: HeaderMap,
+    Json(body): Json<SubscribeBody>,
+) -> Response {
+    let session = match session_or_error(&state, bearer_token(&headers)) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(stocks) = state.stocks.as_ref() else {
+        return unavailable();
+    };
+    let (user, name, code) = (session.user_id, session.name.as_str(), body.code.as_str());
+    let result = stocks
+        .transact(
+            user,
+            |_, _| Ok(Need::Nothing),
+            |market, _, _, _| market.cancel_subscription(user, code),
+        )
+        .await;
+    match result {
+        Ok(refund) => {
+            let message = format!("청약을 취소했습니다 (환불 {})", format_amount(refund));
+            respond(stocks, user, name, Some(code), refund, message).await
+        }
+        Err(message) => invalid(message),
+    }
+}
+
+// ------------------------------------------------------------ 회사
+
+/// 회사 작업. 설립·신주인수 말고는 내가 대표인 회사(`code`, 없으면 첫 회사)에 한다.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum CompanyAction {
+    Found {
+        name: String,
+        sector: Sector,
+        capital: i64,
+    },
+    Ipo {
+        price: i64,
+        shares: i64,
+    },
+    Dividend {
+        per_share: i64,
+    },
+    Rights {
+        shares: i64,
+        price: i64,
+    },
+    Exercise {
+        code: String,
+        qty: i64,
+    },
+    Buyback {
+        budget: i64,
+    },
+    Risk {
+        risk: u8,
+    },
+    Describe {
+        text: String,
+    },
+    /// 확인용으로 회사 이름을 그대로 적는다.
+    Dissolve {
+        confirm: String,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct CompanyTarget {
+    #[serde(default)]
+    code: Option<String>,
+}
+
+async fn company_handler(
+    State(state): State<CasinoWebState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let session = match session_or_error(&state, bearer_token(&headers)) {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(stocks) = state.stocks.as_ref() else {
+        return unavailable();
+    };
+    let target = serde_json::from_value::<CompanyTarget>(body.clone())
+        .ok()
+        .and_then(|target| target.code);
+    let action = match serde_json::from_value::<CompanyAction>(body) {
+        Ok(action) => action,
+        Err(_) => return invalid("알 수 없는 회사 작업입니다.".to_string()),
+    };
+    let (user, name) = (session.user_id, session.name.as_str());
+    let outcome = run_company_action(stocks, user, name, target, action).await;
+    match outcome {
+        Ok((message, code)) => respond(stocks, user, name, code.as_deref(), (), message).await,
+        Err(message) => invalid(message),
+    }
+}
+
+/// 회사 작업을 하고 (안내 문구, 새 상태에서 보여 줄 종목)을 돌려준다.
+async fn run_company_action(
+    stocks: &StockHub,
+    user: u64,
+    name: &str,
+    target: Option<String>,
+    action: CompanyAction,
+) -> Result<(String, Option<String>), String> {
+    match action {
+        CompanyAction::Found {
+            name: company_name,
+            sector,
+            capital,
+        } => {
+            let code = stocks
+                .transact(
+                    user,
+                    |_, rules| Ok(Need::Exactly(StockMarket::founding_cost(capital, rules))),
+                    |market, _, rules, now| {
+                        market.found_company(user, name, &company_name, sector, capital, now, rules)
+                    },
+                )
+                .await?;
+            Ok((format!("{company_name} 설립 완료"), Some(code)))
+        }
+        CompanyAction::Exercise { code, qty } => {
+            let paid = stocks
+                .transact(
+                    user,
+                    |market, _| market.rights_cost(user, &code, qty).map(Need::Exactly),
+                    |market, _, _, now| market.exercise_rights(user, name, &code, qty, now),
+                )
+                .await?;
+            Ok((
+                format!("신주 {qty}주를 인수했습니다 (납입 {})", format_amount(paid)),
+                Some(code),
+            ))
+        }
+        action => {
+            let (code, company_name) = {
+                let market = stocks.market.read().await;
+                let mut owned = market.companies.values().filter(|company| {
+                    company.founder() == Some(user) && company.status.is_active()
+                });
+                let found = match target.as_deref() {
+                    Some(code) => owned.find(|company| company.code == code),
+                    None => owned.next(),
+                };
+                let company = found.ok_or_else(|| "대표로 있는 회사가 없습니다.".to_string())?;
+                (company.code.clone(), company.name.clone())
+            };
+            let code = code.as_str();
+            let message = match action {
+                CompanyAction::Ipo { price, shares } => stocks
+                    .transact(
+                        user,
+                        |_, _| Ok(Need::Nothing),
+                        |market, _, rules, now| {
+                            market.start_ipo(user, code, price, shares, now, rules)
+                        },
+                    )
+                    .await
+                    .map(|offering| {
+                        format!(
+                            "공모 청약을 열었습니다: {}주, 공모가 {}",
+                            offering.shares,
+                            format_amount(offering.price)
+                        )
+                    })?,
+                CompanyAction::Dividend { per_share } => stocks
+                    .transact(
+                        user,
+                        |_, _| Ok(Need::Nothing),
+                        |market, _, rules, now| {
+                            market.declare_dividend(user, code, per_share, now, rules)
+                        },
+                    )
+                    .await
+                    .map(|total| format!("배당을 결정했습니다 (총 {})", format_amount(total)))?,
+                CompanyAction::Rights { shares, price } => stocks
+                    .transact(
+                        user,
+                        |_, _| Ok(Need::Nothing),
+                        |market, _, rules, now| {
+                            market.start_rights(user, code, shares, price, now, rules)
+                        },
+                    )
+                    .await
+                    .map(|()| "유상증자를 결정했습니다".to_string())?,
+                CompanyAction::Buyback { budget } => stocks
+                    .transact(
+                        user,
+                        |_, _| Ok(Need::Nothing),
+                        |market, _, rules, now| {
+                            market.start_buyback(user, code, budget, now, rules)
+                        },
+                    )
+                    .await
+                    .map(|()| "자사주 매입을 시작했습니다".to_string())?,
+                CompanyAction::Risk { risk } => stocks
+                    .transact(
+                        user,
+                        |_, _| Ok(Need::Nothing),
+                        |market, _, _, now| market.set_risk(user, code, risk, now),
+                    )
+                    .await
+                    .map(|()| format!("사업 위험도를 {risk}(으)로 바꿨습니다"))?,
+                CompanyAction::Describe { text } => stocks
+                    .transact(
+                        user,
+                        |_, _| Ok(Need::Nothing),
+                        |market, _, _, _| market.set_description(user, code, &text),
+                    )
+                    .await
+                    .map(|()| "회사 소개를 바꿨습니다".to_string())?,
+                CompanyAction::Dissolve { confirm } => {
+                    if confirm.trim() != company_name {
+                        return Err(format!(
+                            "해산하려면 회사 이름 '{company_name}'을(를) 그대로 적으세요."
+                        ));
+                    }
+                    stocks
+                        .transact(
+                            user,
+                            |_, _| Ok(Need::Nothing),
+                            |market, _, rules, now| market.dissolve(user, code, now, rules),
+                        )
+                        .await
+                        .map(|()| "해산을 결정했습니다".to_string())?
+                }
+                CompanyAction::Found { .. } | CompanyAction::Exercise { .. } => {
+                    return Err("알 수 없는 회사 작업입니다.".to_string());
+                }
+            };
+            Ok((message, Some(code.to_string())))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::casino_hub::CasinoHub;
+    use crate::casino_web::{CasinoWebState, casino_router};
+    use crate::stock_hub::StockHub;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn web_orders_move_coins_through_the_stock_hub() {
+        let dir = std::env::temp_dir().join(format!(
+            "mafia-stock-web-{}-{}",
+            std::process::id(),
+            mafia_remake::atomic_file::next_seq()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut stats = mafia_remake::stats::StatsFile::default();
+        crate::stats::refund_coins(&mut stats, 7, "투자자", 5_000_000);
+        let stats = Arc::new(tokio::sync::RwLock::new(stats));
+        let stats_path = Arc::new(dir.join("stats.json"));
+        let hub = Arc::new(
+            CasinoHub::load(dir.join("casino.json"), stats.clone(), stats_path.clone()).unwrap(),
+        );
+        let stocks =
+            Arc::new(StockHub::load(dir.join("stocks.json"), stats.clone(), stats_path).unwrap());
+        let token = hub.issue_session(7, "투자자".to_string());
+        let router = casino_router(CasinoWebState {
+            hub,
+            static_dir: None,
+            stocks: Some(stocks.clone()),
+        });
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let base = format!("http://{address}/casino/api/stocks");
+        let client = reqwest::Client::new();
+
+        let state: serde_json::Value = client
+            .get(format!("{base}/state"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(state["me"]["user_id"], "7");
+        assert_eq!(state["me"]["coins"], 5_000_000);
+        let code = state["selected"]["summary"]["code"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            state["selected"]["book"]["asks"].as_array().unwrap().len(),
+            10
+        );
+
+        let bought = client
+            .post(format!("{base}/order"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "code": code, "side": "buy", "qty": 3 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bought.status(), 200);
+        let bought: serde_json::Value = bought.json().await.unwrap();
+        assert_eq!(bought["result"]["filled"], 3);
+        let spent = bought["result"]["notional"].as_i64().unwrap()
+            + bought["result"]["fee"].as_i64().unwrap();
+        assert_eq!(bought["state"]["me"]["coins"], 5_000_000 - spent);
+        assert_eq!(bought["state"]["account"]["positions"][0]["qty"], 3);
+        assert_eq!(
+            stats.read().await.users.get("7").unwrap().coins,
+            5_000_000 - spent
+        );
+
+        // 잘못된 요청은 400과 한국어 안내, 세션이 없으면 401.
+        let rejected = client
+            .post(format!("{base}/order"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "code": code, "side": "sell", "qty": 99 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), 400);
+        let rejected: serde_json::Value = rejected.json().await.unwrap();
+        assert!(!rejected["error"]["message"].as_str().unwrap().is_empty());
+        let anonymous = client.get(format!("{base}/state")).send().await.unwrap();
+        assert_eq!(anonymous.status(), 401);
+
+        let founded = client
+            .post(format!("{base}/company"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({
+                "action": "found", "name": "웹테스트상사", "sector": "game", "capital": 1_000_000
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(founded.status(), 200);
+        let founded: serde_json::Value = founded.json().await.unwrap();
+        assert_eq!(
+            founded["state"]["my_companies"][0]["summary"]["name"],
+            "웹테스트상사"
+        );
+        let wrong_name = client
+            .post(format!("{base}/company"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "action": "dissolve", "confirm": "다른이름" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong_name.status(), 400);
+
+        let candles: serde_json::Value = client
+            .get(format!("{base}/candles?code=INDEX&range=minute"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(candles["range"], "minute");
+        assert!(candles["candles"].is_array());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

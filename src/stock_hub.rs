@@ -100,7 +100,12 @@ impl StockHub {
         stats: Arc<RwLock<StatsFile>>,
         stats_path: Arc<PathBuf>,
     ) -> Result<Self> {
-        let candles_path = path.with_file_name("stocks-candles.json");
+        // stocks.json → stocks-candles.json (개발 서버의 stocks-dev.json → stocks-dev-candles.json).
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("stocks");
+        let candles_path = path.with_file_name(format!("{stem}-candles.json"));
         let (mut market, bindings) = if mafia_remake::atomic_file::is_missing(&path) {
             (
                 StockMarket::new(now_ms(), &StockRules::default()),
@@ -476,6 +481,18 @@ impl StockHub {
     }
 
     // ------------------------------------------------------------ 조회
+
+    /// 주식에 쓸 수 있는 코인 (가진 코인에서 진행 중인 마피아 판에 걸린 배팅을 뺀다).
+    pub async fn coins_of(&self, user: u64) -> i64 {
+        let coins = self
+            .stats
+            .read()
+            .await
+            .users
+            .get(&user.to_string())
+            .map_or(0, |entry| entry.coins);
+        (coins - self.locked_bet(user)).max(0)
+    }
 
     /// 주식 시장에 있는 재산 (평가액 + 묶인 코인). 구조금 기준에 넣는다.
     pub async fn portfolio_value(&self, user: u64) -> i64 {
