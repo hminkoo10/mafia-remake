@@ -1494,23 +1494,82 @@ pub enum StockAdminAction {
     Halt,
     #[name = "거래재개"]
     Resume,
+    #[name = "시장 집계 보기"]
+    Stats,
+}
+
+/// 주식 시장이 코인을 얼마나 만들고 없앴는지 (관리자용 누적).
+pub fn market_stats_text(market: &StockMarket) -> String {
+    let stats = &market.stats;
+    let net = stats.lp_sold - stats.lp_bought + stats.dividends - stats.ipo_burned;
+    [
+        format!(
+            "시장조성자에게서 산 금액 (코인 사라짐): {}",
+            won(stats.lp_bought)
+        ),
+        format!("시장조성자에게 판 금액 (코인 생김): {}", won(stats.lp_sold)),
+        format!("플레이어끼리 체결: {}", won(stats.p2p)),
+        format!(
+            "금고로 간 수수료 / 거래세: {} / {}",
+            won(stats.fees),
+            won(stats.taxes)
+        ),
+        format!("시스템 회사 배당 (코인 생김): {}", won(stats.dividends)),
+        format!(
+            "시스템 회사 공모 대금 (코인 사라짐): {}",
+            won(stats.ipo_burned)
+        ),
+        format!(
+            "플레이어 회사 분기 실적 (회사 현금): {}",
+            signed_won(stats.company_earnings)
+        ),
+        String::new(),
+        format!(
+            "**시장이 만든 코인: {}** (판 금액 − 산 금액 + 배당 − 공모 대금)",
+            signed_won(net)
+        ),
+    ]
+    .join("\n")
+}
+
+fn signed_won(amount: i64) -> String {
+    if amount > 0 {
+        format!("+{}", won(amount))
+    } else {
+        won(amount)
+    }
 }
 
 #[poise::command(
     slash_command,
     rename = "주식관리",
-    description_localized("ko", "관리자: 종목 거래정지·재개")
+    description_localized("ko", "관리자: 종목 거래정지·재개, 시장 코인 집계")
 )]
 pub async fn manage_stocks(
     ctx: Context<'_>,
     #[description = "동작"] 동작: StockAdminAction,
-    #[description = "종목"]
+    #[description = "종목 (거래정지·재개 때)"]
     #[autocomplete = "autocomplete_company"]
-    종목: String,
+    종목: Option<String>,
 ) -> Result<(), Error> {
     if !require_manager(ctx).await? {
         return Ok(());
     }
+    if 동작 == StockAdminAction::Stats {
+        let text = market_stats_text(&*ctx.data().stocks.market.read().await);
+        reply_embed(
+            ctx,
+            text,
+            "주식 시장 집계",
+            serenity::Colour::DARK_GREEN,
+            true,
+        )
+        .await?;
+        return Ok(());
+    }
+    let Some(종목) = 종목 else {
+        return fail(ctx, "거래정지·재개할 종목을 골라 주세요.").await;
+    };
     let code = match resolve(ctx, &종목).await {
         Ok(code) => code,
         Err(message) => return fail(ctx, message).await,
@@ -1842,4 +1901,23 @@ pub fn render_candle_chart(title: &str, candles: &[Candle], minute: bool) -> Opt
         .write_to(&mut bytes, ImageFormat::Png)
         .ok()?;
     Some(bytes.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::market_stats_text;
+    use mafia_remake::stocks::{StockMarket, StockRules};
+
+    #[test]
+    fn market_stats_show_the_coins_the_market_made() {
+        let mut market = StockMarket::new(0, &StockRules::default());
+        market.stats.lp_bought = 1_000;
+        market.stats.lp_sold = 1_500;
+        market.stats.dividends = 200;
+        market.stats.ipo_burned = 100;
+        market.stats.company_earnings = -300;
+        let text = market_stats_text(&market);
+        assert!(text.contains("시장이 만든 코인: +600원"), "{text}");
+        assert!(text.contains("(회사 현금): -300원"), "{text}");
+    }
 }
