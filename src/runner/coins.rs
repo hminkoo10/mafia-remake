@@ -82,12 +82,21 @@ pub fn star_vote_components(
     vec![serenity::CreateActionRow::SelectMenu(select)]
 }
 
-/// 게임 결과 발표 뒤: 배팅 정산 안내 → 스타플레이어 투표(10초) → 상금 지급.
+/// 판이 끝난 뒤 알릴 코인 벌이 (참여 보상, 이 판으로 오늘의 마피아 미션을 끝낸 사람).
+#[derive(Debug, Default)]
+pub struct GameRewardNotice {
+    pub rewards: Vec<stats::GameReward>,
+    pub rules: stats::RewardRules,
+    pub mission_done: Vec<String>,
+}
+
+/// 게임 결과 발표 뒤: 배팅 정산 안내 → 참여 보상 → 스타플레이어 투표(10초) → 상금 지급.
 pub async fn announce_coin_results(
     ctx: &serenity::Context,
     data: &Data,
     running: &Arc<RwLock<RunningGame>>,
     settlements: &[stats::BetSettlement],
+    rewards: &GameRewardNotice,
 ) {
     if !settlements.is_empty() {
         let lines = settlements
@@ -118,6 +127,28 @@ pub async fn announce_coin_results(
         .await
         {
             eprintln!("failed to announce bet settlements: {error:?}");
+        }
+    }
+    if let Some(mut text) = crate::commands::game_reward_text(&rewards.rewards, &rewards.rules) {
+        if !rewards.mission_done.is_empty() {
+            text.push_str(&format!(
+                "\n\n🎯 오늘의 마피아 미션 달성: {} — `/미션`으로 보상을 받으세요.",
+                rewards.mission_done.join(", ")
+            ));
+        }
+        if let Err(error) = send_game_embed(
+            ctx,
+            running,
+            text,
+            "참여 보상",
+            serenity::Colour::DARK_GREEN,
+            vec![],
+            true,
+            true,
+        )
+        .await
+        {
+            eprintln!("failed to announce game rewards: {error:?}");
         }
     }
     run_star_player_vote(ctx, data, running).await;

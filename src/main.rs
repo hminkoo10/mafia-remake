@@ -813,6 +813,8 @@ fn bot_commands() -> Vec<poise::Command<Data, Error>> {
         commands::memo(),
         commands::show_my_info(),
         commands::claim_attendance(),
+        commands::missions(),
+        commands::achievements(),
         commands::set_bet(),
         commands::gift_coins(),
         commands::treasury_info(),

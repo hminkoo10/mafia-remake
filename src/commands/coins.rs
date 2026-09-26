@@ -87,31 +87,73 @@ pub(crate) fn recent_coupon_text(entry: &stats::PlayerStats) -> String {
     description_localized("ko", "하루 한 번(한국 시간 기준) 출석해 코인을 받습니다.")
 )]
 pub async fn claim_attendance(ctx: Context<'_>) -> Result<(), Error> {
-    let amount = ctx.data().config.read().await.attendance_coins;
+    let (amount, rules) = {
+        let config = ctx.data().config.read().await;
+        (config.attendance_coins, config.reward_rules())
+    };
     let user = ctx.author();
     let today = stats::kst_today();
-    let (outcome, snapshot) = {
+    let yesterday = stats::kst_yesterday();
+    let (outcome, streak, snapshot) = {
         let mut stats_file = ctx.data().stats.write().await;
+        let previous = stats_file
+            .users
+            .get(&user.id.get().to_string())
+            .map(|entry| entry.last_attendance_date.clone())
+            .unwrap_or_default();
         let outcome =
             stats::claim_attendance(&mut stats_file, user.id.get(), &user.name, amount, &today);
-        (outcome, stats_file.clone())
+        let streak = matches!(outcome, stats::AttendanceOutcome::Claimed { .. }).then(|| {
+            stats::apply_attendance_streak(
+                &mut stats_file,
+                user.id.get(),
+                &user.name,
+                &today,
+                &yesterday,
+                &previous,
+                &rules,
+            )
+        });
+        (outcome, streak, stats_file.clone())
     };
     match outcome {
         stats::AttendanceOutcome::Claimed { amount, balance } => {
             save_stats_snapshot(ctx.data(), snapshot).await;
+            let (streak_days, bonus, balance) = streak.map_or((1, 0, balance), |streak| {
+                (streak.streak, streak.bonus, streak.balance)
+            });
+            let bonus_log = if bonus > 0 {
+                format!(", 연속 출석 보너스 {}", stats::coin_text(bonus))
+            } else {
+                String::new()
+            };
             ctx.data().audit.push(
                 crate::audit_log::COINS,
                 format!(
-                    "📅 {} 출석 {} (보유 코인 {})",
+                    "📅 {} 출석 {} (연속 {streak_days}일{bonus_log}, 보유 코인 {})",
                     user.name,
                     stats::coin_text(amount),
                     stats::coin_text(balance)
                 ),
             );
+            let streak_line = if bonus > 0 {
+                format!(
+                    "🔥 연속 출석 {streak_days}일째! 보너스 **+{}**",
+                    stats::coin_text(bonus)
+                )
+            } else if rules.streak_week > 0 {
+                format!(
+                    "🔥 연속 출석 {streak_days}일째 (7일마다 +{}, 다음 보너스까지 {}일)",
+                    stats::coin_text(rules.streak_week),
+                    7 - streak_days % 7
+                )
+            } else {
+                format!("🔥 연속 출석 {streak_days}일째")
+            };
             reply_embed(
                 ctx,
                 format!(
-                    "출석 완료! **{}**을 받았습니다.\n보유 코인: **{}**",
+                    "출석 완료! **{}**을 받았습니다.\n{streak_line}\n보유 코인: **{}**",
                     stats::coin_text(amount),
                     stats::coin_text(balance)
                 ),

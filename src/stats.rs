@@ -86,6 +86,9 @@ pub struct StatsFile {
     /// 주식 시장 장부 중 코인에 반영한 마지막 번호 (같은 이동을 두 번 반영하지 않는다).
     #[serde(default)]
     pub stock_ledger: u64,
+    /// 참여 보상·미션·업적·연속 출석으로 새로 발행한 코인 누적.
+    #[serde(default)]
+    pub reward_totals: RewardTotals,
     /// 저장 순서용 스냅샷 번호 (파일에는 쓰지 않는다). `SnapshotSeq` 참고.
     #[serde(skip)]
     snapshot_seq: SnapshotSeq,
@@ -184,6 +187,9 @@ pub struct PlayerStats {
     /// 코인 순환: 롤링·주간 손익·환급·구조금 기록.
     #[serde(default)]
     pub economy: EconomyRecord,
+    /// 코인 벌이: 오늘의 미션 진행, 받은 업적, 연속 출석.
+    #[serde(default)]
+    pub rewards: RewardRecord,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +258,7 @@ impl Default for PlayerStats {
             coupon_points_exchanged: 0,
             coupons: Vec::new(),
             economy: EconomyRecord::default(),
+            rewards: RewardRecord::default(),
         }
     }
 }
@@ -1398,6 +1405,8 @@ mod coins;
 pub use self::coins::*;
 mod economy;
 pub use self::economy::*;
+mod rewards;
+pub use self::rewards::*;
 
 #[cfg(test)]
 mod tests;

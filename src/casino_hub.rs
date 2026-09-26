@@ -2094,6 +2094,8 @@ fn record_round_economy(
     stats::apply_house_result(stats_file, house_delta, rules);
     let counts_rolling = result.game == GameKind::Blackjack || result.rake > 0;
     for entry in &result.results {
+        // 코인 벌이: 일일 미션·업적용 카지노 판 수.
+        stats::record_casino_hand(stats_file, entry.user_id, &entry.name, &day);
         if counts_rolling {
             stats::record_rolling(stats_file, entry.user_id, &entry.name, entry.wagered, &day);
         }
@@ -2119,6 +2121,9 @@ fn record_round_economy(
         })
         .map(|entry| (entry.user_id, entry.name.clone()))
         .collect::<Vec<_>>();
+    for (user_id, name) in &hitters {
+        stats::record_jackpot(stats_file, *user_id, name);
+    }
     let shares = stats::pay_jackpot(stats_file, &hitters, &winners, &others, rules);
     if shares.is_empty() {
         return None;
@@ -2232,7 +2237,10 @@ mod economy_tests {
             0,
         );
         record_round_economy(&mut stats_file, &unraked, 0, &rules);
-        assert!(!stats_file.users.contains_key("3"));
+        let gamma = &stats_file.users["3"];
+        assert!(gamma.economy.rolling.is_empty() && gamma.economy.house_net.is_empty());
+        // 코인 벌이용 판 수는 레이크와 상관없이 센다.
+        assert_eq!(gamma.rewards.day_hands, 1);
         let raked = hand(
             GameKind::Holdem,
             vec![seat_result(3, 2_000, -2_000), seat_result(4, 2_000, 1_900)],

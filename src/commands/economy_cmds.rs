@@ -20,7 +20,16 @@ pub async fn treasury_info(ctx: Context<'_>) -> Result<(), Error> {
             .get(&user_id.to_string())
             .map(|entry| entry.economy.clone())
             .unwrap_or_default();
-        treasury_text(&treasury, &economy, &rules, &today, &week)
+        let totals = &stats_read.reward_totals;
+        format!(
+            "{}\n\n**코인 벌기로 새로 발행한 코인** {} (참여 보상 {} · 미션 {} · 업적 {} · 연속 출석 {}) — `/미션`, `/업적`",
+            treasury_text(&treasury, &economy, &rules, &today, &week),
+            stats::coin_text(totals.total()),
+            stats::coin_text(totals.participation),
+            stats::coin_text(totals.missions),
+            stats::coin_text(totals.achievements),
+            stats::coin_text(totals.streak)
+        )
     };
     reply_embed(ctx, message, "복지 금고", serenity::Colour::GOLD, true).await?;
     Ok(())

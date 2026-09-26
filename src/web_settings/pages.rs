@@ -1061,6 +1061,14 @@ pub(crate) fn config_value(config: &BotConfig, name: &str) -> String {
         "chat_slowmode_seconds" => config.chat_slowmode_seconds.to_string(),
         "attendance_coins" => config.attendance_coins.to_string(),
         "star_player_coins" => config.star_player_coins.to_string(),
+        "reward_game_coins" => config.reward_game_coins.to_string(),
+        "reward_win_coins" => config.reward_win_coins.to_string(),
+        "reward_daily_games" => config.reward_daily_games.to_string(),
+        "mission_coins" => config.mission_coins.to_string(),
+        "mission_bonus_coins" => config.mission_bonus_coins.to_string(),
+        "achievement_reward_pct" => config.achievement_reward_pct.to_string(),
+        "streak_week_coins" => config.streak_week_coins.to_string(),
+        "streak_month_coins" => config.streak_month_coins.to_string(),
         "stock_enabled" => config.stock_enabled.to_string(),
         "stock_day_minutes" => config.stock_day_minutes.to_string(),
         "stock_fee_ppm" => percent_fine_text(config.stock_fee_ppm),
@@ -1329,6 +1337,22 @@ pub(crate) fn set_int(
         "chat_slowmode_seconds" => config.chat_slowmode_seconds = value,
         "attendance_coins" => config.attendance_coins = value as i64,
         "star_player_coins" => config.star_player_coins = value as i64,
+        "reward_game_coins" => config.reward_game_coins = i64::try_from(value).unwrap_or(i64::MAX),
+        "reward_win_coins" => config.reward_win_coins = i64::try_from(value).unwrap_or(i64::MAX),
+        "reward_daily_games" => {
+            config.reward_daily_games = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "mission_coins" => config.mission_coins = i64::try_from(value).unwrap_or(i64::MAX),
+        "mission_bonus_coins" => {
+            config.mission_bonus_coins = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "achievement_reward_pct" => {
+            config.achievement_reward_pct = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "streak_week_coins" => config.streak_week_coins = i64::try_from(value).unwrap_or(i64::MAX),
+        "streak_month_coins" => {
+            config.streak_month_coins = i64::try_from(value).unwrap_or(i64::MAX)
+        }
         "stock_day_minutes" => config.stock_day_minutes = i64::try_from(value).unwrap_or(i64::MAX),
         "stock_fee_ppm" => config.stock_fee_ppm = i64::try_from(value).unwrap_or(i64::MAX),
         "stock_tax_ppm" => config.stock_tax_ppm = i64::try_from(value).unwrap_or(i64::MAX),

@@ -725,12 +725,14 @@ pub async fn announce_winner(
         eprintln!("failed to announce prophet victory: {error:?}");
     }
     let mut bet_settlements = Vec::new();
+    let mut reward_notice = GameRewardNotice::default();
     let mut rating_log = Vec::new();
     let mut rating_log_chunks = Vec::new();
     let mut rank_change_chunks = Vec::new();
     if let Some((game_snapshot, initial_roles, elapsed_seconds, bets)) = record_payload {
         let lock_game_key = running.read().await.activity_game_key.clone();
         let economy_rules = data.config.read().await.economy_rules();
+        let reward_rules = data.config.read().await.reward_rules();
         let (recorded_rating_log, stats_snapshot) = {
             let mut stats_file = data.stats.write().await;
             // [배팅] 이 판을 기록하기 전의 전적으로 배율을 정해 정산한다.
@@ -762,8 +764,45 @@ pub async fn announce_winner(
                 elapsed_seconds,
                 winner,
             );
+            // 코인 벌이: 하루 한도 안의 참여 보상과, 이 판으로 오늘의 마피아 미션을 막 끝낸 사람.
+            let today = stats::kst_today();
+            reward_notice.rewards = stats::grant_game_rewards(
+                &mut stats_file,
+                &game_snapshot,
+                winner,
+                &reward_rules,
+                &today,
+            );
+            reward_notice.rules = reward_rules;
+            if reward_rules.mission_coins > 0 {
+                reward_notice.mission_done = game_snapshot
+                    .players
+                    .iter()
+                    .filter(|player| {
+                        let entry = stats_file.users.get(&player.user_id.to_string());
+                        stats::mission_status(entry, player.user_id, &today, 0)
+                            .first()
+                            .is_some_and(|status| {
+                                !status.claimed && status.progress == status.mission.target
+                            })
+                    })
+                    .map(|player| player.name.clone())
+                    .collect();
+            }
             (rating_log, stats_file.clone())
         };
+        let paid = reward_notice
+            .rewards
+            .iter()
+            .filter(|reward| reward.amount > 0)
+            .map(|reward| format!("{} +{}", reward.name, stats::coin_text(reward.amount)))
+            .collect::<Vec<_>>();
+        if !paid.is_empty() {
+            data.audit.push(
+                crate::audit_log::COINS,
+                format!("🎮 마피아 참여 보상: {}", paid.join(", ")),
+            );
+        }
         let labeled_rating_log = {
             let running_read = running.read().await;
             rating_log_with_result_labels(&running_read, &recorded_rating_log)
@@ -835,7 +874,7 @@ pub async fn announce_winner(
     {
         Ok(Some(image)) => match send_game_result_image(ctx, running, image).await {
             Ok(_) => {
-                announce_coin_results(ctx, data, running, &bet_settlements).await;
+                announce_coin_results(ctx, data, running, &bet_settlements, &reward_notice).await;
                 return Ok(true);
             }
             Err(error) => eprintln!("failed to announce game result image: {error:?}"),
@@ -904,6 +943,6 @@ pub async fn announce_winner(
             eprintln!("failed to announce rating log: {error:?}");
         }
     }
-    announce_coin_results(ctx, data, running, &bet_settlements).await;
+    announce_coin_results(ctx, data, running, &bet_settlements, &reward_notice).await;
     Ok(true)
 }

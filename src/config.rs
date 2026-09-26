@@ -161,6 +161,23 @@ pub struct BotConfig {
     pub relief_amount: i64,
     #[serde(default = "default_relief_gift_lock_hours")]
     pub relief_gift_lock_hours: i64,
+    /// 코인 벌이 (`stats::RewardRules` 참고). 0이면 그 보상을 끈다.
+    #[serde(default = "default_reward_game_coins")]
+    pub reward_game_coins: i64,
+    #[serde(default = "default_reward_win_coins")]
+    pub reward_win_coins: i64,
+    #[serde(default = "default_reward_daily_games")]
+    pub reward_daily_games: i64,
+    #[serde(default = "default_mission_coins")]
+    pub mission_coins: i64,
+    #[serde(default = "default_mission_bonus_coins")]
+    pub mission_bonus_coins: i64,
+    #[serde(default = "default_achievement_reward_pct")]
+    pub achievement_reward_pct: i64,
+    #[serde(default = "default_streak_week_coins")]
+    pub streak_week_coins: i64,
+    #[serde(default = "default_streak_month_coins")]
+    pub streak_month_coins: i64,
     /// 주식 시장 (`stocks::StockRules` 참고). 비율: _bp 만분율, _ppm 백만분율.
     #[serde(default = "default_stock_enabled")]
     pub stock_enabled: bool,
@@ -298,6 +315,21 @@ impl BotConfig {
         }
     }
 
+    /// 코인 벌이 규칙 (참여 보상·일일 미션·업적·연속 출석). 금액은 0 이상으로 잘라서 쓴다.
+    pub fn reward_rules(&self) -> crate::stats::RewardRules {
+        let amount = |value: i64| value.max(0);
+        crate::stats::RewardRules {
+            game_coins: amount(self.reward_game_coins),
+            win_coins: amount(self.reward_win_coins),
+            daily_games: self.reward_daily_games.clamp(0, 100),
+            mission_coins: amount(self.mission_coins),
+            mission_bonus: amount(self.mission_bonus_coins),
+            achievement_pct: self.achievement_reward_pct.clamp(0, 1_000),
+            streak_week: amount(self.streak_week_coins),
+            streak_month: amount(self.streak_month_coins),
+        }
+    }
+
     /// 코인 순환 규칙. 비율은 0~100%, 금액은 0 이상으로 잘라서 쓴다.
     pub fn economy_rules(&self) -> crate::stats::EconomyRules {
         let bp = |value: i64| value.clamp(0, crate::stats::BP_SCALE);
@@ -390,6 +422,30 @@ const fn default_relief_amount() -> i64 {
 }
 const fn default_relief_gift_lock_hours() -> i64 {
     crate::stats::DEFAULT_RELIEF_GIFT_LOCK_HOURS
+}
+const fn default_reward_game_coins() -> i64 {
+    crate::stats::DEFAULT_REWARD_GAME_COINS
+}
+const fn default_reward_win_coins() -> i64 {
+    crate::stats::DEFAULT_REWARD_WIN_COINS
+}
+const fn default_reward_daily_games() -> i64 {
+    crate::stats::DEFAULT_REWARD_DAILY_GAMES
+}
+const fn default_mission_coins() -> i64 {
+    crate::stats::DEFAULT_MISSION_COINS
+}
+const fn default_mission_bonus_coins() -> i64 {
+    crate::stats::DEFAULT_MISSION_BONUS_COINS
+}
+const fn default_achievement_reward_pct() -> i64 {
+    crate::stats::DEFAULT_ACHIEVEMENT_REWARD_PCT
+}
+const fn default_streak_week_coins() -> i64 {
+    crate::stats::DEFAULT_STREAK_WEEK_COINS
+}
+const fn default_streak_month_coins() -> i64 {
+    crate::stats::DEFAULT_STREAK_MONTH_COINS
 }
 const fn default_stock_enabled() -> bool {
     true

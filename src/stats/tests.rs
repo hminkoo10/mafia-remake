@@ -1399,3 +1399,218 @@ fn percent_helpers_and_week_keys() {
     assert!(week_key(date("2026-03-02")) < week_key(date("2026-12-28")));
     assert!(week_key(date("2026-12-28")) < week_key(date("2027-01-04")));
 }
+
+// ------------------------------------------------------------ 코인 벌이 (참여 보상·미션·업적·연속 출석)
+
+fn reward_rules() -> RewardRules {
+    RewardRules {
+        game_coins: 1_000,
+        win_coins: 1_000,
+        daily_games: 2,
+        mission_coins: 2_000,
+        mission_bonus: 3_000,
+        achievement_pct: 100,
+        streak_week: 10_000,
+        streak_month: 30_000,
+    }
+}
+
+#[test]
+fn game_rewards_pay_winners_more_within_the_daily_limit() {
+    let game = rating_test_game();
+    let mut stats = StatsFile::default();
+    let rules = reward_rules();
+    let first = grant_game_rewards(&mut stats, &game, Winner::Citizen, &rules, "2026-09-26");
+    assert_eq!(first.len(), 4);
+    for reward in &first {
+        assert_eq!(reward.amount, if reward.won { 2_000 } else { 1_000 });
+    }
+    grant_game_rewards(&mut stats, &game, Winner::Citizen, &rules, "2026-09-26");
+    let third = grant_game_rewards(&mut stats, &game, Winner::Citizen, &rules, "2026-09-26");
+    assert!(
+        third.iter().all(|reward| reward.amount == 0),
+        "하루 2판까지만 받는다"
+    );
+    let entry = &stats.users["1"];
+    assert_eq!(entry.rewards.day_games, 3, "미션용 판 수는 계속 센다");
+    let paid = first.iter().map(|reward| reward.amount).sum::<i64>() * 2;
+    assert_eq!(stats.reward_totals.participation, paid);
+
+    let next_day = grant_game_rewards(&mut stats, &game, Winner::Citizen, &rules, "2026-09-27");
+    assert!(
+        next_day.iter().all(|reward| reward.amount > 0),
+        "날이 바뀌면 다시 받는다"
+    );
+    assert_eq!(stats.users["1"].rewards.day_games, 1);
+
+    let off = RewardRules {
+        game_coins: 0,
+        ..rules
+    };
+    let none = grant_game_rewards(&mut stats, &game, Winner::Citizen, &off, "2026-09-28");
+    assert!(none.iter().all(|reward| reward.amount == 0), "0이면 끈다");
+}
+
+#[test]
+fn daily_missions_change_by_day_but_not_within_a_day() {
+    assert_eq!(
+        daily_missions(7, "2026-09-26"),
+        daily_missions(7, "2026-09-26")
+    );
+    let categories = daily_missions(7, "2026-09-26")
+        .iter()
+        .map(|mission| mission.category)
+        .collect::<Vec<_>>();
+    assert_eq!(categories, vec!["마피아", "카지노", "주식"]);
+    let mafia = (1..=28)
+        .map(|day| {
+            daily_missions(7, &format!("2026-09-{day:02}"))[0]
+                .id
+                .clone()
+        })
+        .collect::<HashSet<_>>();
+    assert!(mafia.len() >= 2, "날마다 바뀐다: {mafia:?}");
+}
+
+#[test]
+fn missions_are_paid_once_and_all_three_add_a_bonus() {
+    let mut stats = StatsFile::default();
+    let rules = reward_rules();
+    let today = "2026-09-26";
+    {
+        let entry = stats.users.entry("1".to_string()).or_default();
+        entry.rewards.day = today.to_string();
+        entry.rewards.day_games = 5;
+        entry.rewards.day_wins = 5;
+        entry.rewards.day_hands = 50;
+    }
+    let (statuses, claim) = claim_missions(&mut stats, 1, "Alpha", today, 0, &rules);
+    assert_eq!(claim.total, 4_000, "마피아·카지노 두 개");
+    assert!(statuses[0].claimed && statuses[1].claimed && !statuses[2].done);
+    let (_, again) = claim_missions(&mut stats, 1, "Alpha", today, 0, &rules);
+    assert_eq!(again.total, 0, "한 번만 받는다");
+    let (_, stocks) = claim_missions(&mut stats, 1, "Alpha", today, 5, &rules);
+    assert_eq!(stocks.total, 2_000 + 3_000, "주식 미션과 세 개 보너스");
+    assert!(mission_bonus_claimed(stats.users.get("1"), today));
+    assert_eq!(stats.users["1"].coins, 9_000);
+    assert_eq!(stats.reward_totals.missions, 9_000);
+    // 다음 날에는 진행이 새로 시작한다.
+    let tomorrow = mission_status(stats.users.get("1"), 1, "2026-09-27", 0);
+    assert!(
+        tomorrow
+            .iter()
+            .all(|status| status.progress == 0 && !status.claimed)
+    );
+}
+
+#[test]
+fn achievements_pay_once_and_follow_the_reward_rate() {
+    let mut stats = StatsFile::default();
+    {
+        let entry = stats.users.entry("1".to_string()).or_default();
+        entry.games = 10;
+        entry.wins = 1;
+    }
+    let half = RewardRules {
+        achievement_pct: 50,
+        ..reward_rules()
+    };
+    let (_, claim) = claim_achievements(&mut stats, 1, "Alpha", StockProgress::default(), &half);
+    // 첫 판 2,000 + 10판 5,000 + 첫 승리 3,000의 절반.
+    assert_eq!(claim.total, 5_000);
+    let (_, again) = claim_achievements(
+        &mut stats,
+        1,
+        "Alpha",
+        StockProgress::default(),
+        &reward_rules(),
+    );
+    assert_eq!(again.total, 0, "받은 업적은 다시 주지 않는다");
+    let stock = StockProgress {
+        trades: 3,
+        founded: 1,
+        listed: 0,
+    };
+    let off = RewardRules {
+        achievement_pct: 0,
+        ..reward_rules()
+    };
+    let (statuses, none) = claim_achievements(&mut stats, 1, "Alpha", stock, &off);
+    assert_eq!(none.total, 0);
+    assert!(
+        statuses
+            .iter()
+            .any(|status| status.achievement.id == "stock-1" && status.done && !status.claimed),
+        "보상이 꺼져 있으면 받지 않고 남겨 둔다"
+    );
+    let (_, later) = claim_achievements(&mut stats, 1, "Alpha", stock, &reward_rules());
+    assert_eq!(later.total, 2_000 + 5_000, "첫 주식 거래 + 회사 세우기");
+    assert_eq!(stats.reward_totals.achievements, 5_000 + 7_000);
+}
+
+#[test]
+fn attendance_streak_pays_every_seventh_day_and_resets_after_a_gap() {
+    let mut stats = StatsFile::default();
+    let rules = reward_rules();
+    let mut bonuses = Vec::new();
+    for day in 1..=7 {
+        let today = format!("2026-09-{day:02}");
+        let yesterday = format!("2026-09-{:02}", day - 1);
+        let previous = stats
+            .users
+            .get("1")
+            .map(|entry| entry.last_attendance_date.clone())
+            .unwrap_or_default();
+        claim_attendance(&mut stats, 1, "Alpha", 10_000, &today);
+        let streak = apply_attendance_streak(
+            &mut stats, 1, "Alpha", &today, &yesterday, &previous, &rules,
+        );
+        assert_eq!(streak.streak, day);
+        bonuses.push(streak.bonus);
+    }
+    assert_eq!(bonuses, vec![0, 0, 0, 0, 0, 0, 10_000]);
+    assert_eq!(stats.users["1"].coins, 7 * 10_000 + 10_000);
+    // 같은 날 다시 세지 않는다.
+    let same = apply_attendance_streak(
+        &mut stats,
+        1,
+        "Alpha",
+        "2026-09-07",
+        "2026-09-06",
+        "",
+        &rules,
+    );
+    assert_eq!((same.streak, same.bonus), (7, 0));
+    // 하루를 건너뛰면 다시 1일부터.
+    let gap = apply_attendance_streak(
+        &mut stats,
+        1,
+        "Alpha",
+        "2026-09-09",
+        "2026-09-08",
+        "",
+        &rules,
+    );
+    assert_eq!(gap.streak, 1);
+    // 연속 기록이 없던 사람도 어제 출석했으면 이어진다.
+    let mut fresh = StatsFile::default();
+    let carried = apply_attendance_streak(
+        &mut fresh,
+        2,
+        "Beta",
+        "2026-09-26",
+        "2026-09-25",
+        "2026-09-25",
+        &rules,
+    );
+    assert_eq!(carried.streak, 2);
+}
+
+#[test]
+fn kst_day_starts_at_korean_midnight() {
+    // 2026-09-26 15:00 UTC = 2026-09-27 00:00 KST.
+    let midnight = 1_790_434_800_000;
+    assert_eq!(kst_day_start_ms(midnight), midnight);
+    assert_eq!(kst_day_start_ms(midnight + 5_000), midnight);
+    assert_eq!(kst_day_start_ms(midnight - 1), midnight - 24 * 3_600_000);
+}
