@@ -100,6 +100,7 @@ impl StockMarket {
                 impact: 0.0,
                 garch: 1.0,
                 last_shock: 0.0,
+                volume_carry: 0.0,
                 adv: entry.adv,
                 depth: (entry.adv / 40).max(1),
                 spread_bp: entry.spread_bp,
@@ -568,9 +569,20 @@ impl StockMarket {
         company.mid = price;
         company.high = company.high.max(price);
         company.low = company.low.min(price);
-        // 시뮬레이션 거래량 (차트용): 평균 거래량 × 장중 패턴 × 움직임.
-        let expected = company.adv as f64 * dt_day * intraday * (1.0 + shock.abs());
-        let volume = (expected * (0.5 + volume_noise)).floor() as i64;
+        // 시뮬레이션 거래량 (차트용): 평균 거래량 × 장중 패턴 × 움직임. 플레이어 회사는 주식이 적어
+        // 평균 거래량(발행 주식의 2%, 가격 영향·호가 수량용)으로는 거래가 없는 종목처럼 보이므로,
+        // 발행 주식의 30%쯤이 하루에 오가는 것으로 본다. 틱마다 1주에 못 미치는 몫은 버리지 않고
+        // 다음 틱으로 넘긴다 (버리면 거래량이 적은 종목은 늘 0주였다).
+        let daily = if company.is_player() {
+            (company.shares.saturating_mul(3) / 10).max(company.adv)
+        } else {
+            company.adv
+        };
+        let expected =
+            daily as f64 * dt_day * intraday * (1.0 + shock.abs()) * (0.5 + volume_noise)
+                + company.volume_carry;
+        let volume = expected.floor().max(0.0) as i64;
+        company.volume_carry = expected - volume as f64;
         company.volume = company.volume.saturating_add(volume);
         company.turnover = company
             .turnover

@@ -540,6 +540,28 @@ fn listed_company(market: &mut StockMarket) -> (String, i64) {
 }
 
 #[test]
+fn small_player_companies_still_show_trading_volume() {
+    // 600주짜리 플레이어 회사: 틱마다 1주 미만인 거래량이 버려지지 않고 쌓여 하루 거래량과 분봉에 보인다.
+    let rules = quiet();
+    let mut market = market();
+    let (code, now) = listed_company(&mut market);
+    assert_eq!(market.companies[&code].shares, 600);
+    // 다음 게임일 하루를 통째로 돌린다 (거래량은 게임일마다 새로 센다).
+    let end = (rules.day_of(now) + 2) * rules.day_ms() - 1;
+    market.tick(end, &rules, &mut rng());
+    let company = &market.companies[&code];
+    assert!(
+        company.volume >= company.shares / 5 && company.volume <= company.shares * 2,
+        "하루 거래량 {}주",
+        company.volume
+    );
+    let series = &market.candles.series[&code];
+    let last_day = series.minute.iter().rev().take(60).collect::<Vec<_>>();
+    let busy = last_day.iter().filter(|candle| candle.v > 0).count();
+    assert!(busy >= 40, "분봉 60개 중 {busy}개에만 거래량이 있다");
+}
+
+#[test]
 fn a_declared_dividend_is_paid_next_day_and_keeps_wealth_neutral() {
     let rules = quiet();
     let mut market = market();

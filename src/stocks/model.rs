@@ -307,6 +307,9 @@ pub struct Company {
     /// 지난 틱의 표준화 충격 (GARCH 갱신용).
     #[serde(default)]
     pub last_shock: f64,
+    /// 시뮬레이션 거래량 중 1주에 못 미쳐 다음 틱으로 넘긴 몫.
+    #[serde(skip)]
+    pub volume_carry: f64,
 
     // --- 유동성
     /// 게임 하루 평균 거래량 (주).
