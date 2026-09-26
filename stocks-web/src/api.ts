@@ -1,5 +1,5 @@
 // 증권 사이트 API (/stocks/api/...). 개인 링크(/stocks/<토큰>)의 토큰으로 인증한다.
-import type { ActionResponse, CandleRange, CandleResponse, CompanyAction, OrderResult, Side, StockState } from "./types";
+import type { ActionResponse, AdminAction, CandleRange, CandleResponse, CompanyAction, OrderResult, RankingResponse, Side, StockState } from "./types";
 
 /** 서버가 거절한 요청 (안내 문구는 서버가 준다). */
 export class ApiError extends Error {
@@ -99,4 +99,12 @@ export function unsubscribeIpo(token: string, code: string): Promise<ActionRespo
 
 export function companyAction(token: string, action: CompanyAction): Promise<ActionResponse<null>> {
   return post("/company", token, action);
+}
+
+export function fetchRanking(token: string): Promise<RankingResponse> {
+  return request("/ranking", token);
+}
+
+export function adminAction(token: string, action: AdminAction): Promise<ActionResponse<null>> {
+  return post("/admin", token, action);
 }

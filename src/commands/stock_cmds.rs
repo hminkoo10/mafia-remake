@@ -995,10 +995,34 @@ pub async fn stock_web(ctx: Context<'_>) -> Result<(), Error> {
         .casino
         .issue_session(ctx.author().id.get(), name.clone());
     let link = crate::stock_web::stocks_link(&ctx.data().casino_base_url, &token);
+    let admin = matches!(
+        manager_denial(
+            ctx.serenity_context(),
+            ctx.data(),
+            ctx.guild_id(),
+            ctx.author().id
+        )
+        .await,
+        Ok(None)
+    );
+    if admin {
+        ctx.data()
+            .stocks
+            .grant_web_admin(
+                ctx.author().id.get(),
+                now_ms() + crate::casino_hub::CASINO_SESSION_TTL_SECONDS as i64 * 1000,
+            )
+            .await;
+    }
+    let admin_note = if admin {
+        "\n\n🛠️ 관리자이므로 사이트의 '관리' 탭에서 거래정지·재개, 시장 집계, 게임일 넘기기, 시세판·뉴스 채널 연결도 할 수 있습니다."
+    } else {
+        ""
+    };
     reply_embed(
         ctx,
         format!(
-            "마피아증권 링크입니다.\n{link}\n\n⚠️ 이 링크는 **{name}** 님 전용이고 12시간 동안 유효합니다. 다른 사람과 공유하지 마세요."
+            "마피아증권 링크입니다.\n{link}\n\n⚠️ 이 링크는 **{name}** 님 전용이고 12시간 동안 유효합니다. 다른 사람과 공유하지 마세요.{admin_note}"
         ),
         "마피아증권",
         serenity::Colour::DARK_GREEN,
@@ -1626,10 +1650,10 @@ async fn skip_game_days(ctx: Context<'_>, days: i64) -> Result<(), Error> {
         eprintln!("failed to defer 게임일 넘기기: {error:?}");
     }
     match ctx.data().stocks.skip_game_days(days).await {
-        Ok((day, skipped)) => {
+        Ok((_, skipped)) => {
             let skipped = market_engine::duration_text(skipped);
             let text = format!(
-                "게임일을 {days}일 넘겼습니다. 지금은 게임일 {day}이고, 시장 시계가 {skipped} 앞당겨졌습니다. 그 사이의 시세·주문·청약·배당은 모두 처리했습니다."
+                "게임일을 {days}일 넘겼습니다. 시장 시계가 {skipped} 앞당겨졌습니다. 그 사이의 시세·주문·청약·배당은 모두 처리했습니다."
             );
             let log_channel_id = ctx.data().config.read().await.log_channel_id;
             send_admin_log(
@@ -1825,7 +1849,7 @@ fn news_messages(news: &[NewsItem]) -> Vec<(String, serenity::Colour)> {
 }
 
 async fn refresh_stock_panel(ctx: &serenity::Context, data: &Data) {
-    let (channel, message, previous) = {
+    let (channel, message, previous, retired) = {
         let bindings = data
             .stocks
             .bindings
@@ -1835,15 +1859,67 @@ async fn refresh_stock_panel(ctx: &serenity::Context, data: &Data) {
             bindings.panel_channel,
             bindings.panel_message,
             bindings.panel_text.clone(),
+            bindings.retired_panel,
         )
     };
-    if channel == 0 || message == 0 {
+    // 웹에서 채널을 바꿨으면 옛 시세판을 지운다.
+    if retired.1 != 0 && (channel == 0 || message != 0) {
+        let _ = serenity::ChannelId::new(retired.0)
+            .delete_message(&ctx.http, serenity::MessageId::new(retired.1))
+            .await;
+        data.stocks
+            .bindings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retired_panel = (0, 0);
+        data.stocks.save_bindings().await;
+    }
+    if channel == 0 {
         return;
     }
     let text = {
         let market = data.stocks.market.read().await;
         market_board_text(&market, market.clock(now_ms()))
     };
+    if message == 0 {
+        // 웹에서 시세판 채널만 정했다: 새로 올려 고정한다.
+        let posted = serenity::ChannelId::new(channel)
+            .send_message(
+                &ctx.http,
+                serenity::CreateMessage::new().embed(make_embed(
+                    text.clone(),
+                    "증권 시세판",
+                    serenity::Colour::DARK_GREEN,
+                )),
+            )
+            .await;
+        match posted {
+            Ok(posted) => {
+                let current = {
+                    let mut bindings = data
+                        .stocks
+                        .bindings
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let current = bindings.panel_channel == channel && bindings.panel_message == 0;
+                    if current {
+                        bindings.panel_message = posted.id.get();
+                        bindings.panel_text = text;
+                    }
+                    current
+                };
+                if current {
+                    let _ = posted.pin(&ctx.http).await;
+                    data.stocks.save_bindings().await;
+                } else {
+                    // 올리는 사이에 채널이 또 바뀌었다: 방금 올린 것은 지우고 다음 갱신 때 새 채널에 올린다.
+                    let _ = posted.delete(&ctx.http).await;
+                }
+            }
+            Err(error) => eprintln!("failed to post stock panel: {error:?}"),
+        }
+        return;
+    }
     if text == previous {
         return;
     }

@@ -1,9 +1,12 @@
-// 내 계좌: 자산 요약, 잔고(신주인수권 포함), 미체결, 체결, 공모주 청약, 내 회사, 시장 뉴스.
+// 내 계좌: 자산 요약, 잔고, 미체결, 체결, 공모·증자(청약·청약 취소·신주인수), 내 회사, 순위, 시장 뉴스,
+// 관리(관리자만).
 import { useState, type ReactNode } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui";
+import { AdminTab } from "./AdminTab";
 import { cancelOrder, companyAction, subscribeIpo, unsubscribeIpo } from "./api";
 import { CompanyDesk } from "./CompanyDesk";
 import { NewsList } from "./NewsList";
+import { RankingTab } from "./RankingTab";
 import { bpText, dateTimeText, parseAmount, pctText, relativeText, signedWon, tone, won } from "./format";
 import type { Act, OfferingView, RightsClaimView, StockState, SubscriptionView } from "./types";
 
@@ -17,12 +20,14 @@ function Stat({ label, value, className }: { label: string; value: ReactNode; cl
 }
 
 export function AccountTabs({
+  token,
   state,
   now,
   busy,
   act,
   onSelect,
 }: {
+  token: string;
   state: StockState;
   now: number;
   busy: boolean;
@@ -31,6 +36,8 @@ export function AccountTabs({
 }) {
   const [tab, setTab] = useState("positions");
   const a = state.account;
+  const openRights = a.rights.filter((claim) => claim.granted > claim.exercised).length;
+  const ipoCount = state.offerings.length + state.rights_offerings.length;
   const total = state.me.coins + a.stock_value + a.pending;
   const selectedCode = state.selected?.summary.code ?? null;
   return (
@@ -48,12 +55,21 @@ export function AccountTabs({
           <TabsTrigger value="positions">잔고 {a.positions.length || ""}</TabsTrigger>
           <TabsTrigger value="orders">미체결 {a.orders.length || ""}</TabsTrigger>
           <TabsTrigger value="fills">체결</TabsTrigger>
-          <TabsTrigger value="ipo">공모주 {state.offerings.length || ""}</TabsTrigger>
+          <TabsTrigger value="ipo">공모·증자 {ipoCount || ""}</TabsTrigger>
           <TabsTrigger value="company">내 회사</TabsTrigger>
+          <TabsTrigger value="ranking">순위</TabsTrigger>
           <TabsTrigger value="news">시장 뉴스</TabsTrigger>
+          {state.me.admin && <TabsTrigger value="admin">관리</TabsTrigger>}
         </TabsList>
         <TabsContent value="positions">
-          {a.rights.length > 0 && <RightsClaims claims={a.rights} coins={state.me.coins} now={now} busy={busy} act={act} />}
+          {openRights > 0 && (
+            <div className="banner">
+              <span>받은 신주인수권이 {openRights}건 있습니다. 기간 안에 인수해야 새 주식을 받습니다.</span>
+              <button className="text-button" onClick={() => setTab("ipo")}>
+                공모·증자 탭에서 인수
+              </button>
+            </div>
+          )}
           {a.positions.length === 0 ? (
             <p className="empty">가진 주식이 없습니다. 호가창 옆 주문 칸에서 사 보세요.</p>
           ) : (
@@ -180,41 +196,109 @@ export function AccountTabs({
           )}
         </TabsContent>
         <TabsContent value="ipo">
-          <Offerings state={state} now={now} busy={busy} act={act} onSelect={onSelect} />
+          <div className="offer-list">
+            <MySubscriptions subscriptions={a.subscriptions} now={now} busy={busy} act={act} onSelect={onSelect} />
+            <Offerings state={state} now={now} busy={busy} act={act} onSelect={onSelect} />
+            <RightsSection state={state} now={now} busy={busy} act={act} onSelect={onSelect} />
+          </div>
         </TabsContent>
         <TabsContent value="company">
           <CompanyDesk state={state} now={now} busy={busy} act={act} onSelect={onSelect} />
         </TabsContent>
+        <TabsContent value="ranking">
+          <RankingTab token={token} />
+        </TabsContent>
         <TabsContent value="news">
           <NewsList items={state.news} now={now} empty="아직 뉴스가 없습니다." onSelect={onSelect} />
         </TabsContent>
+        {state.me.admin && (
+          <TabsContent value="admin">
+            <AdminTab state={state} busy={busy} act={act} />
+          </TabsContent>
+        )}
       </Tabs>
     </section>
   );
 }
 
-// ------------------------------------------------------------ 신주인수권
+// ------------------------------------------------------------ 청약·신주인수
 
-function RightsClaims({
-  claims,
-  coins,
+function MySubscriptions({
+  subscriptions,
   now,
   busy,
   act,
+  onSelect,
 }: {
-  claims: RightsClaimView[];
-  coins: number;
+  subscriptions: SubscriptionView[];
   now: number;
   busy: boolean;
   act: Act;
+  onSelect: (code: string) => void;
+}) {
+  if (subscriptions.length === 0) return null;
+  return (
+    <div className="desk-card">
+      <h3>내 청약</h3>
+      <p className="desk-hint">마감 전에는 청약을 취소하고 증거금을 모두 돌려받을 수 있습니다.</p>
+      {subscriptions.map((sub) => (
+        <div key={sub.code} className="rights-row">
+          <div>
+            <button className="link-cell" onClick={() => onSelect(sub.code)}>
+              {sub.name}
+            </button>
+            <small>
+              {won(sub.qty)}주 청약 · 증거금 {won(sub.deposit)}
+              {sub.closes_at > 0 ? ` · ${relativeText(sub.closes_at, now)} 마감` : ""}
+            </small>
+          </div>
+          <button className="btn small" disabled={busy} onClick={() => void act((t) => unsubscribeIpo(t, sub.code))}>
+            청약 취소
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RightsSection({
+  state,
+  now,
+  busy,
+  act,
+  onSelect,
+}: {
+  state: StockState;
+  now: number;
+  busy: boolean;
+  act: Act;
+  onSelect: (code: string) => void;
 }) {
   return (
     <div className="desk-card rights">
-      <h3>받은 신주인수권</h3>
-      <p className="desk-hint">유상증자를 한 회사의 주주에게 보유 비율대로 배정됩니다. 기간 안에 발행가를 내면 새 주식을 받습니다.</p>
-      {claims.map((claim) => (
-        <RightsRow key={claim.code} claim={claim} coins={coins} now={now} busy={busy} act={act} />
-      ))}
+      <h3>유상증자·신주인수</h3>
+      <p className="desk-hint">
+        상장사가 유상증자를 하면 그때의 주주에게 보유 주식 비율대로 신주인수권이 배정되고, 1게임일 안에 발행가를 내면 새 주식을 받습니다.
+      </p>
+      {state.rights_offerings.length === 0 && <p className="empty">진행 중인 유상증자가 없습니다.</p>}
+      {state.rights_offerings.map((offer) => {
+        const claim = state.account.rights.find((item) => item.code === offer.code);
+        return claim ? (
+          <RightsRow key={offer.code} claim={claim} coins={state.me.coins} now={now} busy={busy} act={act} />
+        ) : (
+          <div key={offer.code} className="rights-row">
+            <div>
+              <button className="link-cell" onClick={() => onSelect(offer.code)}>
+                {offer.name}
+              </button>
+              <small>
+                발행가 {won(offer.price)} · 신주 {won(offer.shares)}주 중 {won(offer.exercised)}주 인수 · {relativeText(offer.until, now)} 마감
+              </small>
+            </div>
+            <span className="desk-done">주주가 아니라 배정받은 인수권이 없습니다</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

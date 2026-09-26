@@ -405,3 +405,8 @@ h1, h2, h3, h4 { margin: 0; }
 @media (prefers-reduced-motion: reduce) {
   .toast { animation: none; }
 }
+
+/* 순위·관리 */
+.table.ranking tr.me td { background: var(--accent-soft); font-weight: 700; }
+.halted-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); }
+.banner .text-button { flex: none; }

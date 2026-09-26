@@ -370,7 +370,7 @@ export default function App() {
                 )}
               </section>
             </div>
-            <AccountTabs state={state} now={now} busy={busy} act={act} onSelect={choose} />
+            <AccountTabs token={token ?? ""} state={state} now={now} busy={busy} act={act} onSelect={choose} />
           </>
         )}
       </main>

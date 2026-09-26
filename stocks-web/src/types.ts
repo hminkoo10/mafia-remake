@@ -243,7 +243,7 @@ export interface StockState {
   server_time: number;
   /** 시장 시계가 실제 시각보다 앞선 시간 (ms). */
   time_shift_ms: number;
-  me: { user_id: string; name: string; coins: number };
+  me: { user_id: string; name: string; coins: number; admin: boolean };
   market: MarketSummary;
   selected: CompanyDetail | null;
   selected_news: NewsItem[];
@@ -251,8 +251,63 @@ export interface StockState {
   news: NewsItem[];
   offerings: OfferingView[];
   my_companies: CompanyDetail[];
+  /** 진행 중인 유상증자 (모든 회사). */
+  rights_offerings: RightsOfferingView[];
+  /** 관리자에게만. */
+  admin: AdminView | null;
   rules: StockRulesView;
 }
+
+export interface RightsOfferingView {
+  code: string;
+  name: string;
+  price: number;
+  shares: number;
+  until: number;
+  /** 지금까지 인수된 주식 수. */
+  exercised: number;
+}
+
+export interface MarketStats {
+  lp_bought: number;
+  lp_sold: number;
+  p2p: number;
+  fees: number;
+  taxes: number;
+  dividends: number;
+  ipo_burned: number;
+  company_earnings: number;
+}
+
+export interface AdminView {
+  stats: MarketStats;
+  /** 채널 ID (문자열, "0"이면 없음). */
+  panel_channel: string;
+  news_channel: string;
+  /** 관리자가 거래정지한 종목 코드. */
+  halted: string[];
+}
+
+export interface RankingRow {
+  rank: number;
+  name: string;
+  value: number;
+  profit: number;
+  me: boolean;
+}
+
+export interface RankingResponse {
+  rows: RankingRow[];
+  mine: RankingRow | null;
+  total: number;
+}
+
+/** POST /stocks/api/admin 의 본문. */
+export type AdminAction =
+  | { action: "halt"; code: string }
+  | { action: "resume"; code: string }
+  | { action: "skip"; days: number }
+  | { action: "channels"; panel_channel?: string; news_channel?: string };
 
 export interface OrderResult {
   filled: number;

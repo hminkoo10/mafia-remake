@@ -16,8 +16,8 @@ use axum::{
     routing::{get, post},
 };
 use mafia_remake::stocks::{
-    AccountView, Candle, CompanyDetail, CompanyStatus, MarketSummary, NewsItem, Sector, Side,
-    StockMarket, format_amount,
+    AccountView, Candle, CompanyDetail, CompanyStatus, MarketStats, MarketSummary, NewsItem,
+    Sector, Side, StockMarket, duration_text, format_amount,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -30,6 +30,8 @@ pub struct StocksWebState {
     /// 개인 링크 세션 (카지노와 같은 표. 토큰은 누구인지 확인할 뿐이다).
     pub sessions: SharedHub,
     pub stocks: SharedStocks,
+    /// 로그 채널 기록 (웹 관리 작업). 개발 서버에는 없다.
+    pub audit: Option<std::sync::Arc<crate::audit_log::AuditLog>>,
     /// 내장된 페이지 대신 디스크의 stocks-web/dist를 쓸 때 (STOCKS_STATIC_DIR).
     pub static_dir: Option<String>,
 }
@@ -43,6 +45,8 @@ pub fn stocks_router(state: StocksWebState) -> Router {
         .route("/stocks/api/subscribe", post(subscribe_handler))
         .route("/stocks/api/unsubscribe", post(unsubscribe_handler))
         .route("/stocks/api/company", post(company_handler))
+        .route("/stocks/api/ranking", get(ranking_handler))
+        .route("/stocks/api/admin", post(admin_handler))
         .layer(CompressionLayer::new());
     Router::new()
         .merge(api)
@@ -152,6 +156,31 @@ pub struct StockMe {
     pub name: String,
     /// 주식에 쓸 수 있는 코인 (진행 중인 마피아 판에 걸린 배팅은 뺀다).
     pub coins: i64,
+    /// 사이트 관리자 (관리자가 `/주식 증권`으로 받은 링크).
+    pub admin: bool,
+}
+
+/// 진행 중인 유상증자 (주주배정).
+#[derive(Debug, Serialize)]
+pub struct RightsOfferingView {
+    pub code: String,
+    pub name: String,
+    pub price: i64,
+    pub shares: i64,
+    pub until: i64,
+    /// 지금까지 인수된 주식 수.
+    pub exercised: i64,
+}
+
+/// 관리자 화면.
+#[derive(Debug, Serialize)]
+pub struct AdminView {
+    pub stats: MarketStats,
+    /// 시세판·뉴스 채널 (JS 정밀도 때문에 문자열).
+    pub panel_channel: String,
+    pub news_channel: String,
+    /// 관리자가 거래정지한 종목 코드.
+    pub halted: Vec<String>,
 }
 
 /// 청약 중인 공모.
@@ -188,6 +217,9 @@ pub struct StockState {
     pub offerings: Vec<OfferingView>,
     /// 내가 대표인 회사 (상세).
     pub my_companies: Vec<CompanyDetail>,
+    pub rights_offerings: Vec<RightsOfferingView>,
+    /// 관리자에게만.
+    pub admin: Option<AdminView>,
     pub rules: StockRulesView,
 }
 
@@ -260,6 +292,39 @@ async fn build_state(stocks: &StockHub, user: u64, name: &str, code: Option<&str
         .filter(|company| company.founder() == Some(user) && company.status.is_active())
         .filter_map(|company| market.company_detail(&company.code, now, &rules))
         .collect();
+    let rights_offerings = market
+        .companies
+        .values()
+        .filter_map(|company| {
+            let rights = company.rights.as_ref()?;
+            Some(RightsOfferingView {
+                code: company.code.clone(),
+                name: company.name.clone(),
+                price: rights.price,
+                shares: rights.shares,
+                until: rights.until,
+                exercised: rights.exercised.values().sum(),
+            })
+        })
+        .collect();
+    let is_admin = stocks.is_web_admin(user);
+    let admin = is_admin.then(|| {
+        let bindings = stocks
+            .bindings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        AdminView {
+            stats: market.stats.clone(),
+            panel_channel: bindings.panel_channel.to_string(),
+            news_channel: bindings.news_channel.to_string(),
+            halted: market
+                .companies
+                .values()
+                .filter(|company| company.admin_halt && company.status.is_active())
+                .map(|company| company.code.clone())
+                .collect(),
+        }
+    });
     StockState {
         server_time: now,
         time_shift_ms: market.time_shift_ms,
@@ -267,6 +332,7 @@ async fn build_state(stocks: &StockHub, user: u64, name: &str, code: Option<&str
             user_id: user.to_string(),
             name: name.to_string(),
             coins,
+            admin: is_admin,
         },
         selected: selected_code.and_then(|code| market.company_detail(&code, now, &rules)),
         selected_news,
@@ -274,6 +340,8 @@ async fn build_state(stocks: &StockHub, user: u64, name: &str, code: Option<&str
         news: market.news.iter().rev().take(40).cloned().collect(),
         offerings,
         my_companies,
+        rights_offerings,
+        admin,
         market: summary,
         rules: StockRulesView {
             enabled: rules.enabled,
@@ -550,6 +618,172 @@ async fn unsubscribe_handler(
     }
 }
 
+// ------------------------------------------------------------ 순위
+
+#[derive(Debug, Clone, Serialize)]
+struct RankingRow {
+    rank: usize,
+    name: String,
+    /// 주식 평가액 + 묶인 코인.
+    value: i64,
+    /// 평가 손익 + 실현 손익.
+    profit: i64,
+    me: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct RankingResponse {
+    rows: Vec<RankingRow>,
+    /// 50위 밖이어도 내 순위.
+    mine: Option<RankingRow>,
+    total: usize,
+}
+
+async fn ranking_handler(State(state): State<StocksWebState>, headers: HeaderMap) -> Response {
+    let Some(session) = session_of(&state, &headers) else {
+        return expired();
+    };
+    let market = state.stocks.market.read().await;
+    let now = market.clock(now_ms());
+    let rows = market
+        .ranking(now)
+        .into_iter()
+        .enumerate()
+        .map(|(index, entry)| RankingRow {
+            rank: index + 1,
+            name: entry.name,
+            value: entry.value,
+            profit: entry.profit,
+            me: entry.user == session.user_id,
+        })
+        .collect::<Vec<_>>();
+    let mine = rows.iter().find(|row| row.me).cloned();
+    let total = rows.len();
+    Json(RankingResponse {
+        rows: rows.into_iter().take(50).collect(),
+        mine,
+        total,
+    })
+    .into_response()
+}
+
+// ------------------------------------------------------------ 관리자
+
+/// 관리자 작업 (거래정지·재개, 게임일 넘기기, 시세판·뉴스 채널).
+#[derive(Debug, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum AdminAction {
+    Halt {
+        code: String,
+    },
+    Resume {
+        code: String,
+    },
+    Skip {
+        days: i64,
+    },
+    Channels {
+        /// 채널 ID (문자열, 빈 값이면 끊음, 없으면 그대로).
+        #[serde(default)]
+        panel_channel: Option<String>,
+        #[serde(default)]
+        news_channel: Option<String>,
+    },
+}
+
+/// 채널 ID 칸: 없으면 그대로(None), 비었으면 끊기(0).
+fn channel_id(text: Option<String>) -> Result<Option<u64>, String> {
+    match text {
+        None => Ok(None),
+        Some(text) if text.trim().is_empty() => Ok(Some(0)),
+        Some(text) => text
+            .trim()
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| "채널 ID는 숫자여야 합니다.".to_string()),
+    }
+}
+
+async fn admin_handler(
+    State(state): State<StocksWebState>,
+    headers: HeaderMap,
+    Json(action): Json<AdminAction>,
+) -> Response {
+    let Some(session) = session_of(&state, &headers) else {
+        return expired();
+    };
+    let stocks = &*state.stocks;
+    if !stocks.is_web_admin(session.user_id) {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "FORBIDDEN",
+            "관리자만 쓸 수 있습니다. 관리자 역할로 Discord에서 `/주식 증권` 링크를 다시 받으세요.",
+        );
+    }
+    let outcome: Result<(String, Option<String>), String> = match action {
+        AdminAction::Halt { code } => stocks
+            .transact(
+                0,
+                |_, _| Ok(Need::Nothing),
+                |market, _, _, now| market.set_admin_halt(&code, true, now),
+            )
+            .await
+            .map(|name| (format!("{name} 거래정지"), Some(code))),
+        AdminAction::Resume { code } => stocks
+            .transact(
+                0,
+                |_, _| Ok(Need::Nothing),
+                |market, _, _, now| market.set_admin_halt(&code, false, now),
+            )
+            .await
+            .map(|name| (format!("{name} 거래재개"), Some(code))),
+        AdminAction::Skip { days } => stocks.skip_game_days(days).await.map(|(_, skipped)| {
+            (
+                format!(
+                    "게임일을 {days}일 넘겼습니다 (시장 시계 {} 앞당김)",
+                    duration_text(skipped)
+                ),
+                None,
+            )
+        }),
+        AdminAction::Channels {
+            panel_channel,
+            news_channel,
+        } => match (channel_id(panel_channel), channel_id(news_channel)) {
+            (Ok(panel), Ok(news)) => {
+                let moved = stocks.set_channels(panel, news).await;
+                let note = match (moved, panel) {
+                    (false, _) => "",
+                    (true, Some(0)) => " 시세판 연결을 끊었습니다.",
+                    (true, _) => " 시세판은 1분 안에 새 채널에 올라갑니다.",
+                };
+                Ok((format!("채널 연결을 저장했습니다.{note}"), None))
+            }
+            (Err(message), _) | (_, Err(message)) => Err(message),
+        },
+    };
+    match outcome {
+        Ok((message, code)) => {
+            if let Some(audit) = &state.audit {
+                audit.push(
+                    crate::audit_log::STOCKS,
+                    format!("🛠️ {} (웹 관리) {message}", session.name),
+                );
+            }
+            respond(
+                stocks,
+                session.user_id,
+                &session.name,
+                code.as_deref(),
+                (),
+                message,
+            )
+            .await
+        }
+        Err(message) => invalid(message),
+    }
+}
+
 // ------------------------------------------------------------ 회사
 
 /// 회사 작업. 설립·신주인수 말고는 내가 대표인 회사(`code`, 없으면 첫 회사)에 한다.
@@ -788,6 +1022,7 @@ mod tests {
         let router = stocks_router(StocksWebState {
             sessions: hub,
             stocks: stocks.clone(),
+            audit: None,
             static_dir: None,
         });
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -909,6 +1144,87 @@ mod tests {
             .unwrap();
         assert_eq!(candles["range"], "minute");
         assert!(candles["candles"].is_array());
+
+        // 순위: 주식을 가진 사람은 나뿐이다.
+        let ranking: serde_json::Value = client
+            .get(format!("{base}/ranking"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(ranking["mine"]["rank"], 1);
+        assert_eq!(ranking["rows"][0]["me"], true);
+
+        // 관리자 기능: 권한이 없으면 403, 권한을 받으면 거래정지와 채널 연결을 한다.
+        let halt = serde_json::json!({ "action": "halt", "code": code });
+        let denied = client
+            .post(format!("{base}/admin"))
+            .bearer_auth(&token)
+            .json(&halt)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), 403);
+        stocks
+            .grant_web_admin(7, crate::stock_hub::now_ms() + 3_600_000)
+            .await;
+        let halted: serde_json::Value = client
+            .post(format!("{base}/admin"))
+            .bearer_auth(&token)
+            .json(&halt)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(halted["state"]["me"]["admin"], true);
+        assert_eq!(halted["state"]["admin"]["halted"][0], code.as_str());
+        let channels: serde_json::Value = client
+            .post(format!("{base}/admin"))
+            .bearer_auth(&token)
+            .json(
+                &serde_json::json!({ "action": "channels", "news_channel": "1234567890123456789" }),
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            channels["state"]["admin"]["news_channel"],
+            "1234567890123456789"
+        );
+        assert_eq!(channels["message"], "채널 연결을 저장했습니다.");
+        let panel: serde_json::Value = client
+            .post(format!("{base}/admin"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "action": "channels", "panel_channel": "42" }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(panel["state"]["admin"]["panel_channel"], "42");
+        assert!(
+            panel["message"]
+                .as_str()
+                .unwrap()
+                .contains("새 채널에 올라갑니다")
+        );
+        let bad = client
+            .post(format!("{base}/admin"))
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "action": "channels", "panel_channel": "abc" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), 400);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

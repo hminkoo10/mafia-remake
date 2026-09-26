@@ -353,6 +353,10 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
         stats_path,
     )?);
     warm_up_dev_market(&stocks).await;
+    // 관리 탭 점검용: 테스터A는 증권 사이트 관리자다.
+    stocks
+        .grant_web_admin(1001, now_ms() + 12 * 3_600_000)
+        .await;
     let binding = TableBinding {
         guild_id: 0,
         channel_id: 0,
@@ -437,6 +441,7 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
         crate::stock_web::StocksWebState {
             sessions: hub,
             stocks,
+            audit: None,
             static_dir: std::env::var("STOCKS_STATIC_DIR").ok(),
         },
     ));

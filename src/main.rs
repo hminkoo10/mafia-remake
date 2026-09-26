@@ -1189,6 +1189,7 @@ async fn main() -> Result<()> {
     .merge(stock_web::stocks_router(stock_web::StocksWebState {
         sessions: casino_hub.clone(),
         stocks: stock_market.clone(),
+        audit: Some(audit.clone()),
         static_dir: std::env::var("STOCKS_STATIC_DIR").ok(),
     }));
     let activity_state = activity::ActivityState::new(

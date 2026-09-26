@@ -54,6 +54,13 @@ pub struct StockBindings {
     /// 마지막으로 올린 시세판 본문 (같으면 고치지 않는다).
     #[serde(default)]
     pub panel_text: String,
+    /// 채널을 바꿔 지울 옛 시세판 (채널, 메시지).
+    #[serde(default)]
+    pub retired_panel: (u64, u64),
+    /// 증권 사이트 관리자 (사용자 → 권한이 끝나는 시각 ms). 관리자가 `/주식 증권`으로 링크를 받으면
+    /// 그 링크가 살아 있는 동안 준다.
+    #[serde(default)]
+    pub web_admins: std::collections::BTreeMap<u64, i64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -473,6 +480,57 @@ impl StockHub {
     }
 
     // ------------------------------------------------------------ 조회
+
+    /// 증권 사이트 관리자 권한을 준다 (`until`까지).
+    pub async fn grant_web_admin(&self, user: u64, until: i64) {
+        {
+            let mut bindings = self
+                .bindings
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now = now_ms();
+            bindings.web_admins.retain(|_, until| *until > now);
+            bindings.web_admins.insert(user, until);
+        }
+        self.save_bindings().await;
+    }
+
+    pub fn is_web_admin(&self, user: u64) -> bool {
+        self.bindings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .web_admins
+            .get(&user)
+            .is_some_and(|until| *until > now_ms())
+    }
+
+    /// 시세판·뉴스 채널을 바꾼다 (0이면 끊는다). 시세판은 다음 갱신 때 새 채널에 올리고 옛 것은 지운다.
+    /// 시세판 채널이 바뀌었으면 true.
+    pub async fn set_channels(&self, panel: Option<u64>, news: Option<u64>) -> bool {
+        let moved = {
+            let mut bindings = self
+                .bindings
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let moved = panel.is_some_and(|panel| panel != bindings.panel_channel);
+            if let Some(panel) = panel
+                && moved
+            {
+                if bindings.panel_message != 0 {
+                    bindings.retired_panel = (bindings.panel_channel, bindings.panel_message);
+                }
+                bindings.panel_channel = panel;
+                bindings.panel_message = 0;
+                bindings.panel_text.clear();
+            }
+            if let Some(news) = news {
+                bindings.news_channel = news;
+            }
+            moved
+        };
+        self.save_bindings().await;
+        moved
+    }
 
     /// 주식에 쓸 수 있는 코인 (가진 코인에서 진행 중인 마피아 판에 걸린 배팅을 뺀다).
     pub async fn coins_of(&self, user: u64) -> i64 {
