@@ -4,4 +4,5 @@ pub mod config;
 pub mod game;
 pub mod model;
 pub mod stats;
+pub mod stocks;
 pub mod system_random;
