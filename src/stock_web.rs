@@ -198,6 +198,8 @@ pub struct OfferingView {
     pub min_fill_bp: i64,
     /// 지금까지 들어온 청약 수량.
     pub requested: i64,
+    /// 기관이 받아 갈 수량 (플레이어는 나머지 일반 청약분을 나눠 받는다).
+    pub institutions: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -282,6 +284,16 @@ async fn build_state(stocks: &StockHub, user: u64, name: &str, code: Option<&str
                     .filter(|subscription| subscription.code == company.code)
                     .map(|subscription| subscription.qty)
                     .sum(),
+                institutions: if company.is_player() {
+                    mafia_remake::stocks::institution_shares(
+                        offering.shares,
+                        offering.price,
+                        company.bvps(),
+                        &rules,
+                    )
+                } else {
+                    0
+                },
             }),
             _ => None,
         })

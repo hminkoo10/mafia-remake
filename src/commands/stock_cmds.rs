@@ -265,8 +265,13 @@ fn company_text(detail: &CompanyDetail) -> String {
         lines.push(format!("상장폐지됨 ({reason}, {})", kst_clock(*at)));
     }
     if let Some(offering) = &detail.ipo {
+        let institutions = if detail.ipo_institutions > 0 {
+            format!(" (기관 {}주)", format_amount(detail.ipo_institutions))
+        } else {
+            String::new()
+        };
         lines.push(format!(
-            "🆕 공모 청약 중: 공모가 {} · {}주 · 청약 {}주 · {}까지 (`/주식 청약`)",
+            "🆕 공모 청약 중: 공모가 {} · {}주{institutions} · 청약 {}주 · {}까지 (`/주식 청약`)",
             won(offering.price),
             format_amount(offering.shares),
             format_amount(detail.ipo_requested),
@@ -289,10 +294,13 @@ fn company_text(detail: &CompanyDetail) -> String {
         ));
     }
     if let Some(buyback) = &detail.buyback {
+        let total = buyback.total.max(buyback.budget);
         lines.push(format!(
-            "자사주 매입 중: 남은 예산 {} · {}주 매입",
-            won(buyback.budget),
-            buyback.bought
+            "자사주 매입 중: 예산 {} 중 {} 사용 · {}주 매입 · {}까지 (회사가 현재가에 매수 호가를 냅니다)",
+            won(total),
+            won(total - buyback.budget),
+            buyback.bought,
+            kst_clock(buyback.until)
         ));
     }
     if matches!(summary.status, "상장" | "정리매매") {
@@ -1228,14 +1236,35 @@ pub async fn company_ipo(
         .transact(
             user,
             |_, _| Ok(Need::Nothing),
-            |market, _, rules, now| market.start_ipo(user, &code, 공모가, 공모주식수, now, rules),
+            |market, _, rules, now| {
+                let offering = market.start_ipo(user, &code, 공모가, 공모주식수, now, rules)?;
+                let bvps = market
+                    .companies
+                    .get(&code)
+                    .map_or(0.0, |company| company.bvps());
+                let institutions = mafia_remake::stocks::institution_shares(
+                    offering.shares,
+                    offering.price,
+                    bvps,
+                    rules,
+                );
+                Ok((offering, institutions))
+            },
         )
         .await;
     company_done(
         ctx,
-        result.map(|offering| {
+        result.map(|(offering, institutions)| {
+            let institutions = if institutions > 0 {
+                format!(
+                    " 그중 {}주는 기관이 받아 가 상장 뒤 시장에서 거래되고, 플레이어는 나머지를 나눠 받습니다.",
+                    format_amount(institutions)
+                )
+            } else {
+                " 공모가가 주당 순자산의 2배 이상이라 기관은 청약하지 않습니다.".to_string()
+            };
             format!(
-                "공모 청약을 열었습니다: 공모가 {}, {}주, {} 마감. 청약이 공모 주식의 절반에 못 미치면 무산됩니다. 상장 뒤 대표 지분은 보호예수로 한동안 팔 수 없습니다.",
+                "공모 청약을 열었습니다: 공모가 {}, {}주, {} 마감.{institutions} 청약이 공모 주식의 절반에 못 미치면 무산됩니다. 상장 뒤 대표 지분은 보호예수로 한동안 팔 수 없습니다.",
                 won(offering.price),
                 format_amount(offering.shares),
                 kst_clock(offering.closes_at)

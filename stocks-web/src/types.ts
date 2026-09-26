@@ -123,8 +123,11 @@ export interface CompanyDetail {
   book: Book;
   ipo: IpoOffering | null;
   ipo_requested: number;
+  /** 공모 주식 중 기관이 받아 갈 수량 (나머지가 일반 청약분). */
+  ipo_institutions: number;
   rights: { price: number; shares: number; until: number } | null;
-  buyback: { budget: number; until: number; bought: number } | null;
+  /** budget은 남은 예산, total은 처음 정한 예산 (예전 서버는 0). */
+  buyback: { budget: number; until: number; bought: number; total: number; started_at: number } | null;
   pending_dividend: { per_share: number; pay_at: number } | null;
   /** [끝나는 시각, 사유] */
   liquidation: [number, string] | null;
@@ -216,6 +219,8 @@ export interface OfferingView {
   closes_at: number;
   min_fill_bp: number;
   requested: number;
+  /** 기관이 받아 갈 수량 (플레이어는 나머지 일반 청약분을 나눠 받는다). */
+  institutions: number;
 }
 
 export interface SectorView {

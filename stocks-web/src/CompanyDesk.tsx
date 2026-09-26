@@ -221,7 +221,9 @@ function ManageCompany({
       )}
       {s.status === "공모 청약" && detail.ipo && (
         <p className="desk-hint">
-          공모 청약 진행 중: {won(detail.ipo.shares)}주 중 {won(detail.ipo_requested)}주 청약, {relativeText(detail.ipo.closes_at, now)} 마감.
+          공모 청약 진행 중: {won(detail.ipo.shares)}주
+          {detail.ipo_institutions > 0 && ` (기관 ${won(detail.ipo_institutions)}주)`} 중 {won(detail.ipo_requested)}주 청약,{" "}
+          {relativeText(detail.ipo.closes_at, now)} 마감.
           청약이 공모 주식의 {bpText(detail.ipo.min_fill_bp)}에 못 미치면 공모가 무산되고 증거금은 돌려줍니다.
         </p>
       )}
@@ -255,8 +257,9 @@ function IpoForm({ detail, rules, busy, run }: { detail: CompanyDetail; rules: S
       hint={
         <>
           공모가는 주당 순자산의 0.8~3배({won(low)}~{won(high)}), 공모 주식은 {won(minShares)}~{won(detail.shares)}주입니다. 청약은 1게임일 동안
-          받고, 모인 대금에서 수수료 {bpText(rules.ipo_fee_bp)}를 뺀 만큼이 회사 현금이 됩니다. 상장하면 대표 지분은 {rules.lockup_days}게임일 동안
-          팔 수 없습니다.
+          받고, 모인 대금에서 수수료 {bpText(rules.ipo_fee_bp)}를 뺀 만큼이 회사 현금이 됩니다. 공모가가 주당 순자산에 가까울수록 기관이 공모
+          주식의 최대 30%를 받아 가 상장 뒤 시장에서 거래되는 물량이 됩니다 (순자산의 2배 이상이면 기관은 받지 않음). 상장하면 대표 지분은
+          {rules.lockup_days}게임일 동안 팔 수 없습니다.
           {tooSmall && ` 자본총계가 ${won(rules.listing_min_equity)} 이상이어야 상장할 수 있습니다.`}
         </>
       }
@@ -352,7 +355,7 @@ function BuybackForm({ detail, busy, run }: { detail: CompanyDetail; busy: boole
       hint={
         running
           ? "진행 중인 자사주 매입이 있습니다."
-          : `회사 현금으로 1게임일 동안 시장에서 주식을 사서 없앱니다 (예산은 회사 현금의 절반 ${won(max)}까지). 그동안 대표는 주식을 팔 수 없습니다.`
+          : `회사 현금으로 1게임일 동안 장내에서 고르게 사서 소각합니다 (예산은 회사 현금의 절반 ${won(max)}까지). 시장에 풀린 물량(기관 몫 등)과 주주의 매도 주문을 사고, 회사가 현재가에 매수 호가를 내 주주가 바로 팔 수도 있습니다. 공시와 매수세로 주가가 오르는 편이고, 파는 사람이 없으면 덜 삽니다. 그동안 대표는 주식을 팔 수 없습니다.`
       }
       submit={budget > 0 ? `${won(budget)} 매입` : "자사주 매입"}
       disabled={running || budget <= 0 || budget > max}

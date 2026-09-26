@@ -224,9 +224,16 @@ pub struct QuarterResult {
 /// 진행 중인 자사주 매입.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Buyback {
+    /// 남은 예산.
     pub budget: i64,
     pub until: i64,
     pub bought: i64,
+    /// 처음 정한 예산 (예전 저장본은 0: 남은 예산으로 본다).
+    #[serde(default)]
+    pub total: i64,
+    /// 시작 시각 (예전 저장본은 0: 끝나기 1게임일 전으로 본다).
+    #[serde(default)]
+    pub started_at: i64,
 }
 
 /// 진행 중인 유상증자 (주주배정).
@@ -833,8 +840,12 @@ pub struct StockRules {
     pub max_companies: i64,
     /// 시스템 회사 수 목표 (모자라면 새로 상장시킨다).
     pub system_companies: i64,
-    /// 플레이어 회사 시장조성자 보유 한도 (발행 주식의 만분율).
+    /// 플레이어 회사 시장조성자 보유 한도 (발행 주식의 만분율). 공모 기관 배정분(최대 15%)을 들고도
+    /// 주주가 파는 주식을 더 받을 수 있게 넉넉히 둔다.
     pub lp_inventory_bp: i64,
+    /// 플레이어 회사 공모에서 기관이 받아 가는 최대 비율 (공모 주식의 만분율). 공모가가 주당 순자산
+    /// 이하일 때 이만큼이고, 비쌀수록 줄어 순자산의 2배면 받지 않는다.
+    pub ipo_institution_bp: i64,
 }
 
 impl Default for StockRules {
@@ -861,7 +872,8 @@ impl Default for StockRules {
             lockup_days: 24,
             max_companies: 1,
             system_companies: 12,
-            lp_inventory_bp: 1_000,
+            lp_inventory_bp: 2_500,
+            ipo_institution_bp: 3_000,
         }
     }
 }

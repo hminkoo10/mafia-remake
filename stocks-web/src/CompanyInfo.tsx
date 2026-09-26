@@ -21,8 +21,9 @@ export function CompanyInfo({ detail, news, now }: { detail: CompanyDetail; news
     );
   }
   if (detail.buyback) {
+    const total = Math.max(detail.buyback.total ?? 0, detail.buyback.budget);
     notices.push(
-      `자사주 매입: 예산 ${won(detail.buyback.budget)} 중 ${won(detail.buyback.bought)} 사용 · ${relativeText(detail.buyback.until, now)} 종료`,
+      `자사주 매입: 예산 ${won(total)} 중 ${won(total - detail.buyback.budget)} 사용 · ${won(detail.buyback.bought)}주 매입 · ${relativeText(detail.buyback.until, now)} 종료 (회사가 현재가에 매수 호가를 냅니다)`,
     );
   }
   if (detail.pending_dividend) {

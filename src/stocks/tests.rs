@@ -6,12 +6,13 @@ use rand::rngs::StdRng;
 
 const T0: i64 = 1_800_000_000_000;
 
-/// 가격이 스스로 움직이지 않는 규칙 (체결·기업 활동만 본다).
+/// 가격이 스스로 움직이지 않는 규칙 (체결·기업 활동만 본다). 공모는 플레이어끼리만 (기관 배정 없음).
 fn quiet() -> StockRules {
     StockRules {
         vol_pct: 0,
         news_pct: 0,
         vi_bp: 0,
+        ipo_institution_bp: 0,
         ..StockRules::default()
     }
 }
@@ -802,6 +803,181 @@ fn a_buyback_retires_shares_with_company_cash() {
     assert!(company.buyback.is_none());
     assert!(company.shares < shares, "산 주식은 소각");
     assert!(company.equity < equity);
+}
+
+/// 기관 배정을 켠 규칙 (실제 운영 기본값).
+fn with_institutions() -> StockRules {
+    StockRules {
+        ipo_institution_bp: StockRules::default().ipo_institution_bp,
+        ..quiet()
+    }
+}
+
+#[test]
+fn institutions_take_more_of_a_cheaper_ipo() {
+    let rules = with_institutions();
+    // 공모가가 주당 순자산 이하면 30%, 1.5배면 15%, 2배 이상이면 없다.
+    assert_eq!(institution_shares(200, 5_000, 5_000.0, &rules), 60);
+    assert_eq!(institution_shares(200, 4_000, 5_000.0, &rules), 60);
+    assert_eq!(institution_shares(200, 7_500, 5_000.0, &rules), 30);
+    assert_eq!(institution_shares(200, 10_000, 5_000.0, &rules), 0);
+    assert_eq!(institution_shares(200, 5_000, 0.0, &rules), 0);
+    assert_eq!(institution_shares(200, 5_000, 5_000.0, &quiet()), 0);
+}
+
+#[test]
+fn an_ipo_leaves_a_public_float_with_the_market_maker() {
+    let rules = with_institutions();
+    let mut market = market();
+    let code = found(&mut market, 1, 2_000_000);
+    let now = T0 + rules.day_ms();
+    market.start_ipo(1, &code, 5_000, 200, now, &rules).unwrap();
+    assert!(
+        market
+            .news
+            .iter()
+            .any(|news| news.headline.contains("기관 배정 예정 60주")),
+        "청약 공시에 기관 몫을 알린다"
+    );
+    // 일반 청약분(140주)보다 많이 청약하면 140주를 나눠 받는다.
+    market.subscribe(2, "U2", &code, 200, now).unwrap();
+    let minted_before = market.stats.lp_sold;
+    let now = now + rules.day_ms() + TICK_MS;
+    market.tick(now, &rules, &mut rng());
+    let company = &market.companies[&code];
+    assert_eq!(company.status, CompanyStatus::Listed);
+    assert_eq!(company.shares, 600);
+    assert_eq!(company.lp_inventory, Some(60));
+    assert_eq!(market.accounts[&2].positions[&code].qty, 140);
+    // 기관 납입금(60주 × 5,000)은 새로 생긴 코인으로 회사 현금이 되고, 공모 수수료는 전체 대금에서 뗀다.
+    let raised = 200 * 5_000;
+    assert_eq!(market.stats.lp_sold - minted_before, 60 * 5_000);
+    assert_eq!(
+        company.equity,
+        2_000_000 + raised - bp_part(raised, rules.ipo_fee_bp)
+    );
+    assert_eq!(
+        balances(&market)[&2],
+        -140 * 5_000,
+        "배정 안 된 증거금은 돌려받는다"
+    );
+    assert!(
+        market
+            .news
+            .iter()
+            .any(|news| news.kind == NewsKind::Listing && news.headline.contains("기관 배정 60주"))
+    );
+    // 이제 상장 직후에도 매도 호가가 있어 다른 사람이 살 수 있다.
+    let book = market.book(&code, &rules).unwrap();
+    assert!(!book.asks.is_empty());
+    let bought = buy(&mut market, 3, &code, 5, None, 1_000_000, now).unwrap();
+    assert_eq!(bought.filled, 5);
+    assert_eq!(market.companies[&code].lp_inventory, Some(55));
+}
+
+#[test]
+fn a_buyback_buys_the_float_through_the_day_and_lifts_the_price() {
+    let rules = with_institutions();
+    let mut market = market();
+    let code = found(&mut market, 1, 2_000_000);
+    let now = T0 + rules.day_ms();
+    market.start_ipo(1, &code, 5_000, 200, now, &rules).unwrap();
+    market.subscribe(2, "U2", &code, 200, now).unwrap();
+    let now = now + rules.day_ms() + TICK_MS;
+    market.tick(now, &rules, &mut rng());
+    let (shares, equity, price) = {
+        let company = &market.companies[&code];
+        (company.shares, company.equity, company.price)
+    };
+    market
+        .start_buyback(1, &code, 200_000, now, &rules)
+        .unwrap();
+    assert!(
+        market.companies[&code].pending_news > 0.0,
+        "매입 공시에 주가가 반응한다"
+    );
+    // 예산을 하루에 고르게 쓴다: 반나절이면 대략 절반.
+    let half = now + rules.day_ms() / 2;
+    market.tick(half, &rules, &mut rng());
+    let buyback = market.companies[&code].buyback.clone().unwrap();
+    let used = buyback.total - buyback.budget;
+    assert!(
+        used > 60_000 && used < 140_000,
+        "반나절에 {used} 사용 (한꺼번에 쓰지 않는다)"
+    );
+    market.tick(now + rules.day_ms() + TICK_MS, &rules, &mut rng());
+    let company = &market.companies[&code];
+    assert!(company.buyback.is_none());
+    let retired = shares - company.shares;
+    assert!(retired >= 30, "유통 물량에서 {retired}주를 사서 소각");
+    assert_eq!(company.lp_inventory, Some(60 - retired));
+    assert!(equity - company.equity >= 190_000, "예산을 거의 다 쓴다");
+    assert!(
+        company.price > price,
+        "매수세로 주가가 오른다 ({price} → {})",
+        company.price
+    );
+    assert!(market.news.iter().any(|news| {
+        news.headline
+            .contains(&format!("자사주 매입 완료: {retired}주 소각"))
+    }));
+}
+
+#[test]
+fn holders_can_sell_into_a_buyback_but_the_founder_cannot() {
+    let rules = quiet();
+    let mut market = market();
+    let (code, now) = listed_company(&mut market);
+    market
+        .start_buyback(1, &code, 300_000, now, &rules)
+        .unwrap();
+    // 회사의 매수 호가가 호가창 맨 위(현재가)에 보인다.
+    let mid = market.companies[&code].quote_mid();
+    let book = market.book(&code, &rules).unwrap();
+    assert_eq!(book.bids[0].price, mid);
+    assert!(book.bids[0].qty >= 50);
+    let before = balances(&market)[&2];
+    let sold = sell(&mut market, 2, &code, 20, None, now).unwrap();
+    assert_eq!(sold.filled, 20);
+    assert_eq!(
+        sold.avg_price, mid,
+        "시장조성자 매수 호가보다 높은 현재가에 판다"
+    );
+    let company = &market.companies[&code];
+    assert_eq!(company.shares, 580, "회사가 산 주식은 바로 소각");
+    assert_eq!(company.lp_inventory, Some(0));
+    let buyback = company.buyback.clone().unwrap();
+    assert_eq!(buyback.bought, 20);
+    let notional = 20 * mid;
+    assert_eq!(buyback.budget, 300_000 - notional - rules.fee(notional));
+    assert_eq!(
+        balances(&market)[&2] - before,
+        notional - rules.fee(notional) - rules.tax(notional)
+    );
+    assert!(
+        sell(&mut market, 1, &code, 1, None, now + rules.day_ms() * 30).is_err(),
+        "대표는 매입 중 팔 수 없다"
+    );
+}
+
+#[test]
+fn resting_sell_orders_fill_against_a_new_buyback() {
+    let rules = quiet();
+    let mut market = market();
+    let (code, now) = listed_company(&mut market);
+    // 매입 전에 현재가에 걸어 둔 매도 주문은 시장조성자 매수 호가(더 낮음)와는 체결되지 않고 남는다.
+    let mid = market.companies[&code].quote_mid();
+    let resting = sell(&mut market, 2, &code, 15, Some(mid), now).unwrap();
+    assert_eq!(resting.filled, 0);
+    market
+        .start_buyback(1, &code, 300_000, now, &rules)
+        .unwrap();
+    // 다음 틱에 회사의 매수 호가와 체결된다.
+    market.tick(now + TICK_MS, &rules, &mut rng());
+    let company = &market.companies[&code];
+    assert_eq!(company.buyback.as_ref().unwrap().bought, 15);
+    assert_eq!(company.shares, 585);
+    assert!(market.orders.iter().all(|order| order.user != 2));
 }
 
 #[test]

@@ -59,6 +59,8 @@ pub struct OrderResult {
 enum Source {
     Lp,
     Order(u64),
+    /// 자사주 매입 중인 회사의 매수 호가.
+    Buyback,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -161,6 +163,15 @@ impl StockMarket {
         levels
     }
 
+    /// 자사주 매입 중인 회사의 매수 호가: 현재가에, 남은 예산으로 (수수료까지) 살 수 있는 만큼.
+    /// 실제 장내 매입처럼 주주는 여기에 바로 팔 수 있다 (대표는 매입 중 팔 수 없다).
+    fn buyback_bid(company: &Company, rules: &StockRules) -> Option<(i64, i64)> {
+        let buyback = company.buyback.as_ref()?;
+        let price = floor_tick(company.quote_mid()).max(1);
+        let qty = affordable_qty(buyback.budget, price, rules);
+        (qty > 0).then_some((price, qty))
+    }
+
     /// 플레이어끼리 체결할 수 있는 가격인지 (현재가 ±밴드).
     fn in_p2p_band(company: &Company, price: i64, rules: &StockRules) -> bool {
         let reference = company.quote_mid();
@@ -191,6 +202,16 @@ impl StockMarket {
                 players: 0,
             })
             .collect();
+        if let Some((price, qty)) = Self::buyback_bid(company, rules) {
+            match bids.iter_mut().find(|level| level.price == price) {
+                Some(level) => level.qty += qty,
+                None => bids.push(BookLevel {
+                    price,
+                    qty,
+                    players: 0,
+                }),
+            }
+        }
         for order in self.orders.iter().filter(|order| order.code == code) {
             let list = match order.side {
                 Side::Sell => &mut asks,
@@ -723,9 +744,19 @@ impl StockMarket {
                 source: Source::Order(order.id),
             });
         }
+        if side == Side::Sell
+            && taker != company.founder()
+            && let Some((price, qty)) = Self::buyback_bid(company, rules)
+        {
+            liquidity.push(Liquidity {
+                price,
+                qty,
+                source: Source::Buyback,
+            });
+        }
         // 가격 순, 같은 가격이면 플레이어 주문(먼저 낸 것) 먼저.
         let created = |source: Source| match source {
-            Source::Lp => i64::MAX,
+            Source::Lp | Source::Buyback => i64::MAX,
             Source::Order(id) => self
                 .orders
                 .iter()
@@ -795,6 +826,7 @@ impl StockMarket {
                         .saturating_add(fill.qty.saturating_mul(fill.price));
                     self.fill_maker(id, fill.qty, fill.price, now, rules);
                 }
+                Source::Buyback => self.fill_buyback(code, fill.qty, fill.price, rules),
             }
         }
         let last = fills.last().map_or(0, |fill| fill.price);
@@ -841,6 +873,24 @@ impl StockMarket {
         if done {
             self.close_order(id, "주문 체결 완료");
         }
+    }
+
+    /// 주주가 자사주 매입 호가에 팔았다: 회사 현금으로 사서 바로 소각한다 (회사가 내는 수수료는 금고로).
+    fn fill_buyback(&mut self, code: &str, qty: i64, price: i64, rules: &StockRules) {
+        let notional = qty.saturating_mul(price);
+        let fee = rules.fee(notional);
+        self.to_treasury(fee, format!("{code} 자사주 매입 수수료"));
+        self.stats.fees = self.stats.fees.saturating_add(fee);
+        let before = self.listed_cap_sum();
+        if let Some(company) = self.companies.get_mut(code) {
+            company.shares = (company.shares - qty).max(1);
+            company.equity = (company.equity - notional - fee).max(0);
+            if let Some(buyback) = company.buyback.as_mut() {
+                buyback.budget = (buyback.budget - notional - fee).max(0);
+                buyback.bought += qty;
+            }
+        }
+        self.rebase_index(before);
     }
 
     /// 체결 뒤: 현재가·거래량·봉, 시장조성자 재고, 가격 영향, 변동성 완화장치.
@@ -955,6 +1005,9 @@ impl StockMarket {
                     self.lp_bids(company, rules)
                         .first()
                         .is_some_and(|(price, _)| *price >= order.limit)
+                        || (Some(order.user) != company.founder()
+                            && Self::buyback_bid(company, rules)
+                                .is_some_and(|(price, _)| price >= order.limit))
                         || self.orders.iter().any(|other| {
                             other.code == order.code
                                 && other.side == Side::Buy

@@ -1,5 +1,6 @@
 // stocks/view.rs — 화면·명령어용 조회 (시세 요약, 종목 상세, 계좌, 평가액, 순위)
 
+use super::corporate::institution_shares;
 use super::model::*;
 use super::trading::Book;
 use serde::Serialize;
@@ -70,6 +71,8 @@ pub struct CompanyDetail {
     pub book: Book,
     pub ipo: Option<IpoOffering>,
     pub ipo_requested: i64,
+    /// 공모 주식 중 기관이 받아 갈 수량 (지금 공모가 기준, 나머지가 일반 청약분).
+    pub ipo_institutions: i64,
     pub rights: Option<RightsView>,
     pub buyback: Option<Buyback>,
     pub pending_dividend: Option<PendingDividend>,
@@ -261,6 +264,12 @@ impl StockMarket {
             .filter(|subscription| subscription.code == code)
             .map(|subscription| subscription.qty)
             .sum();
+        let ipo_institutions = match &company.status {
+            CompanyStatus::Subscription(offering) if company.is_player() => {
+                institution_shares(offering.shares, offering.price, company.bvps(), rules)
+            }
+            _ => 0,
+        };
         Some(CompanyDetail {
             summary: self.summary_of(company, now),
             description: company.description.clone(),
@@ -285,6 +294,7 @@ impl StockMarket {
                 _ => None,
             },
             ipo_requested,
+            ipo_institutions,
             rights: company.rights.as_ref().map(|rights| RightsView {
                 price: rights.price,
                 shares: rights.shares,

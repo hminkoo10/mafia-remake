@@ -76,7 +76,9 @@ impl StockMarket {
         }
     }
 
-    /// 자사주 매입: 남은 예산을 남은 시간에 나눠 조금씩 산다.
+    /// 자사주 매입 (실제처럼 장내 매수): 예산을 기간에 고르게 나눠, 지금까지 쓸 수 있는 몫만큼 파는
+    /// 쪽(시장조성자 유통 물량, 대표가 아닌 주주의 매도 주문)에서 산다. 1주 값에 못 미치는 몫은 모아
+    /// 다음 틱에 산다. 주주는 회사가 현재가에 낸 매수 호가에 바로 팔 수도 있다 (`take`).
     pub(super) fn run_buybacks(&mut self, at: i64, rules: &StockRules, report: &mut TickReport) {
         let active = self
             .companies
@@ -89,10 +91,26 @@ impl StockMarket {
             })
             .collect::<Vec<_>>();
         for (code, buyback) in active {
-            let left_ms = (buyback.until - at).max(TICK_MS);
-            let slice =
-                (i128::from(buyback.budget) * i128::from(TICK_MS) / i128::from(left_ms)) as i64;
-            let (qty, spent) = self.buy_back(&code, slice.max(1).min(buyback.budget), at, rules);
+            let total = if buyback.total > 0 {
+                buyback.total
+            } else {
+                buyback.budget
+            };
+            let started = if buyback.started_at > 0 {
+                buyback.started_at
+            } else {
+                buyback.until - rules.day_ms()
+            };
+            let duration = (buyback.until - started).max(TICK_MS);
+            let elapsed = (at - started).clamp(0, duration);
+            let spent_before = (total - buyback.budget).max(0);
+            let allowance = (i128::from(total) * i128::from(elapsed) / i128::from(duration)) as i64
+                - spent_before;
+            let (qty, spent) = if allowance > 0 {
+                self.buy_back(&code, allowance.min(buyback.budget), at, rules)
+            } else {
+                (0, 0)
+            };
             let Some(company) = self.companies.get_mut(&code) else {
                 continue;
             };
@@ -106,16 +124,27 @@ impl StockMarket {
                 at >= current.until || current.budget <= 0
             };
             if finished {
-                let bought = company.buyback.take().map_or(0, |buyback| buyback.bought);
-                self.log(format!(
-                    "🏢 {name}({code}) 자사주 매입 완료: {bought}주 소각"
-                ));
+                let (bought, left) = company
+                    .buyback
+                    .take()
+                    .map_or((0, 0), |buyback| (buyback.bought, buyback.budget));
+                let used = (total - left).max(0);
+                let result = if bought > 0 {
+                    format!(
+                        "자사주 매입 완료: {bought}주 소각 (예산 {} 중 {} 사용)",
+                        format_amount(total),
+                        format_amount(used)
+                    )
+                } else {
+                    "자사주 매입 종료: 파는 주식이 없어 사지 못함".to_string()
+                };
+                self.log(format!("🏢 {name}({code}) {result}"));
                 let item = self.push_news(
                     at,
                     NewsKind::Disclosure,
                     Some(&code),
-                    format!("{name}, 자사주 매입 완료: {bought}주 소각"),
-                    1,
+                    format!("{name}, {result}"),
+                    i8::from(bought > 0),
                 );
                 report.news.push(item);
             }
@@ -619,6 +648,7 @@ impl StockMarket {
         };
         let player = company.is_player();
         let name = company.name.clone();
+        let bvps_before = company.bvps();
         let orders = self
             .subscriptions
             .iter()
@@ -655,7 +685,15 @@ impl StockMarket {
             report.news.push(item);
             return;
         }
-        let supply = offering.shares.min(requested);
+        // 기관 배정 (실제 공모처럼): 공모가가 싸면 기관이 공모 주식의 일부를 받아 가고, 플레이어는
+        // 나머지(일반 청약분)를 나눠 받는다. 기관 몫은 시장조성자가 유통 물량으로 들고 있다가 시장에 판다.
+        let institutions = if player {
+            institution_shares(offering.shares, offering.price, bvps_before, rules)
+        } else {
+            0
+        };
+        let retail = offering.shares - institutions;
+        let supply = retail.min(requested);
         let allocations = allocate(
             &orders.iter().map(|order| order.qty).collect::<Vec<_>>(),
             supply,
@@ -689,19 +727,26 @@ impl StockMarket {
             }
         }
         let day_ms = rules.day_ms();
-        let fee = if player {
-            bp_part(proceeds, rules.ipo_fee_bp)
-        } else {
-            0
-        };
         if player {
+            // 기관 납입금은 게임 밖에서 들어오는 돈이라 새로 생기는 코인이다 (시장조성자가 주식을 살 때와 같다).
+            let institutional = institutions.saturating_mul(offering.price);
+            if institutions > 0 {
+                self.stats.lp_sold = self.stats.lp_sold.saturating_add(institutional);
+                self.log(format!(
+                    "🏛️ {} 공모 기관 배정 {institutions}주 (납입 {}, 시장조성자 유통 물량)",
+                    self.label(code),
+                    format_amount(institutional)
+                ));
+            }
+            let raised = proceeds.saturating_add(institutional);
+            let fee = bp_part(raised, rules.ipo_fee_bp);
             self.to_treasury(fee, format!("{code} 공모 수수료"));
             let founder = self.companies[code].founder();
             let company = self.companies.get_mut(code).expect("company exists");
-            company.equity = company.equity.saturating_add(proceeds - fee);
-            company.paid_in = company.paid_in.saturating_add(proceeds - fee);
-            company.shares = company.shares.saturating_add(supply);
-            company.lp_inventory = Some(0);
+            company.equity = company.equity.saturating_add(raised - fee);
+            company.paid_in = company.paid_in.saturating_add(raised - fee);
+            company.shares = company.shares.saturating_add(supply + institutions);
+            company.lp_inventory = Some(institutions);
             company.adv = (company.shares / 50).max(10);
             company.depth = (company.adv / 20).max(1);
             // 설립자 지분 보호예수.
@@ -718,8 +763,9 @@ impl StockMarket {
             self.stats.ipo_burned = self.stats.ipo_burned.saturating_add(proceeds);
         }
         let before = self.listed_cap_sum();
-        let ratio = if offering.shares > 0 {
-            requested as f64 / offering.shares as f64
+        // 청약 경쟁률은 플레이어가 나눠 받는 일반 청약분 기준.
+        let ratio = if retail > 0 {
+            requested as f64 / retail as f64
         } else {
             0.0
         };
@@ -757,12 +803,17 @@ impl StockMarket {
             company.turnover = 0;
         }
         self.rebase_index(before);
+        let institution_text = if institutions > 0 {
+            format!(", 기관 배정 {institutions}주")
+        } else {
+            String::new()
+        };
         let item = self.push_news(
             at,
             NewsKind::Listing,
             Some(code),
             format!(
-                "{name} 신규 상장: 공모가 {}, 시초가 {} (청약 경쟁률 {:.1}:1)",
+                "{name} 신규 상장: 공모가 {}, 시초가 {} (청약 경쟁률 {:.1}:1{institution_text})",
                 format_amount(offering.price),
                 format_amount(open),
                 ratio
@@ -1106,6 +1157,12 @@ impl StockMarket {
             ));
         }
         let name = company.name.clone();
+        let institutions = institution_shares(new_shares, price, bvps, rules);
+        let institution_text = if institutions > 0 {
+            format!(" (기관 배정 예정 {institutions}주)")
+        } else {
+            String::new()
+        };
         let offering = IpoOffering {
             price,
             shares: new_shares,
@@ -1116,7 +1173,7 @@ impl StockMarket {
         self.companies.get_mut(code).expect("company exists").status =
             CompanyStatus::Subscription(offering.clone());
         self.log(format!(
-            "🏢 {} 공모 청약 시작: {new_shares}주 @{} (1게임일)",
+            "🏢 {} 공모 청약 시작: {new_shares}주{institution_text} @{} (1게임일)",
             self.label(code),
             format_amount(price)
         ));
@@ -1125,7 +1182,7 @@ impl StockMarket {
             NewsKind::Listing,
             Some(code),
             format!(
-                "공모주 청약 시작: {name}, 공모가 {}, {}주, 청약 1게임일",
+                "공모주 청약 시작: {name}, 공모가 {}, {}주{institution_text}, 청약 1게임일",
                 format_amount(price),
                 new_shares
             ),
@@ -1487,13 +1544,17 @@ impl StockMarket {
             );
         }
         let name = company.name.clone();
-        self.companies
-            .get_mut(code)
-            .expect("company exists")
-            .buyback = Some(Buyback {
+        // 실제처럼 매입 공시에 주가가 반응한다: 시가총액 대비 매입 규모만큼 (투자 심리 최대 +0.08,
+        // 몇 분에 걸쳐 반영). 사들이는 동안에는 매수세로 더 오른다.
+        let signal = (0.3 * budget as f64 / company.market_cap().max(1) as f64).min(0.08);
+        let company = self.companies.get_mut(code).expect("company exists");
+        company.pending_news += signal;
+        company.buyback = Some(Buyback {
             budget,
             until: now + rules.day_ms(),
             bought: 0,
+            total: budget,
+            started_at: now,
         });
         self.log(format!(
             "🏢 {} 자사주 매입 시작: 예산 {} (1게임일)",
@@ -1648,6 +1709,17 @@ impl StockMarket {
 
 fn player_daily_vol(risk: u8) -> f64 {
     0.012 + 0.006 * f64::from(risk.clamp(1, 5))
+}
+
+/// 공모 기관 배정 수량 (수요예측): 공모가가 주당 순자산 이하면 공모 주식의 `ipo_institution_bp`만큼,
+/// 비쌀수록 줄어 순자산의 2배 이상이면 받아 가지 않는다.
+pub fn institution_shares(offered: i64, price: i64, bvps: f64, rules: &StockRules) -> i64 {
+    if offered <= 0 || price <= 0 || bvps.is_nan() || bvps <= 0.0 {
+        return 0;
+    }
+    let appetite = (2.0 - price as f64 / bvps).clamp(0.0, 1.0);
+    let share = rules.ipo_institution_bp.clamp(0, BP) as f64 / BP as f64;
+    ((offered as f64 * share * appetite).floor() as i64).clamp(0, offered)
 }
 
 fn normalize_name(name: &str) -> String {

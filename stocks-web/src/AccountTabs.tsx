@@ -371,8 +371,10 @@ function Offerings({
         />
       ))}
       <p className="foot">
-        청약이 공모 주식보다 많으면 공모 주식의 절반은 청약자에게 고르게(균등 배정), 나머지는 남은 청약 수량에 비례해 나눠 받고, 받지 못한
-        만큼의 증거금은 돌려받습니다. 상장 첫날 가격은 공모가의 60~400% 안에서 움직입니다.
+        플레이어 회사 공모는 실제처럼 기관이 공모가를 보고 일부를 받아 갑니다 (주당 순자산 이하면 공모 주식의 30%, 비쌀수록 줄어 2배면 없음).
+        기관 몫은 상장 뒤 시장에서 거래되고, 플레이어는 나머지(일반 청약분)를 나눠 받습니다. 청약이 일반 청약분보다 많으면 그 절반은
+        청약자에게 고르게(균등 배정), 나머지는 남은 청약 수량에 비례해 나눠 받고, 받지 못한 만큼의 증거금은 돌려받습니다. 상장 첫날 가격은
+        공모가의 60~400% 안에서 움직입니다.
       </p>
     </div>
   );
@@ -398,7 +400,9 @@ function OfferingCard({
   const [qtyText, setQtyText] = useState("");
   const qty = parseAmount(qtyText);
   const cost = qty * offering.price;
-  const ratio = offering.shares > 0 ? offering.requested / offering.shares : 0;
+  const institutions = offering.institutions ?? 0;
+  const retail = offering.shares - institutions;
+  const ratio = retail > 0 ? offering.requested / retail : 0;
   return (
     <div className="desk-card offer">
       <header>
@@ -420,7 +424,9 @@ function OfferingCard({
         </div>
         <div>
           <dt>공모 주식</dt>
-          <dd>{won(offering.shares)}주</dd>
+          <dd>
+            {won(offering.shares)}주{institutions > 0 && <small> (일반 {won(retail)} · 기관 {won(institutions)})</small>}
+          </dd>
         </div>
         <div>
           <dt>청약 경쟁률</dt>
