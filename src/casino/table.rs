@@ -487,6 +487,9 @@ pub struct Seat {
     /// 홀덤: 핸드가 끝난 뒤 본인이 골라 홀 카드를 모두에게 보여 줬다 (다음 핸드를 시작하면 지운다).
     #[serde(default)]
     pub shown: bool,
+    /// 블랙잭: 이번 라운드 21+3에서 수티드 트립스를 맞혀 잭팟 대상이다 (다음 라운드를 시작하면 지운다).
+    #[serde(default)]
+    pub jackpot_hit: bool,
 }
 
 impl Seat {
@@ -508,6 +511,7 @@ impl Seat {
             pending_credit: 0,
             pending_until: 0,
             shown: false,
+            jackpot_hit: false,
             bet: 0,
             total: 0,
             folded: false,
@@ -703,6 +707,57 @@ pub struct HandResult {
     /// 참가한 모든 좌석의 손익 (승자뿐 아니라 잃은 사람도 포함).
     #[serde(default)]
     pub results: Vec<SeatResult>,
+    /// 홀덤: 이 핸드의 팟에서 뗀 레이크 (하우스 몫, 블랙잭은 0).
+    #[serde(default)]
+    pub rake: i64,
+    /// 잭팟에 당첨된 핸드 (홀덤 배드비트, 블랙잭 21+3 수티드 트립스).
+    #[serde(default)]
+    pub jackpot: Option<JackpotHit>,
+}
+
+/// 잭팟 종류.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JackpotKind {
+    /// 홀덤 쇼다운에서 포카드 이상으로 진 핸드.
+    BadBeat,
+    /// 블랙잭 21+3 수티드 트립스.
+    SuitedTrips,
+}
+
+/// 잭팟 당첨. 지급 비율과 금액은 운영 설정을 아는 허브가 정한다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JackpotHit {
+    pub kind: JackpotKind,
+    /// 잭팟을 부른 사람 (배드비트로 진 사람, 수티드 트립스를 맞힌 사람).
+    pub hitters: Vec<u64>,
+    /// 배드비트를 이긴 사람 (수티드 트립스는 비어 있다).
+    pub winners: Vec<u64>,
+    /// 잭팟을 부른 족보 이름.
+    pub hand: String,
+}
+
+/// 홀덤 레이크: 플롭을 연 핸드의 팟에서 떼는 몫과 핸드당 상한. 기본은 떼지 않는다.
+/// 허브가 명령·정산 전에 운영 설정으로 채운다.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RakeRule {
+    /// 만분율 (250 = 2.5%).
+    #[serde(default)]
+    pub bp: i64,
+    /// 한 핸드에서 떼는 최대 칩.
+    #[serde(default)]
+    pub cap: i64,
+}
+
+impl RakeRule {
+    /// `contested`(받아 준 베팅만 모인 팟)에서 뗄 레이크.
+    pub fn on(self, contested: i64) -> i64 {
+        if self.bp <= 0 || self.cap <= 0 || contested <= 0 {
+            return 0;
+        }
+        let raw = i128::from(contested) * i128::from(self.bp.min(10_000)) / 10_000;
+        i64::try_from(raw).unwrap_or(i64::MAX).min(self.cap).max(0)
+    }
 }
 
 /// 명령. JSON은 `{"action":"raise","amount":300}` 꼴이다.
@@ -780,7 +835,8 @@ pub enum CasinoEvent {
     },
     /// 라운드가 끝났다. 블랙잭은 하우스 손익(플레이어 기준 반대 부호)도 같이 준다.
     RoundSettled {
-        result: HandResult,
+        /// 이벤트 크기를 줄이려고 상자에 넣는다 (결과는 커도 이벤트는 자주 옮긴다).
+        result: Box<HandResult>,
         house_delta: i64,
         reveal_until: i64,
         table_id: String,
@@ -834,6 +890,9 @@ pub struct CasinoTable {
     /// 안내이고, 뒤로 갈수록 나중에 뜰 안내다 (`narration`은 가장 마지막 안내).
     #[serde(default)]
     pub narrations: Vec<Narration>,
+    /// 홀덤 레이크 규칙. 허브가 명령·정산 전에 늘 지금 운영 설정으로 덮는다.
+    #[serde(default)]
+    pub rake: RakeRule,
 }
 
 /// 딜러 안내 한 줄과 그 안내가 화면에 뜨는 시각.
@@ -913,6 +972,7 @@ impl CasinoTable {
             settings: TableSettings::default(),
             pending_settings: None,
             narrations: Vec::new(),
+            rake: RakeRule::default(),
         }
     }
 
@@ -1056,6 +1116,12 @@ impl CasinoTable {
     /// 딜러 안내. 안내문을 갱신하고 채팅에도 남긴다 (이름은 현재 딜러).
     pub(super) fn say(&mut self, text: impl Into<String>, now: i64) {
         self.say_at(text, now, now);
+    }
+
+    /// 엔진 밖(허브)에서 알리는 딜러 안내 (잭팟 등). `at` 전에는 화면·채팅에 뜨지 않는다.
+    pub fn announce_at(&mut self, text: impl Into<String>, now: i64, at: i64) {
+        self.say_at(text, now, at);
+        self.version += 1;
     }
 
     /// `at`에 화면에 뜨는 딜러 안내. 결과처럼 카드가 다 놓인 뒤에야 참이 되는 안내는
@@ -1211,12 +1277,10 @@ impl CasinoTable {
 
     /// 정산 기록의 하우스 손익 = 플레이어 순손익의 반대 (사이드베팅·인슈어런스 포함).
     /// 홀덤은 플레이어끼리 주고받으므로 0이다.
+    /// 하우스 손익: 플레이어 순손익 합의 반대. 블랙잭은 하우스와의 승부, 홀덤은 레이크다
+    /// (플레이어끼리 주고받은 칩은 합하면 0이고, 팟에서 뗀 레이크만큼 모자란다).
     fn house_delta(&self, result: &HandResult) -> i64 {
-        if self.kind == GameKind::Blackjack {
-            -result.results.iter().map(|entry| entry.net).sum::<i64>()
-        } else {
-            0
-        }
+        -result.results.iter().map(|entry| entry.net).sum::<i64>()
     }
 
     /// 아직 카드를 여는 중인 이번 라운드가 하우스에 더한 손익. 하우스 누적을 보여 줄 때 빼서
@@ -1265,7 +1329,7 @@ impl CasinoTable {
         if let Some(result) = settled {
             let house_delta = self.house_delta(&result);
             events.push(CasinoEvent::RoundSettled {
-                result,
+                result: Box::new(result),
                 house_delta,
                 reveal_until: self.round.as_ref().map_or(now, |round| round.reveal_until),
                 table_id: self.id.clone(),

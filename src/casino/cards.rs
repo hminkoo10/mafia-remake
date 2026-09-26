@@ -216,6 +216,14 @@ pub struct BestHand {
 
 const SCORE_BASE: i64 = 15 * 15 * 15 * 15 * 15;
 
+/// 족보 점수의 종류 (0 하이 카드 … 7 포카드, 8 스트레이트 플러시).
+pub fn hand_category(score: i64) -> i64 {
+    score / SCORE_BASE
+}
+
+/// 포카드의 족보 종류 (`hand_category`).
+pub const FOUR_OF_A_KIND: i64 = 7;
+
 /// 5장 조합에서 족보를 이루는 카드만 고른다 (키커 제외).
 fn core_cards(five: &[&str], category: i64) -> Vec<String> {
     let mut groups: Vec<(i64, Vec<&str>)> = Vec::new();
@@ -323,6 +331,9 @@ pub fn perfect_pairs(first: &str, second: &str) -> Option<(&'static str, i64)> {
     }
 }
 
+/// 21+3의 가장 높은 족보 (잭팟 대상).
+pub const SUITED_TRIPS: &str = "수티드 트립스";
+
 /// 21+3 사이드베팅: 내 두 장 + 딜러 앞면 카드로 만든 3장 포커 족보 (이름, 배당 n:1).
 /// 플러시 5:1, 스트레이트 10:1, 트리플 30:1, 스트레이트 플러시 40:1, 수티드 트립스 100:1.
 pub fn twenty_one_plus_three(first: &str, second: &str, up: &str) -> Option<(&'static str, i64)> {
@@ -333,7 +344,7 @@ pub fn twenty_one_plus_three(first: &str, second: &str, up: &str) -> Option<(&'s
     let trips = ranks[0] == ranks[2];
     let straight = (ranks[0] + 1 == ranks[1] && ranks[1] + 1 == ranks[2]) || ranks == [2, 3, 14];
     match (trips, straight, flush) {
-        (true, _, true) => Some(("수티드 트립스", 100)),
+        (true, _, true) => Some((SUITED_TRIPS, 100)),
         (_, true, true) => Some(("스트레이트 플러시", 40)),
         (true, _, false) => Some(("트리플", 30)),
         (_, true, false) => Some(("스트레이트", 10)),

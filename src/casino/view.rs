@@ -126,6 +126,9 @@ pub struct TableRules {
     pub card_flight_ms: i64,
     /// 카드 뒤집기 애니메이션 길이 (실제 값).
     pub card_flip_ms: i64,
+    /// 홀덤 레이크 (만분율, 핸드당 상한). 운영 설정이라 방 설정과 따로 온다.
+    pub rake_bp: i64,
+    pub rake_cap: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -176,6 +179,8 @@ pub fn table_rules(settings: &TableSettings) -> TableRules {
         bet_window_ms: BET_WINDOW_MS,
         card_flight_ms: live_timing::CARD_FLIGHT_MS,
         card_flip_ms: live_timing::CARD_FLIP_MS,
+        rake_bp: 0,
+        rake_cap: 0,
     }
 }
 
@@ -467,9 +472,10 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
             && !active
             && reveal_done
             && my.is_some_and(|seat| {
-                !seat.cards.is_empty()
-                    && !seat.shown
-                    && !(round.is_some_and(|round| round.reveal) && seat.in_hand && !seat.folded)
+                // 쇼다운까지 간 카드는 이미 모두에게 보인다.
+                let shown_at_showdown =
+                    round.is_some_and(|round| round.reveal) && seat.in_hand && !seat.folded;
+                !seat.cards.is_empty() && !seat.shown && !shown_at_showdown
             }),
     };
     TableView {
@@ -491,7 +497,15 @@ pub fn table_view(table: &CasinoTable, viewer: Option<u64>, now: i64) -> TableVi
             .cloned()
             .collect(),
         history: table.visible_history(now).to_vec(),
-        rules: table_rules(&table.settings),
+        rules: TableRules {
+            rake_bp: if table.kind == GameKind::Holdem {
+                table.rake.bp
+            } else {
+                0
+            },
+            rake_cap: table.rake.cap,
+            ..table_rules(&table.settings)
+        },
         pending_rules: table.pending_settings.as_ref().map(table_rules),
         shoe: (table.kind == GameKind::Blackjack).then(|| {
             let mut remaining = round

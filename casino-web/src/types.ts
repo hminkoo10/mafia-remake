@@ -112,6 +112,9 @@ export interface TableRules {
   card_flight_ms?: number;
   /** 카드를 뒤집는 연출 시간 (ms). */
   card_flip_ms?: number;
+  /** 홀덤 레이크 (만분율, 250 = 2.5%)와 핸드당 상한. 0이면 레이크 없음. */
+  rake_bp?: number;
+  rake_cap?: number;
 }
 
 export interface ChatMessage {

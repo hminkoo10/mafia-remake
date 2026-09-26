@@ -2139,7 +2139,10 @@ export default function Casino() {
               <h3>기본</h3>
               <ul>
                 <li>
-                  2~6인 노 리밋 텍사스 홀덤. 스몰 블라인드 {fmt(tableRules.small_blind)} / 빅 블라인드 {fmt(tableRules.big_blind)}. 레이크(수수료) 없음.
+                  2~6인 노 리밋 텍사스 홀덤. 스몰 블라인드 {fmt(tableRules.small_blind)} / 빅 블라인드 {fmt(tableRules.big_blind)}.{" "}
+                  {tableRules.rake_bp
+                    ? `레이크: 플롭을 연 핸드의 팟에서 ${Number((tableRules.rake_bp / 100).toFixed(2))}%(핸드당 최대 ${fmt(tableRules.rake_cap ?? 0)})를 떼어 복지 금고로 보냅니다. 플롭 전에 끝난 핸드에는 떼지 않습니다.`
+                    : "레이크(수수료) 없음."}
                 </li>
                 <li>
                   바이인 {fmt(tableRules.min_buy_in)}~{fmt(tableRules.max_buy_in)} 칩. 나가면 남은 칩이 코인으로 돌아옵니다.

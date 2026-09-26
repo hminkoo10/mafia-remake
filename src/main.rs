@@ -806,6 +806,9 @@ fn bot_commands() -> Vec<poise::Command<Data, Error>> {
         commands::claim_attendance(),
         commands::set_bet(),
         commands::gift_coins(),
+        commands::treasury_info(),
+        commands::relief_command(),
+        commands::manage_treasury(),
         commands::exchange_coupon(),
         commands::manage_coins(),
         commands::issue_coupons(),
@@ -1133,6 +1136,8 @@ async fn main() -> Result<()> {
     )?);
     // casino.json은 변경마다 기다려 쓰지 않고 모아서 쓴다 (코인이 오가는 변경은 바로 쓴다).
     casino_hub.start_saver();
+    // 코인 순환: 홀덤 레이크 등 운영 비율과, 바이인이 남겨야 할 마피아 배팅 잠금.
+    casino_hub.connect_economy(config_arc.clone(), bet_locks.clone());
     let casino_base_url = casino_hub::casino_base_url(
         &web_host,
         activity_port,
@@ -1252,6 +1257,7 @@ async fn main() -> Result<()> {
                 };
                 // 카지노: 시간 초과 처리 루프와 Discord 채널 중계.
                 tokio::spawn(commands::run_casino_ticker(data.clone()));
+                tokio::spawn(commands::run_economy_ticker(ctx.clone(), data.clone()));
                 tokio::spawn(commands::run_casino_relay(ctx.clone(), data.clone()));
                 let mut activity_update_rx = activity_discord_update_setup.subscribe();
                 let activity_update_ctx = ctx.clone();

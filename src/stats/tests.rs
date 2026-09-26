@@ -836,6 +836,8 @@ fn star_player_prize_is_split_on_ties() {
     assert!(tally_star_votes(&HashMap::new()).is_empty());
 
     let mut stats = StatsFile::default();
+    // 상금은 복지 금고에서 나간다.
+    stats.treasury.balance = 1_000;
     let awards = award_star_players(
         &mut stats,
         &[(2, "Two".to_string(), 2), (4, "Four".to_string(), 2)],
@@ -853,8 +855,8 @@ fn star_player_prize_is_split_on_ties() {
 fn coupon_reservation_refund_and_record() {
     let mut stats = StatsFile::default();
     claim_attendance(&mut stats, 1, "Alpha", 25_000, "2026-09-21");
-    assert!(reserve_coins(&mut stats, 1, "Alpha", 30_000).is_err());
-    assert_eq!(reserve_coins(&mut stats, 1, "Alpha", 20_000), Ok(5_000));
+    assert!(reserve_coins(&mut stats, 1, "Alpha", 30_000, 0).is_err());
+    assert_eq!(reserve_coins(&mut stats, 1, "Alpha", 20_000, 0), Ok(5_000));
     assert_eq!(refund_coins(&mut stats, 1, "Alpha", 20_000), 25_000);
     record_coupon(
         &mut stats,
@@ -1035,15 +1037,25 @@ fn coupon_redeem_is_single_use_and_checks_expiry() {
     );
 }
 
+/// 수수료 없는 코인 순환 규칙 (선물 금액 검사만 보는 테스트용).
+fn no_fee() -> EconomyRules {
+    EconomyRules {
+        gift_fee_bp: 0,
+        ..EconomyRules::default()
+    }
+}
+
 #[test]
 fn coin_gifts_move_coins_between_two_players_at_once() {
     let mut stats = StatsFile::default();
     claim_attendance(&mut stats, 1, "Alpha", 10_000, "2026-09-23");
-    let gift = gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 3_000, 0).unwrap();
+    let gift = gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 3_000, 0, &no_fee(), 0).unwrap();
     assert_eq!(
         gift,
         CoinGift {
             amount: 3_000,
+            fee: 0,
+            received: 3_000,
             sender_balance: 7_000,
             receiver_balance: 3_000
         }
@@ -1052,7 +1064,7 @@ fn coin_gifts_move_coins_between_two_players_at_once() {
     assert_eq!(stats.users["2"].coins, 3_000);
     assert_eq!(stats.users["2"].name, "Beta");
     // 받은 코인을 다시 보낼 수 있고, 전부 보내면 0원이 된다.
-    gift_coins(&mut stats, 2, "Beta", 1, "Alpha", 3_000, 0).unwrap();
+    gift_coins(&mut stats, 2, "Beta", 1, "Alpha", 3_000, 0, &no_fee(), 0).unwrap();
     assert_eq!(
         (stats.users["1"].coins, stats.users["2"].coins),
         (10_000, 0)
@@ -1070,11 +1082,12 @@ fn coin_gifts_reject_bad_requests_without_touching_anyone() {
         (1, 1_000, "자기 자신"),
         (2, 10_001, "보유 코인이 부족"),
     ] {
-        let error = gift_coins(&mut stats, 1, "Alpha", to, "Beta", amount, 0).unwrap_err();
+        let error =
+            gift_coins(&mut stats, 1, "Alpha", to, "Beta", amount, 0, &no_fee(), 0).unwrap_err();
         assert!(error.contains(text), "{error}");
     }
     // 코인이 없는 사람은 보낼 수 없고, 기록도 새로 생기지 않는다.
-    assert!(gift_coins(&mut stats, 3, "Gamma", 1, "Alpha", 100, 0).is_err());
+    assert!(gift_coins(&mut stats, 3, "Gamma", 1, "Alpha", 100, 0, &no_fee(), 0).is_err());
     assert_eq!(
         serde_json::to_value(&stats).unwrap(),
         serde_json::to_value(&before).unwrap()
@@ -1087,17 +1100,39 @@ fn coin_gifts_keep_the_unsettled_game_bet() {
     let mut stats = StatsFile::default();
     claim_attendance(&mut stats, 1, "Alpha", 10_000, "2026-09-23");
     // 진행 중인 게임에 4,000원이 걸려 있으면 6,000원까지만 보낼 수 있다.
-    let error = gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 6_001, 4_000).unwrap_err();
+    let error = gift_coins(
+        &mut stats,
+        1,
+        "Alpha",
+        2,
+        "Beta",
+        6_001,
+        4_000,
+        &no_fee(),
+        0,
+    )
+    .unwrap_err();
     assert!(
         error.contains("배팅 4,000원") && error.contains("6,000원까지만"),
         "{error}"
     );
     assert_eq!(stats.users["1"].coins, 10_000);
-    let gift = gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 6_000, 4_000).unwrap();
+    let gift = gift_coins(
+        &mut stats,
+        1,
+        "Alpha",
+        2,
+        "Beta",
+        6_000,
+        4_000,
+        &no_fee(),
+        0,
+    )
+    .unwrap();
     assert_eq!(gift.sender_balance, 4_000, "배팅액은 정산까지 남는다");
     // 받는 사람 코인이 넘치면 거부한다.
     stats.users.get_mut("2").unwrap().coins = i64::MAX;
-    assert!(gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 1, 0).is_err());
+    assert!(gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 1, 0, &no_fee(), 0).is_err());
     assert_eq!(stats.users["1"].coins, 4_000);
 }
 
@@ -1152,4 +1187,215 @@ fn save_stats_ignores_an_older_snapshot() {
     save_stats(&path, &newer).unwrap();
     assert_eq!(load_stats(&path).unwrap().users["1"].coins, 300);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+// ------------------------------------------------------------ 코인 순환 (금고·환급·구조금)
+
+fn funded(balance: i64) -> StatsFile {
+    let mut stats = StatsFile::default();
+    stats.treasury.balance = balance;
+    stats
+}
+
+#[test]
+fn treasury_deposits_feed_the_jackpot_and_takes_stop_at_the_balance() {
+    let rules = EconomyRules::default();
+    let mut stats = StatsFile::default();
+    // 20%는 잭팟으로.
+    assert_eq!(treasury_deposit(&mut stats, 1_000, &rules), 200);
+    assert_eq!((stats.treasury.balance, stats.treasury.jackpot), (800, 200));
+    assert_eq!(treasury_take(&mut stats, 900), 800);
+    assert_eq!(stats.treasury.balance, 0);
+    // 하우스가 잃으면 금고에서 메우되 0 아래로는 가지 않는다.
+    apply_house_result(&mut stats, 5_000, &rules);
+    assert_eq!(stats.treasury.balance, 4_000);
+    apply_house_result(&mut stats, -10_000, &rules);
+    assert_eq!(stats.treasury.balance, 0);
+}
+
+#[test]
+fn rolling_and_loss_rebates_pay_once_per_period() {
+    let rules = EconomyRules::default();
+    let mut stats = funded(10_000);
+    // 어제 롤링 100,000 → 0.2% = 200. 지난주 블랙잭 -50,000 → 10% = 5,000.
+    record_rolling(&mut stats, 1, "Alpha", 100_000, "2026-09-24");
+    record_rolling(&mut stats, 1, "Alpha", 7_000, "2026-09-25");
+    record_house_net(&mut stats, 2, "Beta", -50_000, "2026-W38");
+    record_house_net(&mut stats, 2, "Beta", -1_000, "2026-W39");
+    let summary = run_economy_payouts(&mut stats, &rules, "2026-09-25", "2026-W39");
+    assert_eq!((summary.rolling_paid, summary.cashback_paid), (200, 5_000));
+    assert!(!summary.shortfall);
+    assert_eq!(stats.users["1"].coins, 200);
+    assert_eq!(stats.users["2"].coins, 5_000);
+    assert_eq!(stats.treasury.balance, 10_000 - 5_200);
+    let alpha = &stats.users["1"].economy;
+    assert_eq!(
+        alpha.last_rolling,
+        Some(EconomyPayout {
+            period: "2026-09-24".to_string(),
+            amount: 200,
+            claimed: 200
+        })
+    );
+    // 오늘·이번 주 기록은 그대로 남는다.
+    assert_eq!(alpha.rolling.get("2026-09-25"), Some(&7_000));
+    assert_eq!(
+        stats.users["2"].economy.house_net.get("2026-W39"),
+        Some(&-1_000)
+    );
+    // 다시 돌려도 같은 기간을 두 번 주지 않는다.
+    let again = run_economy_payouts(&mut stats, &rules, "2026-09-25", "2026-W39");
+    assert_eq!(again.claimed, 0);
+    assert!(!again.changed);
+    assert_eq!(stats.users["1"].coins, 200);
+}
+
+#[test]
+fn rebates_are_capped_and_shrink_together_when_the_treasury_is_short() {
+    let rules = EconomyRules::default();
+    let mut stats = funded(2_600);
+    record_rolling(&mut stats, 1, "Alpha", 100_000, "2026-09-24");
+    record_house_net(&mut stats, 2, "Beta", -50_000, "2026-W38");
+    // 이긴 주는 환급이 없다.
+    record_house_net(&mut stats, 3, "Gamma", 9_000, "2026-W38");
+    let summary = run_economy_payouts(&mut stats, &rules, "2026-09-25", "2026-W39");
+    assert_eq!(summary.claimed, 5_200);
+    assert!(summary.shortfall);
+    // 금고 2,600 / 청구 5,200 = 절반씩.
+    assert_eq!(stats.users["1"].coins, 100);
+    assert_eq!(stats.users["2"].coins, 2_500);
+    assert_eq!(stats.users["3"].coins, 0);
+    assert_eq!(
+        stats.users["2"].economy.last_cashback,
+        Some(EconomyPayout {
+            period: "2026-W38".to_string(),
+            amount: 2_500,
+            claimed: 5_000
+        })
+    );
+    assert!(stats.treasury.balance >= 0);
+
+    // 상한: 롤링 1천만 × 0.2% = 20,000 → 5,000, 손실 100만 × 10% = 100,000 → 20,000.
+    let mut stats = funded(1_000_000);
+    record_rolling(&mut stats, 1, "Alpha", 10_000_000, "2026-09-24");
+    record_house_net(&mut stats, 1, "Alpha", -1_000_000, "2026-W38");
+    run_economy_payouts(&mut stats, &rules, "2026-09-25", "2026-W39");
+    assert_eq!(stats.users["1"].coins, 5_000 + 20_000);
+}
+
+#[test]
+fn relief_is_daily_for_the_nearly_broke_and_locks_gifts() {
+    let rules = EconomyRules::default();
+    let mut stats = funded(3_000);
+    let now = 1_000_000;
+    // 테이블 칩까지 합쳐 기준(2,000) 이상이면 받을 수 없다.
+    claim_attendance(&mut stats, 1, "Alpha", 1_500, "2026-09-25");
+    let refused = claim_relief(&mut stats, 1, "Alpha", 600, &rules, "2026-09-25", now);
+    assert!(refused.unwrap_err().contains("이상이라"));
+    let paid = claim_relief(&mut stats, 1, "Alpha", 0, &rules, "2026-09-25", now).unwrap();
+    assert_eq!(paid.amount, 5_000);
+    assert_eq!(paid.from_treasury, 3_000, "금고에서 먼저 꺼낸다");
+    assert_eq!(
+        stats.treasury.minted_total, 2_000,
+        "모자란 만큼은 새로 발행"
+    );
+    assert_eq!(stats.users["1"].coins, 6_500);
+    // 하루 한 번.
+    stats.users.get_mut("1").unwrap().coins = 0;
+    assert!(claim_relief(&mut stats, 1, "Alpha", 0, &rules, "2026-09-25", now).is_err());
+    assert!(claim_relief(&mut stats, 1, "Alpha", 0, &rules, "2026-09-26", now).is_ok());
+    // 받은 뒤 24시간은 선물할 수 없다.
+    let locked = gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 100, 0, &rules, now + 1);
+    assert!(locked.unwrap_err().contains("선물할 수 없습니다"));
+    let later = now + 24 * 3_600_000 + 1;
+    assert!(gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 100, 0, &rules, later).is_ok());
+}
+
+#[test]
+fn gift_fee_goes_to_the_treasury() {
+    let rules = EconomyRules::default();
+    let mut stats = StatsFile::default();
+    claim_attendance(&mut stats, 1, "Alpha", 10_000, "2026-09-25");
+    let gift = gift_coins(&mut stats, 1, "Alpha", 2, "Beta", 10_000, 0, &rules, 0).unwrap();
+    // 3% = 300은 금고로 (그중 20%는 잭팟).
+    assert_eq!((gift.fee, gift.received), (300, 9_700));
+    assert_eq!(stats.users["1"].coins, 0);
+    assert_eq!(stats.users["2"].coins, 9_700);
+    assert_eq!((stats.treasury.balance, stats.treasury.jackpot), (240, 60));
+}
+
+#[test]
+fn casino_buy_ins_and_coupons_keep_the_unsettled_bet() {
+    let mut stats = StatsFile::default();
+    claim_attendance(&mut stats, 1, "Alpha", 10_000, "2026-09-25");
+    // 마피아 판에 4,000원이 걸려 있으면 6,000원까지만 꺼낼 수 있다.
+    let error = reserve_coins(&mut stats, 1, "Alpha", 6_001, 4_000).unwrap_err();
+    assert!(error.contains("6,000원까지만"), "{error}");
+    assert_eq!(
+        reserve_coins(&mut stats, 1, "Alpha", 6_000, 4_000),
+        Ok(4_000)
+    );
+}
+
+#[test]
+fn jackpot_splits_between_loser_winner_and_the_table() {
+    let rules = EconomyRules::default();
+    let mut stats = StatsFile::default();
+    stats.treasury.jackpot = 10_000;
+    let hitter = [(1, "Loser".to_string())];
+    let winner = [(2, "Winner".to_string())];
+    let others = [(3, "C".to_string()), (4, "D".to_string())];
+    let shares = pay_jackpot(&mut stats, &hitter, &winner, &others, &rules);
+    // 풀의 50% = 5,000: 진 사람 50%, 이긴 사람 25%, 나머지 25%를 둘이 나눈다.
+    let amounts = shares
+        .iter()
+        .map(|share| (share.user_id, share.amount))
+        .collect::<Vec<_>>();
+    assert_eq!(amounts, vec![(1, 2_500), (2, 1_250), (3, 625), (4, 625)]);
+    assert_eq!(stats.treasury.jackpot, 5_000);
+    assert_eq!(stats.users["1"].coins, 2_500);
+
+    // 수티드 트립스처럼 이긴 사람이 없으면 부른 사람이 모두 가진다.
+    let mut stats = StatsFile::default();
+    stats.treasury.jackpot = 10_001;
+    let shares = pay_jackpot(&mut stats, &hitter, &[], &[], &rules);
+    assert_eq!(shares[0].amount, 5_000);
+    assert_eq!(stats.treasury.jackpot, 5_001);
+    // 풀이 비면 아무것도 주지 않는다.
+    let mut stats = StatsFile::default();
+    assert!(pay_jackpot(&mut stats, &hitter, &winner, &others, &rules).is_empty());
+}
+
+#[test]
+fn star_prize_comes_from_the_treasury_only() {
+    let mut stats = funded(700);
+    let awards = award_star_players(&mut stats, &[(1, "A".to_string(), 3)], 1_000);
+    assert_eq!(awards[0].prize, 700, "금고에 남은 만큼만");
+    assert_eq!(stats.treasury.balance, 0);
+    let awards = award_star_players(&mut stats, &[(1, "A".to_string(), 3)], 1_000);
+    assert_eq!(
+        awards[0].prize, 0,
+        "금고가 비면 상금이 없다 (새 코인을 찍지 않는다)"
+    );
+}
+
+#[test]
+fn percent_helpers_and_week_keys() {
+    assert_eq!(bp_of(10_000, 250), 250);
+    assert_eq!(bp_of(-5, 250), 0);
+    assert_eq!(
+        bp_of(i64::MAX, 20_000),
+        i64::MAX,
+        "100%를 넘는 비율은 100%로"
+    );
+    assert_eq!(bp_text(250), "2.5%");
+    assert_eq!(bp_text(20), "0.2%");
+    assert_eq!(bp_text(5), "0.05%");
+    assert_eq!(bp_text(1_000), "10%");
+    let date = |text: &str| chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").unwrap();
+    // 월요일에 주가 바뀌고, 문자열 순서가 시간 순서와 같다.
+    assert_eq!(week_key(date("2026-09-20")), "2026-W38");
+    assert_eq!(week_key(date("2026-09-21")), "2026-W39");
+    assert!(week_key(date("2026-03-02")) < week_key(date("2026-12-28")));
+    assert!(week_key(date("2026-12-28")) < week_key(date("2027-01-04")));
 }

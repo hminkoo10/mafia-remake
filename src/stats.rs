@@ -80,6 +80,9 @@ pub struct StatsFile {
     /// 관리자가 발급한 코인 쿠폰 (코드 → 쿠폰). 코드는 1회용이다.
     #[serde(default)]
     pub coin_coupons: HashMap<String, CoinCoupon>,
+    /// 복지 금고와 잭팟 풀 (코인 순환, `economy.rs`).
+    #[serde(default)]
+    pub treasury: Treasury,
     /// 저장 순서용 스냅샷 번호 (파일에는 쓰지 않는다). `SnapshotSeq` 참고.
     #[serde(skip)]
     snapshot_seq: SnapshotSeq,
@@ -175,6 +178,9 @@ pub struct PlayerStats {
     /// 최근 발급받은 쿠폰 기록.
     #[serde(default)]
     pub coupons: Vec<CouponRecord>,
+    /// 코인 순환: 롤링·주간 손익·환급·구조금 기록.
+    #[serde(default)]
+    pub economy: EconomyRecord,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,6 +248,7 @@ impl Default for PlayerStats {
             last_attendance_date: String::new(),
             coupon_points_exchanged: 0,
             coupons: Vec::new(),
+            economy: EconomyRecord::default(),
         }
     }
 }
@@ -1386,6 +1393,8 @@ const fn initial_rating() -> i64 {
 
 mod coins;
 pub use self::coins::*;
+mod economy;
+pub use self::economy::*;
 
 #[cfg(test)]
 mod tests;

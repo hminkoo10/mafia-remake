@@ -1,11 +1,12 @@
 // casino/blackjack.rs — 8덱 슈 블랙잭 (S17, 3:2, 피크·인슈어런스·사이드베팅)
 
 use super::cards::{CasinoError, blackjack_value, card_value, draw, shuffled_deck};
-use super::cards::{perfect_pairs, twenty_one_plus_three};
+use super::cards::{SUITED_TRIPS, perfect_pairs, twenty_one_plus_three};
 use super::table::{
     BET_WINDOW_MS, BJ_BET_STEP, BjHand, CasinoTable, DEAL_CARD_MS, DEAL_LEAD_MS, DEALER_DRAW_MS,
-    GameKind, HandResult, HandStatus, INSURANCE_MS, LAND_SETTLE_MS, Payout, Phase, Round,
-    SEAT_COUNT, SETTLE_PAUSE_MS, SIDE_BET_MIN, SeatResult, format_chips, new_id, signed_chips,
+    GameKind, HandResult, HandStatus, INSURANCE_MS, JackpotHit, JackpotKind, LAND_SETTLE_MS,
+    Payout, Phase, Round, SEAT_COUNT, SETTLE_PAUSE_MS, SIDE_BET_MIN, SeatResult, format_chips,
+    new_id, signed_chips,
 };
 use rand::Rng;
 use serde::Serialize;
@@ -88,6 +89,7 @@ pub(super) fn start_blackjack(
         seat.side_won = 0;
         seat.side_paid = 0;
         seat.side_notes.clear();
+        seat.jackpot_hit = false;
         seat.clear_pending_credit();
     }
     let uses_shoe = deck.is_none();
@@ -356,6 +358,9 @@ fn settle_side_bets(table: &mut CasinoTable, players: &[usize], now: i64) {
                         "21+3 {label} {odds}:1 {}",
                         signed_chips(stake * odds)
                     ));
+                    if label == SUITED_TRIPS {
+                        seat.jackpot_hit = true;
+                    }
                     lines.push(format!("{}님 21+3 {label} {odds}:1!", seat.name));
                 }
                 None => {
@@ -714,6 +719,19 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
     );
     // 결과 안내는 딜러 카드가 모두 공개된 뒤에 뜬다.
     table.say_at(summary.clone(), now, settled_until);
+    let hitters = table
+        .seats
+        .iter()
+        .flatten()
+        .filter(|seat| seat.in_hand && seat.jackpot_hit)
+        .map(|seat| seat.user_id)
+        .collect::<Vec<_>>();
+    let jackpot = (!hitters.is_empty()).then(|| JackpotHit {
+        kind: JackpotKind::SuitedTrips,
+        hitters,
+        winners: Vec::new(),
+        hand: format!("21+3 {SUITED_TRIPS}"),
+    });
     table.remember(HandResult {
         id: round_id,
         game: GameKind::Blackjack,
@@ -722,6 +740,8 @@ pub(super) fn settle_blackjack(table: &mut CasinoTable, now: i64) -> Result<(), 
         board,
         payouts,
         results,
+        rake: 0,
+        jackpot,
     });
     return_shoe(table);
     Ok(())

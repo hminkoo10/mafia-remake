@@ -130,6 +130,37 @@ pub struct BotConfig {
     pub anonymous_name_mode: String,
     #[serde(default)]
     pub blacklist_user_ids: Vec<u64>,
+    /// 코인 순환 (비율은 만분율: 250 = 2.5%). `stats::EconomyRules` 참고.
+    #[serde(default = "default_holdem_rake_bp")]
+    pub holdem_rake_bp: i64,
+    #[serde(default = "default_holdem_rake_cap")]
+    pub holdem_rake_cap: i64,
+    #[serde(default = "default_gift_fee_bp")]
+    pub gift_fee_bp: i64,
+    #[serde(default = "default_bet_loss_treasury_bp")]
+    pub bet_loss_treasury_bp: i64,
+    #[serde(default = "default_jackpot_share_bp")]
+    pub jackpot_share_bp: i64,
+    #[serde(default = "default_jackpot_payout_bp")]
+    pub jackpot_payout_bp: i64,
+    #[serde(default = "default_jackpot_loser_bp")]
+    pub jackpot_loser_bp: i64,
+    #[serde(default = "default_jackpot_winner_bp")]
+    pub jackpot_winner_bp: i64,
+    #[serde(default = "default_weekly_cashback_bp")]
+    pub weekly_cashback_bp: i64,
+    #[serde(default = "default_weekly_cashback_cap")]
+    pub weekly_cashback_cap: i64,
+    #[serde(default = "default_daily_rolling_bp")]
+    pub daily_rolling_bp: i64,
+    #[serde(default = "default_daily_rolling_cap")]
+    pub daily_rolling_cap: i64,
+    #[serde(default = "default_relief_threshold")]
+    pub relief_threshold: i64,
+    #[serde(default = "default_relief_amount")]
+    pub relief_amount: i64,
+    #[serde(default = "default_relief_gift_lock_hours")]
+    pub relief_gift_lock_hours: i64,
 }
 
 pub fn load_config(path: impl AsRef<Path>) -> Result<BotConfig> {
@@ -202,6 +233,29 @@ impl BotConfig {
         self.recruitment_seconds
             .clamp(MIN_RECRUITMENT_SECONDS, MAX_RECRUITMENT_SECONDS)
     }
+
+    /// 코인 순환 규칙. 비율은 0~100%, 금액은 0 이상으로 잘라서 쓴다.
+    pub fn economy_rules(&self) -> crate::stats::EconomyRules {
+        let bp = |value: i64| value.clamp(0, crate::stats::BP_SCALE);
+        let amount = |value: i64| value.max(0);
+        crate::stats::EconomyRules {
+            holdem_rake_bp: bp(self.holdem_rake_bp),
+            holdem_rake_cap: amount(self.holdem_rake_cap),
+            gift_fee_bp: bp(self.gift_fee_bp),
+            bet_loss_treasury_bp: bp(self.bet_loss_treasury_bp),
+            jackpot_share_bp: bp(self.jackpot_share_bp),
+            jackpot_payout_bp: bp(self.jackpot_payout_bp),
+            jackpot_loser_bp: bp(self.jackpot_loser_bp),
+            jackpot_winner_bp: bp(self.jackpot_winner_bp),
+            weekly_cashback_bp: bp(self.weekly_cashback_bp),
+            weekly_cashback_cap: amount(self.weekly_cashback_cap),
+            daily_rolling_bp: bp(self.daily_rolling_bp),
+            daily_rolling_cap: amount(self.daily_rolling_cap),
+            relief_threshold: amount(self.relief_threshold),
+            relief_amount: amount(self.relief_amount),
+            relief_gift_lock_hours: amount(self.relief_gift_lock_hours),
+        }
+    }
 }
 
 const fn default_chat_slowmode_seconds() -> u64 {
@@ -226,6 +280,52 @@ const fn default_coupon_coins_per_point() -> i64 {
 
 const fn default_neutral_special_count() -> u32 {
     1
+}
+
+const fn default_holdem_rake_bp() -> i64 {
+    crate::stats::DEFAULT_HOLDEM_RAKE_BP
+}
+const fn default_holdem_rake_cap() -> i64 {
+    crate::stats::DEFAULT_HOLDEM_RAKE_CAP
+}
+const fn default_gift_fee_bp() -> i64 {
+    crate::stats::DEFAULT_GIFT_FEE_BP
+}
+const fn default_bet_loss_treasury_bp() -> i64 {
+    crate::stats::DEFAULT_BET_LOSS_TREASURY_BP
+}
+const fn default_jackpot_share_bp() -> i64 {
+    crate::stats::DEFAULT_JACKPOT_SHARE_BP
+}
+const fn default_jackpot_payout_bp() -> i64 {
+    crate::stats::DEFAULT_JACKPOT_PAYOUT_BP
+}
+const fn default_jackpot_loser_bp() -> i64 {
+    crate::stats::DEFAULT_JACKPOT_LOSER_BP
+}
+const fn default_jackpot_winner_bp() -> i64 {
+    crate::stats::DEFAULT_JACKPOT_WINNER_BP
+}
+const fn default_weekly_cashback_bp() -> i64 {
+    crate::stats::DEFAULT_WEEKLY_CASHBACK_BP
+}
+const fn default_weekly_cashback_cap() -> i64 {
+    crate::stats::DEFAULT_WEEKLY_CASHBACK_CAP
+}
+const fn default_daily_rolling_bp() -> i64 {
+    crate::stats::DEFAULT_DAILY_ROLLING_BP
+}
+const fn default_daily_rolling_cap() -> i64 {
+    crate::stats::DEFAULT_DAILY_ROLLING_CAP
+}
+const fn default_relief_threshold() -> i64 {
+    crate::stats::DEFAULT_RELIEF_THRESHOLD
+}
+const fn default_relief_amount() -> i64 {
+    crate::stats::DEFAULT_RELIEF_AMOUNT
+}
+const fn default_relief_gift_lock_hours() -> i64 {
+    crate::stats::DEFAULT_RELIEF_GIFT_LOCK_HOURS
 }
 
 fn default_anonymous_name_mode() -> String {

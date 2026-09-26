@@ -291,7 +291,9 @@ pub async fn exchange_coupon(
     // 명령으로 같은 코인을 두 번 쓰는 일을 막기 위해서다.
     let reserved = {
         let mut stats_file = ctx.data().stats.write().await;
-        stats::reserve_coins(&mut stats_file, user_id, &user.name, cost)
+        // 진행 중인 판에 걸린 배팅은 남긴다 (쿠폰으로 빼 두면 진 배팅이 0원 아래로 사라진다).
+        let locked = crate::locked_bet(&ctx.data().bet_locks, user_id);
+        stats::reserve_coins(&mut stats_file, user_id, &user.name, cost, locked)
             .map(|balance| (balance, stats_file.clone()))
     };
     let (balance, snapshot) = match reserved {
@@ -583,6 +585,8 @@ pub async fn gift_coins(
     let sender = ctx.author();
     let sender_id = sender.id.get();
     let receiver_id = 대상.id.get();
+    let rules = ctx.data().config.read().await.economy_rules();
+    let now_ms = chrono::Utc::now().timestamp_millis();
     let applied = {
         let mut stats_file = ctx.data().stats.write().await;
         // 판 시작(배팅 확정)과 정산도 이 통계 쓰기 잠금 안에서 배팅 잠금을 바꾸므로 끼어들 틈이 없다.
@@ -596,6 +600,8 @@ pub async fn gift_coins(
             &대상.name,
             금액,
             locked,
+            &rules,
+            now_ms,
         )
         .map(|gift| (gift, stats_file.clone()))
     };
@@ -608,16 +614,25 @@ pub async fn gift_coins(
     };
     save_stats_snapshot(ctx.data(), snapshot).await;
     eprintln!(
-        "coin gift: from={sender_id} to={receiver_id} amount={} sender_after={} receiver_after={}",
-        gift.amount, gift.sender_balance, gift.receiver_balance
+        "coin gift: from={sender_id} to={receiver_id} amount={} fee={} sender_after={} receiver_after={}",
+        gift.amount, gift.fee, gift.sender_balance, gift.receiver_balance
     );
+    let fee_text = if gift.fee > 0 {
+        format!(
+            " (수수료 {}은 복지 금고로, 받은 금액 {})",
+            stats::coin_text(gift.fee),
+            stats::coin_text(gift.received)
+        )
+    } else {
+        String::new()
+    };
     let log_channel_id = ctx.data().config.read().await.log_channel_id;
     send_admin_log(
         ctx.http(),
         log_channel_id,
         TITLE,
         format!(
-            "{} 님(`{sender_id}`)이 {} 님(`{receiver_id}`)에게 {}을 선물했습니다. 보낸 사람 남은 코인 {} / 받은 사람 코인 {}",
+            "{} 님(`{sender_id}`)이 {} 님(`{receiver_id}`)에게 {}을 선물했습니다{fee_text}. 보낸 사람 남은 코인 {} / 받은 사람 코인 {}",
             sender.name,
             대상.name,
             stats::coin_text(gift.amount),
@@ -629,7 +644,7 @@ pub async fn gift_coins(
     reply_embed(
         ctx,
         format!(
-            "<@{sender_id}> 님이 <@{receiver_id}> 님에게 **{}**을 선물했습니다.\n보낸 분 남은 코인: {}",
+            "<@{sender_id}> 님이 <@{receiver_id}> 님에게 **{}**을 선물했습니다{fee_text}.\n보낸 분 남은 코인: {}",
             stats::coin_text(gift.amount),
             stats::coin_text(gift.sender_balance)
         ),

@@ -3305,3 +3305,207 @@ fn shoe_counter_does_not_count_cards_still_in_flight() {
     assert_eq!(remaining(&table, 3_000), 199);
     assert_eq!(remaining(&table, 3_700), 199);
 }
+
+// ------------------------------------------------------------ 코인 순환: 레이크·잭팟
+
+/// 차례인 사람이 체크할 수 있으면 체크, 아니면 콜한다 (라운드가 끝날 때까지).
+fn check_down(table: &mut CasinoTable, users: &[u64], mut now: i64) -> Vec<CasinoEvent> {
+    let mut events = Vec::new();
+    while table.playing() {
+        let turn = table.round.as_ref().unwrap().turn;
+        let user = users
+            .iter()
+            .copied()
+            .find(|user| table.seat_index(*user) == Some(turn as usize))
+            .expect("turn belongs to a player");
+        let command = if table.poker_legal_for(turn).unwrap().can_check {
+            CasinoCommand::Check
+        } else {
+            CasinoCommand::Call
+        };
+        now += 100;
+        events = act(table, user, command, now);
+    }
+    events
+}
+
+#[test]
+fn holdem_rake_comes_out_of_the_pot_after_the_flop() {
+    let mut table = holdem_table();
+    table.rake = RakeRule { bp: 1_000, cap: 25 };
+    for (user, seat) in [(10, 0), (11, 1), (12, 2)] {
+        sit(&mut table, user, seat, 10_000, 0);
+    }
+    let deck = deck_from_top(&[
+        "Kh", "2c", "Ah", "Kd", "7d", "Ad", "8c", "As", "Kc", "5h", "8d", "9s", "8h", "3d",
+    ]);
+    table.start_with_deck(10, deck, 1_000).unwrap();
+    let events = check_down(&mut table, &[10, 11, 12], 1_000);
+    // 팟 300의 10%는 30이지만 상한 25만 뗀다.
+    let result = &table.history[0];
+    assert_eq!(result.rake, 25);
+    assert_eq!(result.payouts[0].amount, 275);
+    assert_eq!(table.seat(0).unwrap().stack, 10_000 - 100 + 275);
+    assert_eq!(stacks(&table), 30_000 - 25, "레이크만큼 칩이 줄어든다");
+    assert_eq!(
+        result.results.iter().map(|entry| entry.net).sum::<i64>(),
+        -25
+    );
+    assert!(result.summary.contains("레이크 25"), "{}", result.summary);
+    assert!(matches!(
+        events.as_slice(),
+        [CasinoEvent::RoundSettled {
+            house_delta: 25,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn holdem_takes_no_rake_without_a_flop() {
+    let mut table = holdem_table();
+    table.rake = RakeRule {
+        bp: 1_000,
+        cap: 500,
+    };
+    sit(&mut table, 96, 0, 10_000, 0);
+    sit(&mut table, 97, 1, 10_000, 0);
+    act(&mut table, 96, CasinoCommand::Start, 0);
+    let turn = table.round.as_ref().unwrap().turn;
+    let folder = table.seat(turn).unwrap().user_id;
+    let events = act(&mut table, folder, CasinoCommand::Fold, 100);
+    assert_eq!(table.history[0].rake, 0, "노 플롭 노 드롭");
+    assert_eq!(stacks(&table), 20_000);
+    assert!(matches!(
+        events.as_slice(),
+        [CasinoEvent::RoundSettled { house_delta: 0, .. }]
+    ));
+}
+
+#[test]
+fn holdem_rake_skips_the_bet_nobody_called() {
+    let mut table = holdem_table();
+    table.rake = RakeRule {
+        bp: 1_000,
+        cap: 500,
+    };
+    sit(&mut table, 96, 0, 10_000, 0);
+    sit(&mut table, 97, 1, 10_000, 0);
+    act(&mut table, 96, CasinoCommand::Start, 0);
+    // 프리플롭은 콜·체크로 넘어간다 (팟 200).
+    let mut now = 0;
+    while table.round.as_ref().unwrap().phase == Phase::Preflop {
+        let turn = table.round.as_ref().unwrap().turn;
+        let user = table.seat(turn).unwrap().user_id;
+        let command = if table.poker_legal_for(turn).unwrap().can_check {
+            CasinoCommand::Check
+        } else {
+            CasinoCommand::Call
+        };
+        now += 100;
+        act(&mut table, user, command, now);
+    }
+    assert_eq!(table.round.as_ref().unwrap().phase, Phase::Flop);
+    let bettor_seat = table.round.as_ref().unwrap().turn;
+    let bettor = table.seat(bettor_seat).unwrap().user_id;
+    let folder = if bettor == 96 { 97 } else { 96 };
+    act(
+        &mut table,
+        bettor,
+        CasinoCommand::Raise { amount: 500 },
+        now + 100,
+    );
+    act(&mut table, folder, CasinoCommand::Fold, now + 200);
+    // 받아 준 팟은 200뿐이라 레이크는 20. 아무도 받지 않은 500은 그대로 돌려받는다.
+    let result = &table.history[0];
+    assert_eq!(result.rake, 20);
+    assert_eq!(
+        table.seats[bettor_seat as usize].as_ref().unwrap().stack,
+        10_000 - 100 - 500 + 680
+    );
+    assert_eq!(stacks(&table), 20_000 - 20);
+}
+
+#[test]
+fn quads_losing_to_a_straight_flush_hit_the_bad_beat_jackpot() {
+    let mut table = holdem_table();
+    sit(&mut table, 30, 0, 10_000, 0);
+    sit(&mut table, 31, 1, 10_000, 0);
+    // 딜: 1, 0, 1, 0 → 번·플롭·번·턴·번·리버. 보드 9h 9s 7h 8h 2c.
+    let deck = deck_from_top(&[
+        "Th", "9d", "Jh", "9c", "2d", "9h", "9s", "7h", "3d", "8h", "4d", "2c",
+    ]);
+    table.start_with_deck(30, deck, 0).unwrap();
+    assert_eq!(table.seat(0).unwrap().cards, cards(&["9d", "9c"]));
+    assert_eq!(table.seat(1).unwrap().cards, cards(&["Th", "Jh"]));
+    check_down(&mut table, &[30, 31], 0);
+    let hit = table.history[0].jackpot.clone().expect("bad beat");
+    assert_eq!(hit.kind, JackpotKind::BadBeat);
+    assert_eq!(hit.hitters, vec![30], "포카드로 진 사람");
+    assert_eq!(hit.winners, vec![31], "스트레이트 플러시로 이긴 사람");
+    assert_eq!(hit.hand, "포 카드");
+}
+
+#[test]
+fn quads_on_the_board_are_not_a_bad_beat() {
+    let mut table = holdem_table();
+    sit(&mut table, 30, 0, 10_000, 0);
+    sit(&mut table, 31, 1, 10_000, 0);
+    // 보드 9h 9s 9d 9c Kd: 둘 다 포카드지만 보드가 만든 족보다 (에이스 키커가 이긴다).
+    let deck = deck_from_top(&[
+        "2c", "Ah", "3c", "Qh", "2d", "9h", "9s", "9d", "3d", "9c", "4d", "Kd",
+    ]);
+    table.start_with_deck(30, deck, 0).unwrap();
+    assert_eq!(table.seat(0).unwrap().cards, cards(&["Ah", "Qh"]));
+    assert_eq!(table.seat(1).unwrap().cards, cards(&["2c", "3c"]));
+    check_down(&mut table, &[30, 31], 0);
+    assert_eq!(
+        table.history[0].board,
+        cards(&["9h", "9s", "9d", "9c", "Kd"])
+    );
+    assert!(table.history[0].jackpot.is_none());
+}
+
+#[test]
+fn blackjack_suited_trips_on_twenty_one_plus_three_hit_the_jackpot() {
+    let mut table = blackjack_table();
+    sit(&mut table, 80, 0, 10_000, 0);
+    // 내 두 장과 딜러 업카드가 모두 8h (8덱 슈에서는 나올 수 있다).
+    table
+        .start_with_deck(80, deck_from_top(&["8h", "8h", "8h", "5c", "Tc"]), 0)
+        .unwrap();
+    act(
+        &mut table,
+        80,
+        CasinoCommand::Bet {
+            amount: 500,
+            pairs: 0,
+            plus3: 100,
+        },
+        100,
+    );
+    act(&mut table, 80, CasinoCommand::Stand, 200);
+    let hit = table.history[0].jackpot.clone().expect("suited trips");
+    assert_eq!(hit.kind, JackpotKind::SuitedTrips);
+    assert_eq!(hit.hitters, vec![80]);
+    assert!(hit.winners.is_empty());
+
+    // 보통 트리플(무늬가 다름)은 잭팟이 아니다.
+    let mut table = blackjack_table();
+    sit(&mut table, 80, 0, 10_000, 0);
+    table
+        .start_with_deck(80, deck_from_top(&["8h", "8s", "8d", "5c", "Tc"]), 0)
+        .unwrap();
+    act(
+        &mut table,
+        80,
+        CasinoCommand::Bet {
+            amount: 500,
+            pairs: 0,
+            plus3: 100,
+        },
+        100,
+    );
+    act(&mut table, 80, CasinoCommand::Stand, 200);
+    assert!(table.history[0].jackpot.is_none());
+}

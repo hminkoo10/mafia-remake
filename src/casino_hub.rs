@@ -5,10 +5,11 @@ use crate::stats;
 use anyhow::{Context as AnyhowContext, Result};
 use dashmap::DashMap;
 use mafia_remake::casino::{
-    CasinoCommand, CasinoError, CasinoEvent, CasinoTable, GameKind, Phase, TableSettings,
-    TableView, format_chips, shown_phase, table_view,
+    CasinoCommand, CasinoError, CasinoEvent, CasinoTable, GameKind, HandResult, JackpotKind, Phase,
+    RakeRule, TableSettings, TableView, format_chips, shown_phase, table_view,
 };
-use mafia_remake::stats::StatsFile;
+use mafia_remake::config::BotConfig;
+use mafia_remake::stats::{EconomyRules, StatsFile};
 use mafia_remake::system_random;
 use poise::serenity_prelude as serenity;
 use serde::{Deserialize, Serialize};
@@ -219,6 +220,10 @@ pub struct CasinoHub {
     /// 카드가 아직 놓이는 중인 라운드의 하우스 손익 (테이블 id, reveal_until, 손익). 공개 시각이 지나면
     /// `house`에 더한다. 저장 파일에는 `house`에 더한 값으로 들어간다 (`save`).
     pending_house: Mutex<Vec<(String, i64, i64)>>,
+    /// 운영 설정 (코인 순환 비율). 개발 서버처럼 연결하지 않으면 기본값을 쓴다.
+    config: std::sync::OnceLock<Arc<RwLock<BotConfig>>>,
+    /// 진행 중인 마피아 판에 걸린 배팅. 바이인은 그만큼을 남기고 받는다.
+    bet_locks: std::sync::OnceLock<crate::BetLocks>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -265,6 +270,8 @@ impl CasinoHub {
             saver: Arc::new(SaveSignal::default()),
             reveal_marks: Mutex::new(std::collections::HashMap::new()),
             pending_house: Mutex::new(Vec::new()),
+            config: std::sync::OnceLock::new(),
+            bet_locks: std::sync::OnceLock::new(),
         };
         let file = load_file(&hub.path)?;
         hub.house.store(file.house, Ordering::Relaxed);
@@ -291,6 +298,27 @@ impl CasinoHub {
             }
         }
         Ok(hub)
+    }
+
+    /// 운영 설정과 마피아 배팅 잠금을 연결한다 (봇 시작 때 한 번).
+    pub fn connect_economy(&self, config: Arc<RwLock<BotConfig>>, bet_locks: crate::BetLocks) {
+        let _ = self.config.set(config);
+        let _ = self.bet_locks.set(bet_locks);
+    }
+
+    /// 지금 코인 순환 규칙 (설정을 바꾸면 다음 명령부터 바로 적용된다).
+    pub async fn economy_rules(&self) -> EconomyRules {
+        match self.config.get() {
+            Some(config) => config.read().await.economy_rules(),
+            None => EconomyRules::default(),
+        }
+    }
+
+    /// 이 유저가 진행 중인 마피아 판에 걸어 둔 배팅액.
+    fn locked_bet(&self, user_id: u64) -> i64 {
+        self.bet_locks
+            .get()
+            .map_or(0, |locks| crate::locked_bet(locks, user_id))
     }
 
     /// 테이블 상태가 바뀌었다고 알린다.
@@ -678,6 +706,29 @@ impl CasinoHub {
         events
     }
 
+    /// 이 사용자가 테이블에 앉혀 둔 칩 (구조금 기준에 코인과 함께 센다).
+    pub async fn chips_on_table(&self, user_id: u64) -> i64 {
+        let mut chips = 0_i64;
+        for (_, handle) in self.table_handles() {
+            let table = handle.read().await;
+            if let Some(seat) = table
+                .seat_index(user_id)
+                .and_then(|index| table.seats[index].as_ref())
+            {
+                // 진행 중인 핸드에 건 칩도 센다 (올인한 채 받아 가지 못하게).
+                let committed = if table.playing() && seat.in_hand {
+                    seat.total.max(0)
+                } else {
+                    0
+                };
+                chips = chips
+                    .saturating_add(seat.stack.max(0))
+                    .saturating_add(committed);
+            }
+        }
+        chips
+    }
+
     /// 어떤 테이블이든 이 사용자가 앉아 있는 곳.
     pub async fn seated_table_of(&self, user_id: u64) -> Option<String> {
         for (id, handle) in self.table_handles() {
@@ -726,9 +777,10 @@ impl CasinoHub {
         }
     }
 
-    /// 캐시아웃·정산 이벤트를 코인·하우스에 반영한다.
+    /// 캐시아웃·정산 이벤트를 코인·하우스·금고에 반영한다.
     pub async fn apply_events(&self, events: &[CasinoEvent]) {
         let mut touched = false;
+        let mut economy_touched = false;
         for event in events {
             match event {
                 CasinoEvent::CashOut {
@@ -741,22 +793,57 @@ impl CasinoHub {
                     touched = true;
                 }
                 CasinoEvent::RoundSettled {
+                    result,
                     house_delta,
                     reveal_until,
                     table_id,
-                    ..
                 } => {
                     self.pending_house
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .push((table_id.clone(), *reveal_until, *house_delta));
+                    let rules = self.economy_rules().await;
+                    let announcement = {
+                        let mut stats_file = self.stats.write().await;
+                        record_round_economy(&mut stats_file, result, *house_delta, &rules)
+                    };
+                    economy_touched = true;
+                    if let Some(text) = announcement {
+                        // 잭팟은 코인이 오간 것이라 바로 저장한다. 안내는 카드를 다 연 뒤에 뜬다.
+                        touched = true;
+                        if let Some(table) = self.table(table_id) {
+                            table
+                                .write()
+                                .await
+                                .announce_at(text, now_ms(), *reveal_until);
+                        }
+                    }
                 }
                 CasinoEvent::Joined { .. } => {}
             }
         }
         if touched {
             self.save_stats().await;
+        } else if economy_touched {
+            // 롤링·주간 손익·금고 기록은 응답을 기다리게 하지 않고 뒤에서 쓴다 (더 새 스냅샷이 이긴다).
+            self.spawn_stats_save();
         }
+    }
+
+    /// 통계 저장을 기다리지 않고 띄운다.
+    fn spawn_stats_save(&self) {
+        let stats_handle = self.stats.clone();
+        let path = self.stats_path.clone();
+        tokio::spawn(async move {
+            let snapshot = stats_handle.read().await.clone();
+            match tokio::task::spawn_blocking(move || stats::save_stats(&*path, &snapshot)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("failed to save stats after casino round: {error:?}"),
+                Err(error) => {
+                    eprintln!("failed to join stats save task after casino round: {error:?}")
+                }
+            }
+        });
     }
 
     /// 명령 적용: 바이인은 코인을 먼저 빼고(실패 시 환불), 결과 이벤트를 코인에 반영한다.
@@ -776,6 +863,7 @@ impl CasinoHub {
         let table = self
             .table(table_id)
             .ok_or_else(|| CasinoError::new("NOT_FOUND", "테이블을 찾을 수 없습니다."))?;
+        let rake = rake_rule(&self.economy_rules().await);
         let now = now_ms();
         // 좌석 이름은 항상 Discord 이름을 쓴다 (웹이 보낸 닉네임은 무시; 채널 웹훅 이름과 맞춘다).
         let sanitized_join;
@@ -810,7 +898,9 @@ impl CasinoHub {
             let stats_wait_started = Instant::now();
             let mut stats_file = self.stats.write().await;
             stats_wait += stats_wait_started.elapsed();
-            stats::reserve_coins(&mut stats_file, user_id, user_name, *amount)
+            // 배팅 잠금은 판 시작·정산이 이 통계 쓰기 잠금 안에서 바꾸므로 여기서 읽으면 엇갈리지 않는다.
+            let locked = self.locked_bet(user_id);
+            stats::reserve_coins(&mut stats_file, user_id, user_name, *amount, locked)
                 .map_err(|message| CasinoError::new("INSUFFICIENT_COINS", message))?;
             reserved = *amount;
         }
@@ -818,6 +908,7 @@ impl CasinoHub {
             let table_wait_started = Instant::now();
             let mut table = table.write().await;
             table_wait += table_wait_started.elapsed();
+            table.rake = rake;
             let version = table.version;
             let result = table.apply_command(user_id, user_name, command, expected_version, now);
             (result, table.version != version)
@@ -893,6 +984,7 @@ impl CasinoHub {
     /// 한 번 `RevealTick`을 보낸다 (연출 중 250ms마다 전체 화면을 밀던 것을 대신한다).
     pub async fn tick_all(&self) -> Vec<String> {
         let tick_started = Instant::now();
+        let rake = rake_rule(&self.economy_rules().await);
         let now = now_ms();
         self.flush_pending_house(None, now);
         let mut changed = Vec::new();
@@ -901,6 +993,7 @@ impl CasinoHub {
         for (id, table) in self.table_handles() {
             let (before, result) = {
                 let mut table = table.write().await;
+                table.rake = rake;
                 let before = table.version;
                 let result = table.tick(now);
                 (before, result)
@@ -1935,8 +2028,238 @@ impl CasinoHub {
 }
 
 /// 코인이 오가는 이벤트(캐시아웃)가 있는지.
+/// 운영 설정의 홀덤 레이크 규칙.
+fn rake_rule(rules: &EconomyRules) -> RakeRule {
+    RakeRule {
+        bp: rules.holdem_rake_bp,
+        cap: rules.holdem_rake_cap,
+    }
+}
+
+/// 끝난 카지노 한 판을 코인 순환에 반영한다: 하우스 손익(블랙잭 승부·홀덤 레이크)은 금고로,
+/// 롤링(베팅 총액)은 오늘 날짜로, 블랙잭 순손익은 이번 주로 기록한다. 롤링은 블랙잭과 레이크를 뗀
+/// 홀덤 핸드만 센다 (레이크 없는 핸드로 롤링만 쌓는 판을 막는다). 잭팟이 터지면 지급하고 딜러 안내를 돌려준다.
+fn record_round_economy(
+    stats_file: &mut StatsFile,
+    result: &HandResult,
+    house_delta: i64,
+    rules: &EconomyRules,
+) -> Option<String> {
+    let day = stats::kst_today();
+    let week = stats::kst_week();
+    stats::apply_house_result(stats_file, house_delta, rules);
+    let counts_rolling = result.game == GameKind::Blackjack || result.rake > 0;
+    for entry in &result.results {
+        if counts_rolling {
+            stats::record_rolling(stats_file, entry.user_id, &entry.name, entry.wagered, &day);
+        }
+        if result.game == GameKind::Blackjack {
+            stats::record_house_net(stats_file, entry.user_id, &entry.name, entry.net, &week);
+        }
+    }
+    let hit = result.jackpot.as_ref()?;
+    let name_of = |user_id: &u64| {
+        result
+            .results
+            .iter()
+            .find(|entry| entry.user_id == *user_id)
+            .map(|entry| (entry.user_id, entry.name.clone()))
+    };
+    let hitters = hit.hitters.iter().filter_map(name_of).collect::<Vec<_>>();
+    let winners = hit.winners.iter().filter_map(name_of).collect::<Vec<_>>();
+    let others = result
+        .results
+        .iter()
+        .filter(|entry| {
+            !hit.hitters.contains(&entry.user_id) && !hit.winners.contains(&entry.user_id)
+        })
+        .map(|entry| (entry.user_id, entry.name.clone()))
+        .collect::<Vec<_>>();
+    let shares = stats::pay_jackpot(stats_file, &hitters, &winners, &others, rules);
+    if shares.is_empty() {
+        return None;
+    }
+    let total = shares.iter().map(|share| share.amount).sum::<i64>();
+    let lines = shares
+        .iter()
+        .map(|share| format!("{} +{}", share.name, format_chips(share.amount)))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let title = match hit.kind {
+        JackpotKind::BadBeat => format!("배드비트 잭팟! ({})", hit.hand),
+        JackpotKind::SuitedTrips => format!("{} 잭팟!", hit.hand),
+    };
+    Some(format!(
+        "🎰 {title} 총 {}코인: {lines}",
+        format_chips(total)
+    ))
+}
+
 fn moves_coins(events: &[CasinoEvent]) -> bool {
     events
         .iter()
         .any(|event| matches!(event, CasinoEvent::CashOut { .. }))
+}
+
+#[cfg(test)]
+mod economy_tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mafia-casino-hub-{name}-{}-{}",
+            std::process::id(),
+            mafia_remake::atomic_file::next_seq()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn load_hub(dir: &Path) -> CasinoHub {
+        CasinoHub::load(
+            dir.join("casino.json"),
+            Arc::new(RwLock::new(StatsFile::default())),
+            Arc::new(dir.join("stats.json")),
+        )
+        .unwrap()
+    }
+
+    fn seat_result(user_id: u64, wagered: i64, net: i64) -> mafia_remake::casino::SeatResult {
+        mafia_remake::casino::SeatResult {
+            user_id,
+            name: format!("P{user_id}"),
+            seat: 0,
+            wagered,
+            net,
+            won: net.max(0),
+            paid: 0,
+            label: String::new(),
+            notes: Vec::new(),
+        }
+    }
+
+    fn hand(
+        game: GameKind,
+        results: Vec<mafia_remake::casino::SeatResult>,
+        rake: i64,
+    ) -> HandResult {
+        HandResult {
+            id: "r1".to_string(),
+            game,
+            at: 0,
+            summary: String::new(),
+            board: Vec::new(),
+            payouts: Vec::new(),
+            results,
+            rake,
+            jackpot: None,
+        }
+    }
+
+    #[test]
+    fn a_settled_round_feeds_the_treasury_rolling_and_weekly_losses() {
+        let rules = EconomyRules::default();
+        let today = stats::kst_today();
+        let week = stats::kst_week();
+        let mut stats_file = StatsFile::default();
+        // 블랙잭: 하우스 +500 → 금고 400 + 잭팟 100. 롤링과 주간 손익을 둘 다 쌓는다.
+        let blackjack = hand(
+            GameKind::Blackjack,
+            vec![seat_result(1, 1_000, -1_000), seat_result(2, 500, 500)],
+            0,
+        );
+        assert!(record_round_economy(&mut stats_file, &blackjack, 500, &rules).is_none());
+        assert_eq!(
+            (stats_file.treasury.balance, stats_file.treasury.jackpot),
+            (400, 100)
+        );
+        let alpha = &stats_file.users["1"].economy;
+        assert_eq!(alpha.rolling.get(&today), Some(&1_000));
+        assert_eq!(alpha.house_net.get(&week), Some(&-1_000));
+        assert_eq!(
+            stats_file.users["2"].economy.house_net.get(&week),
+            Some(&500)
+        );
+
+        // 홀덤: 레이크 없는 핸드는 롤링에 넣지 않고, 플레이어끼리의 승부라 주간 손익도 쌓지 않는다.
+        let unraked = hand(
+            GameKind::Holdem,
+            vec![seat_result(3, 2_000, -2_000), seat_result(4, 2_000, 2_000)],
+            0,
+        );
+        record_round_economy(&mut stats_file, &unraked, 0, &rules);
+        assert!(!stats_file.users.contains_key("3"));
+        let raked = hand(
+            GameKind::Holdem,
+            vec![seat_result(3, 2_000, -2_000), seat_result(4, 2_000, 1_900)],
+            100,
+        );
+        record_round_economy(&mut stats_file, &raked, 100, &rules);
+        let gamma = &stats_file.users["3"].economy;
+        assert_eq!(gamma.rolling.get(&today), Some(&2_000));
+        assert!(gamma.house_net.is_empty());
+        assert_eq!(stats_file.treasury.balance, 400 + 80);
+    }
+
+    #[test]
+    fn a_jackpot_hit_pays_and_returns_the_dealer_announcement() {
+        let rules = EconomyRules::default();
+        let mut stats_file = StatsFile::default();
+        stats_file.treasury.jackpot = 10_000;
+        let mut result = hand(GameKind::Blackjack, vec![seat_result(7, 600, 9_500)], 0);
+        result.jackpot = Some(mafia_remake::casino::JackpotHit {
+            kind: JackpotKind::SuitedTrips,
+            hitters: vec![7],
+            winners: Vec::new(),
+            hand: "21+3 수티드 트립스".to_string(),
+        });
+        let text = record_round_economy(&mut stats_file, &result, -9_500, &rules).unwrap();
+        assert!(
+            text.contains("수티드 트립스 잭팟") && text.contains("P7 +5,000"),
+            "{text}"
+        );
+        assert_eq!(stats_file.users["7"].coins, 5_000);
+        assert_eq!(stats_file.treasury.jackpot, 5_000);
+    }
+
+    #[tokio::test]
+    async fn buy_ins_leave_the_mafia_bet_that_is_still_riding() {
+        let dir = temp_dir("bet-lock");
+        let hub = load_hub(&dir);
+        {
+            let mut stats_file = hub.stats.write().await;
+            stats::refund_coins(&mut stats_file, 1, "Alpha", 12_000);
+        }
+        let locks: crate::BetLocks =
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([(
+                "game".to_string(),
+                std::collections::HashMap::from([(1_u64, 6_000_i64)]),
+            )])));
+        let config = Arc::new(RwLock::new(
+            serde_json::from_str::<BotConfig>(include_str!("../config.example.json")).unwrap(),
+        ));
+        hub.connect_economy(config, locks);
+        let table_id = hub
+            .create_table(
+                GameKind::Blackjack,
+                "잠금 테스트",
+                0,
+                TableBinding::default(),
+                TableSettings::default(),
+            )
+            .unwrap();
+        let join = |amount| CasinoCommand::Join {
+            seat: 0,
+            amount,
+            name: "Alpha".to_string(),
+        };
+        // 12,000 중 6,000이 마피아 판에 걸려 있어 6,000까지만 바이인할 수 있다.
+        let refused = hub.apply(&table_id, 1, "Alpha", &join(6_100), None).await;
+        assert_eq!(refused.unwrap_err().code, "INSUFFICIENT_COINS");
+        hub.apply(&table_id, 1, "Alpha", &join(6_000), None)
+            .await
+            .unwrap();
+        assert_eq!(hub.coins_of(1).await, 6_000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

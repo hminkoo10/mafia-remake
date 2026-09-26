@@ -19,6 +19,21 @@ fn test_config() -> BotConfig {
         chat_slowmode_seconds: 3,
         attendance_coins: 10_000,
         star_player_coins: 1_000,
+        holdem_rake_bp: 250,
+        holdem_rake_cap: 500,
+        gift_fee_bp: 300,
+        bet_loss_treasury_bp: 5_000,
+        jackpot_share_bp: 2_000,
+        jackpot_payout_bp: 5_000,
+        jackpot_loser_bp: 5_000,
+        jackpot_winner_bp: 2_500,
+        weekly_cashback_bp: 1_000,
+        weekly_cashback_cap: 20_000,
+        daily_rolling_bp: 20,
+        daily_rolling_cap: 5_000,
+        relief_threshold: 2_000,
+        relief_amount: 5_000,
+        relief_gift_lock_hours: 24,
         coupon_api_url: String::new(),
         coupon_api_key: String::new(),
         coupon_coins_per_point: 10_000,
@@ -852,4 +867,47 @@ async fn oversized_content_length_is_rejected_without_panicking() {
     let mut request: &[u8] = b"POST /x HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc";
     let parsed = read_http_request(&mut request).await.unwrap();
     assert_eq!((parsed.path.as_str(), parsed.body.as_str()), ("/x", "abc"));
+}
+
+#[test]
+fn economy_percent_fields_round_trip_through_the_form() {
+    assert_eq!(parse_percent_bp("2.5"), Some(250));
+    assert_eq!(parse_percent_bp("0.2"), Some(20));
+    assert_eq!(parse_percent_bp(".05"), Some(5));
+    assert_eq!(parse_percent_bp("100"), Some(10_000));
+    for bad in ["", "-1", "100.01", "1.234", "abc", "1000", "."] {
+        assert_eq!(parse_percent_bp(bad), None, "{bad}");
+    }
+    assert_eq!(percent_text(250), "2.5");
+    assert_eq!(percent_text(20), "0.2");
+    assert_eq!(percent_text(5), "0.05");
+    assert_eq!(percent_text(5_000), "50");
+
+    let mut config = test_config();
+    let mut updates = updates_for(&config);
+    // 화면에서 읽은 값을 그대로 저장하면 설정이 바뀌지 않는다.
+    apply_updates(&mut config, &updates).unwrap();
+    assert_eq!(config.holdem_rake_bp, 250);
+    assert_eq!(config.daily_rolling_bp, 20);
+    updates.insert("holdem_rake_bp".to_string(), "3.25".to_string());
+    updates.insert("relief_amount".to_string(), "7000".to_string());
+    apply_updates(&mut config, &updates).unwrap();
+    assert_eq!(config.holdem_rake_bp, 325);
+    assert_eq!(config.relief_amount, 7_000);
+    assert_eq!(config.economy_rules().holdem_rake_bp, 325);
+}
+
+#[test]
+fn economy_form_rejects_bad_percentages_and_jackpot_shares_over_100() {
+    let config = test_config();
+    let body = form_body_for(&config).replace("gift_fee_bp=3", "gift_fee_bp=150");
+    assert!(parse_form_updates(&body).is_err());
+
+    let mut config = test_config();
+    let mut updates = updates_for(&config);
+    updates.insert("jackpot_loser_bp".to_string(), "80".to_string());
+    updates.insert("jackpot_winner_bp".to_string(), "30".to_string());
+    let error = apply_updates(&mut config, &updates).unwrap_err();
+    assert!(error.contains("100%"), "{error}");
+    assert_eq!(config.jackpot_loser_bp, 5_000, "실패하면 원래 설정 그대로");
 }

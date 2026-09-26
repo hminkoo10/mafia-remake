@@ -978,6 +978,11 @@ pub(crate) fn render_field(field: WebConfigField, config: &BotConfig) -> String 
                 html_escape(&config_value(config, field.name))
             )
         }
+        WebFieldKind::Percent => format!(
+            r#"<label class="row" for="{field_id}"><span>{label}</span><input type="number" id="{field_id}" name="{}" value="{}" min="0" max="100" step="0.01" required></label>"#,
+            field.name,
+            html_escape(&config_value(config, field.name))
+        ),
         WebFieldKind::Text => format!(
             r#"<label class="row" for="{field_id}"><span>{label}</span><input type="text" id="{field_id}" name="{}" value="{}" required></label>"#,
             field.name,
@@ -1051,6 +1056,21 @@ pub(crate) fn config_value(config: &BotConfig, name: &str) -> String {
         "chat_slowmode_seconds" => config.chat_slowmode_seconds.to_string(),
         "attendance_coins" => config.attendance_coins.to_string(),
         "star_player_coins" => config.star_player_coins.to_string(),
+        "holdem_rake_bp" => percent_text(config.holdem_rake_bp),
+        "holdem_rake_cap" => config.holdem_rake_cap.to_string(),
+        "gift_fee_bp" => percent_text(config.gift_fee_bp),
+        "bet_loss_treasury_bp" => percent_text(config.bet_loss_treasury_bp),
+        "jackpot_share_bp" => percent_text(config.jackpot_share_bp),
+        "jackpot_payout_bp" => percent_text(config.jackpot_payout_bp),
+        "jackpot_loser_bp" => percent_text(config.jackpot_loser_bp),
+        "jackpot_winner_bp" => percent_text(config.jackpot_winner_bp),
+        "weekly_cashback_bp" => percent_text(config.weekly_cashback_bp),
+        "weekly_cashback_cap" => config.weekly_cashback_cap.to_string(),
+        "daily_rolling_bp" => percent_text(config.daily_rolling_bp),
+        "daily_rolling_cap" => config.daily_rolling_cap.to_string(),
+        "relief_threshold" => config.relief_threshold.to_string(),
+        "relief_amount" => config.relief_amount.to_string(),
+        "relief_gift_lock_hours" => config.relief_gift_lock_hours.to_string(),
         "coupon_coins_per_point" => config.coupon_coins_per_point.to_string(),
         "coupon_api_url" => config.coupon_api_url.clone(),
         "coupon_api_key" => config.coupon_api_key.clone(),
@@ -1134,6 +1154,12 @@ pub(crate) fn parse_form_updates(
         if text_value.is_empty() {
             return Err(format!("'{}' 값이 비어 있습니다.", field.label));
         }
+        if matches!(field.kind, WebFieldKind::Percent) && parse_percent_bp(text_value).is_none() {
+            return Err(format!(
+                "'{}' 값은 0~100 사이 숫자(소수점 둘째 자리까지)여야 합니다.",
+                field.label
+            ));
+        }
         if matches!(field.kind, WebFieldKind::Int) {
             let parsed = text_value
                 .parse::<u64>()
@@ -1166,6 +1192,11 @@ pub(crate) fn apply_updates(
             WebFieldKind::Text => set_text(config, field.name, value.clone())?,
             WebFieldKind::Int => set_int(config, field.name, value.parse::<u64>().unwrap_or(0))?,
             WebFieldKind::IntList => set_int_list(config, field.name, value)?,
+            WebFieldKind::Percent => {
+                let bp = parse_percent_bp(value)
+                    .ok_or_else(|| format!("'{}' 값이 올바르지 않습니다.", field.label))?;
+                set_int(config, field.name, bp.unsigned_abs())?
+            }
         }
     }
     if let Err(error) = validate_config(config) {
@@ -1261,6 +1292,29 @@ pub(crate) fn set_int(
         "chat_slowmode_seconds" => config.chat_slowmode_seconds = value,
         "attendance_coins" => config.attendance_coins = value as i64,
         "star_player_coins" => config.star_player_coins = value as i64,
+        "holdem_rake_bp" => config.holdem_rake_bp = i64::try_from(value).unwrap_or(i64::MAX),
+        "holdem_rake_cap" => config.holdem_rake_cap = i64::try_from(value).unwrap_or(i64::MAX),
+        "gift_fee_bp" => config.gift_fee_bp = i64::try_from(value).unwrap_or(i64::MAX),
+        "bet_loss_treasury_bp" => {
+            config.bet_loss_treasury_bp = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "jackpot_share_bp" => config.jackpot_share_bp = i64::try_from(value).unwrap_or(i64::MAX),
+        "jackpot_payout_bp" => config.jackpot_payout_bp = i64::try_from(value).unwrap_or(i64::MAX),
+        "jackpot_loser_bp" => config.jackpot_loser_bp = i64::try_from(value).unwrap_or(i64::MAX),
+        "jackpot_winner_bp" => config.jackpot_winner_bp = i64::try_from(value).unwrap_or(i64::MAX),
+        "weekly_cashback_bp" => {
+            config.weekly_cashback_bp = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "weekly_cashback_cap" => {
+            config.weekly_cashback_cap = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "daily_rolling_bp" => config.daily_rolling_bp = i64::try_from(value).unwrap_or(i64::MAX),
+        "daily_rolling_cap" => config.daily_rolling_cap = i64::try_from(value).unwrap_or(i64::MAX),
+        "relief_threshold" => config.relief_threshold = i64::try_from(value).unwrap_or(i64::MAX),
+        "relief_amount" => config.relief_amount = i64::try_from(value).unwrap_or(i64::MAX),
+        "relief_gift_lock_hours" => {
+            config.relief_gift_lock_hours = i64::try_from(value).unwrap_or(i64::MAX)
+        }
         "coupon_coins_per_point" => config.coupon_coins_per_point = (value as i64).max(1),
         "log_channel_id" => config.log_channel_id = value,
         "default_mafia_count" => config.default_mafia_count = value as u32,
@@ -1296,7 +1350,54 @@ pub(crate) fn set_int_list(
     Ok(())
 }
 
+/// 만분율을 "2.5" 같은 퍼센트 문자열로 (소수점 뒤 0은 뺀다).
+pub(crate) fn percent_text(bp: i64) -> String {
+    let bp = bp.clamp(0, mafia_remake::stats::BP_SCALE);
+    let whole = bp / 100;
+    let fraction = bp % 100;
+    if fraction == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{fraction:02}")
+            .trim_end_matches('0')
+            .to_string()
+    }
+}
+
+/// "2.5" 같은 퍼센트(0~100, 소수점 둘째 자리까지)를 만분율로. 형식이 틀리면 None.
+pub(crate) fn parse_percent_bp(text: &str) -> Option<i64> {
+    let text = text.trim();
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+    if whole.is_empty() && fraction.is_empty() {
+        return None;
+    }
+    if fraction.len() > 2
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        || whole.len() > 3
+    {
+        return None;
+    }
+    let whole = if whole.is_empty() {
+        0
+    } else {
+        whole.parse::<i64>().ok()?
+    };
+    let fraction = format!("{fraction:0<2}").parse::<i64>().ok()?;
+    let bp = whole * 100 + fraction;
+    (bp <= mafia_remake::stats::BP_SCALE).then_some(bp)
+}
+
 pub(crate) fn validate_config(config: &BotConfig) -> std::result::Result<(), String> {
+    if config
+        .jackpot_loser_bp
+        .saturating_add(config.jackpot_winner_bp)
+        > mafia_remake::stats::BP_SCALE
+    {
+        return Err(
+            "배드비트 잭팟의 진 사람 몫과 이긴 사람 몫을 합쳐 100%를 넘을 수 없습니다.".to_string(),
+        );
+    }
     if config.default_mafia_count < 1 {
         return Err("마피아는 최소 1명이어야 합니다.".to_string());
     }

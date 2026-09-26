@@ -684,6 +684,8 @@ enum WebFieldKind {
     Int,
     Text,
     IntList,
+    /// 퍼센트 (소수점 둘째 자리까지, 0~100). 설정 파일에는 만분율로 저장한다.
+    Percent,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -742,7 +744,97 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
     ),
     field(
         "star_player_coins",
-        "스타플레이어 상금(원)",
+        "스타플레이어 상금(원, 복지 금고에서 지급)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "holdem_rake_bp",
+        "홀덤 레이크 비율(%) — 플롭을 연 핸드의 팟에서 뗌",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "holdem_rake_cap",
+        "홀덤 레이크 핸드당 상한(칩)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "gift_fee_bp",
+        "코인 선물 수수료(%)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "bet_loss_treasury_bp",
+        "마피아 배팅으로 잃은 코인 중 금고로 가는 비율(%)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "jackpot_share_bp",
+        "금고로 들어오는 코인 중 잭팟 적립 비율(%)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "jackpot_payout_bp",
+        "잭팟이 터지면 풀에서 지급하는 비율(%)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "jackpot_loser_bp",
+        "배드비트 잭팟: 진 사람 몫(%)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "jackpot_winner_bp",
+        "배드비트 잭팟: 이긴 사람 몫(%, 나머지는 같은 핸드 참가자)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "weekly_cashback_bp",
+        "주간 손실 환급 비율(%)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "weekly_cashback_cap",
+        "주간 손실 환급 1인 상한(원)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "daily_rolling_bp",
+        "일간 롤링 환급 비율(%)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "daily_rolling_cap",
+        "일간 롤링 환급 1인 상한(원)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "relief_threshold",
+        "구조금 기준: 보유 코인+테이블 칩이 이 금액 미만(원)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "relief_amount",
+        "구조금 지급액(원, 0이면 끔)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "relief_gift_lock_hours",
+        "구조금을 받은 뒤 선물 금지 시간(시간)",
         WebFieldKind::Int,
         Some(0),
     ),

@@ -730,6 +730,7 @@ pub async fn announce_winner(
     let mut rank_change_chunks = Vec::new();
     if let Some((game_snapshot, initial_roles, elapsed_seconds, bets)) = record_payload {
         let lock_game_key = running.read().await.activity_game_key.clone();
+        let economy_rules = data.config.read().await.economy_rules();
         let (recorded_rating_log, stats_snapshot) = {
             let mut stats_file = data.stats.write().await;
             // [배팅] 이 판을 기록하기 전의 전적으로 배율을 정해 정산한다.
@@ -745,6 +746,13 @@ pub async fn announce_winner(
                     &initial_roles,
                     winner,
                     &bets,
+                );
+                // 코인 순환: 주간 손실 환급용 손익을 쌓고, 잃은 배팅의 일부를 복지 금고로 보낸다.
+                stats::record_bet_economy(
+                    &mut stats_file,
+                    &bet_settlements,
+                    &economy_rules,
+                    &stats::kst_week(),
                 );
             }
             let rating_log = stats::record_game_stats(

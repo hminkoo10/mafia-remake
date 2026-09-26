@@ -158,7 +158,7 @@ async fn run_star_player_vote(
         ctx,
         running,
         format!(
-            "이번 판 최고의 활약을 보여준 플레이어를 {STAR_VOTE_SECONDS}초 동안 골라 주세요 (참가자만, 본인 제외).\n가장 많은 표를 받은 사람에게 **{}**을 드립니다. 동표면 나눠 드립니다.",
+            "이번 판 최고의 활약을 보여준 플레이어를 {STAR_VOTE_SECONDS}초 동안 골라 주세요 (참가자만, 본인 제외).\n가장 많은 표를 받은 사람에게 **{}**을 복지 금고에서 드립니다 (금고가 모자라면 남은 만큼). 동표면 나눠 드립니다.",
             stats::coin_text(prize_total)
         ),
         "스타플레이어 투표",
@@ -268,11 +268,14 @@ async fn run_star_player_vote(
             )
         })
         .collect::<Vec<_>>();
-    if awards.len() > 1 {
+    let paid_total = awards.iter().map(|award| award.prize).sum::<i64>();
+    if prize_total > 0 && paid_total == 0 {
+        lines.push("복지 금고가 비어 있어 이번 상금은 드리지 못했습니다.".to_string());
+    } else if awards.len() > 1 {
         lines.push(format!(
             "동표로 {}명이 {}을 나눠 받았습니다.",
             awards.len(),
-            stats::coin_text(prize_total)
+            stats::coin_text(paid_total)
         ));
     }
     let _ = send_game_embed(

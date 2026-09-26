@@ -1,10 +1,12 @@
 // casino/holdem.rs — 2~6인 노 리밋 텍사스 홀덤 (방 설정의 블라인드, 사이드팟, 헤즈업 버튼 규칙)
 
-use super::cards::{CasinoError, PokerRank, draw, poker_rank, shuffled_deck};
+use super::cards::{
+    CasinoError, FOUR_OF_A_KIND, PokerRank, draw, hand_category, poker_rank, shuffled_deck,
+};
 use super::table::{
-    CARD_FLIP_MS, CasinoTable, DEAL_LEAD_MS, GameKind, HOLE_CARD_MS, HandResult, LAND_SETTLE_MS,
-    Payout, Phase, Round, SEAT_COUNT, SETTLE_PAUSE_MS, SHOWDOWN_STEP_MS, STREET_PAUSE_MS, Seat,
-    SeatResult, format_chips, new_id, signed_chips,
+    CARD_FLIP_MS, CasinoTable, DEAL_LEAD_MS, GameKind, HOLE_CARD_MS, HandResult, JackpotHit,
+    JackpotKind, LAND_SETTLE_MS, Payout, Phase, Round, SEAT_COUNT, SETTLE_PAUSE_MS,
+    SHOWDOWN_STEP_MS, STREET_PAUSE_MS, Seat, SeatResult, format_chips, new_id, signed_chips,
 };
 use serde::Serialize;
 
@@ -243,10 +245,32 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
         .iter()
         .map(|&index| seat_at(table, index).total)
         .sum::<i64>();
+    // 레이크는 플롭을 연 핸드에서만 뗀다 (노 플롭 노 드롭). 아무도 받지 않은 베팅(맨 위 한 사람의
+    // 초과분)은 돌려줄 칩이라 떼지 않는다.
+    let contested = {
+        let mut totals = participants
+            .iter()
+            .map(|&index| seat_at(table, index).total)
+            .collect::<Vec<_>>();
+        totals.sort_unstable_by(|left, right| right.cmp(left));
+        let unmatched = match totals.as_slice() {
+            [top, second, ..] => top - second,
+            [only] => *only,
+            [] => 0,
+        };
+        pot - unmatched
+    };
+    let rake = if board.len() >= 3 {
+        table.rake.on(contested)
+    } else {
+        0
+    };
+    let mut rake_left = rake;
     let mut awards: Vec<(u64, Payout)> = Vec::new();
     let mut reveal = false;
     if contenders.len() == 1 {
-        award(table, &mut awards, contenders[0], pot, "폴드 승리");
+        award(table, &mut awards, contenders[0], pot - rake, "폴드 승리");
+        rake_left = 0;
     } else {
         reveal = true;
         let mut levels = participants
@@ -263,7 +287,7 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
                 .copied()
                 .filter(|&index| seat_at(table, index).total >= level)
                 .collect::<Vec<_>>();
-            let amount = (level - previous) * contributors.len() as i64;
+            let mut amount = (level - previous) * contributors.len() as i64;
             previous = level;
             if contributors.len() == 1 {
                 award(
@@ -283,6 +307,10 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
             if eligible.is_empty() {
                 return Err(CasinoError::new("ENGINE_STATE", "팟 정산 상태 오류"));
             }
+            // 레이크는 메인 팟부터 뗀다 (작은 메인 팟이 모자라면 다음 사이드 팟에서).
+            let take = rake_left.min(amount);
+            amount -= take;
+            rake_left -= take;
             let ranked = eligible
                 .iter()
                 .map(|&index| {
@@ -317,6 +345,14 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
             }
         }
     }
+    if rake_left != 0 {
+        return Err(CasinoError::new("ENGINE_STATE", "레이크 정산 상태 오류"));
+    }
+    let jackpot = if reveal {
+        bad_beat(table, &contenders, &board)
+    } else {
+        None
+    };
     let round_id = {
         let round = table.round.as_mut().expect("round exists");
         round.pot = pot;
@@ -398,7 +434,7 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
         .into_iter()
         .map(|(_, payout)| payout)
         .collect::<Vec<_>>();
-    let summary = results
+    let mut summary = results
         .iter()
         .map(|result| {
             format!(
@@ -410,6 +446,9 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
         })
         .collect::<Vec<_>>()
         .join(" · ");
+    if rake > 0 && !summary.is_empty() {
+        summary.push_str(&format!(" · 레이크 {}", format_chips(rake)));
+    }
     // 결과 안내는 쇼다운 카드가 모두 공개된 뒤에 뜬다.
     if summary.is_empty() {
         table.say_at("핸드가 종료되었습니다.", now, settled_until);
@@ -424,8 +463,51 @@ pub(super) fn settle_poker(table: &mut CasinoTable, now: i64) -> Result<(), Casi
         board,
         payouts,
         results,
+        rake,
+        jackpot,
     });
     Ok(())
+}
+
+/// 배드비트: 쇼다운에서 포카드 이상으로 진 사람. 보드만으로 이미 그 족보면(보드 포카드 등)
+/// 홀 카드가 만든 족보가 아니므로 치지 않는다.
+fn bad_beat(table: &CasinoTable, contenders: &[usize], board: &[String]) -> Option<JackpotHit> {
+    if board.len() != 5 {
+        return None;
+    }
+    let board_category = hand_category(poker_rank(board).ok()?.score);
+    let ranked = contenders
+        .iter()
+        .filter_map(|&index| {
+            let seat = table.seats[index].as_ref()?;
+            let mut cards = seat.cards.clone();
+            cards.extend(board.iter().cloned());
+            poker_rank(&cards).ok().map(|rank| (seat.user_id, rank))
+        })
+        .collect::<Vec<_>>();
+    let best = ranked.iter().map(|(_, rank)| rank.score).max()?;
+    let mut losers = ranked
+        .iter()
+        .filter(|(_, rank)| {
+            let category = hand_category(rank.score);
+            rank.score < best && category >= FOUR_OF_A_KIND && category > board_category
+        })
+        .collect::<Vec<_>>();
+    if losers.is_empty() {
+        return None;
+    }
+    losers.sort_by_key(|(_, rank)| std::cmp::Reverse(rank.score));
+    let hand = losers[0].1.name.clone();
+    Some(JackpotHit {
+        kind: JackpotKind::BadBeat,
+        hitters: losers.iter().map(|(user_id, _)| *user_id).collect(),
+        winners: ranked
+            .iter()
+            .filter(|(_, rank)| rank.score == best)
+            .map(|(user_id, _)| *user_id)
+            .collect(),
+        hand,
+    })
 }
 
 fn advance(table: &mut CasinoTable, from: i32, now: i64) -> Result<(), CasinoError> {
