@@ -896,6 +896,17 @@ async fn oversized_content_length_is_rejected_without_panicking() {
 }
 
 #[test]
+fn percent_decoding_never_splits_a_multibyte_character() {
+    // '%' 뒤 두 바이트가 한글·깨진 바이트(U+FFFD)의 중간에 걸려도 패닉 없이 그대로 둔다.
+    // 로그인 없이 누구나 보내는 GET 쿼리가 여기를 지나므로, 패닉이면 panic=abort로 봇 전체가 죽는다.
+    assert_eq!(percent_decode("%a한"), "%a한");
+    assert_eq!(percent_decode("%é"), "%é");
+    assert_eq!(percent_decode("%a\u{FFFD}"), "%a\u{FFFD}");
+    assert_eq!(percent_decode("%ED%95%9C+%41"), "한 A");
+    assert_eq!(parse_urlencoded("q=%a한&x=1")["x"], "1");
+}
+
+#[test]
 fn economy_percent_fields_round_trip_through_the_form() {
     assert_eq!(parse_percent_bp("2.5"), Some(250));
     assert_eq!(parse_percent_bp("0.2"), Some(20));

@@ -1825,7 +1825,12 @@ pub(crate) fn percent_decode(value: &str) -> String {
                 index += 1;
             }
             b'%' if index + 2 < bytes.len() => {
-                if let Ok(hex) = u8::from_str_radix(&value[index + 1..index + 3], 16) {
+                // 문자열이 아니라 바이트로 읽는다: '%' 뒤가 한글 같은 여러 바이트 문자의 중간이면
+                // 문자열 슬라이스가 패닉하고, 로그인 없이 보내는 쿼리도 여기를 지난다.
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
+                    .ok()
+                    .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+                if let Some(hex) = hex {
                     output.push(hex);
                     index += 3;
                 } else {
