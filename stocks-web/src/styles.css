@@ -98,6 +98,8 @@ h1, h2, h3, h4 { margin: 0; }
 .chip strong { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
 .coin-chip strong { font-size: 15px; }
 .user-chip { font-weight: 600; color: var(--ink); }
+.shift-chip { background: var(--accent-soft); color: var(--accent); }
+.shift-chip strong { color: var(--accent); }
 
 /* ------------------------------------------------------------ 배치 */
 
@@ -351,7 +353,7 @@ h1, h2, h3, h4 { margin: 0; }
 
 @media (max-width: 1100px) {
   .topbar-inner { gap: 12px; }
-  .index-ticker > span, .day-chip > span, .user-chip { display: none; }
+  .index-ticker > span, .day-chip > span, .shift-chip > span, .user-chip { display: none; }
 }
 
 /* 한 줄로 쌓을 때는 시세 → 차트 → 호가 → 주문 → 종목 정보 순서로 (가운데·오른쪽 칸을 풀어 순서를 다시 잡는다). */

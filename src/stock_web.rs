@@ -173,7 +173,10 @@ pub struct OfferingView {
 
 #[derive(Debug, Serialize)]
 pub struct StockState {
+    /// 시장 시각 (관리자가 게임일을 넘기면 실제 시각보다 앞선다).
     pub server_time: i64,
+    /// 시장 시계가 실제 시각보다 앞선 시간 (ms).
+    pub time_shift_ms: i64,
     pub me: StockMe,
     pub market: MarketSummary,
     pub selected: Option<CompanyDetail>,
@@ -201,8 +204,8 @@ fn invalid(message: String) -> Response {
 async fn build_state(stocks: &StockHub, user: u64, name: &str, code: Option<&str>) -> StockState {
     let (rules, _) = stocks.rules().await;
     let coins = stocks.coins_of(user).await;
-    let now = now_ms();
     let market = stocks.market.read().await;
+    let now = market.clock(now_ms());
     let summary = market.market_summary(now, &rules);
     let selected_code = code
         .and_then(|query| market.find_company(query))
@@ -259,6 +262,7 @@ async fn build_state(stocks: &StockHub, user: u64, name: &str, code: Option<&str
         .collect();
     StockState {
         server_time: now,
+        time_shift_ms: market.time_shift_ms,
         me: StockMe {
             user_id: user.to_string(),
             name: name.to_string(),

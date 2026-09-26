@@ -239,7 +239,10 @@ export interface StockRulesView {
 }
 
 export interface StockState {
+  /** 시장 시각 (관리자가 게임일을 넘기면 실제 시각보다 앞선다). */
   server_time: number;
+  /** 시장 시계가 실제 시각보다 앞선 시간 (ms). */
+  time_shift_ms: number;
   me: { user_id: string; name: string; coins: number };
   market: MarketSummary;
   selected: CompanyDetail | null;

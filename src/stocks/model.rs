@@ -768,6 +768,10 @@ pub struct StockMarket {
     pub last_system_ipo_day: i64,
     #[serde(default)]
     pub activity: Activity,
+    /// 관리자가 게임일을 넘긴 만큼 시장 시계가 실제 시각보다 앞선 시간 (ms). 시장의 모든 시각
+    /// (시세·주문·청약·배당·보호예수·뉴스·봉)은 이 시계를 쓴다.
+    #[serde(default)]
+    pub time_shift_ms: i64,
     /// 봉 (파일을 따로 저장한다).
     #[serde(skip)]
     pub candles: CandleStore,

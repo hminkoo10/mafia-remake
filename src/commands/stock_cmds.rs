@@ -53,7 +53,7 @@ pub async fn autocomplete_company(
     partial: &str,
 ) -> Vec<serenity::AutocompleteChoice> {
     let market = ctx.data().stocks.market.read().await;
-    let now = now_ms();
+    let now = market.clock(now_ms());
     let partial = partial.trim();
     let mut rows = market
         .companies
@@ -132,6 +132,13 @@ pub async fn stock(_ctx: Context<'_>) -> Result<(), Error> {
 /// 시장 요약 본문 (시세판과 /주식 시세가 같이 쓴다).
 pub fn market_board_text(market: &StockMarket, now: i64) -> String {
     let mut lines = vec![format!("마피아 종합지수 **{}**", index_change(market))];
+    if market.time_shift_ms > 0 {
+        lines.push(format!(
+            "⏩ 시장 시각 {} (관리자가 게임일을 넘겨 실제보다 {}분 앞섬)",
+            kst_clock(now),
+            market.time_shift_ms / market_engine::MINUTE_MS
+        ));
+    }
     if now < market.halted_until {
         lines.push(format!(
             "⛔ 서킷브레이커: {}까지 모든 거래 정지",
@@ -375,7 +382,7 @@ pub async fn stock_quote(
     #[autocomplete = "autocomplete_company"]
     종목: Option<String>,
 ) -> Result<(), Error> {
-    let now = now_ms();
+    let now = ctx.data().stocks.now().await;
     let (rules, _) = ctx.data().stocks.rules().await;
     let text = match 종목 {
         None => market_board_text(&*ctx.data().stocks.market.read().await, now),
@@ -519,7 +526,7 @@ pub async fn stock_sell(
 )]
 pub async fn stock_balance(ctx: Context<'_>) -> Result<(), Error> {
     let user = ctx.author().id.get();
-    let now = now_ms();
+    let now = ctx.data().stocks.now().await;
     let view = ctx
         .data()
         .stocks
@@ -608,13 +615,10 @@ pub async fn stock_balance(ctx: Context<'_>) -> Result<(), Error> {
 )]
 pub async fn stock_orders(ctx: Context<'_>) -> Result<(), Error> {
     let user = ctx.author().id.get();
-    let view = ctx
-        .data()
-        .stocks
-        .market
-        .read()
-        .await
-        .account_view(user, now_ms());
+    let view = {
+        let market = ctx.data().stocks.market.read().await;
+        market.account_view(user, market.clock(now_ms()))
+    };
     if view.orders.is_empty() {
         reply_embed(
             ctx,
@@ -775,7 +779,7 @@ pub async fn stock_chart(
                 .copied()
                 .collect::<Vec<_>>(),
         };
-        let summary = market.summary_of(company, now_ms());
+        let summary = market.summary_of(company, market.clock(now_ms()));
         (
             format!(
                 "{} ({}) {} {}",
@@ -864,7 +868,8 @@ fn news_line(news: &NewsItem) -> String {
     description_localized("ko", "주식 재산 순위를 봅니다.")
 )]
 pub async fn stock_ranking(ctx: Context<'_>) -> Result<(), Error> {
-    let ranking = ctx.data().stocks.market.read().await.ranking(now_ms());
+    let now = ctx.data().stocks.now().await;
+    let ranking = ctx.data().stocks.market.read().await.ranking(now);
     let text = if ranking.is_empty() {
         "아직 주식을 가진 사람이 없습니다.".to_string()
     } else {
@@ -1162,7 +1167,7 @@ pub async fn company_info(
     let text = {
         let market = ctx.data().stocks.market.read().await;
         market
-            .company_detail(&code, now_ms(), &rules)
+            .company_detail(&code, market.clock(now_ms()), &rules)
             .map(|detail| company_text(&detail))
     };
     match text {
@@ -1493,6 +1498,8 @@ pub enum StockAdminAction {
     Resume,
     #[name = "시장 집계 보기"]
     Stats,
+    #[name = "게임일 넘기기"]
+    SkipDays,
 }
 
 /// 주식 시장이 코인을 얼마나 만들고 없앴는지 (관리자용 누적).
@@ -1540,7 +1547,7 @@ fn signed_won(amount: i64) -> String {
 #[poise::command(
     slash_command,
     rename = "주식관리",
-    description_localized("ko", "관리자: 종목 거래정지·재개, 시장 코인 집계")
+    description_localized("ko", "관리자: 종목 거래정지·재개, 시장 코인 집계, 게임일 넘기기")
 )]
 pub async fn manage_stocks(
     ctx: Context<'_>,
@@ -1548,9 +1555,16 @@ pub async fn manage_stocks(
     #[description = "종목 (거래정지·재개 때)"]
     #[autocomplete = "autocomplete_company"]
     종목: Option<String>,
+    #[description = "넘길 게임일 수 (게임일 넘기기 때, 기본 1)"]
+    #[min = 1]
+    #[max = 24]
+    일수: Option<i64>,
 ) -> Result<(), Error> {
     if !require_manager(ctx).await? {
         return Ok(());
+    }
+    if 동작 == StockAdminAction::SkipDays {
+        return skip_game_days(ctx, 일수.unwrap_or(1)).await;
     }
     if 동작 == StockAdminAction::Stats {
         let text = market_stats_text(&*ctx.data().stocks.market.read().await);
@@ -1606,6 +1620,34 @@ pub async fn manage_stocks(
     }
 }
 
+/// 관리자: 게임일을 넘긴다 (청약·배당·유상증자·보호예수 등 게임일 단위 일정이 그만큼 앞당겨진다).
+async fn skip_game_days(ctx: Context<'_>, days: i64) -> Result<(), Error> {
+    if let Err(error) = ctx.defer_ephemeral().await {
+        eprintln!("failed to defer 게임일 넘기기: {error:?}");
+    }
+    match ctx.data().stocks.skip_game_days(days).await {
+        Ok((day, minutes)) => {
+            let text = format!(
+                "게임일을 {days}일 넘겼습니다. 지금은 게임일 {day}이고, 시장 시계가 {minutes}분 앞당겨졌습니다. 그 사이의 시세·주문·청약·배당은 모두 처리했습니다."
+            );
+            let log_channel_id = ctx.data().config.read().await.log_channel_id;
+            send_admin_log(
+                ctx.http(),
+                log_channel_id,
+                "주식 관리",
+                format!(
+                    "{} 님이 게임일을 {days}일 넘김 ({minutes}분)",
+                    ctx.author().name
+                ),
+            )
+            .await;
+            reply_embed(ctx, text, "주식 관리", serenity::Colour::DARK_GREEN, true).await?;
+            Ok(())
+        }
+        Err(message) => fail(ctx, message).await,
+    }
+}
+
 #[poise::command(
     slash_command,
     rename = "주식패널",
@@ -1618,7 +1660,10 @@ pub async fn stock_panel(ctx: Context<'_>) -> Result<(), Error> {
     if !require_manager(ctx).await? {
         return Ok(());
     }
-    let text = market_board_text(&*ctx.data().stocks.market.read().await, now_ms());
+    let text = {
+        let market = ctx.data().stocks.market.read().await;
+        market_board_text(&market, market.clock(now_ms()))
+    };
     let message = ctx
         .channel_id()
         .send_message(
@@ -1763,7 +1808,10 @@ async fn refresh_stock_panel(ctx: &serenity::Context, data: &Data) {
     if channel == 0 || message == 0 {
         return;
     }
-    let text = market_board_text(&*data.stocks.market.read().await, now_ms());
+    let text = {
+        let market = data.stocks.market.read().await;
+        market_board_text(&market, market.clock(now_ms()))
+    };
     if text == previous {
         return;
     }

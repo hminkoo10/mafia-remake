@@ -306,9 +306,9 @@ impl StockHub {
         if !rules.enabled {
             return Err("지금은 주식 시장이 닫혀 있습니다.".to_string());
         }
-        let now = now_ms();
         let (result, market_snapshot, stats_snapshot) = {
             let mut market = self.market.write().await;
+            let now = market.clock(now_ms());
             let need = need(&market, &rules)?;
             let mut stats_file = self.stats.write().await;
             let budget = match need {
@@ -391,10 +391,10 @@ impl StockHub {
     /// 5초마다: 서버 활동을 넘기고, 시장을 돌리고, 생긴 코인 이동을 반영해 저장한다.
     pub async fn tick(&self) -> TickReport {
         let (rules, econ) = self.rules().await;
-        let now = now_ms();
         let activity = self.take_activity();
         let (report, snapshot) = {
             let mut market = self.market.write().await;
+            let now = market.clock(now_ms());
             if activity != (0, 0, 0) {
                 market.record_activity(activity.0, activity.1, activity.2);
             }
@@ -496,7 +496,38 @@ impl StockHub {
 
     /// 주식 시장에 있는 재산 (평가액 + 묶인 코인). 구조금 기준에 넣는다.
     pub async fn portfolio_value(&self, user: u64) -> i64 {
-        self.market.read().await.portfolio_value(user, now_ms())
+        let market = self.market.read().await;
+        market.portfolio_value(user, market.clock(now_ms()))
+    }
+
+    /// 시장 시각 (관리자가 게임일을 넘긴 만큼 실제 시각보다 앞선다).
+    pub async fn now(&self) -> i64 {
+        self.market.read().await.clock(now_ms())
+    }
+
+    /// 관리자: 게임일을 넘긴다. 시장 시계를 옮기고 그 사이를 바로 따라잡은 뒤 저장한다.
+    /// 돌려주는 값은 (지금 게임일 번호, 앞당긴 분).
+    pub async fn skip_game_days(&self, days: i64) -> std::result::Result<(i64, i64), String> {
+        let (rules, _) = self.rules().await;
+        if !rules.enabled {
+            return Err("지금은 주식 시장이 닫혀 있습니다.".to_string());
+        }
+        let shift_before = {
+            let mut market = self.market.write().await;
+            let before = market.time_shift_ms;
+            let now = market.clock(now_ms());
+            let item = market.skip_game_days(now, days, &rules);
+            self.news_outbox
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(item);
+            before
+        };
+        self.tick().await;
+        self.flush().await;
+        let market = self.market.read().await;
+        let day = rules.day_of(market.clock(now_ms()));
+        Ok((day, (market.time_shift_ms - shift_before) / MINUTE_MS))
     }
 
     pub async fn find_code(&self, query: &str) -> Option<String> {
@@ -580,6 +611,38 @@ mod tests {
             .users
             .get(&user.to_string())
             .map_or(0, |entry| entry.coins)
+    }
+
+    #[tokio::test]
+    async fn skipping_a_game_day_moves_the_market_clock_and_saves_it() {
+        let dir = temp_dir("skip");
+        let hub = hub_with_coins(&dir, 1_000_000);
+        let (rules, _) = hub.rules().await;
+        let before = hub.now().await;
+        let (day, minutes) = hub.skip_game_days(1).await.unwrap();
+        let after = hub.now().await;
+        assert_eq!(day, rules.day_of(before) + 1);
+        assert!(minutes > 0 && minutes <= rules.day_ms() / MINUTE_MS);
+        assert!(after >= (rules.day_of(before) + 1) * rules.day_ms());
+        // 따라잡은 시각까지 시장을 돌렸고, 알림 뉴스가 채널로 갈 준비가 됐다.
+        assert!(hub.market.read().await.last_tick > before);
+        assert!(
+            hub.take_news()
+                .iter()
+                .any(|item| item.headline.contains("게임일을 1일 넘겼습니다"))
+        );
+        // 시장 파일에 앞당긴 시계가 남아 다시 켜도 이어진다.
+        let reloaded = StockHub::load(
+            dir.join("stocks.json"),
+            Arc::new(RwLock::new(StatsFile::default())),
+            Arc::new(dir.join("stats.json")),
+        )
+        .unwrap();
+        assert_eq!(
+            reloaded.market.read().await.time_shift_ms,
+            hub.market.read().await.time_shift_ms
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

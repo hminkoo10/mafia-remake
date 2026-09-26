@@ -27,6 +27,8 @@ pub const VI_HALT_MS: i64 = 2 * MINUTE_MS;
 pub const BREAKER_HALT_MS: i64 = 5 * MINUTE_MS;
 /// 서킷브레이커 기준 (지수 하락 만분율).
 const BREAKER_BP: i64 = 800;
+/// 관리자가 한 번에 넘길 수 있는 게임일 (따라잡기 계산을 한정한다).
+pub const MAX_SKIP_DAYS: i64 = 24;
 /// 시장 뉴스(경제 소식) 빈도: 실제 하루 3건.
 const MACRO_NEWS_PER_DAY: f64 = 3.0;
 /// 기업 뉴스 빈도: 종목당 실제 하루 0.8건.
@@ -142,6 +144,7 @@ impl StockMarket {
             last_tick: now,
             last_system_ipo_day: day,
             activity: Activity::default(),
+            time_shift_ms: 0,
             candles: CandleStore::default(),
         };
         market.push_news(
@@ -308,6 +311,33 @@ impl StockMarket {
             ));
         }
         Ok(())
+    }
+
+    // ------------------------------------------------------------ 시계
+
+    /// 시장 시각 (실제 시각 + 관리자가 넘긴 시간).
+    pub fn clock(&self, real_now: i64) -> i64 {
+        real_now.saturating_add(self.time_shift_ms.max(0))
+    }
+
+    /// 관리자: 게임일을 `days`일 넘긴다. 시장 시계를 그만큼 뒤 게임일의 시작으로 옮기고, 알릴 뉴스를
+    /// 돌려준다. 그 사이의 시세·주문·청약·배당 등은 다음 `tick`이 5초 단위로 따라잡는다.
+    pub fn skip_game_days(&mut self, market_now: i64, days: i64, rules: &StockRules) -> NewsItem {
+        let days = days.clamp(1, MAX_SKIP_DAYS);
+        let day_ms = rules.day_ms();
+        let target = (rules.day_of(market_now) + days) * day_ms;
+        let skipped = (target - market_now).max(0);
+        self.time_shift_ms = self.time_shift_ms.saturating_add(skipped);
+        self.push_news(
+            market_now,
+            NewsKind::Market,
+            None,
+            format!(
+                "관리자가 게임일을 {days}일 넘겼습니다. 시장 시계가 {}분 앞당겨졌습니다.",
+                skipped / MINUTE_MS
+            ),
+            0,
+        )
     }
 
     // ------------------------------------------------------------ 갱신

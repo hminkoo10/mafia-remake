@@ -1,13 +1,13 @@
 // 마피아증권: 종목 목록, 차트, 호가·주문, 잔고·미체결·체결, 공모주, 회사 경영.
 // 개인 링크(/stocks/<토큰>)로 들어오며, 상태는 2초마다 새로 받는다.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Clock, RefreshCw, Search, Wallet, WifiOff } from "lucide-react";
+import { Clock, FastForward, RefreshCw, Search, Wallet, WifiOff } from "lucide-react";
 import { AccountTabs } from "./AccountTabs";
 import { ApiError, fetchCandles, fetchStockState, placeOrder, readToken } from "./api";
 import { CandleChart } from "./CandleChart";
 import { CompanyInfo } from "./CompanyInfo";
 import { OrderBook, OrderForm } from "./OrderPanel";
-import { arrow, compactWon, countdownText, msToNextGameDay, pctText, relativeText, tone, won } from "./format";
+import { arrow, compactWon, countdownText, durationText, msToNextGameDay, pctText, relativeText, timeText, tone, won } from "./format";
 import type { ActionResponse, Candle, CandleRange, CompanyDetail, CompanySummary, StockState } from "./types";
 import { Sheet, Toaster, toast } from "./ui";
 
@@ -266,6 +266,13 @@ export default function App() {
             </button>
           )}
           <div className="topbar-right">
+            {state && state.time_shift_ms > 0 && (
+              <div className="chip shift-chip" title={`관리자가 게임일을 넘겨 시장 시계가 실제보다 ${durationText(state.time_shift_ms)} 앞서 있습니다.`}>
+                <FastForward size={14} />
+                <span>시장 시각</span>
+                <strong>{timeText(now)}</strong>
+              </div>
+            )}
             {state && (
               <div
                 className="chip day-chip"

@@ -943,3 +943,40 @@ fn the_market_survives_a_json_round_trip() {
         assert!((other.sentiment - company.sentiment).abs() < 1e-12);
     }
 }
+
+// ------------------------------------------------------------ 게임일 넘기기
+
+#[test]
+fn skipping_game_days_runs_the_calendar_forward() {
+    let rules = quiet();
+    let mut market = market();
+    let code = found(&mut market, 1, 1_000_000);
+    let day0 = rules.day_of(market.clock(T0));
+
+    // 설립한 날에는 상장할 수 없다. 하루를 넘기면 된다.
+    let mut real_now = T0 + 1_000;
+    let item = market.skip_game_days(market.clock(real_now), 1, &rules);
+    assert_eq!(item.kind, NewsKind::Market);
+    let now = market.clock(real_now);
+    assert_eq!(rules.day_of(now), day0 + 1);
+    assert_eq!(now % rules.day_ms(), 0, "다음 게임일이 막 시작한 시각");
+    market.tick(now, &rules, &mut rng());
+    market.start_ipo(1, &code, 5_000, 100, now, &rules).unwrap();
+    market.subscribe(2, "U2", &code, 80, now).unwrap();
+
+    // 청약은 1게임일 동안 받는다. 또 하루를 넘기면 마감되고 상장한다.
+    real_now += 1_000;
+    market.skip_game_days(market.clock(real_now), 1, &rules);
+    let now = market.clock(real_now);
+    market.tick(now, &rules, &mut rng());
+    let company = &market.companies[&code];
+    assert_eq!(company.status, CompanyStatus::Listed);
+    assert_eq!(rules.day_of(now), day0 + 2);
+    assert!(company.listed_at > 0 && company.listed_at <= now);
+    assert_eq!(market.accounts[&2].positions[&code].qty, 80);
+
+    // 한 번에 넘길 수 있는 날에는 상한이 있다.
+    let before = market.time_shift_ms;
+    market.skip_game_days(market.clock(real_now), 1_000, &rules);
+    assert!(market.time_shift_ms - before <= MAX_SKIP_DAYS * rules.day_ms());
+}
