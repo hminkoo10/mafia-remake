@@ -155,6 +155,8 @@ struct Data {
     stocks: stock_hub::SharedStocks,
     /// 서버 활동 누적 (게임 연동 종목의 실적 재료).
     activity: Arc<stock_hub::ServerActivity>,
+    /// 로그 채널로 보낼 운영 기록 (몇 초마다 모아서 보낸다).
+    audit: Arc<audit_log::AuditLog>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -517,6 +519,7 @@ struct Recruitment {
 }
 
 mod activity;
+mod audit_log;
 mod casino_hub;
 mod casino_web;
 mod channel;
@@ -1152,6 +1155,9 @@ async fn main() -> Result<()> {
     // 주식 시장: 상태(stocks.json)와 코인 장부. 게임 연동 종목을 위해 서버 활동을 함께 센다.
     let server_activity = Arc::new(stock_hub::ServerActivity::default());
     casino_hub.connect_activity(server_activity.clone());
+    // 로그 채널로 보낼 운영 기록 (주식 체결·카지노 바이인·출석·구조금 등).
+    let audit = Arc::new(audit_log::AuditLog::default());
+    casino_hub.connect_audit(audit.clone());
     let stock_market: stock_hub::SharedStocks = Arc::new(load_state_file(
         &workspace_root.join("stocks.json"),
         |path| {
@@ -1226,6 +1232,7 @@ async fn main() -> Result<()> {
     let casino_setup = casino_hub.clone();
     let stocks_setup = stock_market.clone();
     let activity_setup = server_activity.clone();
+    let audit_setup = audit.clone();
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -1294,11 +1301,13 @@ async fn main() -> Result<()> {
                     casino_base_url: Arc::new(casino_base_url.clone()),
                     stocks: stocks_setup.clone(),
                     activity: activity_setup.clone(),
+                    audit: audit_setup.clone(),
                 };
                 // 카지노: 시간 초과 처리 루프와 Discord 채널 중계.
                 tokio::spawn(commands::run_casino_ticker(data.clone()));
                 tokio::spawn(commands::run_economy_ticker(ctx.clone(), data.clone()));
                 tokio::spawn(commands::run_stock_ticker(ctx.clone(), data.clone()));
+                tokio::spawn(audit_log::run_audit_relay(ctx.http.clone(), data.clone()));
                 tokio::spawn(commands::run_casino_relay(ctx.clone(), data.clone()));
                 let mut activity_update_rx = activity_discord_update_setup.subscribe();
                 let activity_update_ctx = ctx.clone();

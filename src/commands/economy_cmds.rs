@@ -165,6 +165,16 @@ pub async fn relief_command(ctx: Context<'_>) -> Result<(), Error> {
         "relief: user={user_id} amount={} from_treasury={} balance={}",
         paid.amount, paid.from_treasury, paid.balance
     );
+    ctx.data().audit.push(
+        crate::audit_log::COINS,
+        format!(
+            "🆘 {} 구조금 {} (금고에서 {}, 보유 코인 {})",
+            user.name,
+            stats::coin_text(paid.amount),
+            stats::coin_text(paid.from_treasury),
+            stats::coin_text(paid.balance)
+        ),
+    );
     reply_embed(
         ctx,
         format!(

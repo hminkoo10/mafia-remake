@@ -772,6 +772,9 @@ pub struct StockMarket {
     /// (시세·주문·청약·배당·보호예수·뉴스·봉)은 이 시계를 쓴다.
     #[serde(default)]
     pub time_shift_ms: i64,
+    /// 운영 기록 (체결·주문·청약·회사 작업·배당 등). 봇이 모아 로그 채널로 보낸다. 저장하지 않는다.
+    #[serde(skip)]
+    pub logs: Vec<String>,
     /// 봉 (파일을 따로 저장한다).
     #[serde(skip)]
     pub candles: CandleStore,

@@ -134,9 +134,9 @@ pub fn market_board_text(market: &StockMarket, now: i64) -> String {
     let mut lines = vec![format!("마피아 종합지수 **{}**", index_change(market))];
     if market.time_shift_ms > 0 {
         lines.push(format!(
-            "⏩ 시장 시각 {} (관리자가 게임일을 넘겨 실제보다 {}분 앞섬)",
+            "⏩ 시장 시각 {} (관리자가 게임일을 넘겨 실제보다 {} 앞섬)",
             kst_clock(now),
-            market.time_shift_ms / market_engine::MINUTE_MS
+            market_engine::duration_text(market.time_shift_ms)
         ));
     }
     if now < market.halted_until {
@@ -1626,9 +1626,10 @@ async fn skip_game_days(ctx: Context<'_>, days: i64) -> Result<(), Error> {
         eprintln!("failed to defer 게임일 넘기기: {error:?}");
     }
     match ctx.data().stocks.skip_game_days(days).await {
-        Ok((day, minutes)) => {
+        Ok((day, skipped)) => {
+            let skipped = market_engine::duration_text(skipped);
             let text = format!(
-                "게임일을 {days}일 넘겼습니다. 지금은 게임일 {day}이고, 시장 시계가 {minutes}분 앞당겨졌습니다. 그 사이의 시세·주문·청약·배당은 모두 처리했습니다."
+                "게임일을 {days}일 넘겼습니다. 지금은 게임일 {day}이고, 시장 시계가 {skipped} 앞당겨졌습니다. 그 사이의 시세·주문·청약·배당은 모두 처리했습니다."
             );
             let log_channel_id = ctx.data().config.read().await.log_channel_id;
             send_admin_log(
@@ -1636,7 +1637,7 @@ async fn skip_game_days(ctx: Context<'_>, days: i64) -> Result<(), Error> {
                 log_channel_id,
                 "주식 관리",
                 format!(
-                    "{} 님이 게임일을 {days}일 넘김 ({minutes}분)",
+                    "{} 님이 게임일을 {days}일 넘김 ({skipped})",
                     ctx.author().name
                 ),
             )

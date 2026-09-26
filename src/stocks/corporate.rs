@@ -107,6 +107,9 @@ impl StockMarket {
             };
             if finished {
                 let bought = company.buyback.take().map_or(0, |buyback| buyback.bought);
+                self.log(format!(
+                    "🏢 {name}({code}) 자사주 매입 완료: {bought}주 소각"
+                ));
                 let item = self.push_news(
                     at,
                     NewsKind::Disclosure,
@@ -230,6 +233,13 @@ impl StockMarket {
         }
         if player {
             self.stats.company_earnings = self.stats.company_earnings.saturating_add(profit);
+            self.log(format!(
+                "📊 {} {quarter}분기 실적 {}{} (회사 현금 {})",
+                self.label(code),
+                if profit > 0 { "+" } else { "" },
+                format_amount(profit),
+                format_amount(self.companies[code].equity)
+            ));
         }
         // 시스템 회사 배당: 이익이 나면 배당수익률만큼 (배당락으로 주가도 그만큼 내려간다).
         let mut dividend = 0;
@@ -311,6 +321,9 @@ impl StockMarket {
                     reason: "파산".to_string(),
                     trading: true,
                 };
+                self.log(format!(
+                    "⚠️ {name}({code}) 파산: 정리매매 {LIQUIDATION_DAYS}게임일 뒤 상장폐지"
+                ));
                 self.close_orders_for(code, "파산으로 주문 취소");
                 let item = self.push_news(
                     at,
@@ -333,6 +346,9 @@ impl StockMarket {
                     .get_mut(code)
                     .expect("company exists")
                     .managed_since = Some(at);
+                self.log(format!(
+                    "⚠️ {name}({code}) 관리종목 지정 (자본잠식률 50% 초과)"
+                ));
                 let item = self.push_news(
                     at,
                     NewsKind::Disclosure,
@@ -349,6 +365,9 @@ impl StockMarket {
                     reason: "자본잠식 지속".to_string(),
                     trading: true,
                 };
+                self.log(format!(
+                    "⚠️ {name}({code}) 자본잠식 지속으로 상장폐지 결정: 정리매매 {LIQUIDATION_DAYS}게임일"
+                ));
                 self.close_orders_for(code, "상장폐지 결정으로 주문 취소");
                 let item = self.push_news(
                     at,
@@ -366,6 +385,7 @@ impl StockMarket {
                     .get_mut(code)
                     .expect("company exists")
                     .managed_since = None;
+                self.log(format!("✅ {name}({code}) 관리종목 해제"));
                 let item = self.push_news(
                     at,
                     NewsKind::Disclosure,
@@ -397,6 +417,7 @@ impl StockMarket {
                     .map(|position| (*user, account.name.clone(), position.qty))
             })
             .collect::<Vec<_>>();
+        let holder_count = holders.len();
         let mut paid = 0_i64;
         for (user, name, qty) in holders {
             let amount = qty.saturating_mul(per_share);
@@ -412,6 +433,14 @@ impl StockMarket {
             let amount = lp.saturating_mul(per_share);
             self.to_treasury(amount, format!("{code} 시장조성자 몫 {reason}"));
             paid = paid.saturating_add(amount);
+        }
+        if paid > 0 {
+            self.log(format!(
+                "💰 {} {reason} 지급: 주당 {}, 주주 {holder_count}명, 총 {}",
+                self.label(code),
+                format_amount(per_share),
+                format_amount(paid)
+            ));
         }
         paid
     }
@@ -573,6 +602,7 @@ impl StockMarket {
         } else {
             format!("{name} 상장폐지 ({reason}){tail}")
         };
+        self.log(format!("⛔ {headline} [{code}]"));
         let item = self.push_news(at, NewsKind::Delisting, Some(code), headline, -1);
         report.news.push(item);
     }
@@ -610,6 +640,11 @@ impl StockMarket {
                 );
             }
             self.companies.get_mut(code).expect("company exists").status = CompanyStatus::Private;
+            self.log(format!(
+                "🧾 {} 공모 무산: 청약 {requested}주, {}명에게 증거금 반환",
+                self.label(code),
+                orders.len()
+            ));
             let item = self.push_news(
                 at,
                 NewsKind::Disclosure,
@@ -630,6 +665,14 @@ impl StockMarket {
             let cost = alloc.saturating_mul(offering.price);
             proceeds = proceeds.saturating_add(cost);
             let refund = order.deposit - cost;
+            self.log(format!(
+                "🧾 {} · {} 공모 {alloc}주 배정 (청약 {}주, 납입 {}, 환불 {})",
+                order.name,
+                self.label(code),
+                order.qty,
+                format_amount(cost),
+                format_amount(refund.max(0))
+            ));
             if refund > 0 {
                 self.transfer(
                     order.user,
@@ -977,6 +1020,11 @@ impl StockMarket {
             format!("{code} 회사 설립 자본금·수수료"),
         );
         self.to_treasury(fee, format!("{code} 회사 설립 수수료"));
+        self.log(format!(
+            "🏢 {user_name} · {company_name}({code}) 설립: 자본금 {}, 수수료 {}",
+            format_amount(capital),
+            format_amount(fee)
+        ));
         let account = self.account_mut(user, user_name);
         account.positions.insert(
             code.clone(),
@@ -1065,6 +1113,11 @@ impl StockMarket {
         };
         self.companies.get_mut(code).expect("company exists").status =
             CompanyStatus::Subscription(offering.clone());
+        self.log(format!(
+            "🏢 {} 공모 청약 시작: {new_shares}주 @{} (1게임일)",
+            self.label(code),
+            format_amount(price)
+        ));
         self.push_news(
             now,
             NewsKind::Listing,
@@ -1146,6 +1199,11 @@ impl StockMarket {
                 at: now,
             }),
         }
+        self.log(format!(
+            "🧾 {name} · {} 공모 {qty}주 청약 (증거금 {})",
+            self.label(code),
+            format_amount(deposit)
+        ));
         self.version += 1;
         Ok(deposit)
     }
@@ -1164,6 +1222,12 @@ impl StockMarket {
             subscription.deposit,
             format!("{code} 청약 취소"),
         );
+        self.log(format!(
+            "🧾 {} · {} 청약 취소 (환불 {})",
+            subscription.name,
+            self.label(code),
+            format_amount(subscription.deposit)
+        ));
         self.version += 1;
         Ok(subscription.deposit)
     }
@@ -1199,6 +1263,12 @@ impl StockMarket {
             .get_mut(code)
             .expect("company exists")
             .pending_dividend = Some(PendingDividend { per_share, pay_at });
+        self.log(format!(
+            "💰 {} 배당 결정: 주당 {}, 총 {} (다음 게임일 지급)",
+            self.label(code),
+            format_amount(per_share),
+            format_amount(total)
+        ));
         self.push_news(
             now,
             NewsKind::Dividend,
@@ -1264,6 +1334,11 @@ impl StockMarket {
             rights,
             exercised: Default::default(),
         });
+        self.log(format!(
+            "🏢 {} 유상증자 결정: 신주 {new_shares}주 @{} (1게임일)",
+            self.label(code),
+            format_amount(price)
+        ));
         self.push_news(
             now,
             NewsKind::Disclosure,
@@ -1317,6 +1392,11 @@ impl StockMarket {
         }
         *rights.exercised.entry(user).or_default() += qty;
         self.transfer(user, name, -cost, format!("{code} 유상증자 대금"));
+        self.log(format!(
+            "🧾 {name} · {} 신주 {qty}주 인수 (납입 {})",
+            self.label(code),
+            format_amount(cost)
+        ));
         self.version += 1;
         Ok(cost)
     }
@@ -1355,6 +1435,10 @@ impl StockMarket {
         company.adv = (company.shares / 50).max(10);
         company.depth = (company.adv / 20).max(1);
         self.rebase_index(before);
+        self.log(format!(
+            "🏢 {name}({code}) 유상증자 완료: 신주 {total}주, {} 조달",
+            format_amount(proceeds)
+        ));
         let item = self.push_news(
             at,
             NewsKind::Disclosure,
@@ -1409,6 +1493,11 @@ impl StockMarket {
             until: now + rules.day_ms(),
             bought: 0,
         });
+        self.log(format!(
+            "🏢 {} 자사주 매입 시작: 예산 {} (1게임일)",
+            self.label(code),
+            format_amount(budget)
+        ));
         self.push_news(
             now,
             NewsKind::Disclosure,
@@ -1437,6 +1526,7 @@ impl StockMarket {
         company.risk = risk;
         company.risk_changed_at = now;
         company.daily_vol = player_daily_vol(risk);
+        self.log(format!("🏢 {name}({code}) 사업 위험도 {risk}단계로 변경"));
         self.push_news(
             now,
             NewsKind::Disclosure,
@@ -1459,6 +1549,7 @@ impl StockMarket {
             .get_mut(code)
             .expect("company exists")
             .description = text.to_string();
+        self.log(format!("🏢 {} 회사 소개 변경: {text}", self.label(code)));
         self.version += 1;
         Ok(())
     }
@@ -1509,6 +1600,9 @@ impl StockMarket {
                     trading: false,
                 };
                 company.buyback = None;
+                self.log(format!(
+                    "🏢 {name}({code}) 해산 결정: 1게임일 거래정지 뒤 남은 현금을 주주에게 분배"
+                ));
                 self.close_orders_for(code, "청산 결정으로 주문 취소");
                 self.push_news(
                     now,

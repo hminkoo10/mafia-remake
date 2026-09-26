@@ -226,6 +226,8 @@ pub struct CasinoHub {
     bet_locks: std::sync::OnceLock<crate::BetLocks>,
     /// 서버 활동 누적 (주식 시장의 게임 연동 종목 실적).
     activity: std::sync::OnceLock<Arc<crate::stock_hub::ServerActivity>>,
+    /// 로그 채널로 보낼 운영 기록 (바이인·캐시아웃).
+    audit: std::sync::OnceLock<Arc<crate::audit_log::AuditLog>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -275,6 +277,7 @@ impl CasinoHub {
             config: std::sync::OnceLock::new(),
             bet_locks: std::sync::OnceLock::new(),
             activity: std::sync::OnceLock::new(),
+            audit: std::sync::OnceLock::new(),
         };
         let file = load_file(&hub.path)?;
         hub.house.store(file.house, Ordering::Relaxed);
@@ -307,6 +310,17 @@ impl CasinoHub {
     pub fn connect_economy(&self, config: Arc<RwLock<BotConfig>>, bet_locks: crate::BetLocks) {
         let _ = self.config.set(config);
         let _ = self.bet_locks.set(bet_locks);
+    }
+
+    /// 로그 채널 기록을 연결한다 (바이인·캐시아웃).
+    pub fn connect_audit(&self, audit: Arc<crate::audit_log::AuditLog>) {
+        let _ = self.audit.set(audit);
+    }
+
+    fn audit(&self, line: String) {
+        if let Some(audit) = self.audit.get() {
+            audit.push(crate::audit_log::CASINO, line);
+        }
     }
 
     /// 서버 활동 누적을 연결한다 (카지노 라운드 수·하우스 손익).
@@ -796,8 +810,15 @@ impl CasinoHub {
                     name,
                     amount,
                 } => {
-                    let mut stats_file = self.stats.write().await;
-                    stats::refund_coins(&mut stats_file, *user_id, name, *amount);
+                    let balance = {
+                        let mut stats_file = self.stats.write().await;
+                        stats::refund_coins(&mut stats_file, *user_id, name, *amount)
+                    };
+                    self.audit(format!(
+                        "💵 {name} 캐시아웃 {} (보유 코인 {})",
+                        stats::coin_text(*amount),
+                        stats::coin_text(balance)
+                    ));
                     touched = true;
                 }
                 CasinoEvent::RoundSettled {
@@ -950,6 +971,13 @@ impl CasinoHub {
             let save_started = Instant::now();
             self.save_stats().await;
             save_stats_time += save_started.elapsed();
+        }
+        if reserved > 0 {
+            let table_name = table.read().await.name.clone();
+            self.audit(format!(
+                "🪙 {user_name} · {table_name} 바이인 {}",
+                stats::coin_text(reserved)
+            ));
         }
         self.apply_events(&events).await;
         self.notify(table_id);

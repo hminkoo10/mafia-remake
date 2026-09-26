@@ -27,6 +27,23 @@ pub const VI_HALT_MS: i64 = 2 * MINUTE_MS;
 pub const BREAKER_HALT_MS: i64 = 5 * MINUTE_MS;
 /// 서킷브레이커 기준 (지수 하락 만분율).
 const BREAKER_BP: i64 = 800;
+/// "2시간 5분", "40분", "12초".
+pub fn duration_text(ms: i64) -> String {
+    let seconds = ms.max(0) / 1000;
+    let (hours, minutes) = (seconds / 3600, seconds % 3600 / 60);
+    if hours > 0 && minutes > 0 {
+        format!("{hours}시간 {minutes}분")
+    } else if hours > 0 {
+        format!("{hours}시간")
+    } else if minutes > 0 {
+        format!("{minutes}분")
+    } else {
+        format!("{seconds}초")
+    }
+}
+
+/// 봇이 가져가지 않은 운영 기록을 이만큼까지만 둔다.
+const LOG_LIMIT: usize = 2_000;
 /// 관리자가 한 번에 넘길 수 있는 게임일 (따라잡기 계산을 한정한다).
 pub const MAX_SKIP_DAYS: i64 = 24;
 /// 시장 뉴스(경제 소식) 빈도: 실제 하루 3건.
@@ -145,6 +162,7 @@ impl StockMarket {
             last_system_ipo_day: day,
             activity: Activity::default(),
             time_shift_ms: 0,
+            logs: Vec::new(),
             candles: CandleStore::default(),
         };
         market.push_news(
@@ -313,6 +331,30 @@ impl StockMarket {
         Ok(())
     }
 
+    // ------------------------------------------------------------ 운영 기록
+
+    /// 운영 기록 한 줄. 봇이 가져가지 않아도 넘치지 않게 오래된 것부터 버린다.
+    pub(super) fn log(&mut self, text: String) {
+        self.logs.push(text);
+        if self.logs.len() > LOG_LIMIT {
+            let excess = self.logs.len() - LOG_LIMIT;
+            self.logs.drain(..excess);
+        }
+    }
+
+    /// 쌓인 운영 기록을 꺼낸다.
+    pub fn take_logs(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.logs)
+    }
+
+    /// 로그용 종목 이름: "하늘반도체(100010)".
+    pub(super) fn label(&self, code: &str) -> String {
+        match self.companies.get(code) {
+            Some(company) => format!("{}({code})", company.name),
+            None => code.to_string(),
+        }
+    }
+
     // ------------------------------------------------------------ 시계
 
     /// 시장 시각 (실제 시각 + 관리자가 넘긴 시간).
@@ -333,8 +375,8 @@ impl StockMarket {
             NewsKind::Market,
             None,
             format!(
-                "관리자가 게임일을 {days}일 넘겼습니다. 시장 시계가 {}분 앞당겨졌습니다.",
-                skipped / MINUTE_MS
+                "관리자가 게임일을 {days}일 넘겼습니다. 시장 시계가 {} 앞당겨졌습니다.",
+                duration_text(skipped)
             ),
             0,
         )

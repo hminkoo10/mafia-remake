@@ -4,6 +4,7 @@
 // 현재가가 움직였다가(일시) 몇 분에 걸쳐 되돌아간다. 영구 영향이 선형이면 사고팔기를 반복해
 // 가격을 조종해도 이익이 나지 않는다 (Huberman–Stanzl). 스프레드·수수료 때문에 반복할수록 손해다.
 
+use super::corporate::format_amount;
 use super::model::*;
 use super::price::*;
 use serde::Serialize;
@@ -404,6 +405,13 @@ impl StockMarket {
                         );
                         result.resting = Some(id);
                         result.resting_qty = affordable;
+                        self.log(format!(
+                            "📝 {} · {} 지정가 매수 {affordable}주 @{} 주문 #{id} (묶인 코인 {})",
+                            request.name,
+                            self.label(&code),
+                            format_amount(limit),
+                            format_amount(reserved)
+                        ));
                     }
                 }
                 if left > 0 {
@@ -452,6 +460,12 @@ impl StockMarket {
                     let id = self.rest_order(request, Side::Sell, limit, remaining, 0, now, rules);
                     result.resting = Some(id);
                     result.resting_qty = remaining;
+                    self.log(format!(
+                        "📝 {} · {} 지정가 매도 {remaining}주 @{} 주문 #{id}",
+                        request.name,
+                        self.label(&code),
+                        format_amount(limit)
+                    ));
                 }
             }
         }
@@ -512,6 +526,22 @@ impl StockMarket {
             return;
         };
         let order = self.orders.remove(index);
+        if reason != "주문 체결 완료" {
+            let refund = if order.side == Side::Buy && order.reserved > 0 {
+                format!(", 반환 {}", format_amount(order.reserved))
+            } else {
+                String::new()
+            };
+            self.log(format!(
+                "✖️ {} · {} 주문 #{} {reason} ({} {}주 @{}{refund})",
+                order.name,
+                self.label(&order.code),
+                order.id,
+                order.side.label(),
+                order.remaining,
+                format_amount(order.limit)
+            ));
+        }
         match order.side {
             Side::Buy => {
                 if order.reserved > 0 {
@@ -563,6 +593,7 @@ impl StockMarket {
         if qty <= 0 {
             return;
         }
+        let label = self.label(code);
         self.to_treasury(fee, format!("{code} 매수 수수료"));
         self.stats.fees = self.stats.fees.saturating_add(fee);
         let account = self.account_mut(user, name);
@@ -581,6 +612,12 @@ impl StockMarket {
         while account.fills.len() > FILL_HISTORY_LIMIT {
             account.fills.pop_front();
         }
+        self.log(format!(
+            "🔴 {name} · {label} {qty}주 매수 체결 @{} · 낸 코인 {} (수수료 {})",
+            format_amount(notional / qty),
+            format_amount(notional + fee),
+            format_amount(fee)
+        ));
     }
 
     /// 매도 체결을 계좌에서 빼고 대금을 준다.
@@ -600,6 +637,7 @@ impl StockMarket {
             return;
         }
         let proceeds = notional - fee - tax;
+        let label = self.label(code);
         self.to_treasury(fee + tax, format!("{code} 매도 수수료·거래세"));
         self.stats.fees = self.stats.fees.saturating_add(fee);
         self.stats.taxes = self.stats.taxes.saturating_add(tax);
@@ -633,6 +671,12 @@ impl StockMarket {
         if empty {
             account.positions.remove(code);
         }
+        self.log(format!(
+            "🔵 {name} · {label} {qty}주 매도 체결 @{} · 받은 코인 {} (수수료·세금 {})",
+            format_amount(notional / qty),
+            format_amount(proceeds),
+            format_amount(fee + tax)
+        ));
     }
 
     /// 호가를 먹는다: 시장조성자와 다른 플레이어의 지정가를 가격 순으로 체결한다. 상대 주문과

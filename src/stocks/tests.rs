@@ -980,3 +980,48 @@ fn skipping_game_days_runs_the_calendar_forward() {
     market.skip_game_days(market.clock(real_now), 1_000, &rules);
     assert!(market.time_shift_ms - before <= MAX_SKIP_DAYS * rules.day_ms());
 }
+
+// ------------------------------------------------------------ 운영 기록
+
+#[test]
+fn market_activity_is_logged_for_the_log_channel() {
+    let mut market = market();
+    let _ = market.take_logs();
+    buy(&mut market, 1, "100010", 3, None, 10_000_000, T0 + 10).unwrap();
+    let low = floor_tick(market.companies["100010"].price * 95 / 100);
+    let resting = buy(&mut market, 1, "100010", 2, Some(low), 10_000_000, T0 + 20).unwrap();
+    let id = resting.resting.expect("아래 가격의 지정가는 호가에 남는다");
+    market.cancel_order(1, id).unwrap();
+    let logs = market.take_logs();
+    assert!(
+        logs.iter()
+            .any(|line| line.contains("U1") && line.contains("3주 매수 체결")),
+        "{logs:?}"
+    );
+    assert!(
+        logs.iter().any(|line| line.contains("지정가 매수 2주")),
+        "{logs:?}"
+    );
+    assert!(
+        logs.iter()
+            .any(|line| line.contains(&format!("주문 #{id} 주문 취소"))),
+        "{logs:?}"
+    );
+    assert!(market.take_logs().is_empty(), "꺼낸 기록은 비운다");
+
+    found(&mut market, 5, 1_000_000);
+    assert!(
+        market
+            .take_logs()
+            .iter()
+            .any(|line| line.contains("U5") && line.contains("설립"))
+    );
+}
+
+#[test]
+fn skipped_time_reads_naturally() {
+    assert_eq!(duration_text(12_000), "12초");
+    assert_eq!(duration_text(40 * MINUTE_MS), "40분");
+    assert_eq!(duration_text(2 * HOUR_MS), "2시간");
+    assert_eq!(duration_text(2 * HOUR_MS + 5 * MINUTE_MS), "2시간 5분");
+}

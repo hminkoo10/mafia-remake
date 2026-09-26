@@ -99,6 +99,15 @@ pub async fn claim_attendance(ctx: Context<'_>) -> Result<(), Error> {
     match outcome {
         stats::AttendanceOutcome::Claimed { amount, balance } => {
             save_stats_snapshot(ctx.data(), snapshot).await;
+            ctx.data().audit.push(
+                crate::audit_log::COINS,
+                format!(
+                    "📅 {} 출석 {} (보유 코인 {})",
+                    user.name,
+                    stats::coin_text(amount),
+                    stats::coin_text(balance)
+                ),
+            );
             reply_embed(
                 ctx,
                 format!(

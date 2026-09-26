@@ -470,6 +470,11 @@ impl StockHub {
         delta
     }
 
+    /// 로그 채널로 보낼 운영 기록(체결·주문·청약·회사 작업·배당 등)을 꺼낸다.
+    pub async fn take_logs(&self) -> Vec<String> {
+        self.market.write().await.take_logs()
+    }
+
     /// Discord에 올릴 뉴스를 꺼낸다.
     pub fn take_news(&self) -> Vec<NewsItem> {
         std::mem::take(
@@ -506,7 +511,7 @@ impl StockHub {
     }
 
     /// 관리자: 게임일을 넘긴다. 시장 시계를 옮기고 그 사이를 바로 따라잡은 뒤 저장한다.
-    /// 돌려주는 값은 (지금 게임일 번호, 앞당긴 분).
+    /// 돌려주는 값은 (지금 게임일 번호, 앞당긴 시간 ms).
     pub async fn skip_game_days(&self, days: i64) -> std::result::Result<(i64, i64), String> {
         let (rules, _) = self.rules().await;
         if !rules.enabled {
@@ -527,7 +532,7 @@ impl StockHub {
         self.flush().await;
         let market = self.market.read().await;
         let day = rules.day_of(market.clock(now_ms()));
-        Ok((day, (market.time_shift_ms - shift_before) / MINUTE_MS))
+        Ok((day, market.time_shift_ms - shift_before))
     }
 
     pub async fn find_code(&self, query: &str) -> Option<String> {
@@ -619,10 +624,10 @@ mod tests {
         let hub = hub_with_coins(&dir, 1_000_000);
         let (rules, _) = hub.rules().await;
         let before = hub.now().await;
-        let (day, minutes) = hub.skip_game_days(1).await.unwrap();
+        let (day, skipped) = hub.skip_game_days(1).await.unwrap();
         let after = hub.now().await;
         assert_eq!(day, rules.day_of(before) + 1);
-        assert!(minutes > 0 && minutes <= rules.day_ms() / MINUTE_MS);
+        assert!(skipped > 0 && skipped <= rules.day_ms());
         assert!(after >= (rules.day_of(before) + 1) * rules.day_ms());
         // 따라잡은 시각까지 시장을 돌렸고, 알림 뉴스가 채널로 갈 준비가 됐다.
         assert!(hub.market.read().await.last_tick > before);
