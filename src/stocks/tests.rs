@@ -981,6 +981,39 @@ fn resting_sell_orders_fill_against_a_new_buyback() {
 }
 
 #[test]
+fn player_companies_are_in_the_news_more_often() {
+    // 뉴스를 10배로 늘려 6시간만 돌린다 (플레이어 회사 약 7.5건, 시스템 회사 약 2건 기대).
+    let rules = StockRules {
+        news_pct: 1_000,
+        ..quiet()
+    };
+    let mut market = market();
+    let (code, now) = listed_company(&mut market);
+    let mut rng = rng();
+    let mut counts = std::collections::BTreeMap::<String, usize>::new();
+    let mut at = now;
+    for _ in 0..6 {
+        at += HOUR_MS;
+        for item in market.tick(at, &rules, &mut rng).news {
+            if matches!(item.kind, NewsKind::News | NewsKind::Rumor) {
+                *counts.entry(item.code.unwrap_or_default()).or_default() += 1;
+            }
+        }
+    }
+    let player = counts.get(&code).copied().unwrap_or(0);
+    let system = counts
+        .iter()
+        .filter(|(key, _)| **key != code)
+        .map(|(_, count)| *count)
+        .collect::<Vec<_>>();
+    let average = system.iter().sum::<usize>() as f64 / system.len().max(1) as f64;
+    assert!(
+        player >= 4 && player as f64 >= 2.0 * average,
+        "플레이어 회사 {player}건, 시스템 회사 평균 {average:.1}건"
+    );
+}
+
+#[test]
 fn risk_and_description_are_the_founders_calls() {
     let mut market = market();
     let code = found(&mut market, 1, 2_000_000);

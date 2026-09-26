@@ -50,6 +50,8 @@ pub const MAX_SKIP_DAYS: i64 = 24;
 const MACRO_NEWS_PER_DAY: f64 = 3.0;
 /// 기업 뉴스 빈도: 종목당 실제 하루 0.8건.
 const COMPANY_NEWS_PER_DAY: f64 = 0.8;
+/// 플레이어 회사 뉴스 빈도: 종목당 실제 하루 3건 (시스템 회사 12개 사이에서도 눈에 띄게).
+const PLAYER_COMPANY_NEWS_PER_DAY: f64 = 3.0;
 
 /// 한 번의 갱신에서 생긴 일 (봇이 Discord·웹에 알린다).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -626,7 +628,12 @@ impl StockMarket {
             return;
         }
         let news_scale = rules.news_pct.max(0) as f64 / 100.0;
-        let chance = COMPANY_NEWS_PER_DAY * news_scale * TICK_MS as f64 / DAY_MS as f64;
+        let per_day = if company.is_player() {
+            PLAYER_COMPANY_NEWS_PER_DAY
+        } else {
+            COMPANY_NEWS_PER_DAY
+        };
+        let chance = per_day * news_scale * TICK_MS as f64 / DAY_MS as f64;
         if uniform(rng) >= chance {
             return;
         }
