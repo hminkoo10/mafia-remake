@@ -161,6 +161,43 @@ pub struct BotConfig {
     pub relief_amount: i64,
     #[serde(default = "default_relief_gift_lock_hours")]
     pub relief_gift_lock_hours: i64,
+    /// 주식 시장 (`stocks::StockRules` 참고). 비율: _bp 만분율, _ppm 백만분율.
+    #[serde(default = "default_stock_enabled")]
+    pub stock_enabled: bool,
+    #[serde(default = "default_stock_day_minutes")]
+    pub stock_day_minutes: i64,
+    #[serde(default = "default_stock_fee_ppm")]
+    pub stock_fee_ppm: i64,
+    #[serde(default = "default_stock_tax_ppm")]
+    pub stock_tax_ppm: i64,
+    #[serde(default = "default_stock_limit_bp")]
+    pub stock_limit_bp: i64,
+    #[serde(default = "default_stock_vi_bp")]
+    pub stock_vi_bp: i64,
+    #[serde(default = "default_stock_drift_bp_week")]
+    pub stock_drift_bp_week: i64,
+    #[serde(default = "default_stock_vol_pct")]
+    pub stock_vol_pct: i64,
+    #[serde(default = "default_stock_news_pct")]
+    pub stock_news_pct: i64,
+    #[serde(default = "default_stock_holding_limit_bp")]
+    pub stock_holding_limit_bp: i64,
+    #[serde(default = "default_stock_order_limit_pct")]
+    pub stock_order_limit_pct: i64,
+    #[serde(default = "default_stock_found_min_capital")]
+    pub stock_found_min_capital: i64,
+    #[serde(default = "default_stock_found_fee_bp")]
+    pub stock_found_fee_bp: i64,
+    #[serde(default = "default_stock_ipo_fee_bp")]
+    pub stock_ipo_fee_bp: i64,
+    #[serde(default = "default_stock_listing_min_equity")]
+    pub stock_listing_min_equity: i64,
+    #[serde(default = "default_stock_lockup_days")]
+    pub stock_lockup_days: i64,
+    #[serde(default = "default_stock_max_companies")]
+    pub stock_max_companies: i64,
+    #[serde(default = "default_stock_system_companies")]
+    pub stock_system_companies: i64,
 }
 
 pub fn load_config(path: impl AsRef<Path>) -> Result<BotConfig> {
@@ -232,6 +269,33 @@ impl BotConfig {
     pub fn effective_recruitment_seconds(&self) -> u64 {
         self.recruitment_seconds
             .clamp(MIN_RECRUITMENT_SECONDS, MAX_RECRUITMENT_SECONDS)
+    }
+
+    /// 주식 시장 규칙. 비율은 0~100%, 금액·길이는 0 이상으로 잘라서 쓴다.
+    pub fn stock_rules(&self) -> crate::stocks::StockRules {
+        let bp = |value: i64| value.clamp(0, crate::stocks::BP);
+        let ppm = |value: i64| value.clamp(0, crate::stocks::PPM);
+        crate::stocks::StockRules {
+            enabled: self.stock_enabled,
+            day_ms: self.stock_day_minutes.clamp(1, 24 * 60) * crate::stocks::MINUTE_MS,
+            fee_ppm: ppm(self.stock_fee_ppm),
+            tax_ppm: ppm(self.stock_tax_ppm),
+            limit_bp: bp(self.stock_limit_bp).max(100),
+            vi_bp: bp(self.stock_vi_bp),
+            drift_bp_week: self.stock_drift_bp_week.clamp(-1_000, 1_000),
+            vol_pct: self.stock_vol_pct.clamp(0, 1_000),
+            news_pct: self.stock_news_pct.clamp(0, 1_000),
+            holding_limit_bp: bp(self.stock_holding_limit_bp).max(1),
+            order_limit_pct: self.stock_order_limit_pct.clamp(1, 100),
+            found_min_capital: self.stock_found_min_capital.max(1),
+            found_fee_bp: bp(self.stock_found_fee_bp),
+            ipo_fee_bp: bp(self.stock_ipo_fee_bp),
+            listing_min_equity: self.stock_listing_min_equity.max(0),
+            lockup_days: self.stock_lockup_days.clamp(0, 24 * 30),
+            max_companies: self.stock_max_companies.clamp(0, 10),
+            system_companies: self.stock_system_companies.clamp(0, 40),
+            ..crate::stocks::StockRules::default()
+        }
     }
 
     /// 코인 순환 규칙. 비율은 0~100%, 금액은 0 이상으로 잘라서 쓴다.
@@ -326,6 +390,60 @@ const fn default_relief_amount() -> i64 {
 }
 const fn default_relief_gift_lock_hours() -> i64 {
     crate::stats::DEFAULT_RELIEF_GIFT_LOCK_HOURS
+}
+const fn default_stock_enabled() -> bool {
+    true
+}
+const fn default_stock_day_minutes() -> i64 {
+    60
+}
+const fn default_stock_fee_ppm() -> i64 {
+    150
+}
+const fn default_stock_tax_ppm() -> i64 {
+    2_000
+}
+const fn default_stock_limit_bp() -> i64 {
+    3_000
+}
+const fn default_stock_vi_bp() -> i64 {
+    1_000
+}
+const fn default_stock_drift_bp_week() -> i64 {
+    10
+}
+const fn default_stock_vol_pct() -> i64 {
+    100
+}
+const fn default_stock_news_pct() -> i64 {
+    100
+}
+const fn default_stock_holding_limit_bp() -> i64 {
+    500
+}
+const fn default_stock_order_limit_pct() -> i64 {
+    20
+}
+const fn default_stock_found_min_capital() -> i64 {
+    1_000_000
+}
+const fn default_stock_found_fee_bp() -> i64 {
+    100
+}
+const fn default_stock_ipo_fee_bp() -> i64 {
+    100
+}
+const fn default_stock_listing_min_equity() -> i64 {
+    1_000_000
+}
+const fn default_stock_lockup_days() -> i64 {
+    24
+}
+const fn default_stock_max_companies() -> i64 {
+    1
+}
+const fn default_stock_system_companies() -> i64 {
+    12
 }
 
 fn default_anonymous_name_mode() -> String {

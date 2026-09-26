@@ -983,6 +983,11 @@ pub(crate) fn render_field(field: WebConfigField, config: &BotConfig) -> String 
             field.name,
             html_escape(&config_value(config, field.name))
         ),
+        WebFieldKind::PercentFine => format!(
+            r#"<label class="row" for="{field_id}"><span>{label}</span><input type="number" id="{field_id}" name="{}" value="{}" min="0" max="100" step="0.0001" required></label>"#,
+            field.name,
+            html_escape(&config_value(config, field.name))
+        ),
         WebFieldKind::Text => format!(
             r#"<label class="row" for="{field_id}"><span>{label}</span><input type="text" id="{field_id}" name="{}" value="{}" required></label>"#,
             field.name,
@@ -1056,6 +1061,24 @@ pub(crate) fn config_value(config: &BotConfig, name: &str) -> String {
         "chat_slowmode_seconds" => config.chat_slowmode_seconds.to_string(),
         "attendance_coins" => config.attendance_coins.to_string(),
         "star_player_coins" => config.star_player_coins.to_string(),
+        "stock_enabled" => config.stock_enabled.to_string(),
+        "stock_day_minutes" => config.stock_day_minutes.to_string(),
+        "stock_fee_ppm" => percent_fine_text(config.stock_fee_ppm),
+        "stock_tax_ppm" => percent_fine_text(config.stock_tax_ppm),
+        "stock_limit_bp" => percent_text(config.stock_limit_bp),
+        "stock_vi_bp" => percent_text(config.stock_vi_bp),
+        "stock_drift_bp_week" => percent_text(config.stock_drift_bp_week),
+        "stock_vol_pct" => config.stock_vol_pct.to_string(),
+        "stock_news_pct" => config.stock_news_pct.to_string(),
+        "stock_holding_limit_bp" => percent_text(config.stock_holding_limit_bp),
+        "stock_order_limit_pct" => config.stock_order_limit_pct.to_string(),
+        "stock_found_min_capital" => config.stock_found_min_capital.to_string(),
+        "stock_found_fee_bp" => percent_text(config.stock_found_fee_bp),
+        "stock_ipo_fee_bp" => percent_text(config.stock_ipo_fee_bp),
+        "stock_listing_min_equity" => config.stock_listing_min_equity.to_string(),
+        "stock_lockup_days" => config.stock_lockup_days.to_string(),
+        "stock_max_companies" => config.stock_max_companies.to_string(),
+        "stock_system_companies" => config.stock_system_companies.to_string(),
         "holdem_rake_bp" => percent_text(config.holdem_rake_bp),
         "holdem_rake_cap" => config.holdem_rake_cap.to_string(),
         "gift_fee_bp" => percent_text(config.gift_fee_bp),
@@ -1154,6 +1177,14 @@ pub(crate) fn parse_form_updates(
         if text_value.is_empty() {
             return Err(format!("'{}' 값이 비어 있습니다.", field.label));
         }
+        if matches!(field.kind, WebFieldKind::PercentFine)
+            && parse_percent_ppm(text_value).is_none()
+        {
+            return Err(format!(
+                "'{}' 값은 0~100 사이 숫자(소수점 넷째 자리까지)여야 합니다.",
+                field.label
+            ));
+        }
         if matches!(field.kind, WebFieldKind::Percent) && parse_percent_bp(text_value).is_none() {
             return Err(format!(
                 "'{}' 값은 0~100 사이 숫자(소수점 둘째 자리까지)여야 합니다.",
@@ -1196,6 +1227,11 @@ pub(crate) fn apply_updates(
                 let bp = parse_percent_bp(value)
                     .ok_or_else(|| format!("'{}' 값이 올바르지 않습니다.", field.label))?;
                 set_int(config, field.name, bp.unsigned_abs())?
+            }
+            WebFieldKind::PercentFine => {
+                let ppm = parse_percent_ppm(value)
+                    .ok_or_else(|| format!("'{}' 값이 올바르지 않습니다.", field.label))?;
+                set_int(config, field.name, ppm.unsigned_abs())?
             }
         }
     }
@@ -1252,6 +1288,7 @@ pub(crate) fn set_bool(
         "enable_mercenary" => config.enable_mercenary = value,
         "enable_thief" => config.enable_thief = value,
         "enable_cult_team" => config.enable_cult_team = value,
+        "stock_enabled" => config.stock_enabled = value,
         _ => return Err("알 수 없는 설정 항목입니다.".to_string()),
     }
     Ok(())
@@ -1292,6 +1329,39 @@ pub(crate) fn set_int(
         "chat_slowmode_seconds" => config.chat_slowmode_seconds = value,
         "attendance_coins" => config.attendance_coins = value as i64,
         "star_player_coins" => config.star_player_coins = value as i64,
+        "stock_day_minutes" => config.stock_day_minutes = i64::try_from(value).unwrap_or(i64::MAX),
+        "stock_fee_ppm" => config.stock_fee_ppm = i64::try_from(value).unwrap_or(i64::MAX),
+        "stock_tax_ppm" => config.stock_tax_ppm = i64::try_from(value).unwrap_or(i64::MAX),
+        "stock_limit_bp" => config.stock_limit_bp = i64::try_from(value).unwrap_or(i64::MAX),
+        "stock_vi_bp" => config.stock_vi_bp = i64::try_from(value).unwrap_or(i64::MAX),
+        "stock_drift_bp_week" => {
+            config.stock_drift_bp_week = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "stock_vol_pct" => config.stock_vol_pct = i64::try_from(value).unwrap_or(i64::MAX),
+        "stock_news_pct" => config.stock_news_pct = i64::try_from(value).unwrap_or(i64::MAX),
+        "stock_holding_limit_bp" => {
+            config.stock_holding_limit_bp = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "stock_order_limit_pct" => {
+            config.stock_order_limit_pct = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "stock_found_min_capital" => {
+            config.stock_found_min_capital = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "stock_found_fee_bp" => {
+            config.stock_found_fee_bp = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "stock_ipo_fee_bp" => config.stock_ipo_fee_bp = i64::try_from(value).unwrap_or(i64::MAX),
+        "stock_listing_min_equity" => {
+            config.stock_listing_min_equity = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "stock_lockup_days" => config.stock_lockup_days = i64::try_from(value).unwrap_or(i64::MAX),
+        "stock_max_companies" => {
+            config.stock_max_companies = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "stock_system_companies" => {
+            config.stock_system_companies = i64::try_from(value).unwrap_or(i64::MAX)
+        }
         "holdem_rake_bp" => config.holdem_rake_bp = i64::try_from(value).unwrap_or(i64::MAX),
         "holdem_rake_cap" => config.holdem_rake_cap = i64::try_from(value).unwrap_or(i64::MAX),
         "gift_fee_bp" => config.gift_fee_bp = i64::try_from(value).unwrap_or(i64::MAX),
@@ -1362,6 +1432,44 @@ pub(crate) fn percent_text(bp: i64) -> String {
             .trim_end_matches('0')
             .to_string()
     }
+}
+
+/// 백만분율을 "0.015" 같은 퍼센트 문자열로.
+pub(crate) fn percent_fine_text(ppm: i64) -> String {
+    let ppm = ppm.clamp(0, 1_000_000);
+    let whole = ppm / 10_000;
+    let fraction = ppm % 10_000;
+    if fraction == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{fraction:04}")
+            .trim_end_matches('0')
+            .to_string()
+    }
+}
+
+/// "0.015" 같은 퍼센트(0~100, 소수점 넷째 자리까지)를 백만분율로. 형식이 틀리면 None.
+pub(crate) fn parse_percent_ppm(text: &str) -> Option<i64> {
+    let text = text.trim();
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+    if whole.is_empty() && fraction.is_empty() {
+        return None;
+    }
+    if fraction.len() > 4
+        || whole.len() > 3
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let whole = if whole.is_empty() {
+        0
+    } else {
+        whole.parse::<i64>().ok()?
+    };
+    let fraction = format!("{fraction:0<4}").parse::<i64>().ok()?;
+    let ppm = whole * 10_000 + fraction;
+    (ppm <= 1_000_000).then_some(ppm)
 }
 
 /// "2.5" 같은 퍼센트(0~100, 소수점 둘째 자리까지)를 만분율로. 형식이 틀리면 None.

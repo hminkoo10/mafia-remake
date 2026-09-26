@@ -686,6 +686,8 @@ enum WebFieldKind {
     IntList,
     /// 퍼센트 (소수점 둘째 자리까지, 0~100). 설정 파일에는 만분율로 저장한다.
     Percent,
+    /// 퍼센트 (소수점 넷째 자리까지, 0~100). 설정 파일에는 백만분율로 저장한다 (주식 수수료 0.015% 등).
+    PercentFine,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1037,6 +1039,109 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
         "블랙리스트 유저 ID 목록",
         WebFieldKind::IntList,
         None,
+    ),
+    field("stock_enabled", "주식 시장 열기", WebFieldKind::Bool, None),
+    field(
+        "stock_day_minutes",
+        "주식 게임 하루 길이(분)",
+        WebFieldKind::Int,
+        Some(1),
+    ),
+    field(
+        "stock_fee_ppm",
+        "주식 매매 수수료(%, 소수점 넷째 자리까지)",
+        WebFieldKind::PercentFine,
+        None,
+    ),
+    field(
+        "stock_tax_ppm",
+        "증권거래세(%, 매도, 소수점 넷째 자리까지)",
+        WebFieldKind::PercentFine,
+        None,
+    ),
+    field(
+        "stock_limit_bp",
+        "주식 가격제한폭(%)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "stock_vi_bp",
+        "변동성 완화장치 기준(%, 0이면 끔)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "stock_drift_bp_week",
+        "시장 기대 수익률(%, 실제 1주당)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "stock_vol_pct",
+        "주가 변동성 배율(%)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "stock_news_pct",
+        "주식 뉴스 빈도 배율(%)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "stock_holding_limit_bp",
+        "시스템 회사 1인 보유 한도(발행 주식의 %)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "stock_order_limit_pct",
+        "주문 1회 최대 수량(게임 하루 평균 거래량의 %)",
+        WebFieldKind::Int,
+        Some(1),
+    ),
+    field(
+        "stock_found_min_capital",
+        "회사 설립 최소 자본금(원)",
+        WebFieldKind::Int,
+        Some(1),
+    ),
+    field(
+        "stock_found_fee_bp",
+        "회사 설립 수수료(%)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "stock_ipo_fee_bp",
+        "공모 수수료(%, 공모 대금에서)",
+        WebFieldKind::Percent,
+        None,
+    ),
+    field(
+        "stock_listing_min_equity",
+        "상장 최소 자본총계(원)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "stock_lockup_days",
+        "설립자 보호예수(게임일)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "stock_max_companies",
+        "한 사람이 운영할 수 있는 회사 수",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "stock_system_companies",
+        "시스템 회사 수 목표",
+        WebFieldKind::Int,
+        Some(0),
     ),
 ];
 

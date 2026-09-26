@@ -407,7 +407,7 @@ pub fn claim_relief(
     let total = coins.saturating_add(chips_on_table.max(0));
     if total >= rules.relief_threshold {
         return Err(format!(
-            "보유 코인 {}(테이블 칩 포함)이 기준 {} 이상이라 받을 수 없습니다.",
+            "보유 코인 {}(테이블 칩·주식 포함)이 기준 {} 이상이라 받을 수 없습니다.",
             coin_text(total),
             coin_text(rules.relief_threshold)
         ));

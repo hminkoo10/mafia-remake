@@ -224,6 +224,8 @@ pub struct CasinoHub {
     config: std::sync::OnceLock<Arc<RwLock<BotConfig>>>,
     /// 진행 중인 마피아 판에 걸린 배팅. 바이인은 그만큼을 남기고 받는다.
     bet_locks: std::sync::OnceLock<crate::BetLocks>,
+    /// 서버 활동 누적 (주식 시장의 게임 연동 종목 실적).
+    activity: std::sync::OnceLock<Arc<crate::stock_hub::ServerActivity>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -272,6 +274,7 @@ impl CasinoHub {
             pending_house: Mutex::new(Vec::new()),
             config: std::sync::OnceLock::new(),
             bet_locks: std::sync::OnceLock::new(),
+            activity: std::sync::OnceLock::new(),
         };
         let file = load_file(&hub.path)?;
         hub.house.store(file.house, Ordering::Relaxed);
@@ -304,6 +307,11 @@ impl CasinoHub {
     pub fn connect_economy(&self, config: Arc<RwLock<BotConfig>>, bet_locks: crate::BetLocks) {
         let _ = self.config.set(config);
         let _ = self.bet_locks.set(bet_locks);
+    }
+
+    /// 서버 활동 누적을 연결한다 (카지노 라운드 수·하우스 손익).
+    pub fn connect_activity(&self, activity: Arc<crate::stock_hub::ServerActivity>) {
+        let _ = self.activity.set(activity);
     }
 
     /// 지금 코인 순환 규칙 (설정을 바꾸면 다음 명령부터 바로 적용된다).
@@ -802,6 +810,14 @@ impl CasinoHub {
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .push((table_id.clone(), *reveal_until, *house_delta));
+                    if let Some(activity) = self.activity.get() {
+                        activity
+                            .casino_hands
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        activity
+                            .casino_house
+                            .fetch_add(*house_delta, std::sync::atomic::Ordering::Relaxed);
+                    }
                     let rules = self.economy_rules().await;
                     let announcement = {
                         let mut stats_file = self.stats.write().await;

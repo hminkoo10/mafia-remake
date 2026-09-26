@@ -17,6 +17,7 @@ pub async fn handle_component(
         ["starvote", guild] => handle_star_vote(ctx, data, component, parse_guild(guild)?).await?,
         ["casino_enter", table_id] => handle_casino_enter(ctx, data, component, table_id).await?,
         ["casino_leave", table_id] => handle_casino_leave(ctx, data, component, table_id).await?,
+        ["stock_cancel", order_id] => handle_stock_cancel(ctx, data, component, order_id).await?,
         ["casino_panel", action] => handle_casino_panel(ctx, data, component, action).await?,
         ["casino_pick", action] => handle_casino_pick(ctx, data, component, action).await?,
         ["casino_close_confirm", table_id] => {

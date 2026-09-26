@@ -151,6 +151,10 @@ struct Data {
     bot_user_id: serenity::UserId,
     casino: casino_hub::SharedHub,
     casino_base_url: Arc<String>,
+    /// 주식 시장.
+    stocks: stock_hub::SharedStocks,
+    /// 서버 활동 누적 (게임 연동 종목의 실적 재료).
+    activity: Arc<stock_hub::ServerActivity>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -520,6 +524,7 @@ mod commands;
 mod embed;
 mod http_pool;
 mod runner;
+mod stock_hub;
 
 async fn event_handler(
     ctx: &serenity::Context,
@@ -809,6 +814,11 @@ fn bot_commands() -> Vec<poise::Command<Data, Error>> {
         commands::treasury_info(),
         commands::relief_command(),
         commands::manage_treasury(),
+        commands::stock(),
+        commands::company(),
+        commands::manage_stocks(),
+        commands::stock_panel(),
+        commands::stock_news_channel(),
         commands::exchange_coupon(),
         commands::manage_coins(),
         commands::issue_coupons(),
@@ -1138,6 +1148,25 @@ async fn main() -> Result<()> {
     casino_hub.start_saver();
     // 코인 순환: 홀덤 레이크 등 운영 비율과, 바이인이 남겨야 할 마피아 배팅 잠금.
     casino_hub.connect_economy(config_arc.clone(), bet_locks.clone());
+    // 주식 시장: 상태(stocks.json)와 코인 장부. 게임 연동 종목을 위해 서버 활동을 함께 센다.
+    let server_activity = Arc::new(stock_hub::ServerActivity::default());
+    casino_hub.connect_activity(server_activity.clone());
+    let stock_market: stock_hub::SharedStocks = Arc::new(load_state_file(
+        &workspace_root.join("stocks.json"),
+        |path| {
+            stock_hub::StockHub::load(
+                path.to_path_buf(),
+                stats_arc.clone(),
+                stats_path_arc.clone(),
+            )
+        },
+    )?);
+    stock_market.connect(
+        config_arc.clone(),
+        bet_locks.clone(),
+        server_activity.clone(),
+    );
+    stock_market.recover().await;
     let casino_base_url = casino_hub::casino_base_url(
         &web_host,
         activity_port,
@@ -1188,6 +1217,8 @@ async fn main() -> Result<()> {
     let completed_replays_path_setup = completed_replays_path_arc.clone();
     let activity_discord_update_setup = activity_discord_update_tx.clone();
     let casino_setup = casino_hub.clone();
+    let stocks_setup = stock_market.clone();
+    let activity_setup = server_activity.clone();
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -1254,10 +1285,13 @@ async fn main() -> Result<()> {
                     bot_user_id: ready.user.id,
                     casino: casino_setup.clone(),
                     casino_base_url: Arc::new(casino_base_url.clone()),
+                    stocks: stocks_setup.clone(),
+                    activity: activity_setup.clone(),
                 };
                 // 카지노: 시간 초과 처리 루프와 Discord 채널 중계.
                 tokio::spawn(commands::run_casino_ticker(data.clone()));
                 tokio::spawn(commands::run_economy_ticker(ctx.clone(), data.clone()));
+                tokio::spawn(commands::run_stock_ticker(ctx.clone(), data.clone()));
                 tokio::spawn(commands::run_casino_relay(ctx.clone(), data.clone()));
                 let mut activity_update_rx = activity_discord_update_setup.subscribe();
                 let activity_update_ctx = ctx.clone();
@@ -1358,8 +1392,9 @@ async fn main() -> Result<()> {
         .framework(framework)
         .await?;
     let result = client.start().await;
-    // 봇이 멈추기 전에 아직 쓰지 않은 카지노 상태를 저장한다.
+    // 봇이 멈추기 전에 아직 쓰지 않은 카지노·주식 상태를 저장한다.
     casino_hub.flush_pending_save().await;
+    stock_market.flush().await;
     result?;
     Ok(())
 }

@@ -83,6 +83,9 @@ pub struct StatsFile {
     /// 복지 금고와 잭팟 풀 (코인 순환, `economy.rs`).
     #[serde(default)]
     pub treasury: Treasury,
+    /// 주식 시장 장부 중 코인에 반영한 마지막 번호 (같은 이동을 두 번 반영하지 않는다).
+    #[serde(default)]
+    pub stock_ledger: u64,
     /// 저장 순서용 스냅샷 번호 (파일에는 쓰지 않는다). `SnapshotSeq` 참고.
     #[serde(skip)]
     snapshot_seq: SnapshotSeq,

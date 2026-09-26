@@ -87,7 +87,7 @@ pub(crate) fn treasury_text(
     );
     lines.push(String::new());
     lines.push(format!(
-        "**구조금** 보유 코인과 테이블 칩을 합쳐 {} 미만이면 하루 한 번 {}을 받을 수 있습니다 (`/구조금`). 받은 뒤 {}시간 동안은 코인을 선물할 수 없습니다.",
+        "**구조금** 보유 코인·테이블 칩·주식 평가액을 합쳐 {} 미만이면 하루 한 번 {}을 받을 수 있습니다 (`/구조금`). 받은 뒤 {}시간 동안은 코인을 선물할 수 없습니다.",
         stats::coin_text(rules.relief_threshold),
         stats::coin_text(rules.relief_amount),
         rules.relief_gift_lock_hours
@@ -131,7 +131,13 @@ pub async fn relief_command(ctx: Context<'_>) -> Result<(), Error> {
     let rules = ctx.data().config.read().await.economy_rules();
     let user = ctx.author();
     let user_id = user.id.get();
-    let chips = ctx.data().casino.chips_on_table(user_id).await;
+    // 테이블 칩과 주식(평가액·주문 증거금)도 재산으로 센다 (코인을 옮겨 두고 받지 못하게).
+    let chips = ctx
+        .data()
+        .casino
+        .chips_on_table(user_id)
+        .await
+        .saturating_add(ctx.data().stocks.portfolio_value(user_id).await);
     let today = stats::kst_today();
     let now_ms = chrono::Utc::now().timestamp_millis();
     let applied = {

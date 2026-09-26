@@ -768,6 +768,10 @@ pub async fn announce_winner(
             let running_read = running.read().await;
             rating_log_with_result_labels(&running_read, &recorded_rating_log)
         };
+        // 주식 시장: 마피아게임즈 실적에 들어갈 서버 활동.
+        data.activity
+            .mafia_games
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         rating_log_chunks = stats::game_rating_log_chunks(&labeled_rating_log, 3500);
         rank_change_chunks = stats::game_rank_change_chunks(&labeled_rating_log, 3500);
         rating_log = recorded_rating_log;

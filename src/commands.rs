@@ -48,6 +48,7 @@ mod config_cmds;
 mod economy_cmds;
 mod guides;
 mod interactions;
+mod stock_cmds;
 pub(crate) use self::anonymous_chat::*;
 pub(crate) use self::boards::*;
 pub(crate) use self::casino_cmds::*;
@@ -56,6 +57,7 @@ pub(crate) use self::config_cmds::*;
 pub(crate) use self::economy_cmds::*;
 pub(crate) use self::guides::*;
 pub(crate) use self::interactions::*;
+pub(crate) use self::stock_cmds::*;
 
 const ANONYMOUS_DELIVERY_CONCURRENCY: usize = 4;
 
