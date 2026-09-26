@@ -1504,20 +1504,22 @@ fn missions_are_paid_once_and_all_three_add_a_bonus() {
 }
 
 #[test]
-fn achievements_pay_once_and_follow_the_reward_rate() {
+fn achievements_pay_each_tier_once_and_follow_the_reward_rate() {
     let mut stats = StatsFile::default();
     {
         let entry = stats.users.entry("1".to_string()).or_default();
         entry.games = 10;
         entry.wins = 1;
+        // 업적 개편 뒤에 시작한 사람 (차액 지급 없음).
+        entry.rewards.achievement_version = 2;
     }
     let half = RewardRules {
         achievement_pct: 50,
         ..reward_rules()
     };
     let (_, claim) = claim_achievements(&mut stats, 1, "Alpha", StockProgress::default(), &half);
-    // 첫 판 2,000 + 10판 5,000 + 첫 승리 3,000의 절반.
-    assert_eq!(claim.total, 5_000);
+    // 마피아 1판 5,000 + 10판 15,000 + 1승 10,000의 절반.
+    assert_eq!(claim.total, 15_000);
     let (_, again) = claim_achievements(
         &mut stats,
         1,
@@ -1525,9 +1527,11 @@ fn achievements_pay_once_and_follow_the_reward_rate() {
         StockProgress::default(),
         &reward_rules(),
     );
-    assert_eq!(again.total, 0, "받은 업적은 다시 주지 않는다");
+    assert_eq!(again.total, 0, "받은 단계는 다시 주지 않는다");
+
     let stock = StockProgress {
-        trades: 3,
+        trades: 12,
+        realized: 150_000,
         founded: 1,
         listed: 0,
     };
@@ -1540,12 +1544,121 @@ fn achievements_pay_once_and_follow_the_reward_rate() {
     assert!(
         statuses
             .iter()
-            .any(|status| status.achievement.id == "stock-1" && status.done && !status.claimed),
+            .any(|status| status.id == "stock-10" && status.done && !status.claimed),
         "보상이 꺼져 있으면 받지 않고 남겨 둔다"
     );
-    let (_, later) = claim_achievements(&mut stats, 1, "Alpha", stock, &reward_rules());
-    assert_eq!(later.total, 2_000 + 5_000, "첫 주식 거래 + 회사 세우기");
-    assert_eq!(stats.reward_totals.achievements, 5_000 + 7_000);
+    let (statuses, later) = claim_achievements(&mut stats, 1, "Alpha", stock, &reward_rules());
+    // 주식 1·10번 체결 10,000 + 30,000, 실현 수익 10만 30,000, 회사 설립 30,000.
+    assert_eq!(later.total, 10_000 + 30_000 + 30_000 + 30_000);
+    let next = statuses
+        .iter()
+        .find(|status| status.track.key == "games" && !status.claimed)
+        .unwrap();
+    assert_eq!((next.target, next.progress), (30, 10), "다음 단계는 30판");
+    assert_eq!(stats.reward_totals.achievements, 15_000 + 100_000);
+}
+
+#[test]
+fn achievement_ids_are_unique_and_tiers_grow() {
+    let mut ids = HashSet::new();
+    for track in ACHIEVEMENT_TRACKS {
+        assert!(!track.tiers.is_empty());
+        for pair in track.tiers.windows(2) {
+            assert!(pair[0].0 < pair[1].0, "{} 목표는 커져야 한다", track.key);
+            assert!(pair[0].1 < pair[1].1, "{} 보상은 커져야 한다", track.key);
+        }
+        for (target, _) in track.tiers {
+            assert!(ids.insert(format!("{}-{target}", track.key)));
+        }
+    }
+    // 처음 내놓은 업적 id는 그대로 남아 있어야 받은 기록이 이어진다.
+    for id in [
+        "games-1",
+        "wins-100",
+        "streak-5",
+        "roles-10",
+        "casino-1000",
+        "listed-1",
+    ] {
+        assert!(ids.contains(id), "{id}");
+    }
+}
+
+#[test]
+fn achievements_claimed_before_the_raise_get_the_difference_once() {
+    let mut stats = StatsFile::default();
+    {
+        let entry = stats.users.entry("1".to_string()).or_default();
+        entry.games = 1;
+        // 업적 표 1에서 "첫 판"으로 2,000을 받았다.
+        entry.rewards.achievements = vec!["games-1".to_string()];
+    }
+    let (_, claim) = claim_achievements(
+        &mut stats,
+        1,
+        "Alpha",
+        StockProgress::default(),
+        &reward_rules(),
+    );
+    assert_eq!(claim.total, 5_000 - 2_000);
+    assert!(claim.paid[0].0.contains("인상분"));
+    let (_, again) = claim_achievements(
+        &mut stats,
+        1,
+        "Alpha",
+        StockProgress::default(),
+        &reward_rules(),
+    );
+    assert_eq!(again.total, 0, "차액은 한 번만 준다");
+}
+
+#[test]
+fn long_term_counters_feed_the_achievement_tracks() {
+    let game = rating_test_game();
+    let mut stats = StatsFile::default();
+    let rules = reward_rules();
+    grant_game_rewards(&mut stats, &game, Winner::Citizen, &rules, "2026-09-26");
+    for player in &game.players {
+        let wins = stats.users[&player.user_id.to_string()]
+            .rewards
+            .team_wins
+            .get(rating_team_key(&game, player))
+            .copied();
+        let won = player_won_game(&game, player, Winner::Citizen);
+        assert_eq!(wins, won.then_some(1), "{}", player.name);
+    }
+
+    // 출석 일수와 최장 연속 출석.
+    for day in [1, 2, 3, 5] {
+        let today = format!("2026-09-{day:02}");
+        let yesterday = format!("2026-09-{:02}", day - 1);
+        claim_attendance(&mut stats, 1, "Alpha", 10_000, &today);
+        apply_attendance_streak(&mut stats, 1, "Alpha", &today, &yesterday, "", &rules);
+    }
+    let record = &stats.users["1"].rewards;
+    assert_eq!(record.attendance_days, 4);
+    assert_eq!(record.best_attendance_streak, 3);
+    assert_eq!(record.attendance_streak, 1);
+
+    // 미션 세 개를 다 끝낸 날 수 (보너스를 꺼도 센다).
+    let today = "2026-09-26";
+    {
+        let entry = stats.users.get_mut("1").unwrap();
+        entry.rewards.day = today.to_string();
+        entry.rewards.day_games = 5;
+        entry.rewards.day_wins = 5;
+        entry.rewards.day_hands = 50;
+    }
+    let no_bonus = RewardRules {
+        mission_bonus: 0,
+        ..rules
+    };
+    claim_missions(&mut stats, 1, "Alpha", today, 5, &no_bonus);
+    claim_missions(&mut stats, 1, "Alpha", today, 5, &no_bonus);
+    assert_eq!(
+        stats.users["1"].rewards.mission_days, 1,
+        "하루에 한 번만 센다"
+    );
 }
 
 #[test]

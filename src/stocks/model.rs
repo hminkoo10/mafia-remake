@@ -464,6 +464,9 @@ pub struct Account {
     pub fees: i64,
     #[serde(default)]
     pub fills: VecDeque<FillRecord>,
+    /// 누적 체결 수 (체결 기록은 최근 것만 남기므로 따로 센다).
+    #[serde(default)]
+    pub trades: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -8,16 +8,22 @@ use crate::stock_hub::now_ms;
 async fn stock_progress(data: &Data, user_id: u64) -> (i64, stats::StockProgress) {
     let market = data.stocks.market.read().await;
     let day_start = market.clock(stats::kst_day_start_ms(now_ms()));
-    let fills = market.accounts.get(&user_id).map(|account| &account.fills);
-    let today = fills.map_or(0, |fills| {
-        fills.iter().filter(|fill| fill.at >= day_start).count() as i64
+    let account = market.accounts.get(&user_id);
+    let today = account.map_or(0, |account| {
+        account
+            .fills
+            .iter()
+            .filter(|fill| fill.at >= day_start)
+            .count() as i64
     });
     let founded = market
         .companies
         .values()
         .filter(|company| company.founder() == Some(user_id));
     let progress = stats::StockProgress {
-        trades: fills.map_or(0, |fills| fills.len() as i64),
+        // 누적 체결 수를 세기 전에 거래한 사람은 남아 있는 체결 기록 수부터 시작한다.
+        trades: account.map_or(0, |account| account.trades.max(account.fills.len() as i64)),
+        realized: account.map_or(0, |account| account.realized),
         founded: founded.clone().count() as i64,
         listed: founded.filter(|company| company.listed_at > 0).count() as i64,
     };
@@ -190,7 +196,7 @@ pub async fn achievements(ctx: Context<'_>) -> Result<(), Error> {
     }
     let done = statuses.iter().filter(|status| status.claimed).count();
     let mut lines = vec![format!(
-        "업적 **{done}/{}** · 코인 벌기로 받은 누적 **{}**",
+        "업적 **{done}/{}**단계 · 코인 벌기로 받은 누적 **{}**",
         statuses.len(),
         stats::coin_text(earned)
     )];
@@ -203,31 +209,46 @@ pub async fn achievements(ctx: Context<'_>) -> Result<(), Error> {
         lines.push(text);
     }
     lines.push(String::new());
-    for status in &statuses {
-        let icon = if status.claimed {
-            "✅"
-        } else if status.done {
-            "🎁"
-        } else {
-            "⬜"
-        };
-        let progress = if status.done {
-            String::new()
-        } else {
-            format!(
-                " — {}/{}",
-                status.progress.min(status.achievement.target),
-                status.achievement.target
-            )
-        };
-        lines.push(format!(
-            "{icon} {}{progress} (+{})",
-            status.achievement.title,
-            stats::coin_text(status.reward)
-        ));
+    // 트랙마다 한 줄: 받은 단계와 다음 목표·보상.
+    for track in stats::ACHIEVEMENT_TRACKS {
+        let tiers = statuses
+            .iter()
+            .filter(|status| std::ptr::eq(status.track, track))
+            .collect::<Vec<_>>();
+        let claimed = tiers.iter().filter(|status| status.claimed).count();
+        match tiers.iter().find(|status| !status.claimed) {
+            Some(next) => {
+                let icon = if next.done { "🎁" } else { "⬜" };
+                lines.push(format!(
+                    "{icon} **{}** {claimed}/{}단계 · 다음 {} ({}/{}) **+{}**",
+                    track.title,
+                    tiers.len(),
+                    next.title,
+                    count_text(next.progress.min(next.target)),
+                    count_text(next.target),
+                    stats::coin_text(next.reward)
+                ));
+            }
+            None => lines.push(format!(
+                "🏅 **{}** 모든 단계 달성 ({}/{})",
+                track.title,
+                tiers.len(),
+                tiers.len()
+            )),
+        }
     }
+    lines.push(String::new());
+    lines.push(
+        "업적은 단계마다 한 번씩 받고, `/업적`을 쓰면 새로 이룬 단계의 보상을 바로 받습니다. 팀별 승리와 출석·미션 일수는 업적 개편 뒤부터 셉니다."
+            .to_string(),
+    );
     reply_embed(ctx, lines.join("\n"), "업적", serenity::Colour::GOLD, true).await?;
     Ok(())
+}
+
+/// "12,345" (단위 없이).
+fn count_text(value: i64) -> String {
+    stats::coin_text(value).trim_end_matches('원').to_string()
 }
 
 /// 판 결과 뒤에 붙이는 참여 보상 안내 (보상이 없으면 None).

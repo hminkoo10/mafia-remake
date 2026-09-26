@@ -1,12 +1,13 @@
 // stats/rewards.rs — 코인 벌이: 마피아 참여 보상, 일일 미션, 업적, 연속 출석 보너스.
 // 보상 코인은 새로 발행한다. 부계정으로 찍어 내지 못하게 참여 보상은 하루 판 수로, 미션은 하루
-// 세 개로, 업적은 한 번씩으로 총량을 묶는다. 금액은 모두 운영 설정이고(0이면 끔), 발행한 누적은
-// `RewardTotals`에 남긴다.
+// 세 개로, 업적은 단계마다 한 번씩으로 총량을 묶는다. 금액은 모두 운영 설정이고(0이면 끔), 발행한
+// 누적은 `RewardTotals`에 남긴다.
 
-use super::{PlayerStats, StatsFile, ensure_player_stats, player_won_game};
+use super::{PlayerStats, StatsFile, ensure_player_stats, player_won_game, rating_team_key};
 use crate::game::MafiaGame;
 use crate::model::Winner;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const DEFAULT_REWARD_GAME_COINS: i64 = 1_000;
 pub const DEFAULT_REWARD_WIN_COINS: i64 = 1_000;
@@ -23,6 +24,8 @@ const DAY_MS: i64 = 24 * HOUR_MS;
 const KST_OFFSET_MS: i64 = 9 * HOUR_MS;
 /// 미션 보너스를 받았다는 표시.
 const BONUS_ID: &str = "bonus";
+/// 업적 표 버전. 2부터 보상을 올리고 단계를 늘렸다 (1에서 받은 업적은 차액을 한 번 더 준다).
+const ACHIEVEMENT_VERSION: u32 = 2;
 
 /// 보상 규칙 (운영 설정으로 만든다).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,14 +86,27 @@ pub struct RewardRecord {
     pub casino_hands: i64,
     #[serde(default)]
     pub jackpots: i64,
-    /// 받은 업적 id.
+    /// 팀별 승리 수 ("citizen", "mafia", "cult", "joker"). 업적 개편 뒤부터 센다.
+    #[serde(default)]
+    pub team_wins: BTreeMap<String, i64>,
+    /// 받은 업적 id ("games-100" 처럼 트랙과 목표).
     #[serde(default)]
     pub achievements: Vec<String>,
-    /// 연속 출석 일수와 마지막으로 센 날.
+    /// 업적 표 버전 (차액 지급을 한 번만 하려고).
+    #[serde(default)]
+    pub achievement_version: u32,
+    /// 연속 출석 일수와 마지막으로 센 날, 최장 연속 출석, 누적 출석 일수.
     #[serde(default)]
     pub attendance_streak: i64,
     #[serde(default)]
     pub streak_day: String,
+    #[serde(default)]
+    pub best_attendance_streak: i64,
+    #[serde(default)]
+    pub attendance_days: i64,
+    /// 일일 미션 세 개를 다 끝낸 날 수.
+    #[serde(default)]
+    pub mission_days: i64,
     /// 보상으로 받은 코인 누적.
     #[serde(default)]
     pub earned: i64,
@@ -136,6 +152,23 @@ fn pay(entry: &mut PlayerStats, amount: i64) {
     entry.rewards.earned = entry.rewards.earned.saturating_add(amount);
 }
 
+/// "12,345" (단위 없이).
+fn group(value: i64) -> String {
+    let digits = value.unsigned_abs().to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    if value < 0 {
+        format!("-{grouped}")
+    } else {
+        grouped
+    }
+}
+
 /// 한국 시간 자정 (unix ms). 오늘 주식 체결을 셀 때 쓴다.
 pub fn kst_day_start_ms(now_ms: i64) -> i64 {
     (now_ms + KST_OFFSET_MS).div_euclid(DAY_MS) * DAY_MS - KST_OFFSET_MS
@@ -162,7 +195,8 @@ pub struct GameReward {
     pub balance: i64,
 }
 
-/// 판이 끝났을 때: 참가자마다 오늘의 판 수·승수를 세고(미션용), 하루 한도 안에서 참여 보상을 준다.
+/// 판이 끝났을 때: 참가자마다 오늘의 판 수·승수와 팀별 승리를 세고(미션·업적용), 하루 한도 안에서
+/// 참여 보상을 준다.
 pub fn grant_game_rewards(
     stats: &mut StatsFile,
     game: &MafiaGame,
@@ -174,11 +208,13 @@ pub fn grant_game_rewards(
     let mut total = 0_i64;
     for player in &game.players {
         let won = player_won_game(game, player, winner);
+        let team = rating_team_key(game, player);
         let entry = ensure_player_stats(stats, player.user_id, &player.name);
         entry.rewards.roll(today);
         entry.rewards.day_games += 1;
         if won {
             entry.rewards.day_wins += 1;
+            *entry.rewards.team_wins.entry(team.to_string()).or_default() += 1;
         }
         let mut amount = 0;
         if rules.game_coins > 0 && entry.rewards.day_rewarded_games < rules.daily_games {
@@ -362,14 +398,16 @@ pub fn claim_missions(
         }
     }
     let all_done = statuses.iter().all(|status| status.done);
-    if all_done && rules.mission_bonus > 0 && !entry.rewards.claimed.iter().any(|id| id == BONUS_ID)
-    {
+    if all_done && !entry.rewards.claimed.iter().any(|id| id == BONUS_ID) {
         entry.rewards.claimed.push(BONUS_ID.to_string());
-        pay(entry, rules.mission_bonus);
-        claim
-            .paid
-            .push(("세 미션 모두 달성 보너스".to_string(), rules.mission_bonus));
-        claim.total += rules.mission_bonus;
+        entry.rewards.mission_days += 1;
+        if rules.mission_bonus > 0 {
+            pay(entry, rules.mission_bonus);
+            claim
+                .paid
+                .push(("세 미션 모두 달성 보너스".to_string(), rules.mission_bonus));
+            claim.total += rules.mission_bonus;
+        }
     }
     claim.balance = entry.coins;
     let statuses = mission_status(Some(entry), user_id, today, stock_trades_today);
@@ -393,104 +431,277 @@ pub enum Metric {
     BestWinStreak,
     StarPlayer,
     RolesPlayed,
+    /// 팀별 승리 ("citizen", "mafia", "cult", "joker").
+    TeamWins(&'static str),
+    PlayHours,
+    RatingPeak,
     CasinoHands,
     Jackpots,
     StockTrades,
+    StockProfit,
     CompaniesFounded,
     CompaniesListed,
+    AttendanceDays,
+    AttendanceStreak,
+    MissionDays,
 }
 
+/// 업적 트랙: 같은 기록의 목표를 단계별로 이어서 준다 (id는 "트랙-목표").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Achievement {
-    pub id: &'static str,
+pub struct AchievementTrack {
+    pub key: &'static str,
     pub title: &'static str,
+    /// 목표를 적는 틀 (`{}` 자리에 목표 수).
+    pub goal: &'static str,
     pub metric: Metric,
-    pub target: i64,
-    /// 기본 보상 (운영 설정의 배율을 곱한다).
-    pub reward: i64,
+    /// (목표, 기본 보상). 운영 설정의 배율을 곱한다.
+    pub tiers: &'static [(i64, i64)],
 }
 
-const fn achievement(
-    id: &'static str,
+const fn track(
+    key: &'static str,
     title: &'static str,
+    goal: &'static str,
     metric: Metric,
-    target: i64,
-    reward: i64,
-) -> Achievement {
-    Achievement {
-        id,
+    tiers: &'static [(i64, i64)],
+) -> AchievementTrack {
+    AchievementTrack {
+        key,
         title,
+        goal,
         metric,
-        target,
-        reward,
+        tiers,
     }
 }
 
-pub const ACHIEVEMENTS: &[Achievement] = &[
-    achievement("games-1", "첫 판", Metric::Games, 1, 2_000),
-    achievement("games-10", "마피아 10판", Metric::Games, 10, 5_000),
-    achievement("games-50", "마피아 50판", Metric::Games, 50, 15_000),
-    achievement("games-100", "마피아 100판", Metric::Games, 100, 30_000),
-    achievement("games-300", "마피아 300판", Metric::Games, 300, 60_000),
-    achievement("wins-1", "첫 승리", Metric::Wins, 1, 3_000),
-    achievement("wins-10", "10승", Metric::Wins, 10, 8_000),
-    achievement("wins-50", "50승", Metric::Wins, 50, 25_000),
-    achievement("wins-100", "100승", Metric::Wins, 100, 50_000),
-    achievement("streak-3", "3연승", Metric::BestWinStreak, 3, 5_000),
-    achievement("streak-5", "5연승", Metric::BestWinStreak, 5, 15_000),
-    achievement("star-1", "첫 스타플레이어", Metric::StarPlayer, 1, 5_000),
-    achievement(
-        "star-10",
-        "스타플레이어 10번",
+pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
+    track(
+        "games",
+        "마피아 판 수",
+        "마피아 {}판",
+        Metric::Games,
+        &[
+            (1, 5_000),
+            (10, 15_000),
+            (30, 30_000),
+            (50, 50_000),
+            (100, 100_000),
+            (200, 180_000),
+            (300, 250_000),
+            (500, 400_000),
+            (1_000, 800_000),
+        ],
+    ),
+    track(
+        "wins",
+        "승리",
+        "{}승",
+        Metric::Wins,
+        &[
+            (1, 10_000),
+            (10, 30_000),
+            (30, 60_000),
+            (50, 100_000),
+            (100, 200_000),
+            (200, 350_000),
+            (300, 500_000),
+            (500, 800_000),
+        ],
+    ),
+    track(
+        "streak",
+        "최고 연승",
+        "{}연승",
+        Metric::BestWinStreak,
+        &[(3, 20_000), (5, 50_000), (7, 100_000), (10, 250_000)],
+    ),
+    track(
+        "star",
+        "스타플레이어",
+        "스타플레이어 {}번",
         Metric::StarPlayer,
-        10,
-        20_000,
+        &[
+            (1, 15_000),
+            (5, 50_000),
+            (10, 100_000),
+            (30, 250_000),
+            (50, 400_000),
+        ],
     ),
-    achievement(
-        "roles-10",
-        "직업 10가지 해 보기",
+    track(
+        "roles",
+        "해 본 직업",
+        "직업 {}가지",
         Metric::RolesPlayed,
-        10,
-        10_000,
+        &[
+            (5, 20_000),
+            (10, 50_000),
+            (15, 100_000),
+            (20, 200_000),
+            (25, 300_000),
+        ],
     ),
-    achievement("casino-1", "카지노 첫 판", Metric::CasinoHands, 1, 1_000),
-    achievement(
-        "casino-100",
-        "카지노 100판",
+    track(
+        "citizen-wins",
+        "시민팀 승리",
+        "시민팀으로 {}승",
+        Metric::TeamWins("citizen"),
+        &[(10, 30_000), (50, 120_000), (100, 250_000)],
+    ),
+    track(
+        "mafia-wins",
+        "마피아팀 승리",
+        "마피아팀으로 {}승",
+        Metric::TeamWins("mafia"),
+        &[(5, 30_000), (20, 100_000), (50, 250_000)],
+    ),
+    track(
+        "cult-wins",
+        "교주팀 승리",
+        "교주팀으로 {}승",
+        Metric::TeamWins("cult"),
+        &[(3, 50_000), (10, 150_000)],
+    ),
+    track(
+        "joker-wins",
+        "조커 승리",
+        "조커로 {}승",
+        Metric::TeamWins("joker"),
+        &[(1, 50_000), (5, 200_000)],
+    ),
+    track(
+        "hours",
+        "플레이 시간",
+        "마피아 {}시간",
+        Metric::PlayHours,
+        &[(10, 30_000), (50, 100_000), (100, 200_000), (300, 500_000)],
+    ),
+    track(
+        "rating",
+        "최고 레이팅",
+        "레이팅 {}",
+        Metric::RatingPeak,
+        &[
+            (1_100, 30_000),
+            (1_200, 80_000),
+            (1_300, 150_000),
+            (1_500, 300_000),
+        ],
+    ),
+    track(
+        "casino",
+        "카지노 판 수",
+        "카지노 {}판",
         Metric::CasinoHands,
-        100,
-        5_000,
+        &[
+            (1, 5_000),
+            (100, 20_000),
+            (500, 50_000),
+            (1_000, 100_000),
+            (5_000, 300_000),
+            (10_000, 500_000),
+        ],
     ),
-    achievement(
-        "casino-1000",
-        "카지노 1,000판",
-        Metric::CasinoHands,
-        1_000,
-        20_000,
+    track(
+        "jackpot",
+        "카지노 잭팟",
+        "잭팟 {}번",
+        Metric::Jackpots,
+        &[(1, 50_000), (3, 150_000), (10, 400_000)],
     ),
-    achievement("jackpot-1", "잭팟 당첨", Metric::Jackpots, 1, 10_000),
-    achievement("stock-1", "첫 주식 거래", Metric::StockTrades, 1, 2_000),
-    achievement(
-        "company-1",
-        "회사 세우기",
+    track(
+        "stock",
+        "주식 체결",
+        "주식 {}번 체결",
+        Metric::StockTrades,
+        &[
+            (1, 10_000),
+            (10, 30_000),
+            (100, 100_000),
+            (500, 250_000),
+            (1_000, 400_000),
+        ],
+    ),
+    track(
+        "stock-profit",
+        "주식 실현 수익",
+        "실현 수익 {}원",
+        Metric::StockProfit,
+        &[
+            (100_000, 30_000),
+            (1_000_000, 100_000),
+            (10_000_000, 300_000),
+        ],
+    ),
+    track(
+        "company",
+        "회사 설립",
+        "회사 {}개 세우기",
         Metric::CompaniesFounded,
-        1,
-        5_000,
+        &[(1, 30_000)],
     ),
-    achievement(
-        "listed-1",
-        "회사 상장시키기",
+    track(
+        "listed",
+        "회사 상장",
+        "회사 {}개 상장",
         Metric::CompaniesListed,
-        1,
-        10_000,
+        &[(1, 80_000)],
     ),
+    track(
+        "attend",
+        "출석",
+        "출석 {}일",
+        Metric::AttendanceDays,
+        &[(7, 20_000), (30, 60_000), (100, 200_000), (365, 600_000)],
+    ),
+    track(
+        "attend-streak",
+        "최장 연속 출석",
+        "{}일 연속 출석",
+        Metric::AttendanceStreak,
+        &[(7, 30_000), (30, 100_000), (100, 300_000)],
+    ),
+    track(
+        "mission-days",
+        "미션 올클리어",
+        "미션 세 개 모두 {}일",
+        Metric::MissionDays,
+        &[(1, 10_000), (10, 50_000), (30, 120_000), (100, 400_000)],
+    ),
+];
+
+/// 업적 표 1(처음 내놓은 것)의 보상. 표 2로 올린 차액을 한 번 지급할 때 쓴다.
+const ACHIEVEMENT_V1_REWARDS: &[(&str, i64)] = &[
+    ("games-1", 2_000),
+    ("games-10", 5_000),
+    ("games-50", 15_000),
+    ("games-100", 30_000),
+    ("games-300", 60_000),
+    ("wins-1", 3_000),
+    ("wins-10", 8_000),
+    ("wins-50", 25_000),
+    ("wins-100", 50_000),
+    ("streak-3", 5_000),
+    ("streak-5", 15_000),
+    ("star-1", 5_000),
+    ("star-10", 20_000),
+    ("roles-10", 10_000),
+    ("casino-1", 1_000),
+    ("casino-100", 5_000),
+    ("casino-1000", 20_000),
+    ("jackpot-1", 10_000),
+    ("stock-1", 2_000),
+    ("company-1", 5_000),
+    ("listed-1", 10_000),
 ];
 
 /// 업적 판단에 쓰는 주식 시장 쪽 값 (호출자가 시장에서 센다).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StockProgress {
-    /// 체결 기록 수 (최근 기록 기준, 0이면 거래한 적 없음).
+    /// 누적 체결 수.
     pub trades: i64,
+    /// 실현 손익 누적.
+    pub realized: i64,
     /// 세운 회사 수 (해산·상장폐지 포함).
     pub founded: i64,
     /// 상장까지 간 회사 수.
@@ -499,7 +710,11 @@ pub struct StockProgress {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AchievementStatus {
-    pub achievement: Achievement,
+    pub id: String,
+    pub track: &'static AchievementTrack,
+    /// "마피아 100판"
+    pub title: String,
+    pub target: i64,
     pub progress: i64,
     pub done: bool,
     pub claimed: bool,
@@ -508,52 +723,69 @@ pub struct AchievementStatus {
 }
 
 fn metric_value(entry: Option<&PlayerStats>, stock: StockProgress, metric: Metric) -> i64 {
+    let Some(entry) = entry else {
+        return match metric {
+            Metric::StockTrades => stock.trades,
+            Metric::StockProfit => stock.realized.max(0),
+            Metric::CompaniesFounded => stock.founded,
+            Metric::CompaniesListed => stock.listed,
+            _ => 0,
+        };
+    };
     match metric {
-        Metric::Games => entry.map_or(0, |entry| entry.games),
-        Metric::Wins => entry.map_or(0, |entry| entry.wins),
-        Metric::BestWinStreak => entry.map_or(0, |entry| entry.best_win_streak),
-        Metric::StarPlayer => entry.map_or(0, |entry| entry.star_player_count),
-        Metric::RolesPlayed => entry.map_or(0, |entry| {
-            entry.roles.values().filter(|count| **count > 0).count() as i64
-        }),
-        Metric::CasinoHands => entry.map_or(0, |entry| entry.rewards.casino_hands),
-        Metric::Jackpots => entry.map_or(0, |entry| entry.rewards.jackpots),
+        Metric::Games => entry.games,
+        Metric::Wins => entry.wins,
+        Metric::BestWinStreak => entry.best_win_streak,
+        Metric::StarPlayer => entry.star_player_count,
+        Metric::RolesPlayed => entry.roles.values().filter(|count| **count > 0).count() as i64,
+        Metric::TeamWins(team) => entry.rewards.team_wins.get(team).copied().unwrap_or(0),
+        Metric::PlayHours => entry.play_seconds / 3_600,
+        Metric::RatingPeak => entry.rating_peak,
+        Metric::CasinoHands => entry.rewards.casino_hands,
+        Metric::Jackpots => entry.rewards.jackpots,
         Metric::StockTrades => stock.trades,
+        Metric::StockProfit => stock.realized.max(0),
         Metric::CompaniesFounded => stock.founded,
         Metric::CompaniesListed => stock.listed,
+        Metric::AttendanceDays => entry.rewards.attendance_days,
+        Metric::AttendanceStreak => entry.rewards.best_attendance_streak,
+        Metric::MissionDays => entry.rewards.mission_days,
     }
 }
 
+fn scaled(reward: i64, rules: &RewardRules) -> i64 {
+    reward.saturating_mul(rules.achievement_pct.max(0)) / 100
+}
+
+/// 모든 업적의 진행 (트랙 순서, 트랙 안에서는 목표 순서).
 pub fn achievement_status(
     entry: Option<&PlayerStats>,
     stock: StockProgress,
     rules: &RewardRules,
 ) -> Vec<AchievementStatus> {
-    ACHIEVEMENTS
-        .iter()
-        .map(|achievement| {
-            let progress = metric_value(entry, stock, achievement.metric);
-            AchievementStatus {
-                achievement: *achievement,
+    let mut out = Vec::new();
+    for track in ACHIEVEMENT_TRACKS {
+        let progress = metric_value(entry, stock, track.metric);
+        for (target, reward) in track.tiers {
+            let id = format!("{}-{target}", track.key);
+            let claimed = entry.is_some_and(|entry| entry.rewards.achievements.contains(&id));
+            out.push(AchievementStatus {
+                title: track.goal.replace("{}", &group(*target)),
+                track,
+                target: *target,
                 progress,
-                done: progress >= achievement.target,
-                claimed: entry.is_some_and(|entry| {
-                    entry
-                        .rewards
-                        .achievements
-                        .iter()
-                        .any(|id| id == achievement.id)
-                }),
-                reward: achievement
-                    .reward
-                    .saturating_mul(rules.achievement_pct.max(0))
-                    / 100,
-            }
-        })
-        .collect()
+                done: progress >= *target,
+                claimed,
+                reward: scaled(*reward, rules),
+                id,
+            });
+        }
+    }
+    out
 }
 
-/// 새로 이룬 업적의 보상을 받는다 (업적 보상이 꺼져 있으면 받지 않고 그대로 둔다).
+/// 새로 이룬 업적의 보상을 받는다 (업적 보상이 꺼져 있으면 받지 않고 그대로 둔다). 업적 표 1에서
+/// 이미 받은 업적은 표 2로 올린 차액을 한 번 더 준다.
 pub fn claim_achievements(
     stats: &mut StatsFile,
     user_id: u64,
@@ -563,18 +795,32 @@ pub fn claim_achievements(
 ) -> (Vec<AchievementStatus>, Claim) {
     let mut claim = Claim::default();
     let entry = ensure_player_stats(stats, user_id, name);
-    let statuses = achievement_status(Some(entry), stock, rules);
     if rules.achievement_pct > 0 {
+        let statuses = achievement_status(Some(entry), stock, rules);
+        if entry.rewards.achievement_version < ACHIEVEMENT_VERSION {
+            for status in statuses.iter().filter(|status| status.claimed) {
+                let Some((_, old)) = ACHIEVEMENT_V1_REWARDS
+                    .iter()
+                    .find(|(id, _)| *id == status.id)
+                else {
+                    continue;
+                };
+                let extra = status.reward - scaled(*old, rules);
+                if extra > 0 {
+                    pay(entry, extra);
+                    claim
+                        .paid
+                        .push((format!("{} 보상 인상분", status.title), extra));
+                    claim.total += extra;
+                }
+            }
+            entry.rewards.achievement_version = ACHIEVEMENT_VERSION;
+        }
         for status in &statuses {
             if status.done && !status.claimed {
-                entry
-                    .rewards
-                    .achievements
-                    .push(status.achievement.id.to_string());
+                entry.rewards.achievements.push(status.id.clone());
                 pay(entry, status.reward);
-                claim
-                    .paid
-                    .push((status.achievement.title.to_string(), status.reward));
+                claim.paid.push((status.title.clone(), status.reward));
                 claim.total += status.reward;
             }
         }
@@ -595,8 +841,9 @@ pub struct StreakBonus {
     pub balance: i64,
 }
 
-/// 출석한 뒤 부른다: 연속 출석 일수를 세고 7일째·30일째마다 보너스를 준다. 같은 날 두 번 세지 않는다.
-/// `previous_attendance`는 이번 출석 전의 마지막 출석 날짜 (연속 기록이 없던 사람을 이어 주려고 쓴다).
+/// 출석한 뒤 부른다: 연속 출석 일수와 누적 출석 일수를 세고 7일째·30일째마다 보너스를 준다. 같은 날
+/// 두 번 세지 않는다. `previous_attendance`는 이번 출석 전의 마지막 출석 날짜 (연속 기록이 없던
+/// 사람을 이어 주려고 쓴다).
 pub fn apply_attendance_streak(
     stats: &mut StatsFile,
     user_id: u64,
@@ -608,22 +855,23 @@ pub fn apply_attendance_streak(
 ) -> StreakBonus {
     let entry = ensure_player_stats(stats, user_id, name);
     let record = &mut entry.rewards;
-    if record.streak_day != today {
-        let continued = record.streak_day == yesterday
-            || (record.streak_day.is_empty() && previous_attendance == yesterday);
-        record.attendance_streak = if continued {
-            record.attendance_streak.max(1) + 1
-        } else {
-            1
-        };
-        record.streak_day = today.to_string();
-    } else {
+    if record.streak_day == today {
         return StreakBonus {
             streak: record.attendance_streak,
             bonus: 0,
             balance: entry.coins,
         };
     }
+    let continued = record.streak_day == yesterday
+        || (record.streak_day.is_empty() && previous_attendance == yesterday);
+    record.attendance_streak = if continued {
+        record.attendance_streak.max(1) + 1
+    } else {
+        1
+    };
+    record.streak_day = today.to_string();
+    record.attendance_days += 1;
+    record.best_attendance_streak = record.best_attendance_streak.max(record.attendance_streak);
     let streak = record.attendance_streak;
     let mut bonus = 0;
     if streak % 7 == 0 {

@@ -601,6 +601,7 @@ impl StockMarket {
         position.qty += qty;
         position.cost = position.cost.saturating_add(notional + fee);
         account.fees = account.fees.saturating_add(fee);
+        account.trades += 1;
         account.fills.push_back(FillRecord {
             at: now,
             code: code.to_string(),
@@ -654,6 +655,7 @@ impl StockMarket {
         }
         account.realized = account.realized.saturating_add(proceeds - cost_out);
         account.fees = account.fees.saturating_add(fee + tax);
+        account.trades += 1;
         account.fills.push_back(FillRecord {
             at: now,
             code: code.to_string(),
