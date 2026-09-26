@@ -425,7 +425,7 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
             interval.tick().await;
             stock_ticker.tick().await;
             // Discord가 없으니 알릴 뉴스와 운영 기록은 버린다 (웹은 시장 상태의 뉴스를 읽는다).
-            let _ = stock_ticker.take_news();
+            let _ = stock_ticker.take_news().await;
             let _ = stock_ticker.take_logs().await;
         }
     });

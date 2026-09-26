@@ -1744,7 +1744,7 @@ pub async fn run_stock_ticker(ctx: serenity::Context, data: Data) {
     loop {
         interval.tick().await;
         data.stocks.tick().await;
-        let news = data.stocks.take_news();
+        let news = data.stocks.take_news().await;
         if !news.is_empty() {
             post_news(&ctx, &data, news).await;
         }
@@ -1765,32 +1765,63 @@ async fn post_news(ctx: &serenity::Context, data: &Data, news: Vec<NewsItem>) {
     if channel == 0 {
         return;
     }
-    // 틱 한 번의 소식은 한 메시지로 묶는다 (Discord 요청을 아낀다).
-    let important = news
+    for (text, colour) in news_messages(&news) {
+        let embed = serenity::CreateEmbed::new()
+            .title("증권 뉴스")
+            .description(text)
+            .color(colour);
+        if let Err(error) = serenity::ChannelId::new(channel)
+            .send_message(&ctx.http, serenity::CreateMessage::new().embed(embed))
+            .await
+        {
+            eprintln!("failed to post stock news: {error:?}");
+        }
+    }
+}
+
+/// 뉴스 채널 메시지: 한 번에 모인 소식을 한 메시지로 묶고, 넘치면 나눈다 (잘라 버리지 않는다).
+/// 종목별 변동성 완화장치(2분 거래정지)는 잦아서 빼고, 서킷브레이커 같은 시장 전체 정지는 올린다.
+fn news_messages(news: &[NewsItem]) -> Vec<(String, serenity::Colour)> {
+    const LIMIT: usize = 3_900;
+    let mut chunks: Vec<Vec<&NewsItem>> = Vec::new();
+    let mut length = 0;
+    for item in news
         .iter()
         .filter(|item| !matches!(item.kind, NewsKind::Halt) || item.code.is_none())
-        .map(news_line)
-        .collect::<Vec<_>>();
-    if important.is_empty() {
-        return;
-    }
-    let text = important.join("\n");
-    let colour = if news.iter().any(|item| item.tone < 0) && !news.iter().any(|item| item.tone > 0)
     {
-        serenity::Colour::RED
-    } else {
-        serenity::Colour::BLUE
-    };
-    let embed = serenity::CreateEmbed::new()
-        .title("증권 뉴스")
-        .description(text.chars().take(3_900).collect::<String>())
-        .color(colour);
-    if let Err(error) = serenity::ChannelId::new(channel)
-        .send_message(&ctx.http, serenity::CreateMessage::new().embed(embed))
-        .await
-    {
-        eprintln!("failed to post stock news: {error:?}");
+        let line = news_line(item).chars().count() + 1;
+        match chunks.last_mut() {
+            Some(chunk) if length + line <= LIMIT => {
+                chunk.push(item);
+                length += line;
+            }
+            _ => {
+                chunks.push(vec![item]);
+                length = line;
+            }
+        }
     }
+    chunks
+        .into_iter()
+        .map(|chunk| {
+            let text = chunk
+                .iter()
+                .map(|item| news_line(item))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .chars()
+                .take(LIMIT)
+                .collect::<String>();
+            let colour = if chunk.iter().any(|item| item.tone < 0)
+                && !chunk.iter().any(|item| item.tone > 0)
+            {
+                serenity::Colour::RED
+            } else {
+                serenity::Colour::BLUE
+            };
+            (text, colour)
+        })
+        .collect()
 }
 
 async fn refresh_stock_panel(ctx: &serenity::Context, data: &Data) {
@@ -1951,8 +1982,63 @@ pub fn render_candle_chart(title: &str, candles: &[Candle], minute: bool) -> Opt
 
 #[cfg(test)]
 mod tests {
-    use super::market_stats_text;
-    use mafia_remake::stocks::{StockMarket, StockRules};
+    use super::{market_stats_text, news_messages};
+    use mafia_remake::stocks::{NewsItem, NewsKind, StockMarket, StockRules};
+
+    fn news(id: u64, kind: NewsKind, code: Option<&str>, headline: String) -> NewsItem {
+        NewsItem {
+            id,
+            at: 0,
+            kind,
+            code: code.map(str::to_string),
+            headline,
+            body: String::new(),
+            tone: 0,
+        }
+    }
+
+    #[test]
+    fn news_channel_skips_vi_halts_and_splits_long_batches() {
+        let batch = vec![
+            news(
+                1,
+                NewsKind::Halt,
+                Some("100010"),
+                "변동성 완화장치".to_string(),
+            ),
+            news(2, NewsKind::Halt, None, "서킷브레이커".to_string()),
+            news(
+                3,
+                NewsKind::Disclosure,
+                Some("700010"),
+                "회사 설립".to_string(),
+            ),
+        ];
+        let messages = news_messages(&batch);
+        assert_eq!(messages.len(), 1);
+        let text = &messages[0].0;
+        assert!(!text.contains("변동성 완화장치"), "종목별 VI는 뺀다");
+        assert!(text.contains("서킷브레이커") && text.contains("회사 설립"));
+
+        let long = (0..100)
+            .map(|id| news(id, NewsKind::News, None, "가".repeat(80)))
+            .collect::<Vec<_>>();
+        let messages = news_messages(&long);
+        assert!(messages.len() > 1, "넘치면 나눈다");
+        assert!(
+            messages
+                .iter()
+                .all(|(text, _)| text.chars().count() <= 3_900)
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .map(|(text, _)| text.lines().count())
+                .sum::<usize>(),
+            100,
+            "잘라 버리지 않는다"
+        );
+    }
 
     #[test]
     fn market_stats_show_the_coins_the_market_made() {

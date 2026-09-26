@@ -85,7 +85,6 @@ pub struct StockHub {
     activity_seen: Mutex<(i64, i64, i64)>,
     pub bindings: Mutex<StockBindings>,
     save_lock: tokio::sync::Mutex<()>,
-    news_outbox: Mutex<Vec<NewsItem>>,
     rng: Mutex<StdRng>,
     dirty: AtomicBool,
     last_market_save: Mutex<Instant>,
@@ -137,7 +136,6 @@ impl StockHub {
             activity_seen: Mutex::new((0, 0, 0)),
             bindings: Mutex::new(bindings),
             save_lock: tokio::sync::Mutex::new(()),
-            news_outbox: Mutex::new(Vec::new()),
             rng: Mutex::new(StdRng::from_os_rng()),
             dirty: AtomicBool::new(false),
             last_market_save: Mutex::new(Instant::now()),
@@ -442,12 +440,6 @@ impl StockHub {
         if candles_due {
             self.write_candles().await;
         }
-        if !report.news.is_empty() {
-            self.news_outbox
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .extend(report.news.iter().cloned());
-        }
         report
     }
 
@@ -475,14 +467,9 @@ impl StockHub {
         self.market.write().await.take_logs()
     }
 
-    /// Discord에 올릴 뉴스를 꺼낸다.
-    pub fn take_news(&self) -> Vec<NewsItem> {
-        std::mem::take(
-            &mut *self
-                .news_outbox
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        )
+    /// 뉴스 채널에 올릴 새 뉴스·공시를 꺼낸다 (틱에서 생긴 것과 명령으로 생긴 공시 모두).
+    pub async fn take_news(&self) -> Vec<NewsItem> {
+        self.market.write().await.take_news_outbox()
     }
 
     // ------------------------------------------------------------ 조회
@@ -521,11 +508,7 @@ impl StockHub {
             let mut market = self.market.write().await;
             let before = market.time_shift_ms;
             let now = market.clock(now_ms());
-            let item = market.skip_game_days(now, days, &rules);
-            self.news_outbox
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .push(item);
+            market.skip_game_days(now, days, &rules);
             before
         };
         self.tick().await;
@@ -633,6 +616,7 @@ mod tests {
         assert!(hub.market.read().await.last_tick > before);
         assert!(
             hub.take_news()
+                .await
                 .iter()
                 .any(|item| item.headline.contains("게임일을 1일 넘겼습니다"))
         );

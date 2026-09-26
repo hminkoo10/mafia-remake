@@ -775,6 +775,10 @@ pub struct StockMarket {
     /// 운영 기록 (체결·주문·청약·회사 작업·배당 등). 봇이 모아 로그 채널로 보낸다. 저장하지 않는다.
     #[serde(skip)]
     pub logs: Vec<String>,
+    /// 아직 뉴스 채널에 올리지 않은 뉴스·공시 (틱에서 생긴 것과 회사 설립·공모·배당 결정처럼 명령으로
+    /// 생긴 것 모두). 저장하지 않는다.
+    #[serde(skip)]
+    pub news_outbox: Vec<NewsItem>,
     /// 봉 (파일을 따로 저장한다).
     #[serde(skip)]
     pub candles: CandleStore,

@@ -1626,12 +1626,12 @@ impl StockMarket {
             .ok_or_else(|| "그런 종목이 없습니다.".to_string())?;
         company.admin_halt = halted;
         let name = company.name.clone();
-        let text = if halted {
-            format!("{name}, 거래소 결정으로 거래정지")
+        let (text, tone) = if halted {
+            (format!("{name}, 거래소 결정으로 거래정지"), -1)
         } else {
-            format!("{name}, 거래 재개")
+            (format!("{name}, 거래 재개"), 0)
         };
-        self.push_news(now, NewsKind::Halt, Some(code), text, 0);
+        self.push_news(now, NewsKind::Disclosure, Some(code), text, tone);
         self.version += 1;
         Ok(name)
     }

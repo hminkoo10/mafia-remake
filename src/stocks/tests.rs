@@ -1025,3 +1025,57 @@ fn skipped_time_reads_naturally() {
     assert_eq!(duration_text(2 * HOUR_MS), "2시간");
     assert_eq!(duration_text(2 * HOUR_MS + 5 * MINUTE_MS), "2시간 5분");
 }
+
+// ------------------------------------------------------------ 뉴스 채널
+
+#[test]
+fn every_news_item_waits_for_the_news_channel() {
+    let rules = quiet();
+    let mut market = market();
+    let opening = market.take_news_outbox();
+    assert!(
+        opening.iter().any(|item| item.headline.contains("개장")),
+        "개장 소식도 올린다"
+    );
+
+    // 명령으로 생긴 공시 (설립·공모 시작·관리자 거래정지)도 틱을 기다리지 않고 채널로 간다.
+    let code = found(&mut market, 1, 1_000_000);
+    let founded = market.take_news_outbox();
+    assert!(
+        founded
+            .iter()
+            .any(|item| item.kind == NewsKind::Disclosure && item.headline.contains("설립"))
+    );
+    let now = T0 + rules.day_ms();
+    market.tick(now, &rules, &mut rng());
+    let _ = market.take_news_outbox();
+    market.start_ipo(1, &code, 5_000, 100, now, &rules).unwrap();
+    assert!(
+        market
+            .take_news_outbox()
+            .iter()
+            .any(|item| item.headline.contains("공모주 청약 시작"))
+    );
+    market.set_admin_halt("100010", true, now).unwrap();
+    let halted = market.take_news_outbox();
+    assert!(
+        halted
+            .iter()
+            .any(|item| item.kind == NewsKind::Disclosure && item.headline.contains("거래정지")),
+        "관리자 거래정지는 공시로 올린다"
+    );
+
+    // 회사가 사라지는 것도 올라간다 (비상장 회사 해산).
+    let other = market
+        .found_company(3, "U3", "사라질상사", Sector::Bio, 1_000_000, now, &rules)
+        .unwrap();
+    let _ = market.take_news_outbox();
+    market.dissolve(3, &other, now, &rules).unwrap();
+    assert!(
+        market
+            .take_news_outbox()
+            .iter()
+            .any(|item| item.kind == NewsKind::Delisting && item.headline.contains("해산"))
+    );
+    assert!(market.take_news_outbox().is_empty(), "꺼낸 뉴스는 비운다");
+}

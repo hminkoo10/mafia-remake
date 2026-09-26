@@ -163,6 +163,7 @@ impl StockMarket {
             activity: Activity::default(),
             time_shift_ms: 0,
             logs: Vec::new(),
+            news_outbox: Vec::new(),
             candles: CandleStore::default(),
         };
         market.push_news(
@@ -228,7 +229,17 @@ impl StockMarket {
         while self.news.len() > NEWS_LIMIT {
             self.news.pop_front();
         }
+        self.news_outbox.push(item.clone());
+        if self.news_outbox.len() > NEWS_LIMIT {
+            let excess = self.news_outbox.len() - NEWS_LIMIT;
+            self.news_outbox.drain(..excess);
+        }
         item
+    }
+
+    /// 뉴스 채널에 올릴 새 뉴스·공시를 꺼낸다.
+    pub fn take_news_outbox(&mut self) -> Vec<NewsItem> {
+        std::mem::take(&mut self.news_outbox)
     }
 
     pub fn account_mut(&mut self, user: u64, name: &str) -> &mut Account {
