@@ -2,25 +2,56 @@
 
 use super::*;
 
+/// 설정 페이지 위에 띄우는 알림.
+pub(crate) enum SettingsNotice<'a> {
+    /// 보고 있는 카테고리를 저장했다.
+    Saved,
+    Error(&'a str),
+}
+
+/// 설정 페이지: 카테고리 탭과, 보고 있는 카테고리의 칸만 담은 폼. 저장하면 그 카테고리만 바뀐다.
 pub(crate) fn render_settings_page(
     session: &WebSettingsSession,
     action: &str,
     config: &BotConfig,
     status: Option<&Value>,
-    error: Option<&str>,
+    category: &WebConfigCategory,
+    notice: Option<SettingsNotice<'_>>,
 ) -> String {
-    let message_html = error.map_or_else(String::new, |message| {
-        format!(
+    let message_html = match notice {
+        Some(SettingsNotice::Saved) => format!(
+            r#"<p class="message ok">✅ '{}' 설정을 저장했습니다. 다른 카테고리도 이어서 바꿀 수 있습니다.</p>"#,
+            html_escape(category.title)
+        ),
+        Some(SettingsNotice::Error(message)) => format!(
             r#"<p class="message error">⚠️ {}</p>"#,
             html_escape(message)
-        )
-    });
-    let rows = WEB_CONFIG_FIELDS
+        ),
+        None => String::new(),
+    };
+    let action = html_escape(action);
+    let tabs = WEB_CONFIG_CATEGORIES
         .iter()
-        .map(|field| render_field(*field, config))
+        .map(|item| {
+            let current = if item.key == category.key {
+                r#" class="active" aria-current="page""#
+            } else {
+                ""
+            };
+            format!(
+                r#"<a href="{action}?tab={}"{current}>{}</a>"#,
+                item.key,
+                html_escape(item.title)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let rows = category_fields(category)
+        .map(|field| render_field(field, config))
         .collect::<Vec<_>>()
         .join("\n");
     let status_html = status.map(render_status_summary).unwrap_or_default();
+    let minutes = session_ttl_minutes();
     format!(
         r#"<!DOCTYPE html>
 <html lang="ko">
@@ -34,26 +65,32 @@ pub(crate) fn render_settings_page(
 <body>
 <div class="site-shell">
 {}
-<p class="meta">{} 님 전용 1회용 링크입니다. 저장하면 이 링크는 더 이상 사용할 수 없습니다.</p>
-{}
+<p class="meta">{} 님 전용 링크입니다. 카테고리마다 따로 저장하고, 발급 후 {minutes}분 동안 쓸 수 있습니다. 다 바꿨으면 아래 '설정 마치기'로 링크를 닫으세요.</p>
+{status_html}
+<nav class="metric-tabs" aria-label="설정 카테고리">{tabs}</nav>
 {message_html}
-<form method="post" action="{}">
+<form method="post" action="{action}?tab={key}">
+  <input type="hidden" name="category" value="{key}">
   <fieldset>
-    <legend>설정 항목</legend>
+    <legend>{title}</legend>
+    <p class="category-hint">{hint}</p>
     {rows}
   </fieldset>
-  <button type="submit">저장하기</button>
+  <button type="submit">{title} 저장</button>
 </form>
-<p><a href="{}/api-keys">API 키 관리</a></p>
+<div class="settings-actions">
+  <form method="post" action="{action}"><input type="hidden" name="action" value="finish"><button type="submit" class="secondary">설정 마치기 (링크 닫기)</button></form>
+  <a href="{action}/api-keys">API 키 관리</a>
+</div>
 </main>
 </div>
 </body>
 </html>"#,
         render_page_header("🕵️ 마피아 게임 웹 설정", false),
         html_escape(&session.user_label),
-        status_html,
-        html_escape(action),
-        html_escape(action)
+        key = category.key,
+        title = html_escape(category.title),
+        hint = html_escape(category.hint),
     )
 }
 
@@ -1041,10 +1078,10 @@ pub(crate) fn expired_page() -> String {
     )
 }
 
-pub(crate) fn saved_page() -> String {
+pub(crate) fn finished_page() -> String {
     render_message_page(
-        "✅ 설정을 저장했습니다",
-        "마피아 게임 설정이 반영되었습니다. 이 창은 닫으셔도 됩니다.",
+        "✅ 설정을 마쳤습니다",
+        "이 링크는 이제 쓸 수 없습니다. 저장한 설정은 모두 반영되었으니 이 창은 닫으셔도 됩니다.",
     )
 }
 
@@ -1161,12 +1198,14 @@ pub(crate) fn config_value(config: &BotConfig, name: &str) -> String {
     }
 }
 
+/// 한 카테고리의 폼 값을 읽는다. 다른 카테고리 칸은 보지 않는다: 체크박스는 폼에 없으면 꺼짐으로
+/// 읽으므로, 다른 카테고리까지 읽으면 그쪽 스위치가 모두 꺼진다.
 pub(crate) fn parse_form_updates(
-    body: &str,
+    raw_form: &HashMap<String, String>,
+    category: &WebConfigCategory,
 ) -> std::result::Result<HashMap<String, String>, String> {
-    let raw_form = parse_urlencoded(body);
     let mut updates = HashMap::new();
-    for field in WEB_CONFIG_FIELDS {
+    for field in category_fields(category) {
         if matches!(field.kind, WebFieldKind::Bool) {
             updates.insert(
                 field.name.to_string(),
@@ -1217,37 +1256,43 @@ pub(crate) fn parse_form_updates(
     Ok(updates)
 }
 
+/// 받은 칸만 바꾼다 (없는 칸은 그대로). 하나라도 실패하면 모두 되돌린다: 잠금을 쥔 채 바꾸는
+/// 설정이 봇이 쓰는 설정이라, 도중에 멈추면 저장하지 않은 값이 그대로 쓰인다.
 pub(crate) fn apply_updates(
     config: &mut BotConfig,
     updates: &HashMap<String, String>,
 ) -> std::result::Result<(), String> {
     let previous = config.clone();
-    for field in WEB_CONFIG_FIELDS {
-        let value = updates
-            .get(field.name)
-            .ok_or_else(|| format!("'{}' 값이 비어 있습니다.", field.label))?;
-        match field.kind {
-            WebFieldKind::Bool => set_bool(config, field.name, value == "true")?,
-            WebFieldKind::Text => set_text(config, field.name, value.clone())?,
-            WebFieldKind::Int => set_int(config, field.name, value.parse::<u64>().unwrap_or(0))?,
-            WebFieldKind::IntList => set_int_list(config, field.name, value)?,
-            WebFieldKind::Percent => {
-                let bp = parse_percent_bp(value)
-                    .ok_or_else(|| format!("'{}' 값이 올바르지 않습니다.", field.label))?;
-                set_int(config, field.name, bp.unsigned_abs())?
-            }
-            WebFieldKind::PercentFine => {
-                let ppm = parse_percent_ppm(value)
-                    .ok_or_else(|| format!("'{}' 값이 올바르지 않습니다.", field.label))?;
-                set_int(config, field.name, ppm.unsigned_abs())?
+    let result = (|| {
+        for field in WEB_CONFIG_FIELDS {
+            let Some(value) = updates.get(field.name) else {
+                continue;
+            };
+            match field.kind {
+                WebFieldKind::Bool => set_bool(config, field.name, value == "true")?,
+                WebFieldKind::Text => set_text(config, field.name, value.clone())?,
+                WebFieldKind::Int => {
+                    set_int(config, field.name, value.parse::<u64>().unwrap_or(0))?
+                }
+                WebFieldKind::IntList => set_int_list(config, field.name, value)?,
+                WebFieldKind::Percent => {
+                    let bp = parse_percent_bp(value)
+                        .ok_or_else(|| format!("'{}' 값이 올바르지 않습니다.", field.label))?;
+                    set_int(config, field.name, bp.unsigned_abs())?
+                }
+                WebFieldKind::PercentFine => {
+                    let ppm = parse_percent_ppm(value)
+                        .ok_or_else(|| format!("'{}' 값이 올바르지 않습니다.", field.label))?;
+                    set_int(config, field.name, ppm.unsigned_abs())?
+                }
             }
         }
-    }
-    if let Err(error) = validate_config(config) {
+        validate_config(config)
+    })();
+    if result.is_err() {
         *config = previous;
-        return Err(error);
     }
-    Ok(())
+    result
 }
 
 pub(crate) fn set_bool(

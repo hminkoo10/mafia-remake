@@ -1193,6 +1193,197 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
     ),
 ];
 
+/// 설정 페이지의 카테고리. 카테고리마다 따로 저장하고, 저장하면 그 카테고리의 칸만 바꾼다.
+/// 모든 설정 칸은 정확히 한 카테고리에 들어간다 (테스트가 확인한다).
+#[derive(Debug)]
+pub(crate) struct WebConfigCategory {
+    key: &'static str,
+    title: &'static str,
+    hint: &'static str,
+    fields: &'static [&'static str],
+}
+
+const WEB_CONFIG_CATEGORIES: &[WebConfigCategory] = &[
+    WebConfigCategory {
+        key: "basic",
+        title: "기본",
+        hint: "게임 시작 스위치, 참가자·관리자 역할, 관리자 로그 채널, 참가 차단 목록입니다.",
+        fields: &[
+            "game_enabled",
+            "participant_role",
+            "manager_role",
+            "log_channel_id",
+            "blacklist_user_ids",
+        ],
+    },
+    WebConfigCategory {
+        key: "flow",
+        title: "게임 진행",
+        hint: "모집 인원과 단계별 시간, 게임 중 무엇을 공개할지, 익명 채팅입니다.",
+        fields: &[
+            "max_player_count",
+            "recruitment_seconds",
+            "night_seconds",
+            "discussion_seconds",
+            "vote_seconds",
+            "chat_slowmode_seconds",
+            "reveal_death_roles",
+            "reveal_public_police_status",
+            "reveal_morning_mafia_count",
+            "show_confirmation_vote_counts",
+            "anonymous_mode",
+            "anonymous_name_mode",
+        ],
+    },
+    WebConfigCategory {
+        key: "lineup",
+        title: "직업 구성",
+        hint: "기본 직업 수와 팀별 특수 직업 수입니다. 저장할 때 모집 최대 인원과 켜 둔 특수 직업으로 이 구성이 되는지 함께 확인합니다.",
+        fields: &[
+            "default_mafia_count",
+            "default_doctor_count",
+            "default_police_count",
+            "default_joker_count",
+            "citizen_special_count",
+            "mafia_special_count",
+            "neutral_special_count",
+        ],
+    },
+    WebConfigCategory {
+        key: "roles",
+        title: "특수 직업",
+        hint: "특수 직업으로 뽑힐 수 있는 직업입니다. 직업 구성의 특수 직업 수보다 적게 켜면 저장되지 않습니다.",
+        fields: &[
+            "use_agent",
+            "use_vigilante",
+            "enable_detective",
+            "enable_inspector",
+            "enable_graverobber",
+            "enable_spy",
+            "enable_contractor",
+            "enable_fraudster",
+            "enable_witch",
+            "enable_scientist",
+            "enable_madam",
+            "enable_godfather",
+            "enable_joker",
+            "enable_politician",
+            "enable_judge",
+            "enable_reporter",
+            "enable_hacker",
+            "enable_terrorist",
+            "enable_lover",
+            "enable_civil_servant",
+            "enable_paparazzi",
+            "enable_shaman",
+            "enable_priest",
+            "enable_soldier",
+            "enable_nurse",
+            "enable_gangster",
+            "enable_prophet",
+            "enable_psychologist",
+            "enable_hypnotist",
+            "enable_mercenary",
+            "enable_thief",
+            "enable_cult_team",
+        ],
+    },
+    WebConfigCategory {
+        key: "rewards",
+        title: "코인 보상",
+        hint: "출석·스타플레이어·참여 보상·일일 미션·업적·연속 출석으로 새로 주는 코인입니다. 0이면 끕니다.",
+        fields: &[
+            "attendance_coins",
+            "star_player_coins",
+            "reward_game_coins",
+            "reward_win_coins",
+            "reward_daily_games",
+            "mission_coins",
+            "mission_bonus_coins",
+            "achievement_reward_pct",
+            "streak_week_coins",
+            "streak_month_coins",
+        ],
+    },
+    WebConfigCategory {
+        key: "casino",
+        title: "카지노·잭팟",
+        hint: "홀덤 레이크와 잭팟 적립·지급 비율입니다.",
+        fields: &[
+            "holdem_rake_bp",
+            "holdem_rake_cap",
+            "jackpot_share_bp",
+            "jackpot_payout_bp",
+            "jackpot_loser_bp",
+            "jackpot_winner_bp",
+        ],
+    },
+    WebConfigCategory {
+        key: "treasury",
+        title: "금고·환급·구조금",
+        hint: "복지 금고로 들어오는 비율, 주간 손실·일간 롤링 환급, 구조금입니다.",
+        fields: &[
+            "bet_loss_treasury_bp",
+            "gift_fee_bp",
+            "weekly_cashback_bp",
+            "weekly_cashback_cap",
+            "daily_rolling_bp",
+            "daily_rolling_cap",
+            "relief_threshold",
+            "relief_amount",
+            "relief_gift_lock_hours",
+        ],
+    },
+    WebConfigCategory {
+        key: "stock",
+        title: "주식",
+        hint: "시장 열기, 게임 하루 길이, 수수료·세금, 가격 움직임, 보유·주문 한도, 회사 설립·상장 조건입니다.",
+        fields: &[
+            "stock_enabled",
+            "stock_day_minutes",
+            "stock_fee_ppm",
+            "stock_tax_ppm",
+            "stock_limit_bp",
+            "stock_vi_bp",
+            "stock_drift_bp_week",
+            "stock_vol_pct",
+            "stock_news_pct",
+            "stock_holding_limit_bp",
+            "stock_order_limit_pct",
+            "stock_found_min_capital",
+            "stock_found_fee_bp",
+            "stock_ipo_fee_bp",
+            "stock_listing_min_equity",
+            "stock_lockup_days",
+            "stock_max_companies",
+            "stock_system_companies",
+        ],
+    },
+    WebConfigCategory {
+        key: "coupon",
+        title: "내신 쿠폰",
+        hint: "내신 쿠폰을 코인으로 바꾸는 비율과 쿠폰 API입니다.",
+        fields: &["coupon_coins_per_point", "coupon_api_url", "coupon_api_key"],
+    },
+];
+
+/// 키로 카테고리를 찾는다 (없으면 None).
+fn web_category(key: &str) -> Option<&'static WebConfigCategory> {
+    WEB_CONFIG_CATEGORIES
+        .iter()
+        .find(|category| category.key == key)
+}
+
+/// 카테고리의 설정 칸 (카테고리에 적힌 순서대로).
+fn category_fields(category: &WebConfigCategory) -> impl Iterator<Item = WebConfigField> + '_ {
+    category.fields.iter().filter_map(|name| {
+        WEB_CONFIG_FIELDS
+            .iter()
+            .find(|field| field.name == *name)
+            .copied()
+    })
+}
+
 const fn field(
     name: &'static str,
     label: &'static str,
@@ -1281,6 +1472,13 @@ const WEB_PAGE_STYLE: &str = r#"
   button:focus-visible, a:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
   .message { margin: 0 0 16px; padding: 11px 12px; border: 1px solid #fde68a; border-left: 3px solid var(--warm); border-radius: 4px; background: #fffbeb; color: #713f12; }
   .message.error { border-color: #fecaca; border-left-color: var(--danger); background: #fef2f2; color: #991b1b; }
+  .message.ok { border-color: #bbf7d0; border-left-color: #16a34a; background: #f0fdf4; color: #166534; }
+  .category-hint { margin: 10px 0 2px; color: var(--muted); font-size: 0.9rem; }
+  .settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .settings-actions form { margin: 0; }
+  .settings-actions button { margin-top: 0; }
+  button.secondary { border-color: #cbd5df; background: var(--surface); color: var(--text); }
+  button.secondary:hover { border-color: var(--danger); background: #fef2f2; color: #991b1b; }
   small { color: var(--muted); }
   @media (max-width: 760px) {
     body { padding: 18px 12px 32px; }
@@ -1547,34 +1745,63 @@ async fn route_request(state: &WebSettingsState, request: HttpRequest) -> String
         );
     }
 
+    let action = format!("{WEB_SETTINGS_PATH}/{token}");
     match request.method.as_str() {
         "GET" => {
+            // ?tab=<카테고리>, 없거나 모르는 값이면 첫 카테고리.
+            let category = parse_urlencoded(query)
+                .get("tab")
+                .and_then(|key| web_category(key))
+                .unwrap_or(&WEB_CONFIG_CATEGORIES[0]);
             let config = state.config.read().await.clone();
             http_response(
                 "200 OK",
                 &render_settings_page(
                     &session,
-                    &format!("{WEB_SETTINGS_PATH}/{token}"),
+                    &action,
                     &config,
                     Some(&web_status_values(state).await),
+                    category,
                     None,
                 ),
             )
         }
         "POST" => {
-            let updates = match parse_form_updates(&request.body) {
+            let form = parse_urlencoded(&request.body);
+            // 설정 마치기: 링크를 닫는다.
+            if form.get("action").is_some_and(|value| value == "finish") {
+                state.sessions.remove(token);
+                return http_response("200 OK", &finished_page());
+            }
+            // 카테고리마다 따로 저장한다. 링크는 만료되거나 설정을 마칠 때까지 계속 쓴다.
+            let Some(category) = form.get("category").and_then(|key| web_category(key)) else {
+                let config = state.config.read().await.clone();
+                let status = web_status_values(state).await;
+                return http_response(
+                    "400 Bad Request",
+                    &render_settings_page(
+                        &session,
+                        &action,
+                        &config,
+                        Some(&status),
+                        &WEB_CONFIG_CATEGORIES[0],
+                        Some(SettingsNotice::Error(
+                            "어느 카테고리를 저장할지 알 수 없습니다. 페이지를 새로 고친 뒤 다시 저장해 주세요.",
+                        )),
+                    ),
+                );
+            };
+            let page = |config: &BotConfig, status: &Value, notice| {
+                render_settings_page(&session, &action, config, Some(status), category, notice)
+            };
+            let updates = match parse_form_updates(&form, category) {
                 Ok(updates) => updates,
                 Err(error) => {
                     let config = state.config.read().await.clone();
+                    let status = web_status_values(state).await;
                     return http_response(
                         "400 Bad Request",
-                        &render_settings_page(
-                            &session,
-                            &format!("{WEB_SETTINGS_PATH}/{token}"),
-                            &config,
-                            Some(&web_status_values(state).await),
-                            Some(&error),
-                        ),
+                        &page(&config, &status, Some(SettingsNotice::Error(&error))),
                     );
                 }
             };
@@ -1585,13 +1812,7 @@ async fn route_request(state: &WebSettingsState, request: HttpRequest) -> String
                 let status = web_status_values(state).await;
                 return http_response(
                     "400 Bad Request",
-                    &render_settings_page(
-                        &session,
-                        &format!("{WEB_SETTINGS_PATH}/{token}"),
-                        &page_config,
-                        Some(&status),
-                        Some(&error),
-                    ),
+                    &page(&page_config, &status, Some(SettingsNotice::Error(&error))),
                 );
             }
             if let Err(error) = config::save_config(&*state.config_path, &config) {
@@ -1601,18 +1822,16 @@ async fn route_request(state: &WebSettingsState, request: HttpRequest) -> String
                 let status = web_status_values(state).await;
                 return http_response(
                     "500 Internal Server Error",
-                    &render_settings_page(
-                        &session,
-                        &format!("{WEB_SETTINGS_PATH}/{token}"),
-                        &page_config,
-                        Some(&status),
-                        Some(&error),
-                    ),
+                    &page(&page_config, &status, Some(SettingsNotice::Error(&error))),
                 );
             }
+            let page_config = config.clone();
             drop(config);
-            state.sessions.remove(token);
-            http_response("200 OK", &saved_page())
+            let status = web_status_values(state).await;
+            http_response(
+                "200 OK",
+                &page(&page_config, &status, Some(SettingsNotice::Saved)),
+            )
         }
         _ => http_response(
             "405 Method Not Allowed",

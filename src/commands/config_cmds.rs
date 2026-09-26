@@ -287,7 +287,7 @@ pub async fn configure_anonymous_mode(
     rename = "마피아웹설정",
     description_localized(
         "ko",
-        "브라우저에서 게임 설정을 편집할 수 있는 1회용 링크를 발급합니다. (관리자 전용)"
+        "브라우저에서 게임 설정을 카테고리별로 편집할 수 있는 링크를 발급합니다. (관리자 전용)"
     )
 )]
 pub async fn web_configure_game(ctx: Context<'_>) -> Result<(), Error> {
@@ -322,7 +322,7 @@ pub async fn web_configure_game(ctx: Context<'_>) -> Result<(), Error> {
     reply_embed(
         ctx,
         format!(
-            "아래 링크에서 마피아 게임 설정을 편집할 수 있습니다.\n{url}\n\n⚠️ 이 링크는 **{}** 님만 사용할 수 있고, **{minutes}분 동안 1회**만 유효합니다. 다른 사람과 공유하지 마세요.",
+            "아래 링크에서 마피아 게임 설정을 카테고리별로 편집할 수 있습니다. 카테고리마다 따로 저장하고, 다 바꾸면 페이지 아래 '설정 마치기'로 링크를 닫으세요.\n{url}\n\n⚠️ 이 링크는 **{}** 님만 사용할 수 있고, **{minutes}분 동안** 유효합니다. 다른 사람과 공유하지 마세요.",
             user.name
         ),
         "웹 설정 링크 발급",

@@ -148,19 +148,183 @@ fn updates_for(config: &BotConfig) -> HashMap<String, String> {
         .collect()
 }
 
-fn form_body_for(config: &BotConfig) -> String {
-    WEB_CONFIG_FIELDS
-        .iter()
-        .filter_map(|field| {
+/// 설정 페이지의 한 카테고리 폼이 보내는 본문 (꺼진 체크박스는 보내지 않는다).
+fn form_body_for(config: &BotConfig, key: &str) -> String {
+    let category = web_category(key).expect("known category");
+    std::iter::once(format!("category={key}"))
+        .chain(category_fields(category).filter_map(|field| {
             let value = config_value(config, field.name);
             if matches!(field.kind, WebFieldKind::Bool) && value != "true" {
                 None
             } else {
                 Some(format!("{}={}", field.name, value.replace('\n', "%0A")))
             }
-        })
+        }))
         .collect::<Vec<_>>()
         .join("&")
+}
+
+fn session_state(token: &str) -> WebSettingsState {
+    let state = test_state();
+    state.sessions.insert(
+        token.to_string(),
+        WebSettingsSession {
+            guild_id: 1,
+            user_id: 2,
+            user_label: "tester".to_string(),
+            expires_at: Instant::now() + Duration::from_secs(60),
+        },
+    );
+    state
+}
+
+fn settings_request(method: &str, token: &str, query: &str, body: String) -> HttpRequest {
+    HttpRequest {
+        method: method.to_string(),
+        path: format!("{WEB_SETTINGS_PATH}/{token}{query}"),
+        headers: HashMap::new(),
+        body,
+    }
+}
+
+#[test]
+fn every_setting_belongs_to_exactly_one_category() {
+    let mut seen = HashMap::new();
+    for category in WEB_CONFIG_CATEGORIES {
+        assert_eq!(
+            category_fields(category).count(),
+            category.fields.len(),
+            "{}: 없는 설정 이름",
+            category.key
+        );
+        for name in category.fields {
+            assert!(
+                seen.insert(*name, category.key).is_none(),
+                "{name}이 두 카테고리에 있다"
+            );
+        }
+    }
+    for field in WEB_CONFIG_FIELDS {
+        assert!(
+            seen.contains_key(field.name),
+            "{}의 카테고리가 없다",
+            field.name
+        );
+    }
+    let mut keys = WEB_CONFIG_CATEGORIES
+        .iter()
+        .map(|category| category.key)
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    keys.dedup();
+    assert_eq!(
+        keys.len(),
+        WEB_CONFIG_CATEGORIES.len(),
+        "카테고리 키가 겹친다"
+    );
+}
+
+#[tokio::test]
+async fn each_tab_shows_only_its_own_settings() {
+    let token = "tab-token";
+    let state = session_state(token);
+    let stock = route_request(
+        &state,
+        settings_request("GET", token, "?tab=stock", String::new()),
+    )
+    .await;
+    assert!(stock.starts_with("HTTP/1.1 200 OK"));
+    assert!(stock.contains(r#"name="stock_fee_ppm""#));
+    assert!(!stock.contains(r#"name="night_seconds""#));
+    assert!(stock.contains(r#"name="category" value="stock""#));
+    // 모든 카테고리로 가는 탭이 있고, 보고 있는 탭이 표시된다.
+    for category in WEB_CONFIG_CATEGORIES {
+        assert!(
+            stock.contains(&format!("?tab={}", category.key)),
+            "{}",
+            category.key
+        );
+    }
+    assert!(stock.contains(r#"?tab=stock" class="active""#));
+    // 탭을 모르면 첫 카테고리.
+    let first = route_request(
+        &state,
+        settings_request("GET", token, "?tab=nope", String::new()),
+    )
+    .await;
+    assert!(first.contains(r#"name="game_enabled""#));
+}
+
+#[tokio::test]
+async fn saving_one_category_keeps_the_others_and_the_link() {
+    let token = "save-token";
+    let mut state = session_state(token);
+    let dir = std::env::temp_dir().join(format!("mafia-web-settings-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    state.config_path = Arc::new(dir.join("config.json"));
+    let config = test_config();
+    // 주식 카테고리만 보낸다: 폼에 없는 기본 카테고리의 스위치(game_enabled)가 꺼지면 안 된다.
+    let body = form_body_for(&config, "stock").replace("stock_fee_ppm=0.015", "stock_fee_ppm=0.02");
+    let saved = route_request(&state, settings_request("POST", token, "?tab=stock", body)).await;
+    assert!(saved.starts_with("HTTP/1.1 200 OK"), "{saved}");
+    assert!(saved.contains("'주식' 설정을 저장했습니다"));
+    {
+        let current = state.config.read().await;
+        assert_eq!(current.stock_fee_ppm, 200);
+        assert!(current.game_enabled && current.reveal_death_roles && current.enable_detective);
+        assert_eq!(current.night_seconds, 60);
+    }
+    let written = std::fs::read_to_string(dir.join("config.json")).unwrap();
+    assert!(written.contains("\"stock_fee_ppm\": 200"), "{written}");
+    // 링크는 계속 쓴다: 다른 카테고리를 이어서 저장한다.
+    assert!(state.sessions.contains_key(token));
+    let body = form_body_for(&config, "flow").replace("night_seconds=60", "night_seconds=45");
+    let flow = route_request(&state, settings_request("POST", token, "", body)).await;
+    assert!(flow.starts_with("HTTP/1.1 200 OK"), "{flow}");
+    {
+        let current = state.config.read().await;
+        assert_eq!((current.night_seconds, current.stock_fee_ppm), (45, 200));
+    }
+    // 카테고리를 모르면 아무것도 바꾸지 않는다.
+    let unknown = route_request(
+        &state,
+        settings_request(
+            "POST",
+            token,
+            "",
+            "category=nope&night_seconds=1".to_string(),
+        ),
+    )
+    .await;
+    assert!(unknown.starts_with("HTTP/1.1 400 Bad Request"));
+    assert_eq!(state.config.read().await.night_seconds, 45);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn finishing_closes_the_link() {
+    let token = "finish-token";
+    let state = session_state(token);
+    let done = route_request(
+        &state,
+        settings_request("POST", token, "", "action=finish".to_string()),
+    )
+    .await;
+    assert!(done.starts_with("HTTP/1.1 200 OK"));
+    assert!(done.contains("설정을 마쳤습니다"));
+    let after = route_request(&state, settings_request("GET", token, "", String::new())).await;
+    assert!(after.starts_with("HTTP/1.1 410 Gone"));
+}
+
+#[test]
+fn a_rejected_value_leaves_the_live_config_untouched() {
+    // 잘못된 칸이 있으면 앞서 읽은 칸도 되돌린다 (잠금 안의 설정은 봇이 바로 쓴다).
+    let mut config = test_config();
+    let mut updates = updates_for(&config);
+    updates.insert("participant_role".to_string(), "changed".to_string());
+    updates.insert("blacklist_user_ids".to_string(), "12 abc".to_string());
+    assert!(apply_updates(&mut config, &updates).is_err());
+    assert_eq!(config.participant_role, "participant");
 }
 
 #[test]
@@ -258,7 +422,7 @@ async fn invalid_post_returns_error_without_lock_deadlock() {
             expires_at: Instant::now() + Duration::from_secs(60),
         },
     );
-    let body = form_body_for(&config)
+    let body = form_body_for(&config, "lineup")
         .replace("default_mafia_count=2", "default_mafia_count=1")
         .replace("mafia_special_count=0", "mafia_special_count=1");
 
@@ -937,8 +1101,9 @@ fn economy_percent_fields_round_trip_through_the_form() {
 #[test]
 fn economy_form_rejects_bad_percentages_and_jackpot_shares_over_100() {
     let config = test_config();
-    let body = form_body_for(&config).replace("gift_fee_bp=3", "gift_fee_bp=150");
-    assert!(parse_form_updates(&body).is_err());
+    let body = form_body_for(&config, "treasury").replace("gift_fee_bp=3", "gift_fee_bp=150");
+    let treasury = web_category("treasury").unwrap();
+    assert!(parse_form_updates(&parse_urlencoded(&body), treasury).is_err());
 
     let mut config = test_config();
     let mut updates = updates_for(&config);
