@@ -80,10 +80,11 @@ pub fn company_news(
     };
     if uniform(rng) < rumor_rate {
         let truth = uniform(rng) < 0.5;
+        // "[루머]" 표시는 뉴스 종류(NewsKind::Rumor)로 붙는다. 제목에도 넣으면 두 번 나온다.
         let headline = if good {
-            format!("[루머] {name}, {topic} 관련 대형 호재 임박설")
+            format!("{name}, {topic} 관련 대형 호재 임박설")
         } else {
-            format!("[루머] {name}, {topic} 관련 악재 발생설")
+            format!("{name}, {topic} 관련 악재 발생설")
         };
         return NewsDraft {
             headline,

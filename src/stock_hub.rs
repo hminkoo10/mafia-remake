@@ -120,8 +120,14 @@ impl StockHub {
         } else {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("주식 파일을 읽지 못했습니다: {}", path.display()))?;
-            let file: StockFile = serde_json::from_str(&text)
+            let mut file: StockFile = serde_json::from_str(&text)
                 .with_context(|| format!("주식 파일을 해석하지 못했습니다: {}", path.display()))?;
+            // 예전 루머 제목은 "[루머] "로 시작해 종류 표시와 겹쳤다.
+            for item in file.market.news.iter_mut() {
+                if let Some(rest) = item.headline.strip_prefix("[루머] ") {
+                    item.headline = rest.to_string();
+                }
+            }
             (file.market, file.bindings)
         };
         // 봉은 없어도 시장을 돌릴 수 있다 (읽지 못하면 빈 차트로 시작한다).

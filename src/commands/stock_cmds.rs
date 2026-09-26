@@ -2117,6 +2117,21 @@ mod tests {
     }
 
     #[test]
+    fn rumors_are_tagged_once() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        let draft = mafia_remake::stocks::company_news(
+            "한빛바이오",
+            mafia_remake::stocks::Sector::Bio,
+            1.0,
+            &mut rng,
+        );
+        assert!(draft.rumor.is_some());
+        let line = super::news_line(&news(1, NewsKind::Rumor, Some("100050"), draft.headline));
+        assert_eq!(line.matches("[루머]").count(), 1, "{line}");
+    }
+
+    #[test]
     fn market_stats_show_the_coins_the_market_made() {
         let mut market = StockMarket::new(0, &StockRules::default());
         market.stats.lp_bought = 1_000;
