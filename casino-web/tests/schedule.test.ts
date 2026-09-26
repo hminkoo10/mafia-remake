@@ -159,6 +159,28 @@ test("after settlement the dealer turns the hole card over before drawing, witho
   assert.equal(dealerMoodAt(twoDraws, [player], timing, flipAt + 700), "deal");
 });
 
+test("the last flop card is laid and the hand returns to the shoe before the flop turns over", () => {
+  // 홀덤 플롭: 번 카드 뒤 세 장이 1.7초 간격으로 놓이고, 마지막 카드가 놓이고 250ms 뒤 함께 뒤집힌다.
+  const last = T0 + 4400;
+  const flop = round({ phase: "flop", board: ["7h", "8d", "9s"], board_reveal_at: [T0 + 1000, T0 + 2700, last], board_flip_at: last + 250 });
+  // 뒤집기 동작이 시작될 시각(-50)에도 마지막 카드를 내려놓는 중이다.
+  assert.equal(dealerMoodAt(flop, [], timing, last - 50), "deal");
+  const placing = dealClipAt(flop, [], timing, last - 50);
+  assert.equal(placing?.kind, "deal");
+  // 내려놓은 손을 되돌리는 동안에도 끊지 않는다 (뒤집기 창 안이지만 딜 동작이 이어진다).
+  const returning = dealClipAt(flop, [], timing, last + 300);
+  assert.equal(returning?.kind, "return");
+  assert.equal(returning?.rate, RETURN_IDLE_RATE);
+  assert.equal(dealerMoodAt(flop, [], timing, last + 300), "deal");
+  // 손이 슈에 닿으면 대기로 돌아간다.
+  const home = Math.ceil(placing!.startAt + DEAL_CLIP_MS / placing!.rate + RETURN_REST_MS / RETURN_IDLE_RATE);
+  assert.equal(dealerMoodAt(flop, [], timing, home), "idle");
+  // 1.7초 간격이면 카드 사이의 되돌리기는 제 속도에 가깝다 (1.25초 간격의 2.5배속이 아니다).
+  const between = dealClipAt(flop, [], timing, T0 + 1000 + 300);
+  assert.equal(between?.kind, "return");
+  assert.ok(between!.rate < 1.3, `되돌리기 ${between!.rate}배속`);
+});
+
 test("flop cards stay face down until the flip time", () => {
   assert.equal(faceDown(undefined, T0), false, "예전 서버");
   assert.equal(faceDown(0, T0), false);

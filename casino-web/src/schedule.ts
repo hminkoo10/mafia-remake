@@ -231,8 +231,13 @@ export function cardsLeftShoe(round: RoundView | null | undefined, seats: Seats,
 export function dealerMoodAt(round: RoundView | null | undefined, seats: Seats, timing: CardTiming, now: number): DealerMood {
   if (!round) return "idle";
   const flips = flipTimes(round, seats);
-  if (flips.some((time) => now >= time - FLIP_LEAD_MS && now < time + timing.flip)) return "flip";
-  if (dealClipAt(round, seats, timing, now)) return "deal";
+  const clip = dealClipAt(round, seats, timing, now);
+  const flip = flips.find((time) => now >= time - FLIP_LEAD_MS && now < time + timing.flip);
+  // 뒤집기 전에 시작한 카드 동작은 내려놓고 손을 슈로 되돌리기까지 끝낸다: 뒤집기로 끊으면 펠트 위의 손이
+  // 슈로 튄다 (홀덤 플롭은 마지막 카드가 놓이자마자 뒤집는다). 뒤집기를 시작한 뒤에 나가는 카드(블랙잭 딜러 드로)는 뒤집기가 먼저다.
+  if (clip && (clip.kind === "return" || (flip !== undefined && clip.startAt < flip - FLIP_LEAD_MS))) return "deal";
+  if (flip !== undefined) return "flip";
+  if (clip) return "deal";
   const nextCard = Math.min(...cardTimes(round, seats).map((time) => time - timing.flight).filter((time) => time > now));
   if (!Number.isFinite(nextCard)) return "idle";
   const nextFlip = Math.min(...flips.map((time) => time - FLIP_LEAD_MS).filter((time) => time > now));
