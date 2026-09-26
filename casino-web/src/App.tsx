@@ -3,7 +3,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUpRight,
-  ChartCandlestick,
   AudioLines,
   Bell,
   BellOff,
@@ -1304,9 +1303,6 @@ export default function Casino() {
         <button aria-label="게임 규칙 보기" title="게임 규칙" onClick={() => setRules(true)}>
           <CircleHelp />
         </button>
-        <a className="rail-link" aria-label="증권 (주식 거래)" title="증권" href={`${location.pathname}?view=stocks`}>
-          <ChartCandlestick />
-        </a>
         <div className="rail-bottom">
           <ShieldCheck size={20} />
           <span>

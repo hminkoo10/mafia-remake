@@ -30,8 +30,6 @@ include!(concat!(env!("OUT_DIR"), "/casino_static.rs"));
 pub struct CasinoWebState {
     pub hub: SharedHub,
     pub static_dir: Option<String>,
-    /// 웹 증권 화면(?view=stocks)이 쓰는 주식 시장. 없으면 증권 API가 503을 준다.
-    pub stocks: Option<crate::stock_hub::SharedStocks>,
 }
 
 pub fn casino_router(state: CasinoWebState) -> Router {
@@ -43,7 +41,6 @@ pub fn casino_router(state: CasinoWebState) -> Router {
         .layer(CompressionLayer::new());
     Router::new()
         .merge(api)
-        .merge(crate::stock_web::stock_routes())
         .route("/casino/api/ws", get(ws_handler))
         .route("/casino", get(casino_index))
         .route("/casino/", get(casino_index))
@@ -154,7 +151,6 @@ mod tests {
         let router = super::casino_router(super::CasinoWebState {
             hub,
             static_dir: None,
-            stocks: None,
         });
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -318,7 +314,7 @@ mod tests {
 
 // ------------------------------------------------------------ 개발 모드
 
-/// `mafia --casino-dev`: Discord 연결 없이 카지노·증권 웹만 띄운다 (UI 개발·점검용).
+/// `mafia --casino-dev`: Discord 연결 없이 카지노 웹과 증권 사이트만 띄운다 (UI 개발·점검용).
 /// 테스트 계정 3개(각 3,000,000코인: 회사 설립까지 해 볼 수 있게)와 홀덤·블랙잭 테이블을 만들고,
 /// 6시간치를 미리 돌린 주식 시장과 함께 개인 링크를 출력한다.
 pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
@@ -409,7 +405,10 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
             "{name} (블랙잭): {}",
             personal_link(&base, &token, &blackjack)
         );
-        println!("{name} (증권): {base}/casino/{token}?view=stocks");
+        println!(
+            "{name} (증권): {}",
+            crate::stock_web::stocks_link(&base, &token)
+        );
     }
     let ticker = hub.clone();
     tokio::spawn(async move {
@@ -430,10 +429,16 @@ pub async fn run_dev_server(workspace_root: &Path) -> anyhow::Result<()> {
         }
     });
     let router = casino_router(CasinoWebState {
-        hub,
+        hub: hub.clone(),
         static_dir: std::env::var("CASINO_STATIC_DIR").ok(),
-        stocks: Some(stocks),
-    });
+    })
+    .merge(crate::stock_web::stocks_router(
+        crate::stock_web::StocksWebState {
+            sessions: hub,
+            stocks,
+            static_dir: std::env::var("STOCKS_STATIC_DIR").ok(),
+        },
+    ));
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     axum::serve(listener, router).await?;
     Ok(())
@@ -569,7 +574,7 @@ fn is_safe_asset_path(relative: &str) -> bool {
 }
 
 /// CASINO_STATIC_DIR 안의 파일만 읽는다. 심볼릭 링크 등으로 밖을 가리키면 거부한다.
-fn read_static_file(dir: &Path, relative: &str) -> Option<Vec<u8>> {
+pub(crate) fn read_static_file(dir: &Path, relative: &str) -> Option<Vec<u8>> {
     if !is_safe_asset_path(relative) {
         return None;
     }
@@ -634,7 +639,7 @@ fn byte_range(range: Option<&str>, len: usize) -> ByteRange {
     ByteRange::Part(start, end)
 }
 
-fn asset_response(
+pub(crate) fn asset_response(
     asset_path: &str,
     content_type: &str,
     body: Bytes,
@@ -659,7 +664,7 @@ fn asset_response(
     response.unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-fn content_type_for(path: &str) -> &'static str {
+pub(crate) fn content_type_for(path: &str) -> &'static str {
     match Path::new(path).extension().and_then(|ext| ext.to_str()) {
         Some("html") => "text/html; charset=utf-8",
         Some("js") => "text/javascript; charset=utf-8",
@@ -710,7 +715,7 @@ pub(crate) fn error_response(
         .into_response()
 }
 
-pub(crate) fn session_or_error(
+fn session_or_error(
     state: &CasinoWebState,
     token: Option<String>,
 ) -> Result<CasinoSession, Response> {

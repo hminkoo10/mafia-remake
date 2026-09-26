@@ -13,9 +13,9 @@ export function NewsList({
   empty: string;
   onSelect?: (code: string) => void;
 }) {
-  if (items.length === 0) return <p className="hts-empty">{empty}</p>;
+  if (items.length === 0) return <p className="empty">{empty}</p>;
   return (
-    <ul className="hts-news">
+    <ul className="news">
       {items.map((item) => (
         <li key={item.id} className={item.tone > 0 ? "good" : item.tone < 0 ? "bad" : ""}>
           <div>

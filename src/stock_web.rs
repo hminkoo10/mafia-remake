@@ -1,11 +1,16 @@
-// stock_web.rs — 웹 증권 화면(HTS) API. 카지노 개인 링크 세션을 같이 쓴다 (/casino/<토큰>?view=stocks).
+// stock_web.rs — 증권 사이트(마피아증권): 개인 링크 페이지(/stocks/<토큰>)와 API(/stocks/api/...).
+// 카지노와 따로 떨어진 사이트다 (프론트엔드는 stocks-web/). 개인 링크 세션만 카지노와 같은 표를 쓴다.
 // 코인이 오가는 작업은 모두 StockHub(transact)를 거치므로 Discord 명령과 같은 규칙·장부를 쓴다.
 
-use crate::casino_web::{CasinoWebState, bearer_token, error_response, session_or_error};
-use crate::stock_hub::{Need, StockHub, now_ms};
+use crate::casino_hub::{CasinoSession, SharedHub};
+use crate::casino_web::{
+    asset_response, bearer_token, content_type_for, error_response, read_static_file,
+};
+use crate::stock_hub::{Need, SharedStocks, StockHub, now_ms};
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    body::Bytes,
+    extract::{Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -15,18 +20,105 @@ use mafia_remake::stocks::{
     StockMarket, format_amount,
 };
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use tower_http::compression::CompressionLayer;
 
-pub fn stock_routes() -> Router<CasinoWebState> {
+include!(concat!(env!("OUT_DIR"), "/stocks_static.rs"));
+
+#[derive(Clone)]
+pub struct StocksWebState {
+    /// 개인 링크 세션 (카지노와 같은 표. 토큰은 누구인지 확인할 뿐이다).
+    pub sessions: SharedHub,
+    pub stocks: SharedStocks,
+    /// 내장된 페이지 대신 디스크의 stocks-web/dist를 쓸 때 (STOCKS_STATIC_DIR).
+    pub static_dir: Option<String>,
+}
+
+pub fn stocks_router(state: StocksWebState) -> Router {
+    let api = Router::new()
+        .route("/stocks/api/state", get(state_handler))
+        .route("/stocks/api/candles", get(candles_handler))
+        .route("/stocks/api/order", post(order_handler))
+        .route("/stocks/api/cancel", post(cancel_handler))
+        .route("/stocks/api/subscribe", post(subscribe_handler))
+        .route("/stocks/api/unsubscribe", post(unsubscribe_handler))
+        .route("/stocks/api/company", post(company_handler))
+        .layer(CompressionLayer::new());
     Router::new()
-        .route("/casino/api/stocks/state", get(state_handler))
-        .route("/casino/api/stocks/candles", get(candles_handler))
-        .route("/casino/api/stocks/order", post(order_handler))
-        .route("/casino/api/stocks/cancel", post(cancel_handler))
-        .route("/casino/api/stocks/subscribe", post(subscribe_handler))
-        .route("/casino/api/stocks/unsubscribe", post(unsubscribe_handler))
-        .route("/casino/api/stocks/company", post(company_handler))
-        .layer(CompressionLayer::new())
+        .merge(api)
+        .route("/stocks", get(stocks_index))
+        .route("/stocks/", get(stocks_index))
+        .route("/stocks/{*path}", get(stocks_asset))
+        .with_state(state)
+}
+
+/// Discord에서 받은 개인 링크.
+pub fn stocks_link(base_url: &str, token: &str) -> String {
+    format!("{}/stocks/{token}", base_url.trim_end_matches('/'))
+}
+
+fn session_of(state: &StocksWebState, headers: &HeaderMap) -> Option<CasinoSession> {
+    bearer_token(headers).and_then(|token| state.sessions.session(&token))
+}
+
+fn expired() -> Response {
+    error_response(
+        StatusCode::UNAUTHORIZED,
+        "UNAUTHORIZED",
+        "링크가 만료됐습니다. Discord에서 `/주식 증권`으로 새 링크를 받으세요.",
+    )
+}
+
+// ------------------------------------------------------------ 페이지
+
+async fn stocks_index(State(state): State<StocksWebState>) -> Response {
+    serve_asset(&state, "/index.html")
+}
+
+async fn stocks_asset(
+    State(state): State<StocksWebState>,
+    AxumPath(path): AxumPath<String>,
+) -> Response {
+    if path.starts_with("assets/") || path.contains('.') {
+        return try_serve_asset(&state, &format!("/{path}"))
+            .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response());
+    }
+    // /stocks/<토큰> 같은 페이지 경로는 index.html을 준다.
+    serve_asset(&state, "/index.html")
+}
+
+fn serve_asset(state: &StocksWebState, asset_path: &str) -> Response {
+    try_serve_asset(state, asset_path).unwrap_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            "stocks-web/dist가 없습니다. `cd stocks-web && npm ci && npm run build` 후 다시 빌드하세요.",
+        )
+            .into_response()
+    })
+}
+
+fn try_serve_asset(state: &StocksWebState, asset_path: &str) -> Option<Response> {
+    if let Some(dir) = state.static_dir.as_deref()
+        && let Some(body) = read_static_file(Path::new(dir), asset_path.trim_start_matches('/'))
+    {
+        return Some(asset_response(
+            asset_path,
+            content_type_for(asset_path),
+            Bytes::from(body),
+            None,
+        ));
+    }
+    STOCKS_ASSETS
+        .iter()
+        .find(|asset| asset.path == asset_path)
+        .map(|asset| {
+            asset_response(
+                asset.path,
+                asset.content_type,
+                Bytes::from_static(asset.body),
+                None,
+            )
+        })
 }
 
 // ------------------------------------------------------------ 상태
@@ -100,14 +192,6 @@ pub struct StockState {
 pub struct StateQuery {
     #[serde(default)]
     pub code: Option<String>,
-}
-
-fn unavailable() -> Response {
-    error_response(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "NO_MARKET",
-        "주식 시장이 열려 있지 않습니다.",
-    )
 }
 
 fn invalid(message: String) -> Response {
@@ -211,17 +295,14 @@ async fn build_state(stocks: &StockHub, user: u64, name: &str, code: Option<&str
 }
 
 async fn state_handler(
-    State(state): State<CasinoWebState>,
+    State(state): State<StocksWebState>,
     headers: HeaderMap,
     Query(query): Query<StateQuery>,
 ) -> Response {
-    let session = match session_or_error(&state, bearer_token(&headers)) {
-        Ok(session) => session,
-        Err(response) => return response,
+    let Some(session) = session_of(&state, &headers) else {
+        return expired();
     };
-    let Some(stocks) = state.stocks.as_ref() else {
-        return unavailable();
-    };
+    let stocks = &*state.stocks;
     Json(
         build_state(
             stocks,
@@ -253,16 +334,14 @@ struct CandleResponse {
 }
 
 async fn candles_handler(
-    State(state): State<CasinoWebState>,
+    State(state): State<StocksWebState>,
     headers: HeaderMap,
     Query(query): Query<CandleQuery>,
 ) -> Response {
-    if let Err(response) = session_or_error(&state, bearer_token(&headers)) {
-        return response;
+    if session_of(&state, &headers).is_none() {
+        return expired();
     }
-    let Some(stocks) = state.stocks.as_ref() else {
-        return unavailable();
-    };
+    let stocks = &*state.stocks;
     let market = stocks.market.read().await;
     let series = if query.code == "INDEX" {
         Some(&market.candles.index)
@@ -325,17 +404,14 @@ pub struct OrderBody {
 }
 
 async fn order_handler(
-    State(state): State<CasinoWebState>,
+    State(state): State<StocksWebState>,
     headers: HeaderMap,
     Json(body): Json<OrderBody>,
 ) -> Response {
-    let session = match session_or_error(&state, bearer_token(&headers)) {
-        Ok(session) => session,
-        Err(response) => return response,
+    let Some(session) = session_of(&state, &headers) else {
+        return expired();
     };
-    let Some(stocks) = state.stocks.as_ref() else {
-        return unavailable();
-    };
+    let stocks = &*state.stocks;
     let result = stocks
         .order(
             session.user_id,
@@ -386,17 +462,14 @@ pub struct CancelBody {
 }
 
 async fn cancel_handler(
-    State(state): State<CasinoWebState>,
+    State(state): State<StocksWebState>,
     headers: HeaderMap,
     Json(body): Json<CancelBody>,
 ) -> Response {
-    let session = match session_or_error(&state, bearer_token(&headers)) {
-        Ok(session) => session,
-        Err(response) => return response,
+    let Some(session) = session_of(&state, &headers) else {
+        return expired();
     };
-    let Some(stocks) = state.stocks.as_ref() else {
-        return unavailable();
-    };
+    let stocks = &*state.stocks;
     match stocks.cancel(session.user_id, body.order_id).await {
         Ok(()) => {
             respond(
@@ -421,17 +494,14 @@ pub struct SubscribeBody {
 }
 
 async fn subscribe_handler(
-    State(state): State<CasinoWebState>,
+    State(state): State<StocksWebState>,
     headers: HeaderMap,
     Json(body): Json<SubscribeBody>,
 ) -> Response {
-    let session = match session_or_error(&state, bearer_token(&headers)) {
-        Ok(session) => session,
-        Err(response) => return response,
+    let Some(session) = session_of(&state, &headers) else {
+        return expired();
     };
-    let Some(stocks) = state.stocks.as_ref() else {
-        return unavailable();
-    };
+    let stocks = &*state.stocks;
     let (user, name) = (session.user_id, session.name.as_str());
     let (code, qty) = (body.code.as_str(), body.qty);
     let result = stocks
@@ -451,17 +521,14 @@ async fn subscribe_handler(
 }
 
 async fn unsubscribe_handler(
-    State(state): State<CasinoWebState>,
+    State(state): State<StocksWebState>,
     headers: HeaderMap,
     Json(body): Json<SubscribeBody>,
 ) -> Response {
-    let session = match session_or_error(&state, bearer_token(&headers)) {
-        Ok(session) => session,
-        Err(response) => return response,
+    let Some(session) = session_of(&state, &headers) else {
+        return expired();
     };
-    let Some(stocks) = state.stocks.as_ref() else {
-        return unavailable();
-    };
+    let stocks = &*state.stocks;
     let (user, name, code) = (session.user_id, session.name.as_str(), body.code.as_str());
     let result = stocks
         .transact(
@@ -527,17 +594,14 @@ struct CompanyTarget {
 }
 
 async fn company_handler(
-    State(state): State<CasinoWebState>,
+    State(state): State<StocksWebState>,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
-    let session = match session_or_error(&state, bearer_token(&headers)) {
-        Ok(session) => session,
-        Err(response) => return response,
+    let Some(session) = session_of(&state, &headers) else {
+        return expired();
     };
-    let Some(stocks) = state.stocks.as_ref() else {
-        return unavailable();
-    };
+    let stocks = &*state.stocks;
     let target = serde_json::from_value::<CompanyTarget>(body.clone())
         .ok()
         .and_then(|target| target.code);
@@ -694,8 +758,8 @@ async fn run_company_action(
 
 #[cfg(test)]
 mod tests {
+    use super::{StocksWebState, stocks_link, stocks_router};
     use crate::casino_hub::CasinoHub;
-    use crate::casino_web::{CasinoWebState, casino_router};
     use crate::stock_hub::StockHub;
     use std::sync::Arc;
 
@@ -717,10 +781,10 @@ mod tests {
         let stocks =
             Arc::new(StockHub::load(dir.join("stocks.json"), stats.clone(), stats_path).unwrap());
         let token = hub.issue_session(7, "투자자".to_string());
-        let router = casino_router(CasinoWebState {
-            hub,
+        let router = stocks_router(StocksWebState {
+            sessions: hub,
+            stocks: stocks.clone(),
             static_dir: None,
-            stocks: Some(stocks.clone()),
         });
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -729,8 +793,22 @@ mod tests {
         tokio::spawn(async move {
             let _ = axum::serve(listener, router).await;
         });
-        let base = format!("http://{address}/casino/api/stocks");
+        let base = format!("http://{address}/stocks/api");
         let client = reqwest::Client::new();
+
+        // 개인 링크는 증권 사이트 페이지(index.html)를 연다.
+        let page = client
+            .get(stocks_link(&format!("http://{address}/"), &token))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(page.status(), 200);
+        assert!(
+            page.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/html")
+        );
 
         let state: serde_json::Value = client
             .get(format!("{base}/state"))
@@ -784,6 +862,13 @@ mod tests {
         assert!(!rejected["error"]["message"].as_str().unwrap().is_empty());
         let anonymous = client.get(format!("{base}/state")).send().await.unwrap();
         assert_eq!(anonymous.status(), 401);
+        let anonymous: serde_json::Value = anonymous.json().await.unwrap();
+        assert!(
+            anonymous["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("/주식 증권")
+        );
 
         let founded = client
             .post(format!("{base}/company"))

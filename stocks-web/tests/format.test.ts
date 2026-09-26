@@ -15,7 +15,7 @@ import {
   tickDown,
   tickSize,
   tickUp,
-} from "../src/stocks/format.ts";
+} from "../src/format.ts";
 
 test("tick sizes follow the KRX table like the bot", () => {
   assert.equal(tickSize(1_999), 1);

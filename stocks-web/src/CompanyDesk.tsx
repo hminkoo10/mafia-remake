@@ -25,12 +25,12 @@ export function CompanyDesk({
   const canFound = mine.length < state.rules.max_companies;
   const run = (action: CompanyAction) => act((t) => companyAction(t, action));
   return (
-    <div className="hts-desk">
+    <div className="desk">
       {mine.map((detail) => (
         <ManageCompany key={detail.summary.code} detail={detail} state={state} now={now} busy={busy} run={run} onSelect={onSelect} />
       ))}
       {canFound && <FoundCompany state={state} busy={busy} run={run} />}
-      {!canFound && mine.length === 0 && <p className="hts-empty">지금은 회사를 세울 수 없습니다.</p>}
+      {!canFound && mine.length === 0 && <p className="empty">지금은 회사를 세울 수 없습니다.</p>}
     </div>
   );
 }
@@ -65,7 +65,7 @@ function DeskForm({
       <h4>{title}</h4>
       {hint && <p className="desk-hint">{hint}</p>}
       {children}
-      <button type="submit" className={danger ? "fold-button" : "gold-button small"} disabled={busy || disabled}>
+      <button type="submit" className={danger ? "btn danger small" : "btn primary small"} disabled={busy || disabled}>
         {submit}
       </button>
     </form>
@@ -176,11 +176,11 @@ function ManageCompany({
             {s.managed ? " · 관리종목" : ""}
           </span>
         </div>
-        <button className="secondary-button small" onClick={() => onSelect(code)}>
+        <button className="btn small" onClick={() => onSelect(code)}>
           시세 보기
         </button>
       </header>
-      <dl className="hts-facts">
+      <dl className="facts">
         <div>
           <dt>회사 현금 (자본총계)</dt>
           <dd>{won(detail.equity)}</dd>

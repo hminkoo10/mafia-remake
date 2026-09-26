@@ -1,6 +1,6 @@
 // 내 계좌: 자산 요약, 잔고(신주인수권 포함), 미체결, 체결, 공모주 청약, 내 회사, 시장 뉴스.
 import { useState, type ReactNode } from "react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui";
 import { cancelOrder, companyAction, subscribeIpo, unsubscribeIpo } from "./api";
 import { CompanyDesk } from "./CompanyDesk";
 import { NewsList } from "./NewsList";
@@ -34,17 +34,17 @@ export function AccountTabs({
   const total = state.me.coins + a.stock_value + a.pending;
   const selectedCode = state.selected?.summary.code ?? null;
   return (
-    <section className="hts-account side-panel">
-      <div className="hts-summary">
-        <Stat label="총자산" value={won(total)} className="gold" />
+    <section className="card account">
+      <div className="summary">
+        <Stat label="총자산" value={won(total)} className="accent" />
         <Stat label="보유 코인" value={won(state.me.coins)} />
         <Stat label="주식 평가액" value={won(a.stock_value)} />
         <Stat label="주문·청약에 묶인 코인" value={won(a.pending)} />
         <Stat label="평가손익" value={signedWon(a.unrealized)} className={tone(a.unrealized)} />
         <Stat label="실현손익" value={signedWon(a.realized)} className={tone(a.realized)} />
       </div>
-      <Tabs value={tab} onValueChange={setTab} className="panel-tabs hts-tabs">
-        <TabsList className="panel-tab-list">
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList label="내 계좌">
           <TabsTrigger value="positions">잔고 {a.positions.length || ""}</TabsTrigger>
           <TabsTrigger value="orders">미체결 {a.orders.length || ""}</TabsTrigger>
           <TabsTrigger value="fills">체결</TabsTrigger>
@@ -55,10 +55,10 @@ export function AccountTabs({
         <TabsContent value="positions">
           {a.rights.length > 0 && <RightsClaims claims={a.rights} coins={state.me.coins} now={now} busy={busy} act={act} />}
           {a.positions.length === 0 ? (
-            <p className="hts-empty">가진 주식이 없습니다. 호가창 옆 주문 칸에서 사 보세요.</p>
+            <p className="empty">가진 주식이 없습니다. 호가창 옆 주문 칸에서 사 보세요.</p>
           ) : (
-            <div className="hts-table-wrap">
-              <table className="hts-table clickable">
+            <div className="table-wrap">
+              <table className="table clickable">
                 <thead>
                   <tr>
                     <th>종목</th>
@@ -97,16 +97,16 @@ export function AccountTabs({
               </table>
             </div>
           )}
-          <p className="hts-foot">
+          <p className="foot">
             낸 수수료·세금 누적 {won(a.fees)} · 비상장 주식은 주당 순자산으로, 상장폐지된 주식은 0으로 평가합니다.
           </p>
         </TabsContent>
         <TabsContent value="orders">
           {a.orders.length === 0 ? (
-            <p className="hts-empty">호가에 걸어 둔 주문이 없습니다.</p>
+            <p className="empty">호가에 걸어 둔 주문이 없습니다.</p>
           ) : (
-            <div className="hts-table-wrap">
-              <table className="hts-table">
+            <div className="table-wrap">
+              <table className="table">
                 <thead>
                   <tr>
                     <th>종목</th>
@@ -136,7 +136,7 @@ export function AccountTabs({
                       <td>{dateTimeText(order.created_at)}</td>
                       <td>{relativeText(order.expires_at, now)}</td>
                       <td>
-                        <button className="secondary-button small" disabled={busy} onClick={() => void act((t) => cancelOrder(t, order.id, selectedCode))}>
+                        <button className="btn small" disabled={busy} onClick={() => void act((t) => cancelOrder(t, order.id, selectedCode))}>
                           취소
                         </button>
                       </td>
@@ -149,10 +149,10 @@ export function AccountTabs({
         </TabsContent>
         <TabsContent value="fills">
           {a.fills.length === 0 ? (
-            <p className="hts-empty">체결 기록이 없습니다.</p>
+            <p className="empty">체결 기록이 없습니다.</p>
           ) : (
-            <div className="hts-table-wrap">
-              <table className="hts-table">
+            <div className="table-wrap">
+              <table className="table">
                 <thead>
                   <tr>
                     <th>시각</th>
@@ -236,7 +236,7 @@ function RightsRow({ claim, coins, now, busy, act }: { claim: RightsClaimView; c
         <div className="inline-form">
           <input inputMode="numeric" value={qtyText} onChange={(e) => setQtyText(e.target.value)} aria-label="인수할 주식 수" />
           <button
-            className="gold-button small"
+            className="btn primary small"
             disabled={busy || qty <= 0 || qty > left || cost > coins}
             onClick={() => void act((t) => companyAction(t, { action: "exercise", code: claim.code, qty }))}
           >
@@ -267,7 +267,7 @@ function Offerings({
 }) {
   if (state.offerings.length === 0 && state.account.subscriptions.length === 0) {
     return (
-      <p className="hts-empty">
+      <p className="empty">
         지금 청약을 받는 공모주가 없습니다. 새 시스템 회사는 가끔 상장하고, 플레이어 회사는 대표가 공모를 열면 여기에 나옵니다.
       </p>
     );
@@ -286,7 +286,7 @@ function Offerings({
           onSelect={onSelect}
         />
       ))}
-      <p className="hts-foot">
+      <p className="foot">
         청약이 공모 주식보다 많으면 공모 주식의 절반은 청약자에게 고르게(균등 배정), 나머지는 남은 청약 수량에 비례해 나눠 받고, 받지 못한
         만큼의 증거금은 돌려받습니다. 상장 첫날 가격은 공모가의 60~400% 안에서 움직입니다.
       </p>
@@ -325,11 +325,11 @@ function OfferingCard({
             {offering.player ? ` · 플레이어 회사${offering.founder_name ? ` (${offering.founder_name})` : ""}` : ""}
           </span>
         </div>
-        <button className="secondary-button small" onClick={() => onSelect(offering.code)}>
+        <button className="btn small" onClick={() => onSelect(offering.code)}>
           회사 보기
         </button>
       </header>
-      <dl className="hts-facts">
+      <dl className="facts">
         <div>
           <dt>공모가</dt>
           <dd>{won(offering.price)}</dd>
@@ -358,7 +358,7 @@ function OfferingCard({
             <b>내 청약 {won(mine.qty)}주</b>
             <small>증거금 {won(mine.deposit)} 냄</small>
           </div>
-          <button className="secondary-button small" disabled={busy} onClick={() => void act((t) => unsubscribeIpo(t, offering.code))}>
+          <button className="btn small" disabled={busy} onClick={() => void act((t) => unsubscribeIpo(t, offering.code))}>
             청약 취소
           </button>
         </div>
@@ -366,7 +366,7 @@ function OfferingCard({
       <div className="inline-form">
         <input inputMode="numeric" placeholder="청약 수량" value={qtyText} onChange={(e) => setQtyText(e.target.value)} aria-label="청약 수량" />
         <button
-          className="gold-button small"
+          className="btn primary small"
           disabled={busy || qty <= 0 || qty > offering.shares || cost > coins}
           onClick={async () => {
             const done = await act((t) => subscribeIpo(t, offering.code, qty));

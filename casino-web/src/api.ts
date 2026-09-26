@@ -56,7 +56,7 @@ async function parseError(response: Response): Promise<CasinoApiError> {
 }
 
 /** 제한 시간을 두고 요청해 원문을 받는다. 끊김·시간 초과는 한국어 안내가 담긴 CasinoNetworkError로 바꾼다. */
-export async function request(url: string, init: RequestInit): Promise<RawResponse> {
+async function request(url: string, init: RequestInit): Promise<RawResponse> {
   const controller = new AbortController();
   let timedOut = false;
   const timer = window.setTimeout(() => {

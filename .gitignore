@@ -20,9 +20,15 @@ activity/node_modules/
 activity/dist/
 casino-web/node_modules/
 casino-web/dist/
+stocks-web/node_modules/
+stocks-web/dist/
 casino.json
+stocks.json
+stocks-candles.json
 casino-dev.json
 casino-dev-stats.json
+stocks-dev.json
+stocks-dev-candles.json
 activity/.env
 activity/.env.local
 __pycache__/

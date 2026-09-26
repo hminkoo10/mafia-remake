@@ -47,6 +47,8 @@ mafia-remake/
 │   │       ├── RoleCard.tsx      # 내 역할 카드
 │   │       └── PhaseTimer.tsx    # 페이즈/타이머 헤더
 │   └── package.json
+├── casino-web/            # 카지노 웹 (React, /casino/<토큰>)
+├── stocks-web/            # 증권 사이트 마피아증권 (React, /stocks/<토큰>)
 ├── Dockerfile             # 멀티스테이지 빌드 (Node → Rust → 최종)
 ├── fly.toml               # Fly.io 배포 설정
 ├── config.example.json    # 게임 설정 예시
@@ -270,15 +272,17 @@ Discord 안에서 **홀덤**과 **블랙잭** 테이블을 열고 봇의 코인�
 ```env
 # 개인 링크 공개 주소 (비우면 WEB_SETTINGS_BASE_URL 호스트 + ACTIVITY_PORT)
 # CASINO_BASE_URL=https://example.com:2053
-# 내장된 카지노 웹 대신 디스크의 dist를 쓰려면
+# 내장된 카지노 웹·증권 사이트 대신 디스크의 dist를 쓰려면
 # CASINO_STATIC_DIR=/path/to/casino-web/dist
+# STOCKS_STATIC_DIR=/path/to/stocks-web/dist
 ```
 
 UI만 점검할 때는 Discord 없이 개발 서버를 띄울 수 있습니다:
 
 ```bash
-cargo run -- --casino-dev     # http://localhost:8811/casino/ (CASINO_DEV_PORT로 변경)
+cargo run -- --casino-dev     # http://localhost:8811/casino/, /stocks/ (CASINO_DEV_PORT로 변경)
 cd casino-web && npm run dev  # Vite 5174, /casino/api 는 localhost:2053으로 프록시
+cd stocks-web && npm run dev  # Vite 5175, /stocks/api 는 localhost:2053으로 프록시
 ```
 
 테스트 계정 3개(각 3,000,000코인)와 홀덤·블랙잭 테이블이 만들어지고 카지노·증권 개인 링크가 출력됩니다. 주식 시장은 6시간치를 미리 돌려 두고, 회사 화면 점검용으로 테스터C의 상장사와 테스터B의 공모 청약 중인 회사를 만들어 둡니다. 상태는 `casino-dev.json`, `stocks-dev.json`에 저장되고 켤 때마다 새로 시작합니다.
@@ -438,7 +442,7 @@ Discord에서 `/마피아설정` 또는 `/마피아웹설정`으로 게임 중�
 - **게임 연동 종목**: 마피아게임즈는 이 서버의 마피아 판 수, 카지노73레저는 카지노 핸드 수·하우스 손익이 실적에 들어갑니다.
 - **플레이어 회사**: `/회사 설립`(자본금 100만 이상)으로 세우고, 1게임일 뒤 `/회사 상장`으로 공모 청약을 열어 상장합니다. 배당·유상증자·자사주·위험도로 경영하고, 자본잠식이 이어지면 관리종목을 거쳐 상장폐지, 자본이 바닥나면 파산합니다.
 - **코인**: 주식 매매는 롤링·손실 환급에서 빠지고, 구조금 기준에는 주식 평가액이 들어갑니다. 상태는 `stocks.json`(봉은 `stocks-candles.json`)에, 코인은 `stats.json`에 저장되며 같은 코인 이동은 한 번만 반영됩니다.
-- **웹 증권 화면(HTS)**: `/주식 증권`이 주는 개인 링크(카지노 링크 + `?view=stocks`, 카지노 화면 왼쪽 레일에도 있음)에서 차트·호가창·주문·잔고·공모주·회사 경영을 합니다. API는 `GET /casino/api/stocks/state`, `GET /casino/api/stocks/candles`, `POST /casino/api/stocks/{order,cancel,subscribe,unsubscribe,company}`.
+- **증권 사이트(마피아증권)**: 카지노와 따로 떨어진 밝은 화면의 웹사이트입니다. `/주식 증권`이 주는 개인 링크(`/stocks/<토큰>`, 12시간 유효)에서 차트·호가창·주문·잔고·공모주·회사 경영을 합니다. 프론트엔드는 `stocks-web/`(Vite + React)이고 Activity 서버와 같은 포트에서 서비스되며, `build.rs`가 `stocks-web/dist`를 바이너리에 내장합니다 (`MAFIA_SKIP_STOCKS_BUILD`로 생략, `STOCKS_STATIC_DIR`로 디스크의 dist 사용). API는 `GET /stocks/api/state`, `GET /stocks/api/candles`, `POST /stocks/api/{order,cancel,subscribe,unsubscribe,company}` (개인 링크 토큰을 Bearer로).
 - **채널**: `/주식패널`을 쓴 채널에 1분마다 고쳐지는 시세판이, `/주식뉴스채널`로 정한 채널에 뉴스·공시·실적이 올라옵니다.
 - **설정**: 웹 설정(`/마피아웹설정`)에서 시장 열기, 게임 하루 길이, 수수료·거래세, 가격제한폭·VI, 기대 수익률, 변동성·뉴스 배율, 보유·주문 한도, 설립·공모 수수료, 상장 조건, 보호예수, 회사 수를 바꿀 수 있습니다.
 
@@ -463,7 +467,7 @@ Discord에서 `/마피아설정` 또는 `/마피아웹설정`으로 게임 중�
 | `/금고관리 [넣기/빼기] [금고/잭팟] [금액]` | 금고·잭팟에 코인을 넣거나(처음 씨앗 등) 빼기, 관리 로그에 기록 | 관리자 |
 | `/주식 시세·매수·매도·잔고·주문·취소·차트·뉴스·순위` | 시세·호가, 시장가·지정가 주문, 잔고·손익, 미체결 취소, 캔들 차트, 뉴스, 주식 재산 순위 | 누구나 |
 | `/주식 청약·청약취소` | 공모주 청약 (증거금 = 공모가 × 수량) | 누구나 |
-| `/주식 증권` | 웹 증권 화면(HTS) 개인 링크 | 누구나 |
+| `/주식 증권` | 증권 사이트(마피아증권) 개인 링크 | 누구나 |
 | `/회사 설립·정보·상장·배당·유상증자·신주인수·자사주·위험도·소개·해산` | 플레이어 회사 세우기·상장·경영 | 누구나 (경영은 대표) |
 | `/주식관리 [거래정지/거래재개/시장 집계 보기]` | 종목 거래정지·재개, 시장이 만든·없앤 코인 집계 | 관리자 |
 | `/주식패널`, `/주식뉴스채널` | 이 채널에 시세판 올리기 / 주식 뉴스 채널 정하기 | 관리자 |

@@ -1,6 +1,6 @@
 // 고른 종목의 정보: 개요·진행 중인 일(공모·유상증자·자사주·배당·청산), 분기 실적, 주주, 뉴스.
 import { useState } from "react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui";
 import { NewsList } from "./NewsList";
 import { bpText, compactWon, dateTimeText, pctText, relativeText, RISK_TEXT, tone, won } from "./format";
 import type { CompanyDetail, NewsItem } from "./types";
@@ -39,9 +39,9 @@ export function CompanyInfo({ detail, news, now }: { detail: CompanyDetail; news
   }
 
   return (
-    <div className="hts-info side-panel">
-      <Tabs value={tab} onValueChange={setTab} className="panel-tabs hts-tabs">
-        <TabsList className="panel-tab-list">
+    <div className="card info">
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList label="종목 정보">
           <TabsTrigger value="overview">종목 정보</TabsTrigger>
           <TabsTrigger value="earnings">실적</TabsTrigger>
           <TabsTrigger value="holders">주주</TabsTrigger>
@@ -49,14 +49,14 @@ export function CompanyInfo({ detail, news, now }: { detail: CompanyDetail; news
         </TabsList>
         <TabsContent value="overview">
           {notices.length > 0 && (
-            <ul className="hts-notices">
+            <ul className="notices">
               {notices.map((text) => (
                 <li key={text}>{text}</li>
               ))}
             </ul>
           )}
-          <p className="hts-desc">{detail.description || "회사 소개가 아직 없습니다."}</p>
-          <dl className="hts-facts">
+          <p className="desc">{detail.description || "회사 소개가 아직 없습니다."}</p>
+          <dl className="facts">
             <div>
               <dt>업종</dt>
               <dd>{s.sector}</dd>
@@ -98,11 +98,17 @@ export function CompanyInfo({ detail, news, now }: { detail: CompanyDetail; news
             )}
             <div>
               <dt>다음 실적</dt>
-              <dd>
-                {detail.next_earnings_at > 0 ? relativeText(detail.next_earnings_at, now) : "—"}
-                {detail.consensus !== null && <small> · 예상 {detail.consensus > 0 ? "+" : ""}{compactWon(detail.consensus)}</small>}
-              </dd>
+              <dd>{detail.next_earnings_at > 0 ? relativeText(detail.next_earnings_at, now) : "—"}</dd>
             </div>
+            {detail.consensus !== null && (
+              <div>
+                <dt>실적 예상 (순이익)</dt>
+                <dd className={tone(detail.consensus)}>
+                  {detail.consensus > 0 ? "+" : ""}
+                  {compactWon(detail.consensus)}
+                </dd>
+              </div>
+            )}
             <div>
               <dt>{detail.listed_at > 0 ? "상장" : "설립"}</dt>
               <dd>{dateTimeText(detail.listed_at > 0 ? detail.listed_at : detail.founded_at)}</dd>
@@ -111,10 +117,10 @@ export function CompanyInfo({ detail, news, now }: { detail: CompanyDetail; news
         </TabsContent>
         <TabsContent value="earnings">
           {detail.quarters.length === 0 ? (
-            <p className="hts-empty">아직 발표한 실적이 없습니다. 실적은 실제 1주마다 발표됩니다.</p>
+            <p className="empty">아직 발표한 실적이 없습니다. 실적은 실제 1주마다 발표됩니다.</p>
           ) : (
-            <div className="hts-table-wrap">
-              <table className="hts-table">
+            <div className="table-wrap">
+              <table className="table">
                 <thead>
                   <tr>
                     <th>분기</th>
@@ -148,9 +154,9 @@ export function CompanyInfo({ detail, news, now }: { detail: CompanyDetail; news
         </TabsContent>
         <TabsContent value="holders">
           {detail.holders.length === 0 ? (
-            <p className="hts-empty">플레이어 주주가 아직 없습니다.</p>
+            <p className="empty">플레이어 주주가 아직 없습니다.</p>
           ) : (
-            <ol className="hts-holders">
+            <ol className="holders">
               {detail.holders.map((holder, index) => (
                 <li key={`${holder.name}-${index}`}>
                   <span>{holder.name}</span>

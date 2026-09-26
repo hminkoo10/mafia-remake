@@ -1173,11 +1173,16 @@ async fn main() -> Result<()> {
         activity_port,
         activity_tls_cert.is_some() && activity_tls_key.is_some(),
     );
+    // 카지노 웹(/casino)과 증권 사이트(/stocks)는 Activity 서버에 함께 얹힌다.
     let casino_router = casino_web::casino_router(casino_web::CasinoWebState {
         hub: casino_hub.clone(),
         static_dir: std::env::var("CASINO_STATIC_DIR").ok(),
-        stocks: Some(stock_market.clone()),
-    });
+    })
+    .merge(stock_web::stocks_router(stock_web::StocksWebState {
+        sessions: casino_hub.clone(),
+        stocks: stock_market.clone(),
+        static_dir: std::env::var("STOCKS_STATIC_DIR").ok(),
+    }));
     let activity_state = activity::ActivityState::new(
         games.clone(),
         config_arc.clone(),

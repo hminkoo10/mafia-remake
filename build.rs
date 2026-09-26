@@ -37,6 +37,14 @@ const FRONTENDS: &[Frontend] = &[
         const_name: "CASINO_ASSETS",
         label: "Casino UI",
     },
+    Frontend {
+        dir: "stocks-web",
+        env: "STOCKS",
+        generated: "stocks_static.rs",
+        struct_name: "EmbeddedStocksAsset",
+        const_name: "STOCKS_ASSETS",
+        label: "Stocks UI",
+    },
 ];
 
 fn main() {

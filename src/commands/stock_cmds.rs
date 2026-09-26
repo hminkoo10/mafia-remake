@@ -981,7 +981,7 @@ pub async fn stock_unsubscribe(
 #[poise::command(
     slash_command,
     rename = "증권",
-    description_localized("ko", "웹 증권 화면(차트·호가·주문) 개인 링크를 받습니다.")
+    description_localized("ko", "증권 사이트(마피아증권: 차트·호가·주문) 개인 링크를 받습니다.")
 )]
 pub async fn stock_web(ctx: Context<'_>) -> Result<(), Error> {
     let name = display_name(ctx).await;
@@ -989,16 +989,13 @@ pub async fn stock_web(ctx: Context<'_>) -> Result<(), Error> {
         .data()
         .casino
         .issue_session(ctx.author().id.get(), name.clone());
-    let link = format!(
-        "{}/casino/{token}?view=stocks",
-        ctx.data().casino_base_url.trim_end_matches('/')
-    );
+    let link = crate::stock_web::stocks_link(&ctx.data().casino_base_url, &token);
     reply_embed(
         ctx,
         format!(
-            "웹 증권 화면 링크입니다.\n{link}\n\n⚠️ 이 링크는 **{name}** 님 전용이고 12시간 동안 유효합니다. 다른 사람과 공유하지 마세요."
+            "마피아증권 링크입니다.\n{link}\n\n⚠️ 이 링크는 **{name}** 님 전용이고 12시간 동안 유효합니다. 다른 사람과 공유하지 마세요."
         ),
-        "증권",
+        "마피아증권",
         serenity::Colour::DARK_GREEN,
         true,
     )

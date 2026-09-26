@@ -73,13 +73,13 @@ export function OrderBook({
   };
 
   return (
-    <div className="hts-book side-panel">
-      <div className="panel-title">
+    <div className="card book">
+      <div className="card-title">
         <h2>호가</h2>
-        <span className="small-count">누르면 지정가로</span>
+        <span className="muted">누르면 지정가로</span>
       </div>
       {asks.length + bids.length === 0 ? (
-        <p className="hts-empty">{emptyBookText(detail)}</p>
+        <p className="empty">{emptyBookText(detail)}</p>
       ) : (
         <>
           <div className="book-head">
@@ -184,7 +184,7 @@ export function OrderForm({
   };
 
   return (
-    <div className={`hts-order side-panel ${side}`}>
+    <div className={`card order ${side}`}>
       <div className="order-sides" role="tablist" aria-label="매수·매도">
         <button role="tab" aria-selected={side === "buy"} className={side === "buy" ? "on buy" : ""} onClick={() => setSide("buy")}>
           매수
@@ -193,7 +193,7 @@ export function OrderForm({
           매도
         </button>
       </div>
-      <div className="hts-seg order-kind" role="group" aria-label="주문 종류">
+      <div className="seg order-kind" role="group" aria-label="주문 종류">
         <button className={kind === "limit" ? "on" : ""} onClick={() => setKind("limit")}>
           지정가
         </button>
@@ -201,7 +201,7 @@ export function OrderForm({
           시장가
         </button>
       </div>
-      <label className="order-field">
+      <label className="field">
         <span>가격</span>
         <div className="stepper">
           <button type="button" aria-label="한 호가 아래" disabled={kind === "market"} onClick={() => stepPrice(false)}>
@@ -219,7 +219,7 @@ export function OrderForm({
           </button>
         </div>
       </label>
-      <label className="order-field">
+      <label className="field">
         <span>수량</span>
         <div className="stepper">
           <button type="button" aria-label="1주 빼기" onClick={() => stepQty(-1)}>
@@ -231,7 +231,7 @@ export function OrderForm({
           </button>
         </div>
       </label>
-      <div className="order-percents">
+      <div className="percents">
         {PERCENTS.map((p) => (
           <button key={p.label} type="button" disabled={maxQty <= 0} onClick={() => setQtyText(won(Math.max(p.part === 1 ? maxQty : 0, Math.floor(maxQty * p.part))))}>
             {p.label}

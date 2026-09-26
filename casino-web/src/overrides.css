@@ -523,6 +523,3 @@ html{scrollbar-gutter:stable}
 /* 라운드 사이 안내 줄의 버튼들 (홀덤 "내 카드 보여주기" + 라운드 시작/초대). */
 .action-row .row-buttons{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 @media(max-width:760px){.action-row .row-buttons{flex:1 1 100%}.action-row .row-buttons>button{flex:1}}
-
-/* 증권 화면으로 가는 레일 링크 (레일 버튼과 같은 모양) */
-.rail .rail-link{display:flex;color:#8c9b83;padding:12px;border-radius:9px;text-decoration:none}.rail .rail-link:hover{color:var(--gold)}.rail .rail-link svg{width:20px;height:20px}

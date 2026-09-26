@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { niceTicks, movingAverage, visibleWindow, priceRange, formatPrice } from "../src/stocks/chart-math.ts";
+import { niceTicks, movingAverage, visibleWindow, priceRange, formatPrice } from "../src/chart-math.ts";
 
 test("nice ticks are round and inside the range", () => {
   const ticks = niceTicks(103, 987, 5);
