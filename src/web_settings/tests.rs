@@ -929,3 +929,50 @@ fn economy_form_rejects_bad_percentages_and_jackpot_shares_over_100() {
     assert!(error.contains("100%"), "{error}");
     assert_eq!(config.jackpot_loser_bp, 5_000, "실패하면 원래 설정 그대로");
 }
+
+#[test]
+fn only_certificate_rejections_are_worth_logging() {
+    use std::io::{Error, ErrorKind};
+    let tls = |error: rustls::Error| Error::new(ErrorKind::InvalidData, error);
+    // 브라우저·Cloudflare가 인증서를 거부하면 남긴다.
+    assert!(is_certificate_rejection(&tls(
+        rustls::Error::AlertReceived(rustls::AlertDescription::UnknownCA)
+    )));
+    assert!(is_certificate_rejection(&tls(
+        rustls::Error::AlertReceived(rustls::AlertDescription::CertificateExpired)
+    )));
+    // 포트 스캐너가 내는 실패는 남기지 않는다.
+    assert!(!is_certificate_rejection(&tls(
+        rustls::Error::PeerIncompatible(rustls::PeerIncompatible::NoCipherSuitesInCommon)
+    )));
+    assert!(!is_certificate_rejection(&tls(
+        rustls::Error::InvalidMessage(rustls::InvalidMessage::InvalidContentType)
+    )));
+    assert!(!is_certificate_rejection(&Error::from(
+        ErrorKind::ConnectionReset
+    )));
+    assert!(!is_certificate_rejection(&Error::new(
+        ErrorKind::UnexpectedEof,
+        "tls handshake eof"
+    )));
+}
+
+#[test]
+fn clients_hanging_up_are_not_server_errors() {
+    use std::io::{Error, ErrorKind};
+    assert!(is_peer_disconnect(&anyhow::Error::from(Error::from(
+        ErrorKind::ConnectionReset
+    ))));
+    assert!(is_peer_disconnect(&anyhow::Error::from(Error::from(
+        ErrorKind::BrokenPipe
+    ))));
+    assert!(is_peer_disconnect(
+        &anyhow::Error::from(Error::from(ErrorKind::ConnectionReset)).context("응답 쓰기")
+    ));
+    assert!(!is_peer_disconnect(&anyhow::anyhow!(
+        "설정 파일을 쓰지 못했습니다"
+    )));
+    assert!(!is_peer_disconnect(&anyhow::Error::from(Error::from(
+        ErrorKind::PermissionDenied
+    ))));
+}

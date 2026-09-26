@@ -1320,11 +1320,16 @@ pub async fn run_server(
                     Ok(Ok(stream)) => {
                         if let Err(error) =
                             handle_connection(stream, state, WEB_CONNECTION_IO_TIMEOUT).await
+                            && !is_peer_disconnect(&error)
                         {
                             eprintln!("web settings error: {error:?}");
                         }
                     }
-                    Ok(Err(error)) => eprintln!("web settings tls error: {error:?}"),
+                    Ok(Err(error)) if is_certificate_rejection(&error) => {
+                        eprintln!("web settings tls: a client rejected the certificate: {error:?}");
+                    }
+                    // 포트 스캐너의 평문 HTTP·옛 TLS·맞지 않는 암호 조합, 중간에 끊긴 연결은 남기지 않는다.
+                    Ok(Err(_)) => {}
                     // 핸드셰이크를 끝내지 않고 버티는 연결은 조용히 끊는다.
                     Err(_) => {}
                 }
@@ -1340,11 +1345,51 @@ pub async fn run_server(
         let state = state.clone();
         tokio::spawn(async move {
             let _slot = slot;
-            if let Err(error) = handle_connection(stream, state, WEB_CONNECTION_IO_TIMEOUT).await {
+            if let Err(error) = handle_connection(stream, state, WEB_CONNECTION_IO_TIMEOUT).await
+                && !is_peer_disconnect(&error)
+            {
                 eprintln!("web settings error: {error:?}");
             }
         });
     }
+}
+
+/// TLS 핸드셰이크 실패 중 알릴 만한 것: 브라우저·Cloudflare가 우리 인증서를 거부한 경우.
+/// 인터넷의 포트 스캐너는 평문 HTTP(InvalidContentType)·옛 TLS(Tls12NotOffered,
+/// SignatureAlgorithmsExtensionRequired)·맞지 않는 암호 조합(NoCipherSuitesInCommon)으로 찔러 보고
+/// 끊으므로, 그런 실패를 모두 남기면 진짜 문제가 로그에 묻힌다.
+fn is_certificate_rejection(error: &std::io::Error) -> bool {
+    use rustls::AlertDescription as Alert;
+    matches!(
+        error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<rustls::Error>()),
+        Some(rustls::Error::AlertReceived(
+            Alert::BadCertificate
+                | Alert::UnsupportedCertificate
+                | Alert::CertificateRevoked
+                | Alert::CertificateExpired
+                | Alert::CertificateUnknown
+                | Alert::UnknownCA
+        ))
+    )
+}
+
+/// 응답을 쓰기 전에 상대가 먼저 끊은 연결 (창을 닫았거나 스캐너). 서버 문제가 아니다.
+fn is_peer_disconnect(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io_error| {
+                matches!(
+                    io_error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::UnexpectedEof
+                )
+            })
+    })
 }
 
 /// 연결 하나를 받아 동시 연결 슬롯과 함께 돌려준다. accept 실패(EMFILE 등)는
