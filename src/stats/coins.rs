@@ -162,6 +162,10 @@ pub fn settle_bets(
         };
         let entry = ensure_player_stats(stats, player.user_id, &player.name);
         entry.coins = entry.coins.saturating_add(delta).max(0);
+        if won {
+            // 업적: 마피아 배팅 적중.
+            entry.rewards.bet_wins += 1;
+        }
         settlements.push(BetSettlement {
             user_id: player.user_id,
             name: player.name.clone(),

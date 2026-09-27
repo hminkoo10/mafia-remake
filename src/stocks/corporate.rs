@@ -431,7 +431,8 @@ impl StockMarket {
     // ------------------------------------------------------------ 배당·분배
 
     /// 주주에게 주당 `per_share`씩 준다: 플레이어는 코인으로, 시장조성자 몫은 금고로. 준 총액을 돌려준다.
-    fn pay_holders(&mut self, code: &str, per_share: i64, reason: &str) -> i64 {
+    /// `dividend`면 받은 배당금 누적에도 더한다 (청산 분배금은 배당이 아니다).
+    fn pay_holders(&mut self, code: &str, per_share: i64, reason: &str, dividend: bool) -> i64 {
         if per_share <= 0 {
             return 0;
         }
@@ -451,6 +452,9 @@ impl StockMarket {
         for (user, name, qty) in holders {
             let amount = qty.saturating_mul(per_share);
             self.transfer(user, &name, amount, format!("{code} {reason}"));
+            if dividend && let Some(account) = self.accounts.get_mut(&user) {
+                account.dividends = account.dividends.saturating_add(amount);
+            }
             paid = paid.saturating_add(amount);
         }
         let lp = self
@@ -482,7 +486,7 @@ impl StockMarket {
         let target = (company.price - per_share).max(1);
         let total = per_share.saturating_mul(company.shares);
         let player = company.is_player();
-        let paid = self.pay_holders(code, per_share, "배당금");
+        let paid = self.pay_holders(code, per_share, "배당금", true);
         if !player {
             self.stats.dividends = self.stats.dividends.saturating_add(paid);
         }
@@ -602,7 +606,7 @@ impl StockMarket {
                 );
             }
         }
-        let distributed = self.pay_holders(code, per_share, "청산 분배금");
+        let distributed = self.pay_holders(code, per_share, "청산 분배금", false);
         let before = self.listed_cap_sum();
         for account in self.accounts.values_mut() {
             account.positions.remove(code);

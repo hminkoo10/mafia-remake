@@ -26,18 +26,25 @@ async fn stock_progress(data: &Data, user_id: u64) -> (i64, stats::StockProgress
         realized: account.map_or(0, |account| account.realized),
         founded: founded.clone().count() as i64,
         listed: founded.filter(|company| company.listed_at > 0).count() as i64,
+        dividends: account.map_or(0, |account| account.dividends),
     };
     (today, progress)
 }
 
 fn claim_text(claim: &stats::Claim) -> Option<String> {
+    /// 한꺼번에 많이 받으면 앞의 몇 개만 적는다 (임베드 글자 수 한도 4,096).
+    const SHOWN: usize = 10;
     (claim.total > 0).then(|| {
-        let items = claim
+        let mut items = claim
             .paid
             .iter()
+            .take(SHOWN)
             .map(|(title, amount)| format!("{title} +{}", stats::coin_text(*amount)))
             .collect::<Vec<_>>()
             .join(", ");
+        if claim.paid.len() > SHOWN {
+            items.push_str(&format!(" 외 {}개", claim.paid.len() - SHOWN));
+        }
         format!(
             "🎁 **{} 받았습니다** ({items})\n보유 코인: **{}**",
             stats::coin_text(claim.total),
@@ -239,7 +246,7 @@ pub async fn achievements(ctx: Context<'_>) -> Result<(), Error> {
     }
     lines.push(String::new());
     lines.push(
-        "업적은 단계마다 한 번씩 받고, `/업적`을 쓰면 새로 이룬 단계의 보상을 바로 받습니다. 팀별 승리와 출석·미션 일수는 업적 개편 뒤부터 셉니다."
+        "업적은 단계마다 한 번씩 받고, `/업적`을 쓰면 새로 이룬 단계의 보상을 바로 받습니다. 팀별 승리와 출석·미션 일수는 업적 개편 뒤부터, 카지노 승리·배팅 적중·받은 배당금은 업적 추가 뒤부터 셉니다."
             .to_string(),
     );
     reply_embed(ctx, lines.join("\n"), "업적", serenity::Colour::GOLD, true).await?;

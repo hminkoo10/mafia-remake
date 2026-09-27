@@ -86,6 +86,11 @@ pub struct RewardRecord {
     pub casino_hands: i64,
     #[serde(default)]
     pub jackpots: i64,
+    /// 누적 카지노 승리(순이익이 난 판)·마피아 배팅 적중 수 (업적용, 업적 추가 뒤부터 센다).
+    #[serde(default)]
+    pub casino_wins: i64,
+    #[serde(default)]
+    pub bet_wins: i64,
     /// 팀별 승리 수 ("citizen", "mafia", "cult", "joker"). 업적 개편 뒤부터 센다.
     #[serde(default)]
     pub team_wins: BTreeMap<String, i64>,
@@ -235,12 +240,15 @@ pub fn grant_game_rewards(
     rewards
 }
 
-/// 카지노 한 판 (일일 미션·업적용).
-pub fn record_casino_hand(stats: &mut StatsFile, user_id: u64, name: &str, today: &str) {
+/// 카지노 한 판 (일일 미션·업적용). `won`은 그 판에서 순이익이 났는지.
+pub fn record_casino_hand(stats: &mut StatsFile, user_id: u64, name: &str, today: &str, won: bool) {
     let entry = ensure_player_stats(stats, user_id, name);
     entry.rewards.roll(today);
     entry.rewards.day_hands += 1;
     entry.rewards.casino_hands += 1;
+    if won {
+        entry.rewards.casino_wins += 1;
+    }
 }
 
 /// 카지노 잭팟 당첨 (업적용).
@@ -431,14 +439,19 @@ pub enum Metric {
     BestWinStreak,
     StarPlayer,
     RolesPlayed,
+    /// 한 직업(시민 빼고)으로 한 가장 많은 판 수.
+    RoleMastery,
     /// 팀별 승리 ("citizen", "mafia", "cult", "joker").
     TeamWins(&'static str),
     PlayHours,
     RatingPeak,
+    BetWins,
     CasinoHands,
+    CasinoWins,
     Jackpots,
     StockTrades,
     StockProfit,
+    Dividends,
     CompaniesFounded,
     CompaniesListed,
     AttendanceDays,
@@ -490,6 +503,9 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
             (300, 250_000),
             (500, 400_000),
             (1_000, 800_000),
+            (2_000, 1_500_000),
+            (3_000, 2_200_000),
+            (5_000, 3_500_000),
         ],
     ),
     track(
@@ -506,6 +522,8 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
             (200, 350_000),
             (300, 500_000),
             (500, 800_000),
+            (1_000, 1_500_000),
+            (2_000, 3_000_000),
         ],
     ),
     track(
@@ -513,7 +531,14 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
         "최고 연승",
         "{}연승",
         Metric::BestWinStreak,
-        &[(3, 20_000), (5, 50_000), (7, 100_000), (10, 250_000)],
+        &[
+            (3, 20_000),
+            (5, 50_000),
+            (7, 100_000),
+            (10, 250_000),
+            (15, 500_000),
+            (20, 1_000_000),
+        ],
     ),
     track(
         "star",
@@ -526,6 +551,8 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
             (10, 100_000),
             (30, 250_000),
             (50, 400_000),
+            (100, 800_000),
+            (200, 1_500_000),
         ],
     ),
     track(
@@ -539,6 +566,20 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
             (15, 100_000),
             (20, 200_000),
             (25, 300_000),
+            (30, 500_000),
+        ],
+    ),
+    track(
+        "role-master",
+        "한 직업 장인",
+        "한 직업(시민 빼고)으로 {}판",
+        Metric::RoleMastery,
+        &[
+            (20, 30_000),
+            (50, 80_000),
+            (100, 200_000),
+            (200, 400_000),
+            (500, 1_000_000),
         ],
     ),
     track(
@@ -546,35 +587,54 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
         "시민팀 승리",
         "시민팀으로 {}승",
         Metric::TeamWins("citizen"),
-        &[(10, 30_000), (50, 120_000), (100, 250_000)],
+        &[
+            (10, 30_000),
+            (50, 120_000),
+            (100, 250_000),
+            (300, 600_000),
+            (500, 1_000_000),
+        ],
     ),
     track(
         "mafia-wins",
         "마피아팀 승리",
         "마피아팀으로 {}승",
         Metric::TeamWins("mafia"),
-        &[(5, 30_000), (20, 100_000), (50, 250_000)],
+        &[
+            (5, 30_000),
+            (20, 100_000),
+            (50, 250_000),
+            (100, 500_000),
+            (200, 1_000_000),
+        ],
     ),
     track(
         "cult-wins",
         "교주팀 승리",
         "교주팀으로 {}승",
         Metric::TeamWins("cult"),
-        &[(3, 50_000), (10, 150_000)],
+        &[(3, 50_000), (10, 150_000), (30, 400_000)],
     ),
     track(
         "joker-wins",
         "조커 승리",
         "조커로 {}승",
         Metric::TeamWins("joker"),
-        &[(1, 50_000), (5, 200_000)],
+        &[(1, 50_000), (5, 200_000), (10, 400_000)],
     ),
     track(
         "hours",
         "플레이 시간",
         "마피아 {}시간",
         Metric::PlayHours,
-        &[(10, 30_000), (50, 100_000), (100, 200_000), (300, 500_000)],
+        &[
+            (10, 30_000),
+            (50, 100_000),
+            (100, 200_000),
+            (300, 500_000),
+            (500, 800_000),
+            (1_000, 1_500_000),
+        ],
     ),
     track(
         "rating",
@@ -586,6 +646,21 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
             (1_200, 80_000),
             (1_300, 150_000),
             (1_500, 300_000),
+            (1_600, 500_000),
+            (1_800, 1_000_000),
+        ],
+    ),
+    track(
+        "bet-wins",
+        "배팅 적중",
+        "마피아 배팅 {}번 적중",
+        Metric::BetWins,
+        &[
+            (1, 10_000),
+            (10, 40_000),
+            (50, 120_000),
+            (200, 350_000),
+            (500, 800_000),
         ],
     ),
     track(
@@ -600,6 +675,21 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
             (1_000, 100_000),
             (5_000, 300_000),
             (10_000, 500_000),
+            (20_000, 800_000),
+            (50_000, 1_500_000),
+        ],
+    ),
+    track(
+        "casino-wins",
+        "카지노 승리",
+        "카지노 {}판 이기기",
+        Metric::CasinoWins,
+        &[
+            (10, 20_000),
+            (100, 60_000),
+            (500, 150_000),
+            (1_000, 300_000),
+            (5_000, 800_000),
         ],
     ),
     track(
@@ -607,7 +697,7 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
         "카지노 잭팟",
         "잭팟 {}번",
         Metric::Jackpots,
-        &[(1, 50_000), (3, 150_000), (10, 400_000)],
+        &[(1, 50_000), (3, 150_000), (10, 400_000), (30, 1_000_000)],
     ),
     track(
         "stock",
@@ -620,6 +710,8 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
             (100, 100_000),
             (500, 250_000),
             (1_000, 400_000),
+            (3_000, 800_000),
+            (10_000, 1_500_000),
         ],
     ),
     track(
@@ -631,6 +723,21 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
             (100_000, 30_000),
             (1_000_000, 100_000),
             (10_000_000, 300_000),
+            (50_000_000, 800_000),
+            (100_000_000, 1_500_000),
+        ],
+    ),
+    track(
+        "dividends",
+        "배당 수령",
+        "배당금 {}원 받기",
+        Metric::Dividends,
+        &[
+            (10_000, 5_000),
+            (100_000, 15_000),
+            (1_000_000, 50_000),
+            (10_000_000, 150_000),
+            (100_000_000, 800_000),
         ],
     ),
     track(
@@ -652,21 +759,41 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
         "출석",
         "출석 {}일",
         Metric::AttendanceDays,
-        &[(7, 20_000), (30, 60_000), (100, 200_000), (365, 600_000)],
+        &[
+            (7, 20_000),
+            (30, 60_000),
+            (100, 200_000),
+            (365, 600_000),
+            (500, 1_000_000),
+            (1_000, 2_000_000),
+        ],
     ),
     track(
         "attend-streak",
         "최장 연속 출석",
         "{}일 연속 출석",
         Metric::AttendanceStreak,
-        &[(7, 30_000), (30, 100_000), (100, 300_000)],
+        &[
+            (7, 30_000),
+            (30, 100_000),
+            (100, 300_000),
+            (200, 600_000),
+            (365, 1_200_000),
+        ],
     ),
     track(
         "mission-days",
         "미션 올클리어",
         "미션 세 개 모두 {}일",
         Metric::MissionDays,
-        &[(1, 10_000), (10, 50_000), (30, 120_000), (100, 400_000)],
+        &[
+            (1, 10_000),
+            (10, 50_000),
+            (30, 120_000),
+            (100, 400_000),
+            (200, 700_000),
+            (365, 1_200_000),
+        ],
     ),
 ];
 
@@ -706,6 +833,8 @@ pub struct StockProgress {
     pub founded: i64,
     /// 상장까지 간 회사 수.
     pub listed: i64,
+    /// 받은 배당금 누적.
+    pub dividends: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -727,6 +856,7 @@ fn metric_value(entry: Option<&PlayerStats>, stock: StockProgress, metric: Metri
         return match metric {
             Metric::StockTrades => stock.trades,
             Metric::StockProfit => stock.realized.max(0),
+            Metric::Dividends => stock.dividends,
             Metric::CompaniesFounded => stock.founded,
             Metric::CompaniesListed => stock.listed,
             _ => 0,
@@ -738,13 +868,23 @@ fn metric_value(entry: Option<&PlayerStats>, stock: StockProgress, metric: Metri
         Metric::BestWinStreak => entry.best_win_streak,
         Metric::StarPlayer => entry.star_player_count,
         Metric::RolesPlayed => entry.roles.values().filter(|count| **count > 0).count() as i64,
+        Metric::RoleMastery => entry
+            .roles
+            .iter()
+            .filter(|(role, _)| role.as_str() != "시민")
+            .map(|(_, count)| *count)
+            .max()
+            .unwrap_or(0),
         Metric::TeamWins(team) => entry.rewards.team_wins.get(team).copied().unwrap_or(0),
         Metric::PlayHours => entry.play_seconds / 3_600,
         Metric::RatingPeak => entry.rating_peak,
+        Metric::BetWins => entry.rewards.bet_wins,
         Metric::CasinoHands => entry.rewards.casino_hands,
+        Metric::CasinoWins => entry.rewards.casino_wins,
         Metric::Jackpots => entry.rewards.jackpots,
         Metric::StockTrades => stock.trades,
         Metric::StockProfit => stock.realized.max(0),
+        Metric::Dividends => stock.dividends,
         Metric::CompaniesFounded => stock.founded,
         Metric::CompaniesListed => stock.listed,
         Metric::AttendanceDays => entry.rewards.attendance_days,

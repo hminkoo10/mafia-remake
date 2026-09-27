@@ -2095,7 +2095,7 @@ fn record_round_economy(
     let counts_rolling = result.game == GameKind::Blackjack || result.rake > 0;
     for entry in &result.results {
         // 코인 벌이: 일일 미션·업적용 카지노 판 수.
-        stats::record_casino_hand(stats_file, entry.user_id, &entry.name, &day);
+        stats::record_casino_hand(stats_file, entry.user_id, &entry.name, &day, entry.net > 0);
         if counts_rolling {
             stats::record_rolling(stats_file, entry.user_id, &entry.name, entry.wagered, &day);
         }

@@ -586,6 +586,11 @@ fn a_declared_dividend_is_paid_next_day_and_keeps_wealth_neutral() {
     let after = balances(&market);
     let holding2 = market.accounts[&2].positions[&code].qty;
     assert_eq!(after[&2] - before[&2], holding2 * 500);
+    assert_eq!(
+        market.accounts[&2].dividends,
+        holding2 * 500,
+        "받은 배당금 누적 (업적용)"
+    );
     assert_eq!(market.companies[&code].equity, equity - shares * 500);
     // 배당락: 주가가 배당금만큼 내려간다.
     let price_after = market.companies[&code].price;
@@ -725,6 +730,10 @@ fn a_founder_with_a_majority_can_dissolve_and_everyone_gets_book_value() {
         400 * per_share
     );
     assert_eq!(after[&2] - before[&2], market_qty_before(200) * per_share);
+    assert_eq!(
+        market.accounts[&2].dividends, 0,
+        "청산 분배금은 배당으로 세지 않는다"
+    );
     assert!(matches!(
         market.companies[&code].status,
         CompanyStatus::Delisted { .. }

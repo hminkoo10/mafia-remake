@@ -756,6 +756,10 @@ fn bet_settlement_pays_winners_and_charges_losers_within_bounds() {
     assert_eq!(stats.users["1"].coins, 10_000 + mafia.delta);
     assert_eq!(stats.users["2"].coins, 10_000 + police.delta);
     assert_eq!(stats.users["3"].coins, 10_000);
+    // 업적용 배팅 적중 수: 이긴 배팅만 센다 (배팅하지 않은 3번은 이겨도 세지 않는다).
+    assert_eq!(stats.users["1"].rewards.bet_wins, 0);
+    assert_eq!(stats.users["2"].rewards.bet_wins, 1);
+    assert_eq!(stats.users["3"].rewards.bet_wins, 0);
 }
 
 #[test]
@@ -1534,6 +1538,7 @@ fn achievements_pay_each_tier_once_and_follow_the_reward_rate() {
         realized: 150_000,
         founded: 1,
         listed: 0,
+        dividends: 0,
     };
     let off = RewardRules {
         achievement_pct: 0,
@@ -1610,6 +1615,59 @@ fn achievements_claimed_before_the_raise_get_the_difference_once() {
         &reward_rules(),
     );
     assert_eq!(again.total, 0, "차액은 한 번만 준다");
+}
+
+#[test]
+fn new_long_term_tracks_count_role_mastery_casino_wins_bets_and_dividends() {
+    let mut stats = StatsFile::default();
+    {
+        let entry = stats.users.entry("1".to_string()).or_default();
+        // 한 직업 장인은 시민을 빼고 가장 많이 한 직업으로 센다.
+        entry.roles = HashMap::from([
+            ("시민".to_string(), 300),
+            ("의사".to_string(), 30),
+            ("마피아".to_string(), 55),
+        ]);
+        entry.rewards.bet_wins = 12;
+        entry.rewards.achievement_version = 2;
+    }
+    for won in [true, true, false, true] {
+        record_casino_hand(&mut stats, 1, "Alpha", "2026-09-27", won);
+    }
+    let record = &stats.users["1"].rewards;
+    assert_eq!((record.casino_hands, record.casino_wins), (4, 3));
+    let stock = StockProgress {
+        dividends: 1_200_000,
+        ..StockProgress::default()
+    };
+    let statuses = achievement_status(stats.users.get("1"), stock, &reward_rules());
+    let progress = |key: &str| {
+        statuses
+            .iter()
+            .find(|status| status.track.key == key)
+            .map(|status| status.progress)
+            .unwrap()
+    };
+    assert_eq!(progress("role-master"), 55);
+    assert_eq!(progress("casino-wins"), 3);
+    assert_eq!(progress("bet-wins"), 12);
+    assert_eq!(progress("dividends"), 1_200_000);
+    let (_, claim) = claim_achievements(&mut stats, 1, "Alpha", stock, &reward_rules());
+    for title in [
+        "한 직업(시민 빼고)으로 50판",
+        "마피아 배팅 10번 적중",
+        "배당금 1,000,000원 받기",
+    ] {
+        assert!(
+            claim.paid.iter().any(|(paid, _)| paid == title),
+            "{title}: {:?}",
+            claim.paid
+        );
+    }
+    assert!(
+        !claim.paid.iter().any(|(paid, _)| paid.contains("100판")),
+        "시민 300판은 장인으로 치지 않는다"
+    );
 }
 
 #[test]
