@@ -774,11 +774,53 @@ fn a_rights_offering_raises_cash_from_shareholders_who_exercise() {
     let cost = market.exercise_rights(2, "U2", &code, 100, now).unwrap();
     assert_eq!(cost, 100 * offer);
     let equity = market.companies[&code].equity;
+    let minted = market.stats.lp_sold;
     market.tick(now + rules.day_ms() + TICK_MS, &rules, &mut rng());
     let company = &market.companies[&code];
-    assert_eq!(company.shares, 700, "행사한 만큼만 발행");
-    assert_eq!(company.equity, equity + cost);
+    // 대표가 행사하지 않은 200주는 실권주: 발행가가 주당 순자산보다 싸서 기관이 사려 하지만, 시장조성자가
+    // 들 수 있는 한도(증자 뒤 700주의 25% = 175주)까지만 인수하고 남은 25주는 발행하지 않는다.
+    assert_eq!(company.shares, 600 + 100 + 175);
+    assert_eq!(company.lp_inventory, Some(175));
+    assert_eq!(company.equity, equity + cost + 175 * offer);
+    assert_eq!(
+        market.stats.lp_sold - minted,
+        175 * offer,
+        "기관 납입금은 새 코인"
+    );
     assert_eq!(market.accounts[&2].positions[&code].qty, 300);
+    assert!(market.news.iter().any(|news| {
+        news.headline
+            .contains("주주 100주, 실권주 175주 기관 인수, 남은 25주 미발행")
+    }));
+}
+
+#[test]
+fn institutions_take_up_unsubscribed_rights_and_the_float_can_be_bought() {
+    let rules = quiet();
+    let mut market = market();
+    let (code, now) = listed_company(&mut market);
+    let price = market.companies[&code].price;
+    let offer = floor_tick(price * 9 / 10);
+    market
+        .start_rights(1, &code, 120, offer, now, &rules)
+        .unwrap();
+    assert!(
+        market
+            .news
+            .iter()
+            .any(|news| news.headline.contains("실권주는 기관 인수"))
+    );
+    // 대표만 자기 몫(80주)을 행사하고 2번은 행사하지 않는다 → 실권주 40주는 모두 기관이 인수한다.
+    market.exercise_rights(1, "U1", &code, 80, now).unwrap();
+    let now = now + rules.day_ms() + TICK_MS;
+    market.tick(now, &rules, &mut rng());
+    let company = &market.companies[&code];
+    assert_eq!(company.shares, 720);
+    assert_eq!(company.lp_inventory, Some(40));
+    // 이제 기존 상장사에도 시장에 풀린 물량이 있어 누구나 사고, 자사주 매입도 여기서 산다.
+    let bought = buy(&mut market, 3, &code, 5, None, 1_000_000, now).unwrap();
+    assert_eq!(bought.filled, 5);
+    assert_eq!(market.companies[&code].lp_inventory, Some(35));
 }
 
 #[test]

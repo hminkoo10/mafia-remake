@@ -279,6 +279,7 @@ function RightsSection({
       <h3>유상증자·신주인수</h3>
       <p className="desk-hint">
         상장사가 유상증자를 하면 그때의 주주에게 보유 주식 비율대로 신주인수권이 배정되고, 1게임일 안에 발행가를 내면 새 주식을 받습니다.
+        주주가 인수하지 않은 실권주는 발행가가 주당 순자산에 가까우면 기관이 인수해 시장에 풀립니다.
       </p>
       {state.rights_offerings.length === 0 && <p className="empty">진행 중인 유상증자가 없습니다.</p>}
       {state.rights_offerings.map((offer) => {

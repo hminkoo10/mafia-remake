@@ -322,7 +322,7 @@ function RightsForm({ detail, busy, run }: { detail: CompanyDetail; busy: boolea
       hint={
         running
           ? "진행 중인 유상증자가 있습니다."
-          : `지금 주주에게 보유 비율대로 신주인수권을 주고 1게임일 동안 청약을 받습니다. 발행가는 현재가의 70~100%(${won(low)}~${won(price)}), 들어온 대금은 회사 현금이 됩니다.`
+          : `지금 주주에게 보유 비율대로 신주인수권을 주고 1게임일 동안 청약을 받습니다. 발행가는 현재가의 70~100%(${won(low)}~${won(price)}), 들어온 대금은 회사 현금이 됩니다. 주주가 인수하지 않은 실권주는 발행가가 주당 순자산에 가까우면 기관이 인수해 시장에서 거래되고(시장조성자가 들 수 있는 만큼), 나머지는 발행하지 않습니다.`
       }
       submit={shares > 0 && issue > 0 ? `신주 ${won(shares)}주 발행 (최대 ${won(shares * issue)})` : "유상증자 결정"}
       disabled={running || shares <= 0 || issue <= 0}

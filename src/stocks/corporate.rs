@@ -65,7 +65,7 @@ impl StockMarket {
                 self.pay_declared_dividend(&code, at, report);
             }
             if rights_due {
-                self.finish_rights(&code, at, report);
+                self.finish_rights(&code, at, rules, report);
             }
             if ipo_due {
                 self.close_ipo(&code, at, rules, report);
@@ -1373,6 +1373,11 @@ impl StockMarket {
         }
         let shares = company.shares.max(1);
         let name = company.name.clone();
+        let institution_text = if institution_appetite(price, company.bvps()) > 0.0 {
+            ", 실권주는 기관 인수"
+        } else {
+            ""
+        };
         let rights = self
             .accounts
             .iter()
@@ -1403,7 +1408,7 @@ impl StockMarket {
             NewsKind::Disclosure,
             Some(code),
             format!(
-                "{name}, 주주배정 유상증자: 신주 {new_shares}주, 발행가 {} (1게임일 동안 청약)",
+                "{name}, 주주배정 유상증자: 신주 {new_shares}주, 발행가 {} (1게임일 동안 청약{institution_text})",
                 format_amount(price)
             ),
             -1,
@@ -1460,7 +1465,7 @@ impl StockMarket {
         Ok(cost)
     }
 
-    fn finish_rights(&mut self, code: &str, at: i64, report: &mut TickReport) {
+    fn finish_rights(&mut self, code: &str, at: i64, rules: &StockRules, report: &mut TickReport) {
         let Some(rights) = self
             .companies
             .get_mut(code)
@@ -1468,8 +1473,31 @@ impl StockMarket {
         else {
             return;
         };
-        let total = rights.exercised.values().sum::<i64>();
+        let exercised = rights.exercised.values().sum::<i64>();
+        // 실권주 (주주가 인수하지 않은 신주, 시장조성자 몫 포함): 실제처럼 기관이 발행가에 인수해 시장에
+        // 풀린다. 기관 납입금은 공모 기관 배정처럼 새로 생기는 코인이다. 기관도 사지 않은 몫은 발행하지 않는다.
+        let unsubscribed = (rights.shares - exercised).max(0);
+        let institutions = self.companies.get(code).map_or(0, |company| {
+            company.lp_inventory.map_or(0, |inventory| {
+                rights_institution_shares(
+                    unsubscribed,
+                    rights.price,
+                    company.bvps(),
+                    company.shares.saturating_add(exercised),
+                    inventory,
+                    rules,
+                )
+            })
+        });
+        let dropped = unsubscribed - institutions;
+        let total = exercised + institutions;
         let proceeds = total.saturating_mul(rights.price);
+        if institutions > 0 {
+            self.stats.lp_sold = self
+                .stats
+                .lp_sold
+                .saturating_add(institutions.saturating_mul(rights.price));
+        }
         let before = self.listed_cap_sum();
         for (user, qty) in &rights.exercised {
             let name = self
@@ -1491,11 +1519,21 @@ impl StockMarket {
         company.shares = company.shares.saturating_add(total);
         company.equity = company.equity.saturating_add(proceeds);
         company.paid_in = company.paid_in.saturating_add(proceeds);
+        if let Some(inventory) = company.lp_inventory.as_mut() {
+            *inventory = inventory.saturating_add(institutions);
+        }
         company.adv = (company.shares / 50).max(10);
         company.depth = (company.adv / 20).max(1);
         self.rebase_index(before);
+        let mut detail = format!("주주 {exercised}주");
+        if institutions > 0 {
+            detail.push_str(&format!(", 실권주 {institutions}주 기관 인수"));
+        }
+        if dropped > 0 {
+            detail.push_str(&format!(", 남은 {dropped}주 미발행"));
+        }
         self.log(format!(
-            "🏢 {name}({code}) 유상증자 완료: 신주 {total}주, {} 조달",
+            "🏢 {name}({code}) 유상증자 완료: 신주 {total}주 ({detail}), {} 조달",
             format_amount(proceeds)
         ));
         let item = self.push_news(
@@ -1503,7 +1541,7 @@ impl StockMarket {
             NewsKind::Disclosure,
             Some(code),
             format!(
-                "{name}, 유상증자 완료: 신주 {total}주 발행, {} 조달",
+                "{name}, 유상증자 완료: 신주 {total}주 발행 ({detail}), {} 조달",
                 format_amount(proceeds)
             ),
             0,
@@ -1711,15 +1749,40 @@ fn player_daily_vol(risk: u8) -> f64 {
     0.012 + 0.006 * f64::from(risk.clamp(1, 5))
 }
 
+/// 기관이 플레이어 회사 신주를 사려는 정도 (0~1): 값이 주당 순자산 이하면 1, 비쌀수록 줄어 2배면 0.
+fn institution_appetite(price: i64, bvps: f64) -> f64 {
+    if price <= 0 || bvps.is_nan() || bvps <= 0.0 {
+        return 0.0;
+    }
+    (2.0 - price as f64 / bvps).clamp(0.0, 1.0)
+}
+
 /// 공모 기관 배정 수량 (수요예측): 공모가가 주당 순자산 이하면 공모 주식의 `ipo_institution_bp`만큼,
 /// 비쌀수록 줄어 순자산의 2배 이상이면 받아 가지 않는다.
 pub fn institution_shares(offered: i64, price: i64, bvps: f64, rules: &StockRules) -> i64 {
-    if offered <= 0 || price <= 0 || bvps.is_nan() || bvps <= 0.0 {
+    if offered <= 0 {
         return 0;
     }
-    let appetite = (2.0 - price as f64 / bvps).clamp(0.0, 1.0);
     let share = rules.ipo_institution_bp.clamp(0, BP) as f64 / BP as f64;
-    ((offered as f64 * share * appetite).floor() as i64).clamp(0, offered)
+    ((offered as f64 * share * institution_appetite(price, bvps)).floor() as i64).clamp(0, offered)
+}
+
+/// 유상증자 실권주 중 기관이 인수하는 수량: 발행가를 보고 사려는 만큼(`institution_appetite`)을,
+/// 시장조성자가 들 수 있는 한도(증자 뒤 발행 주식의 `lp_inventory_bp`) 안에서.
+pub fn rights_institution_shares(
+    unsubscribed: i64,
+    price: i64,
+    bvps: f64,
+    shares_after: i64,
+    inventory: i64,
+    rules: &StockRules,
+) -> i64 {
+    if unsubscribed <= 0 {
+        return 0;
+    }
+    let wanted = (unsubscribed as f64 * institution_appetite(price, bvps)).floor() as i64;
+    let room = shares_after.saturating_mul(rules.lp_inventory_bp.clamp(0, BP)) / BP - inventory;
+    wanted.min(room).clamp(0, unsubscribed)
 }
 
 fn normalize_name(name: &str) -> String {
