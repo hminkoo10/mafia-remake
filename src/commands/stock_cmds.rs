@@ -991,26 +991,40 @@ pub async fn stock_unsubscribe(
 )]
 pub async fn stock_web(ctx: Context<'_>) -> Result<(), Error> {
     let name = display_name(ctx).await;
-    let token = ctx
-        .data()
-        .casino
-        .issue_session(ctx.author().id.get(), name.clone());
-    let link = crate::stock_web::stocks_link(&ctx.data().casino_base_url, &token);
-    let admin = matches!(
-        manager_denial(
-            ctx.serenity_context(),
-            ctx.data(),
-            ctx.guild_id(),
-            ctx.author().id
-        )
-        .await,
-        Ok(None)
-    );
+    let (link, text) = stock_site_link(
+        ctx.serenity_context(),
+        ctx.data(),
+        ctx.guild_id(),
+        ctx.author().id,
+        &name,
+    )
+    .await;
+    ctx.send(
+        poise::CreateReply::default()
+            .embed(make_embed(text, "마피아증권", serenity::Colour::DARK_GREEN))
+            .components(site_link_button(link))
+            .ephemeral(true),
+    )
+    .await?;
+    Ok(())
+}
+
+/// 증권 사이트 개인 링크와 안내 (`/주식 증권`과 시세판의 '마피아증권 열기' 버튼이 같이 쓴다).
+/// 관리자면 링크가 유효한 동안 사이트의 관리 탭을 쓸 수 있다.
+async fn stock_site_link(
+    ctx: &serenity::Context,
+    data: &Data,
+    guild_id: Option<serenity::GuildId>,
+    user_id: serenity::UserId,
+    name: &str,
+) -> (String, String) {
+    let token = data.casino.issue_session(user_id.get(), name.to_string());
+    let link = crate::stock_web::stocks_link(&data.casino_base_url, &token);
+    let admin = matches!(manager_denial(ctx, data, guild_id, user_id).await, Ok(None));
     if admin {
-        ctx.data()
-            .stocks
+        data.stocks
             .grant_web_admin(
-                ctx.author().id.get(),
+                user_id.get(),
                 now_ms() + crate::casino_hub::CASINO_SESSION_TTL_SECONDS as i64 * 1000,
             )
             .await;
@@ -1020,16 +1034,54 @@ pub async fn stock_web(ctx: Context<'_>) -> Result<(), Error> {
     } else {
         ""
     };
-    reply_embed(
-        ctx,
-        format!(
-            "마피아증권 링크입니다.\n{link}\n\n⚠️ 이 링크는 **{name}** 님 전용이고 12시간 동안 유효합니다. 다른 사람과 공유하지 마세요.{admin_note}"
-        ),
-        "마피아증권",
-        serenity::Colour::DARK_GREEN,
-        true,
-    )
-    .await?;
+    let text = format!(
+        "마피아증권 링크입니다.\n{link}\n\n⚠️ 이 링크는 **{name}** 님 전용이고 12시간 동안 유효합니다. 다른 사람과 공유하지 마세요.{admin_note}"
+    );
+    (link, text)
+}
+
+/// 개인 링크로 바로 여는 버튼.
+fn site_link_button(link: String) -> Vec<serenity::CreateActionRow> {
+    vec![serenity::CreateActionRow::Buttons(vec![
+        serenity::CreateButton::new_link(link)
+            .label("마피아증권 열기")
+            .emoji('📈'),
+    ])]
+}
+
+/// 시세판 아래 버튼. 링크는 사람마다 달라 누른 사람에게 따로 준다 (`handle_stock_site`).
+fn stock_panel_buttons() -> Vec<serenity::CreateActionRow> {
+    vec![serenity::CreateActionRow::Buttons(vec![
+        serenity::CreateButton::new("stock_site")
+            .label("마피아증권 열기")
+            .emoji('📈')
+            .style(serenity::ButtonStyle::Primary),
+    ])]
+}
+
+/// 시세판의 '마피아증권 열기' 버튼: 누른 사람에게만 보이는 개인 링크를 준다 (`/주식 증권`과 같다).
+pub async fn handle_stock_site(
+    ctx: &serenity::Context,
+    data: &Data,
+    component: &serenity::ComponentInteraction,
+) -> anyhow::Result<()> {
+    // 관리자 확인에 Discord 조회가 걸릴 수 있어 먼저 응답을 미뤄 둔다 (3초 안에 답해야 한다).
+    component.defer_ephemeral(&ctx.http).await?;
+    let name = component
+        .member
+        .as_ref()
+        .map(|member| member.display_name().to_string())
+        .unwrap_or_else(|| component.user.name.clone());
+    let (link, text) =
+        stock_site_link(ctx, data, component.guild_id, component.user.id, &name).await;
+    component
+        .edit_response(
+            &ctx.http,
+            serenity::EditInteractionResponse::new()
+                .embed(make_embed(text, "마피아증권", serenity::Colour::DARK_GREEN))
+                .components(site_link_button(link)),
+        )
+        .await?;
     Ok(())
 }
 
@@ -1711,11 +1763,13 @@ pub async fn stock_panel(ctx: Context<'_>) -> Result<(), Error> {
         .channel_id()
         .send_message(
             ctx.http(),
-            serenity::CreateMessage::new().embed(make_embed(
-                text.clone(),
-                "증권 시세판",
-                serenity::Colour::DARK_GREEN,
-            )),
+            serenity::CreateMessage::new()
+                .embed(make_embed(
+                    text.clone(),
+                    "증권 시세판",
+                    serenity::Colour::DARK_GREEN,
+                ))
+                .components(stock_panel_buttons()),
         )
         .await?;
     let _ = message.pin(ctx.http()).await;
@@ -1904,11 +1958,13 @@ async fn refresh_stock_panel(ctx: &serenity::Context, data: &Data) {
         let posted = serenity::ChannelId::new(channel)
             .send_message(
                 &ctx.http,
-                serenity::CreateMessage::new().embed(make_embed(
-                    text.clone(),
-                    "증권 시세판",
-                    serenity::Colour::DARK_GREEN,
-                )),
+                serenity::CreateMessage::new()
+                    .embed(make_embed(
+                        text.clone(),
+                        "증권 시세판",
+                        serenity::Colour::DARK_GREEN,
+                    ))
+                    .components(stock_panel_buttons()),
             )
             .await;
         match posted {
@@ -1945,11 +2001,13 @@ async fn refresh_stock_panel(ctx: &serenity::Context, data: &Data) {
         .edit_message(
             &ctx.http,
             serenity::MessageId::new(message),
-            serenity::EditMessage::new().embed(make_embed(
-                text.clone(),
-                "증권 시세판",
-                serenity::Colour::DARK_GREEN,
-            )),
+            serenity::EditMessage::new()
+                .embed(make_embed(
+                    text.clone(),
+                    "증권 시세판",
+                    serenity::Colour::DARK_GREEN,
+                ))
+                .components(stock_panel_buttons()),
         )
         .await;
     match result {
