@@ -132,13 +132,6 @@ pub async fn stock(_ctx: Context<'_>) -> Result<(), Error> {
 /// 시장 요약 본문 (시세판과 /주식 시세가 같이 쓴다).
 pub fn market_board_text(market: &StockMarket, now: i64) -> String {
     let mut lines = vec![format!("마피아 종합지수 **{}**", index_change(market))];
-    if market.time_shift_ms > 0 {
-        lines.push(format!(
-            "⏩ 시장 시각 {} (관리자가 게임일을 넘겨 실제보다 {} 앞섬)",
-            kst_clock(now),
-            market_engine::duration_text(market.time_shift_ms)
-        ));
-    }
     if now < market.halted_until {
         lines.push(format!(
             "⛔ 서킷브레이커: {}까지 모든 거래 정지",
@@ -1673,26 +1666,22 @@ pub async fn manage_stocks(
     }
 }
 
-/// 관리자: 게임일을 넘긴다 (청약·배당·유상증자·보호예수 등 게임일 단위 일정이 그만큼 앞당겨진다).
+/// 관리자: 게임일을 넘긴다. 시장이 그 게임일로 완전히 이동한다 (되돌리지 않는다).
 async fn skip_game_days(ctx: Context<'_>, days: i64) -> Result<(), Error> {
     if let Err(error) = ctx.defer_ephemeral().await {
         eprintln!("failed to defer 게임일 넘기기: {error:?}");
     }
     match ctx.data().stocks.skip_game_days(days).await {
-        Ok((_, skipped)) => {
-            let skipped = market_engine::duration_text(skipped);
+        Ok(_) => {
             let text = format!(
-                "게임일을 {days}일 넘겼습니다. 시장 시계가 {skipped} 앞당겨졌습니다. 그 사이의 시세·주문·청약·배당은 모두 처리했습니다."
+                "게임일을 {days}일 넘겨 새 게임일이 시작됐습니다. 그 사이의 시세·주문·청약·배당·보호예수는 모두 처리했습니다."
             );
             let log_channel_id = ctx.data().config.read().await.log_channel_id;
             send_admin_log(
                 ctx.http(),
                 log_channel_id,
                 "주식 관리",
-                format!(
-                    "{} 님이 게임일을 {days}일 넘김 ({skipped})",
-                    ctx.author().name
-                ),
+                format!("{} 님이 게임일을 {days}일 넘김", ctx.author().name),
             )
             .await;
             reply_embed(ctx, text, "주식 관리", serenity::Colour::DARK_GREEN, true).await?;

@@ -556,13 +556,13 @@ impl StockHub {
         market.portfolio_value(user, market.clock(now_ms()))
     }
 
-    /// 시장 시각 (관리자가 게임일을 넘긴 만큼 실제 시각보다 앞선다).
+    /// 시장 시각 (관리자가 넘긴 게임일만큼 이동한 시장의 시계).
     pub async fn now(&self) -> i64 {
         self.market.read().await.clock(now_ms())
     }
 
     /// 관리자: 게임일을 넘긴다. 시장 시계를 옮기고 그 사이를 바로 따라잡은 뒤 저장한다.
-    /// 돌려주는 값은 (지금 게임일 번호, 앞당긴 시간 ms).
+    /// 돌려주는 값은 (지금 게임일 번호, 시장 시계가 이동한 시간 ms).
     pub async fn skip_game_days(&self, days: i64) -> std::result::Result<(i64, i64), String> {
         let (rules, _) = self.rules().await;
         if !rules.enabled {
@@ -684,7 +684,7 @@ mod tests {
                 .iter()
                 .any(|item| item.headline.contains("게임일을 1일 넘겼습니다"))
         );
-        // 시장 파일에 앞당긴 시계가 남아 다시 켜도 이어진다.
+        // 이동한 시장 시계는 시장 파일에 남아 다시 켜도 이어진다.
         let reloaded = StockHub::load(
             dir.join("stocks.json"),
             Arc::new(RwLock::new(StatsFile::default())),

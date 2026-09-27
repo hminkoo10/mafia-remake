@@ -18,7 +18,7 @@ export function AdminTab({ state, busy, act }: { state: StockState; busy: boolea
   const nameOf = (target: string) => companies.find((company) => company.code === target)?.name ?? target;
 
   const skip = () => {
-    if (window.confirm(`게임일을 ${days}일 넘길까요? 시장 시계가 앞당겨지고 그 사이 시세·청약·배당이 바로 처리됩니다.`)) {
+    if (window.confirm(`게임일을 ${days}일 넘길까요? 시장이 그 게임일로 이동하고 그 사이의 시세·청약·배당이 바로 처리됩니다. 되돌릴 수 없습니다.`)) {
       void act((t) => adminAction(t, { action: "skip", days }));
     }
   };
@@ -102,8 +102,8 @@ export function AdminTab({ state, busy, act }: { state: StockState; busy: boolea
         <div className="desk-form">
           <h4>게임일 넘기기</h4>
           <p className="desk-hint">
-            시장 시계를 다음 게임일로 옮기고 그 사이의 시세·주문·청약·배당·보호예수를 바로 처리합니다 (한 번에 24일까지).
-            {state.time_shift_ms > 0 && ` 지금 시장 시계는 실제보다 ${Math.round(state.time_shift_ms / 60_000)}분 앞서 있습니다.`}
+            시장을 그만큼 뒤 게임일의 시작으로 이동하고 그 사이의 시세·주문·청약·배당·보호예수를 바로 처리합니다 (한 번에 24일까지, 되돌릴 수
+            없음).
           </p>
           <label className="desk-field">
             <span>넘길 게임일</span>

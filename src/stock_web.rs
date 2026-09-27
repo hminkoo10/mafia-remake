@@ -17,7 +17,7 @@ use axum::{
 };
 use mafia_remake::stocks::{
     AccountView, Candle, CompanyDetail, CompanyStatus, MarketStats, MarketSummary, NewsItem,
-    Sector, Side, StockMarket, duration_text, format_amount,
+    Sector, Side, StockMarket, format_amount,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -204,10 +204,8 @@ pub struct OfferingView {
 
 #[derive(Debug, Serialize)]
 pub struct StockState {
-    /// 시장 시각 (관리자가 게임일을 넘기면 실제 시각보다 앞선다).
+    /// 시장 시각 (관리자가 게임일을 넘기면 그만큼 이동해 있다).
     pub server_time: i64,
-    /// 시장 시계가 실제 시각보다 앞선 시간 (ms).
-    pub time_shift_ms: i64,
     pub me: StockMe,
     pub market: MarketSummary,
     pub selected: Option<CompanyDetail>,
@@ -339,7 +337,6 @@ async fn build_state(stocks: &StockHub, user: u64, name: &str, code: Option<&str
     });
     StockState {
         server_time: now,
-        time_shift_ms: market.time_shift_ms,
         me: StockMe {
             user_id: user.to_string(),
             name: name.to_string(),
@@ -749,15 +746,10 @@ async fn admin_handler(
             )
             .await
             .map(|name| (format!("{name} 거래재개"), Some(code))),
-        AdminAction::Skip { days } => stocks.skip_game_days(days).await.map(|(_, skipped)| {
-            (
-                format!(
-                    "게임일을 {days}일 넘겼습니다 (시장 시계 {} 앞당김)",
-                    duration_text(skipped)
-                ),
-                None,
-            )
-        }),
+        AdminAction::Skip { days } => stocks
+            .skip_game_days(days)
+            .await
+            .map(|_| (format!("게임일을 {days}일 넘겼습니다"), None)),
         AdminAction::Channels {
             panel_channel,
             news_channel,

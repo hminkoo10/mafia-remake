@@ -376,8 +376,9 @@ impl StockMarket {
         real_now.saturating_add(self.time_shift_ms.max(0))
     }
 
-    /// 관리자: 게임일을 `days`일 넘긴다. 시장 시계를 그만큼 뒤 게임일의 시작으로 옮기고, 알릴 뉴스를
-    /// 돌려준다. 그 사이의 시세·주문·청약·배당 등은 다음 `tick`이 5초 단위로 따라잡는다.
+    /// 관리자: 게임일을 `days`일 넘긴다. 시장 시계를 그만큼 뒤 게임일의 시작으로 옮기고(되돌리지 않는다),
+    /// 알릴 뉴스를 돌려준다. 그 사이의 시세·주문·청약·배당 등은 다음 `tick`이 5초 단위로 따라잡는다.
+    /// 시장의 모든 시각(뉴스·봉·일정)은 이 시계를 쓰고, 화면은 실제 시각과 비교하지 않는다.
     pub fn skip_game_days(&mut self, market_now: i64, days: i64, rules: &StockRules) -> NewsItem {
         let days = days.clamp(1, MAX_SKIP_DAYS);
         let day_ms = rules.day_ms();
@@ -388,10 +389,7 @@ impl StockMarket {
             market_now,
             NewsKind::Market,
             None,
-            format!(
-                "관리자가 게임일을 {days}일 넘겼습니다. 시장 시계가 {} 앞당겨졌습니다.",
-                duration_text(skipped)
-            ),
+            format!("관리자가 게임일을 {days}일 넘겼습니다. 새 게임일이 시작됩니다."),
             0,
         )
     }
