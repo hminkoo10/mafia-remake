@@ -777,6 +777,9 @@ pub struct ConfirmVoteResult {
     pub judge: Option<Player>,
     pub judge_choice: Option<bool>,
     pub decided_by_judge: bool,
+    /// 판사가 살아 있던 찬반투표 (동률 없이 과반 미달로 보고 판사의 표를 따른다).
+    #[serde(default)]
+    pub judge_present: bool,
 }
 
 #[cfg(test)]

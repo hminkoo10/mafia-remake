@@ -3759,6 +3759,54 @@ fn gangster_vote_block_does_not_change_confirmation_majority() {
     assert_eq!(result.weighted_vote_counts.get(&false).copied(), Some(3));
 }
 
+/// 판사가 살아 있으면 찬반 동률이 없다: 과반 미달과 같게 보고 판사의 표를 따른다.
+#[test]
+fn a_living_judge_leaves_no_confirmation_tie() {
+    let players = (1..=5)
+        .map(|id| (id, format!("Player {id}")))
+        .collect::<Vec<_>>();
+    let judge_game = || {
+        let mut game = MafiaGame::new(players.clone(), 1, 0, 0, Vec::new()).unwrap();
+        for id in 1..=5 {
+            game.get_player_mut(id).unwrap().role = Role::Citizen;
+        }
+        game.get_player_mut(1).unwrap().role = Role::Mafia;
+        game.get_player_mut(4).unwrap().role = Role::Judge;
+        game.phase = Phase::ConfirmVote;
+        game
+    };
+
+    // 2:2에서 판사가 반대: 동률이 아니라 과반 미달로 처형하지 않고, 판사도 드러나지 않는다.
+    let mut game = judge_game();
+    for (voter, approve) in [(1, true), (2, true), (3, false), (4, false)] {
+        game.submit_confirmation_vote(voter, approve).unwrap();
+    }
+    let result = game.resolve_confirmation_vote(5).unwrap();
+    assert!(!result.tied);
+    assert!(!result.approved && result.executed.is_none());
+    assert!(result.judge_present && !result.decided_by_judge);
+    assert!(!game.revealed_judge_ids.contains(&4));
+
+    // 2:2에서 판사가 찬성: 판사의 표를 따라 처형한다.
+    let mut game = judge_game();
+    for (voter, approve) in [(1, true), (2, false), (3, false), (4, true)] {
+        game.submit_confirmation_vote(voter, approve).unwrap();
+    }
+    let result = game.resolve_confirmation_vote(5).unwrap();
+    assert!(!result.tied);
+    assert!(result.approved && result.decided_by_judge);
+    assert_eq!(result.executed.map(|player| player.user_id), Some(5));
+
+    // 판사가 죽었으면 판사를 따를 수 없으니 동률은 그대로 동률이다.
+    let mut game = judge_game();
+    game.get_player_mut(4).unwrap().alive = false;
+    for (voter, approve) in [(1, true), (2, false)] {
+        game.submit_confirmation_vote(voter, approve).unwrap();
+    }
+    let result = game.resolve_confirmation_vote(5).unwrap();
+    assert!(result.tied && !result.judge_present);
+}
+
 #[test]
 fn politician_vote_displays_one_but_counts_as_two_for_nomination() {
     let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();

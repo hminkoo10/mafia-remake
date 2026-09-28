@@ -269,7 +269,10 @@ impl MafiaGame {
                 decided_by_judge = true;
             }
         }
-        let tied = !decided_by_judge && !normal_approved && yes == no;
+        // 판사가 살아 있는 판에는 찬반 동률이 없다: 과반 미달과 같게 보고 판사의 표를 따른다
+        // (판사가 찬성이면 위에서 뒤집어 처형하고, 반대면 그대로 처형하지 않는다).
+        let judge_present = judge.is_some();
+        let tied = !judge_present && !decided_by_judge && !normal_approved && yes == no;
         let blocked_by_politician = approved
             && target.as_ref().is_some_and(|target| {
                 target.role == Role::Politician && self.passive_ability_active(target)
@@ -309,6 +312,7 @@ impl MafiaGame {
                         judge: if decided_by_judge { judge } else { None },
                         judge_choice: if decided_by_judge { judge_choice } else { None },
                         decided_by_judge,
+                        judge_present,
                     });
                 }
                 executed = self.mark_dead(target.user_id);
@@ -346,6 +350,7 @@ impl MafiaGame {
             judge: if decided_by_judge { judge } else { None },
             judge_choice: if decided_by_judge { judge_choice } else { None },
             decided_by_judge,
+            judge_present,
         })
     }
 }

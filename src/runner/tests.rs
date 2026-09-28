@@ -228,6 +228,23 @@ fn confirmation_summary_requires_strict_majority_for_even_votes() {
 }
 
 #[test]
+fn a_judge_game_reports_an_even_split_as_below_majority() {
+    let result = ConfirmVoteResult {
+        vote_counts: HashMap::from([(true, 2), (false, 2)]),
+        judge_present: true,
+        ..Default::default()
+    };
+    let context = ConfirmationVoteContext {
+        eligible_voters: 5,
+        submitted_voters: 4,
+    };
+    assert_eq!(
+        confirmation_rejection_message(&result, context),
+        "찬성이 투표수 기준 과반수에 도달하지 못해 처형하지 않습니다. (찬성 2/3표)"
+    );
+}
+
+#[test]
 fn confirmation_summary_can_hide_vote_counts() {
     let result = ConfirmVoteResult {
         vote_counts: HashMap::from([(true, 3), (false, 2)]),

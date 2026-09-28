@@ -1100,7 +1100,13 @@ pub(crate) fn confirmation_rejection_message(
     let counts = confirmation_weighted_counts(confirm_result);
     let yes = counts.get(&true).copied().unwrap_or(0);
     let no = counts.get(&false).copied().unwrap_or(0);
-    if yes == no {
+    if yes == no && confirm_result.judge_present {
+        // 판사가 있는 판에는 동률이 없다: 과반 미달로 처형하지 않는다.
+        let required_yes = confirmation_required_yes(confirm_result);
+        format!(
+            "찬성이 투표수 기준 과반수에 도달하지 못해 처형하지 않습니다. (찬성 {yes}/{required_yes}표)"
+        )
+    } else if yes == no {
         "찬성과 반대가 같아 처형하지 않습니다.".to_string()
     } else if yes > no {
         let required_yes = confirmation_required_yes(confirm_result);
