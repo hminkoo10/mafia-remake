@@ -386,13 +386,12 @@ pub async fn unlock_pending_dead_chats(
                 .is_some_and(|player| can_use_anonymous_dead_chat(&running_read, player))
         };
         set_shaman_channel_member_access(ctx, running, player, true, can_dead_chat).await;
-        if can_dead_chat {
-            if ensure_anonymous_dead_input_channel(ctx, running, player, roles, category, true)
-                .await
-                .is_none()
-            {
-                failed_dead_chat_names.push(player.name.clone());
-            }
+        // 성불(영매·퇴마)된 사망자도 채팅방은 받는다: 읽기만 하고 말은 못 한다.
+        if ensure_anonymous_dead_input_channel(ctx, running, player, roles, category, can_dead_chat)
+            .await
+            .is_none()
+        {
+            failed_dead_chat_names.push(player.name.clone());
         }
         if anonymous_enabled && running.read().await.shaman_channel_id.is_some() {
             let can_shaman_chat = {
@@ -481,23 +480,29 @@ pub async fn apply_death_side_effects(
     let category = running_source_category(ctx, running).await;
     let anonymous_enabled = running.read().await.anonymous_enabled;
     for player in dead_players {
-        let can_chat = {
+        let (can_view, can_chat) = {
             let running_read = running.read().await;
             running_read
                 .game
                 .get_player(player.user_id)
-                .is_some_and(|player| can_use_anonymous_dead_chat(&running_read, player))
+                .map_or((false, false), |player| {
+                    (
+                        can_view_anonymous_dead_chat(&running_read, player),
+                        can_use_anonymous_dead_chat(&running_read, player),
+                    )
+                })
         };
         let dead_channel_exists = running
             .read()
             .await
             .anonymous_dead_input_channel_ids
             .contains_key(&player.user_id);
-        if can_chat || dead_channel_exists {
+        // 퇴마로 죽은 사람처럼 죽자마자 성불된 사망자도 읽기 전용 채팅방을 받는다.
+        if can_view || dead_channel_exists {
             if ensure_anonymous_dead_input_channel(ctx, running, player, roles, category, can_chat)
                 .await
                 .is_none()
-                && can_chat
+                && can_view
             {
                 failed_dead_chat_names.push(player.name.clone());
             }

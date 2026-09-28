@@ -1140,16 +1140,7 @@ pub async fn apply_purification_side_effects(
     if purified_user_ids.is_empty() {
         return;
     }
-    {
-        let mut running_write = running.write().await;
-        for user_id in purified_user_ids {
-            running_write.dead_chat_unlocked_ids.remove(user_id);
-            running_write.pending_dead_chat_user_ids.remove(user_id);
-            running_write
-                .dead_role_chat_visible_from_days
-                .remove(user_id);
-        }
-    }
+    // 사망자 채팅에서는 빼지 않는다: 입만 막고(채팅방은 읽기 전용) 계속 읽게 한다.
     let anonymous_enabled = running.read().await.anonymous_enabled;
     let roles = match running_channel_roles(ctx, data, running).await {
         Some(roles) => roles,

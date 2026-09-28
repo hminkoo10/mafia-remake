@@ -872,14 +872,21 @@ pub fn private_role_member_can_chat(game: &MafiaGame, role: Role, player: &Playe
     true
 }
 
+/// 사망자 채팅을 읽을 수 있는지: 사망자 채팅이 열린 사망자. 성불(영매의 성불, 마피아의 퇴마)된
+/// 사망자도 입만 막히고 읽기는 그대로 한다.
+pub fn can_view_anonymous_dead_chat(running: &RunningGame, player: &Player) -> bool {
+    !player.alive && running.dead_chat_unlocked_ids.contains(&player.user_id)
+}
+
+/// 사망자 채팅에 말할 수 있는지: 읽을 수 있고 성불되지 않은 사망자.
 pub fn can_use_anonymous_dead_chat(running: &RunningGame, player: &Player) -> bool {
-    !player.alive
-        && running.dead_chat_unlocked_ids.contains(&player.user_id)
+    can_view_anonymous_dead_chat(running, player)
         && !running.game.purified_dead_ids.contains(&player.user_id)
 }
 
+/// 밤의 역할 채팅을 사망자 채팅방으로 받아 보는지 (읽기라서 성불돼도 받는다).
 pub fn can_receive_role_chat_as_dead(running: &RunningGame, player: &Player) -> bool {
-    can_use_anonymous_dead_chat(running, player)
+    can_view_anonymous_dead_chat(running, player)
         && running.game.phase == Phase::Night
         && running
             .dead_role_chat_visible_from_days

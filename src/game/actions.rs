@@ -801,7 +801,7 @@ impl MafiaGame {
         self.shaman_targets.insert(actor_id, target_id);
         self.purified_dead_ids.insert(target.user_id);
         Ok(format!(
-            "{prefix}[성불] {} 님의 직업은 **{}** 입니다.\n대상은 사망자 채널에서 채팅할 수 없습니다.",
+            "{prefix}[성불] {} 님의 직업은 **{}** 입니다.\n대상은 사망자 채팅을 읽기만 하고 말할 수 없습니다.",
             target.name,
             self.visible_role(&target).value()
         ))

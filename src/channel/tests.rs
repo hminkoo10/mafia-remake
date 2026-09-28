@@ -374,6 +374,51 @@ fn vote_victim_receives_role_chat_from_the_following_night() {
     assert!(can_receive_role_chat_as_dead(&running, &dead_player));
 }
 
+/// 성불(영매의 성불, 마피아의 퇴마)된 사망자는 입만 막힌다: 사망자 채팅과 역할 채팅은 계속 읽고
+/// 말만 못 하며, 영매는 접촉할 수 없다. 퇴마로 죽은 사람도 낮에 사망자 채팅방(읽기 전용)을 받는다.
+#[test]
+fn purified_dead_keep_reading_the_dead_chat_but_cannot_speak() {
+    let mut running = dead_chat_test_running();
+    running.game.day_number = 2;
+    running.game.phase = Phase::Night;
+    running.game.players[0].alive = false;
+    let victim = running.game.players[0].clone();
+    // 퇴마: 마피아에게 죽으면서 곧바로 성불된다.
+    running.game.purified_dead_ids.insert(victim.user_id);
+    record_dead_chat_deaths(&mut running, std::slice::from_ref(&victim));
+    assert!(
+        !can_view_anonymous_dead_chat(&running, &victim),
+        "밤에는 아직 열리지 않는다"
+    );
+
+    running.game.phase = Phase::Day;
+    let candidates = dead_chat_unlock_candidates(&running);
+    assert!(
+        candidates
+            .iter()
+            .any(|player| player.user_id == victim.user_id),
+        "낮에 사망자 채팅방을 받는다"
+    );
+    assert!(running.pending_dead_chat_user_ids.remove(&victim.user_id));
+    running.dead_chat_unlocked_ids.insert(victim.user_id);
+
+    assert!(can_view_anonymous_dead_chat(&running, &victim));
+    assert!(
+        !can_use_anonymous_dead_chat(&running, &victim),
+        "말은 못 한다"
+    );
+    assert!(
+        !can_use_anonymous_shaman_chat(&running, &victim),
+        "영매는 접촉할 수 없다"
+    );
+    running.game.phase = Phase::Night;
+    running.game.day_number = 3;
+    assert!(
+        can_receive_role_chat_as_dead(&running, &victim),
+        "밤의 역할 채팅도 읽는다"
+    );
+}
+
 #[test]
 fn unlocked_dead_without_channel_is_retried_on_day() {
     let mut running = dead_chat_test_running();

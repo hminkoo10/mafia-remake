@@ -464,7 +464,7 @@ pub async fn relay_anonymous_dead_message(
                 .iter()
                 .filter(|viewer| {
                     viewer.user_id != sender.user_id
-                        && can_use_anonymous_dead_chat(&running_read, viewer)
+                        && can_view_anonymous_dead_chat(&running_read, viewer)
                 })
                 .cloned()
                 .collect::<Vec<_>>(),
