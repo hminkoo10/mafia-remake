@@ -1140,6 +1140,8 @@ pub(crate) fn config_value(config: &BotConfig, name: &str) -> String {
         "relief_amount" => config.relief_amount.to_string(),
         "relief_gift_lock_hours" => config.relief_gift_lock_hours.to_string(),
         "coupon_coins_per_point" => config.coupon_coins_per_point.to_string(),
+        "coupon_daily_max_points" => config.coupon_daily_max_points.to_string(),
+        "coupon_weekly_max_points" => config.coupon_weekly_max_points.to_string(),
         "coupon_api_url" => config.coupon_api_url.clone(),
         "coupon_api_key" => config.coupon_api_key.clone(),
         "log_channel_id" => config.log_channel_id.to_string(),
@@ -1455,6 +1457,12 @@ pub(crate) fn set_int(
             config.relief_gift_lock_hours = i64::try_from(value).unwrap_or(i64::MAX)
         }
         "coupon_coins_per_point" => config.coupon_coins_per_point = (value as i64).max(1),
+        "coupon_daily_max_points" => {
+            config.coupon_daily_max_points = i64::try_from(value).unwrap_or(i64::MAX)
+        }
+        "coupon_weekly_max_points" => {
+            config.coupon_weekly_max_points = i64::try_from(value).unwrap_or(i64::MAX)
+        }
         "log_channel_id" => config.log_channel_id = value,
         "default_mafia_count" => config.default_mafia_count = value as u32,
         "default_joker_count" => config.default_joker_count = value as u32,

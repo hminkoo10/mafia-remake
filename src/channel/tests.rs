@@ -166,6 +166,8 @@ fn selection_test_config() -> config::BotConfig {
         coupon_api_url: String::new(),
         coupon_api_key: String::new(),
         coupon_coins_per_point: 10_000,
+        coupon_daily_max_points: 0,
+        coupon_weekly_max_points: 0,
         log_channel_id: 0,
         home_guild_id: 0,
         reveal_death_roles: false,

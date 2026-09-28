@@ -184,6 +184,9 @@ pub struct PlayerStats {
     /// 최근 발급받은 쿠폰 기록.
     #[serde(default)]
     pub coupons: Vec<CouponRecord>,
+    /// 내신 쿠폰 전환 한도용: 오늘·이번 주에 전환한 포인트.
+    #[serde(default)]
+    pub coupon_usage: CouponUsage,
     /// 코인 순환: 롤링·주간 손익·환급·구조금 기록.
     #[serde(default)]
     pub economy: EconomyRecord,
@@ -257,6 +260,7 @@ impl Default for PlayerStats {
             last_attendance_date: String::new(),
             coupon_points_exchanged: 0,
             coupons: Vec::new(),
+            coupon_usage: CouponUsage::default(),
             economy: EconomyRecord::default(),
             rewards: RewardRecord::default(),
         }

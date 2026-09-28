@@ -25,6 +25,123 @@ pub struct CouponRecord {
     pub codes: Vec<String>,
 }
 
+/// 내신 쿠폰 전환 사용량. 날짜(한국 시간)와 주(월요일 0시)가 바뀌면 새로 센다.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CouponUsage {
+    #[serde(default)]
+    pub day: String,
+    #[serde(default)]
+    pub day_points: i64,
+    #[serde(default)]
+    pub week: String,
+    #[serde(default)]
+    pub week_points: i64,
+}
+
+impl CouponUsage {
+    fn roll(&mut self, today: &str, week: &str) {
+        if self.day != today {
+            self.day = today.to_string();
+            self.day_points = 0;
+        }
+        if self.week != week {
+            self.week = week.to_string();
+            self.week_points = 0;
+        }
+    }
+
+    /// 오늘·이번 주에 전환한 포인트 (날짜나 주가 지났으면 0).
+    pub fn used(&self, today: &str, week: &str) -> (i64, i64) {
+        (
+            if self.day == today {
+                self.day_points
+            } else {
+                0
+            },
+            if self.week == week {
+                self.week_points
+            } else {
+                0
+            },
+        )
+    }
+}
+
+/// 한 사람의 내신 쿠폰 전환 한도 (0이면 제한 없음).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CouponLimits {
+    pub daily: i64,
+    pub weekly: i64,
+}
+
+/// 전환 한도를 확인하고 이번 포인트를 오늘·이번 주 사용량에 미리 더한다. 동시에 여러 번 전환해도
+/// 한도를 넘지 않게 코인 예약과 같은 잠금 안에서 부르고, 발급에 실패하면 `release_coupon_usage`로 되돌린다.
+pub fn reserve_coupon_usage(
+    stats: &mut StatsFile,
+    user_id: u64,
+    name: &str,
+    points: i64,
+    limits: CouponLimits,
+    today: &str,
+    week: &str,
+) -> Result<(), String> {
+    let usage = &mut ensure_player_stats(stats, user_id, name).coupon_usage;
+    usage.roll(today, week);
+    if limits.daily > 0 && usage.day_points.saturating_add(points) > limits.daily {
+        return Err(format!(
+            "오늘은 {}포인트까지 더 전환할 수 있습니다 (하루 최대 {}포인트).",
+            (limits.daily - usage.day_points).max(0),
+            limits.daily
+        ));
+    }
+    if limits.weekly > 0 && usage.week_points.saturating_add(points) > limits.weekly {
+        return Err(format!(
+            "이번 주는 {}포인트까지 더 전환할 수 있습니다 (한 주 최대 {}포인트, 월요일 0시에 새로 셉니다).",
+            (limits.weekly - usage.week_points).max(0),
+            limits.weekly
+        ));
+    }
+    usage.day_points = usage.day_points.saturating_add(points);
+    usage.week_points = usage.week_points.saturating_add(points);
+    Ok(())
+}
+
+/// 발급에 실패한 전환을 사용량에서 뺀다 (예약한 날·주가 지났으면 그대로 둔다).
+pub fn release_coupon_usage(
+    stats: &mut StatsFile,
+    user_id: u64,
+    name: &str,
+    points: i64,
+    today: &str,
+    week: &str,
+) {
+    let usage = &mut ensure_player_stats(stats, user_id, name).coupon_usage;
+    if usage.day == today {
+        usage.day_points = (usage.day_points - points).max(0);
+    }
+    if usage.week == week {
+        usage.week_points = (usage.week_points - points).max(0);
+    }
+}
+
+/// 한도가 있으면 "오늘 3/10포인트 · 이번 주 12/30포인트" 같은 사용량 (없으면 None).
+pub fn coupon_limit_text(
+    usage: &CouponUsage,
+    limits: CouponLimits,
+    today: &str,
+    week: &str,
+) -> Option<String> {
+    let (day, week_used) = usage.used(today, week);
+    let mut parts = Vec::new();
+    if limits.daily > 0 {
+        parts.push(format!("오늘 {day}/{}포인트", limits.daily));
+    }
+    if limits.weekly > 0 {
+        parts.push(format!("이번 주 {week_used}/{}포인트", limits.weekly));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 /// 한국 시간 기준 오늘 날짜(YYYY-MM-DD). 출석은 이 날짜가 바뀌면 다시 할 수 있다.
 pub fn kst_today() -> String {
     let kst = chrono::FixedOffset::east_opt(9 * 3600).expect("KST offset");

@@ -306,12 +306,16 @@ pub async fn exchange_coupon(
         .await?;
         return Ok(());
     }
-    let (api_url, api_key, rate) = {
+    let (api_url, api_key, rate, limits) = {
         let config = ctx.data().config.read().await;
         (
             config.coupon_api_url.clone(),
             config.coupon_api_key.clone(),
             config.coupon_coins_per_point.max(1),
+            stats::CouponLimits {
+                daily: config.coupon_daily_max_points.max(0),
+                weekly: config.coupon_weekly_max_points.max(0),
+            },
         )
     };
     if api_key.trim().is_empty() || api_url.trim().is_empty() {
@@ -338,14 +342,41 @@ pub async fn exchange_coupon(
     };
     let user = ctx.author();
     let user_id = user.id.get();
-    // 코인을 먼저 차감해 두고(예약), 발급에 실패하면 돌려준다. 발급 중 다른
-    // 명령으로 같은 코인을 두 번 쓰는 일을 막기 위해서다.
+    let today = stats::kst_today();
+    let week = stats::kst_week();
+    // 전환 한도와 코인을 먼저 잡아 두고(예약), 발급에 실패하면 돌려준다. 발급 중 다른
+    // 명령으로 같은 코인을 두 번 쓰거나 한도를 넘기는 일을 막기 위해서다.
     let reserved = {
         let mut stats_file = ctx.data().stats.write().await;
         // 진행 중인 판에 걸린 배팅은 남긴다 (쿠폰으로 빼 두면 진 배팅이 0원 아래로 사라진다).
         let locked = crate::locked_bet(&ctx.data().bet_locks, user_id);
-        stats::reserve_coins(&mut stats_file, user_id, &user.name, cost, locked)
-            .map(|balance| (balance, stats_file.clone()))
+        match stats::reserve_coupon_usage(
+            &mut stats_file,
+            user_id,
+            &user.name,
+            포인트,
+            limits,
+            &today,
+            &week,
+        ) {
+            Err(message) => Err(message),
+            Ok(()) => {
+                match stats::reserve_coins(&mut stats_file, user_id, &user.name, cost, locked) {
+                    Ok(balance) => Ok((balance, stats_file.clone())),
+                    Err(message) => {
+                        stats::release_coupon_usage(
+                            &mut stats_file,
+                            user_id,
+                            &user.name,
+                            포인트,
+                            &today,
+                            &week,
+                        );
+                        Err(message)
+                    }
+                }
+            }
+        }
     };
     let (balance, snapshot) = match reserved {
         Ok(reserved) => reserved,
@@ -376,7 +407,7 @@ pub async fn exchange_coupon(
                 ),
             )
             .await;
-            let snapshot = {
+            let (snapshot, limit_text) = {
                 let mut stats_file = ctx.data().stats.write().await;
                 stats::record_coupon(
                     &mut stats_file,
@@ -386,7 +417,15 @@ pub async fn exchange_coupon(
                     codes.clone(),
                     &issued_at,
                 );
-                stats_file.clone()
+                let limit_text = stats_file
+                    .users
+                    .get(&user_id.to_string())
+                    .and_then(|entry| {
+                        stats::coupon_limit_text(&entry.coupon_usage, limits, &today, &week)
+                    })
+                    .map(|text| format!("\n전환 한도: {text}"))
+                    .unwrap_or_default();
+                (stats_file.clone(), limit_text)
             };
             save_stats_snapshot(ctx.data(), snapshot).await;
             let code_lines = codes
@@ -397,7 +436,7 @@ pub async fn exchange_coupon(
             reply_embed(
                 ctx,
                 format!(
-                    "쿠폰 발급 완료! **{포인트}포인트** (코인 {} 차감)\n\n쿠폰 코드\n{code_lines}\n\n보유 코인: **{}**\n코드는 본인에게만 보이니 지금 저장해 두세요. `/내정보`에서 최근 발급 기록을 다시 볼 수 있습니다.",
+                    "쿠폰 발급 완료! **{포인트}포인트** (코인 {} 차감)\n\n쿠폰 코드\n{code_lines}\n\n보유 코인: **{}**{limit_text}\n코드는 본인에게만 보이니 지금 저장해 두세요. `/내정보`에서 최근 발급 기록을 다시 볼 수 있습니다.",
                     stats::coin_text(cost),
                     stats::coin_text(balance)
                 ),
@@ -424,6 +463,14 @@ pub async fn exchange_coupon(
             let snapshot = {
                 let mut stats_file = ctx.data().stats.write().await;
                 stats::refund_coins(&mut stats_file, user_id, &user.name, cost);
+                stats::release_coupon_usage(
+                    &mut stats_file,
+                    user_id,
+                    &user.name,
+                    포인트,
+                    &today,
+                    &week,
+                );
                 stats_file.clone()
             };
             save_stats_snapshot(ctx.data(), snapshot).await;

@@ -38,6 +38,12 @@ pub struct BotConfig {
     /// 내신 쿠폰 1포인트당 코인(원).
     #[serde(default = "default_coupon_coins_per_point")]
     pub coupon_coins_per_point: i64,
+    /// 한 사람이 하루(한국 시간)에 내신 쿠폰으로 전환할 수 있는 최대 포인트. 0이면 제한 없음.
+    #[serde(default)]
+    pub coupon_daily_max_points: i64,
+    /// 한 사람이 한 주(한국 시간 월요일 0시부터)에 전환할 수 있는 최대 포인트. 0이면 제한 없음.
+    #[serde(default)]
+    pub coupon_weekly_max_points: i64,
     /// 관리자 로그 채널 ID. 0이면 보내지 않는다 (코인 관리·코인 선물·쿠폰 발급·블랙리스트·초기화 기록).
     #[serde(default)]
     pub log_channel_id: u64,

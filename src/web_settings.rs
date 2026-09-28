@@ -895,6 +895,18 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
         Some(1),
     ),
     field(
+        "coupon_daily_max_points",
+        "내신 쿠폰 하루 최대 전환 포인트 (1인, 0이면 제한 없음)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
+        "coupon_weekly_max_points",
+        "내신 쿠폰 한 주 최대 전환 포인트 (1인, 월요일 0시에 새로 셈, 0이면 제한 없음)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
+    field(
         "coupon_api_url",
         "내신 쿠폰 API 주소",
         WebFieldKind::Text,
@@ -1362,8 +1374,14 @@ const WEB_CONFIG_CATEGORIES: &[WebConfigCategory] = &[
     WebConfigCategory {
         key: "coupon",
         title: "내신 쿠폰",
-        hint: "내신 쿠폰을 코인으로 바꾸는 비율과 쿠폰 API입니다.",
-        fields: &["coupon_coins_per_point", "coupon_api_url", "coupon_api_key"],
+        hint: "코인을 내신 쿠폰 포인트로 바꾸는 비율, 한 사람이 하루·한 주에 전환할 수 있는 최대 포인트, 쿠폰 API입니다.",
+        fields: &[
+            "coupon_coins_per_point",
+            "coupon_daily_max_points",
+            "coupon_weekly_max_points",
+            "coupon_api_url",
+            "coupon_api_key",
+        ],
     },
 ];
 

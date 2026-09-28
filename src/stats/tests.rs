@@ -721,6 +721,55 @@ fn coin_test_game() -> MafiaGame {
 }
 
 #[test]
+fn coupon_exchange_limits_count_per_day_and_per_week() {
+    let mut stats = StatsFile::default();
+    let limits = CouponLimits {
+        daily: 5,
+        weekly: 8,
+    };
+    let (monday, tuesday, week) = ("2026-09-28", "2026-09-29", "2026-W40");
+    // 오늘 3 + 2 = 5포인트: 하루 한도에 닿으면 더 못 한다.
+    reserve_coupon_usage(&mut stats, 1, "Alpha", 3, limits, monday, week).unwrap();
+    reserve_coupon_usage(&mut stats, 1, "Alpha", 2, limits, monday, week).unwrap();
+    let error = reserve_coupon_usage(&mut stats, 1, "Alpha", 1, limits, monday, week).unwrap_err();
+    assert!(error.contains("오늘은 0포인트까지"), "{error}");
+    // 다음 날: 하루는 새로 세지만 한 주는 이어진다 (5 + 3 = 8).
+    let error = reserve_coupon_usage(&mut stats, 1, "Alpha", 4, limits, tuesday, week).unwrap_err();
+    assert!(error.contains("이번 주는 3포인트까지"), "{error}");
+    reserve_coupon_usage(&mut stats, 1, "Alpha", 3, limits, tuesday, week).unwrap();
+    assert_eq!(
+        coupon_limit_text(&stats.users["1"].coupon_usage, limits, tuesday, week).as_deref(),
+        Some("오늘 3/5포인트 · 이번 주 8/8포인트")
+    );
+    // 발급에 실패하면 되돌려서 다시 전환할 수 있다.
+    release_coupon_usage(&mut stats, 1, "Alpha", 3, tuesday, week);
+    assert_eq!(stats.users["1"].coupon_usage.used(tuesday, week), (0, 5));
+    reserve_coupon_usage(&mut stats, 1, "Alpha", 3, limits, tuesday, week).unwrap();
+    // 다음 주(월요일 0시)에는 둘 다 새로 센다.
+    reserve_coupon_usage(&mut stats, 1, "Alpha", 5, limits, "2026-10-05", "2026-W41").unwrap();
+    // 0이면 제한 없음.
+    reserve_coupon_usage(
+        &mut stats,
+        2,
+        "Beta",
+        1_000,
+        CouponLimits::default(),
+        monday,
+        week,
+    )
+    .unwrap();
+    assert!(
+        coupon_limit_text(
+            &stats.users["2"].coupon_usage,
+            CouponLimits::default(),
+            monday,
+            week
+        )
+        .is_none()
+    );
+}
+
+#[test]
 fn bet_settlement_pays_winners_and_charges_losers_within_bounds() {
     let game = coin_test_game();
     let initial_roles = game
