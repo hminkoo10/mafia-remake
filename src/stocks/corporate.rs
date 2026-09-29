@@ -31,6 +31,11 @@ pub const LOW_CAP_WARN_DAYS: u16 = 3;
 pub const LOW_CAP_DELIST_DAYS: u16 = 6;
 /// AI 청약 수요의 한도 (일반 청약분 대비 배수).
 const MAX_AI_RATIO: f64 = 500.0;
+/// AI 청약 수요의 기본 배수 (일반 청약분 대비, 공모가가 기대 가치와 같을 때, 테마주는 두 배). 시스템 회사
+/// 공모는 플레이어와 경쟁이 붙을 만큼, 플레이어 회사 공모는 적정가면 거의 늘 상장할 만큼 들어온다.
+/// 기대 가치보다 비쌀수록 빠르게 줄어, 비싸게 판 공모가 게임 밖 코인으로 대표를 불려 주지 않는다.
+const SYSTEM_IPO_AI_BASE: f64 = 2.0;
+const PLAYER_IPO_AI_BASE: f64 = 4.0;
 
 impl StockMarket {
     // ------------------------------------------------------------ 일정
@@ -819,11 +824,21 @@ impl StockMarket {
         self.subscriptions
             .retain(|subscription| subscription.code != code);
         let requested = orders.iter().map(|order| order.qty).sum::<i64>();
-        // AI(게임 밖 투자자) 청약까지 합쳐 본다: 공모가가 매력적이면 플레이어가 적어도 공모가 찬다.
+        // 기관 배정 (실제 공모처럼): 공모가가 싸면 기관이 공모 주식의 일부를 받아 가고, 플레이어는
+        // 나머지(일반 청약분)를 나눠 받는다. 기관 몫은 시장조성자가 유통 물량으로 들고 있다가 시장에 판다.
+        let institutions = if player {
+            institution_shares(offering.shares, offering.price, bvps_before, rules)
+        } else {
+            0
+        };
+        // 최소 물량은 기관 배정과 AI(게임 밖 투자자) 청약까지 합쳐 본다: 공모가가 매력적이면 플레이어가
+        // 적어도 공모가 찬다 (예전에는 기관 몫을 세지 않아 적정가 공모도 자주 무산됐다).
         let ai_demand = offering.ai_demand.max(0);
         let total_requested = requested.saturating_add(ai_demand);
         if player
-            && total_requested.saturating_mul(BP)
+            && total_requested
+                .saturating_add(institutions)
+                .saturating_mul(BP)
                 < offering.shares.saturating_mul(offering.min_fill_bp)
         {
             for order in &orders {
@@ -843,7 +858,7 @@ impl StockMarket {
             }
             self.companies.get_mut(code).expect("company exists").status = CompanyStatus::Private;
             self.log(format!(
-                "🧾 {} 공모 무산: 청약 {requested}주 (AI {ai_demand}주), {}명에게 증거금 반환",
+                "🧾 {} 공모 무산: 청약 {requested}주 (AI {ai_demand}주, 기관 {institutions}주), {}명에게 증거금 반환",
                 self.label(code),
                 orders.len()
             ));
@@ -852,20 +867,14 @@ impl StockMarket {
                 NewsKind::Disclosure,
                 Some(code),
                 format!(
-                    "{name} 공모 무산: 청약 {total_requested}주(AI {ai_demand}주 포함)로 최소 물량에 못 미침"
+                    "{name} 공모 무산: 청약 {}주(AI {ai_demand}주·기관 {institutions}주 포함)로 최소 물량에 못 미침",
+                    total_requested + institutions
                 ),
                 -1,
             );
             report.news.push(item);
             return;
         }
-        // 기관 배정 (실제 공모처럼): 공모가가 싸면 기관이 공모 주식의 일부를 받아 가고, 플레이어는
-        // 나머지(일반 청약분)를 나눠 받는다. 기관 몫은 시장조성자가 유통 물량으로 들고 있다가 시장에 판다.
-        let institutions = if player {
-            institution_shares(offering.shares, offering.price, bvps_before, rules)
-        } else {
-            0
-        };
         let retail = offering.shares - institutions;
         // AI 청약은 가상 투자자 여럿으로 나눠, 플레이어와 똑같이 균등·비례 배정을 받는다.
         let requests = orders
@@ -1117,7 +1126,8 @@ impl StockMarket {
             0
         };
         let upside = price as f64 / offer_price as f64 - 1.0;
-        let ai_demand = self.ai_ipo_demand(offered, sector, upside, theme, rules, normal(rng));
+        let base = SYSTEM_IPO_AI_BASE * if theme { 2.0 } else { 1.0 };
+        let ai_demand = self.ai_ipo_demand(offered, sector, upside, base, rules, normal(rng));
         let description = if theme {
             format!(
                 "{} 테마주. 소문과 뉴스에 크게 흔들리고, 실적이나 주가가 무너지면 상장폐지될 수 있다.",
@@ -1208,14 +1218,14 @@ impl StockMarket {
         report.news.push(item);
     }
 
-    /// AI(게임 밖 투자자) 청약 수요 (주): 공모가가 기대 가치보다 쌀수록(`upside`, 0.25면 25% 싸다), 시장·
-    /// 업종 분위기가 좋을수록, 테마주일수록 많고, 같은 조건이어도 공모마다 다르다 (`luck`, 표준정규값).
+    /// AI(게임 밖 투자자) 청약 수요 (주): 기본 배수(`base`)에서, 공모가가 기대 가치보다 쌀수록(`upside`,
+    /// 0.25면 25% 싸다), 시장·업종 분위기가 좋을수록 많고, 같은 조건이어도 공모마다 다르다 (`luck`, 표준정규값).
     fn ai_ipo_demand(
         &self,
         retail: i64,
         sector: Sector,
         upside: f64,
-        theme: bool,
+        base: f64,
         rules: &StockRules,
         luck: f64,
     ) -> i64 {
@@ -1229,10 +1239,9 @@ impl StockMarket {
                 .get(&sector)
                 .copied()
                 .unwrap_or(0.0);
-        let ratio = 2.0
+        let ratio = base
             * (8.0 * upside.clamp(-1.0, 1.0)).exp()
             * (2.0 * mood).exp().clamp(0.5, 2.0)
-            * if theme { 2.0 } else { 1.0 }
             * (0.7 * luck.clamp(-4.0, 4.0)).exp()
             * rules.ipo_ai_pct.clamp(0, 1_000) as f64
             / 100.0;
@@ -1472,7 +1481,7 @@ impl StockMarket {
             new_shares - institutions,
             sector,
             bvps / price as f64 - 1.0,
-            false,
+            PLAYER_IPO_AI_BASE,
             rules,
             offering_luck(code, now),
         );

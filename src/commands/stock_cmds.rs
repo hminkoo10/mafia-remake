@@ -1504,7 +1504,7 @@ pub async fn company_ipo(
                 " 공모가가 주당 순자산의 2배 이상이라 기관은 청약하지 않습니다.".to_string()
             };
             format!(
-                "공모 청약을 열었습니다: 공모가 {}, {}주, {} 마감.{institutions} 청약이 공모 주식의 절반에 못 미치면 무산됩니다. 상장 뒤 대표 지분은 보호예수로 한동안 팔 수 없습니다.",
+                "공모 청약을 열었습니다: 공모가 {}, {}주, {} 마감.{institutions} 기관 배정과 AI 청약까지 합쳐도 공모 주식의 절반에 못 미치면 무산됩니다 (공모가가 주당 순자산에 가까울수록 AI가 많이 들어옵니다). 상장 뒤 대표 지분은 보호예수로 한동안 팔 수 없습니다.",
                 won(offering.price),
                 format_amount(offering.shares),
                 kst_clock(offering.closes_at)

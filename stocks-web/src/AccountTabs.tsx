@@ -674,7 +674,7 @@ function OfferingCard({
         AI 투자자도 함께 청약하고 마감이 가까울수록 몰립니다. 경쟁률이 높을수록 배정받는 주식이 줄고, 못 받은 만큼 증거금을 돌려받습니다.
       </p>
       {offering.min_fill_bp > 0 && (
-        <p className="desk-hint">청약이 공모 주식의 {bpText(offering.min_fill_bp)}에 못 미치면 공모가 무산되고 증거금은 모두 돌려받습니다.</p>
+        <p className="desk-hint">기관 배정과 AI 청약까지 합쳐도 공모 주식의 {bpText(offering.min_fill_bp)}에 못 미치면 공모가 무산되고 증거금은 모두 돌려받습니다.</p>
       )}
       {mine && (
         <div className="rights-row">

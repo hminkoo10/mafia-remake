@@ -912,6 +912,22 @@ fn with_institutions() -> StockRules {
     }
 }
 
+/// 공모 최소 물량은 기관 배정분까지 합쳐 본다: 주당 순자산에 공모하면 기관이 30%를 받아 가므로
+/// 플레이어·AI 청약이 20%만 돼도 상장한다 (예전에는 기관 몫을 세지 않아 무산됐다).
+#[test]
+fn institutions_count_toward_the_minimum_fill() {
+    let rules = with_institutions();
+    let mut market = market();
+    let code = found(&mut market, 1, 2_000_000);
+    let now = T0 + rules.day_ms();
+    market.start_ipo(1, &code, 5_000, 200, now, &rules).unwrap();
+    market.subscribe(2, "U2", &code, 40, now).unwrap();
+    market.tick(now + rules.day_ms() + TICK_MS, &rules, &mut rng());
+    assert_eq!(market.companies[&code].status, CompanyStatus::Listed);
+    assert_eq!(market.accounts[&2].positions[&code].qty, 40);
+    assert_eq!(market.companies[&code].lp_inventory, Some(60));
+}
+
 #[test]
 fn institutions_take_more_of_a_cheaper_ipo() {
     let rules = with_institutions();
