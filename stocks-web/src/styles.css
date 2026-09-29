@@ -236,6 +236,8 @@ h1, h2, h3, h4 { margin: 0; }
 .table td small { display: block; font-size: 12px; color: var(--ink-3); margin-top: 3px; }
 .table.clickable tbody tr { cursor: pointer; }
 .table.clickable tbody tr:hover td { background: var(--softer); }
+.table tfoot td { border-top: 2px solid var(--line); border-bottom: none; font-weight: 700; }
+.table.pnl tr.legacy td { color: var(--ink-3); cursor: default; }
 
 /* ------------------------------------------------------------ 호가창 */
 
@@ -294,7 +296,7 @@ h1, h2, h3, h4 { margin: 0; }
 /* ------------------------------------------------------------ 계좌 */
 
 .account { margin-top: 16px; }
-.summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
 .summary div { background: var(--softer); border: 1px solid #f0f2f5; border-radius: 12px; padding: 12px 14px; min-width: 0; }
 .summary span { display: block; font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .summary strong { display: block; margin-top: 6px; font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -364,7 +366,7 @@ h1, h2, h3, h4 { margin: 0; }
   .book { order: 3; }
   .order { order: 4; }
   .info { order: 5; }
-  .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 760px) {

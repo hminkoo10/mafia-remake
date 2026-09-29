@@ -151,9 +151,39 @@ pub struct AccountView {
     pub unrealized: i64,
     pub realized: i64,
     pub fees: i64,
+    /// 받은 배당금 누적.
+    pub dividends: i64,
+    /// 누적 체결 수.
+    pub trades: i64,
+    /// 종목별 손익 (거래한 적 있는 종목과 지금 가진 종목, 합계 손익이 큰 순).
+    pub pnl: Vec<StockPnlView>,
+    /// 종목별 장부가 생기기 전 거래의 실현 손익·배당·수수료 (종목 구분 없음, 없으면 비움).
+    pub legacy_pnl: Option<StockPnlView>,
+    /// 최근 체결 (새것부터). 매도에는 실현 손익이 붙는다.
     pub fills: Vec<FillRecord>,
     /// 내가 대표인 회사 코드.
     pub companies: Vec<String>,
+}
+
+/// 종목별 손익.
+#[derive(Debug, Clone, Serialize)]
+pub struct StockPnlView {
+    pub code: String,
+    pub name: String,
+    /// 지금 가진 주식 수.
+    pub qty: i64,
+    /// 산 금액 (수수료 포함, 공모 배정·신주 인수·설립 자본금 포함).
+    pub bought: i64,
+    /// 판 금액 (받은 코인, 청산 분배금 포함).
+    pub sold: i64,
+    pub realized: i64,
+    /// 가진 주식의 평가 손익.
+    pub unrealized: i64,
+    pub dividends: i64,
+    pub fees: i64,
+    /// 실현 + 평가 + 배당.
+    pub total: i64,
+    pub status: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -474,6 +504,9 @@ impl StockMarket {
                 .iter()
                 .map(|claim| claim.exercised.saturating_mul(claim.price))
                 .sum::<i64>();
+        let (pnl, legacy_pnl) = account.map_or((Vec::new(), None), |account| {
+            self.stock_pnl(account, &positions)
+        });
         AccountView {
             positions,
             orders,
@@ -484,8 +517,12 @@ impl StockMarket {
             unrealized,
             realized: account.map_or(0, |account| account.realized),
             fees: account.map_or(0, |account| account.fees),
+            dividends: account.map_or(0, |account| account.dividends),
+            trades: account.map_or(0, |account| account.trades),
+            pnl,
+            legacy_pnl,
             fills: account
-                .map(|account| account.fills.iter().rev().take(20).cloned().collect())
+                .map(|account| account.fills.iter().rev().cloned().collect())
                 .unwrap_or_default(),
             companies: self
                 .companies
@@ -494,6 +531,76 @@ impl StockMarket {
                 .map(|company| company.code.clone())
                 .collect(),
         }
+    }
+
+    /// 종목별 손익과, 종목별 장부가 생기기 전 거래의 합계 (계좌 합계 − 장부 합계).
+    fn stock_pnl(
+        &self,
+        account: &Account,
+        positions: &[PositionView],
+    ) -> (Vec<StockPnlView>, Option<StockPnlView>) {
+        let held = positions
+            .iter()
+            .map(|position| (position.code.as_str(), (position.qty, position.pnl)))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut codes = account
+            .ledger
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        codes.extend(account.positions.keys().cloned());
+        let mut rows = codes
+            .into_iter()
+            .map(|code| {
+                // 장부가 생기기 전부터 가진 주식은 원가를 산 금액으로 본다 (`Account::ledger_mut`와 같다).
+                let ledger = account
+                    .ledger
+                    .get(&code)
+                    .cloned()
+                    .unwrap_or_else(|| StockLedger {
+                        bought: account
+                            .positions
+                            .get(&code)
+                            .map_or(0, |position| position.cost),
+                        ..StockLedger::default()
+                    });
+                let (qty, unrealized) = held.get(code.as_str()).copied().unwrap_or((0, 0));
+                let company = self.companies.get(&code);
+                StockPnlView {
+                    name: company.map_or_else(|| code.clone(), |company| company.name.clone()),
+                    status: company.map_or("", |company| company.status.label()),
+                    qty,
+                    bought: ledger.bought,
+                    sold: ledger.sold,
+                    realized: ledger.realized,
+                    unrealized,
+                    dividends: ledger.dividends,
+                    fees: ledger.fees,
+                    total: ledger.realized + unrealized + ledger.dividends,
+                    code,
+                }
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by_key(|row| std::cmp::Reverse(row.total));
+        let recorded =
+            |field: fn(&StockLedger) -> i64| account.ledger.values().map(field).sum::<i64>();
+        let realized = account.realized - recorded(|ledger| ledger.realized);
+        let dividends = account.dividends - recorded(|ledger| ledger.dividends);
+        let fees = account.fees - recorded(|ledger| ledger.fees);
+        let legacy = (realized != 0 || dividends != 0 || fees != 0).then(|| StockPnlView {
+            code: String::new(),
+            name: "종목별 기록 이전 거래".to_string(),
+            qty: 0,
+            bought: 0,
+            sold: 0,
+            realized,
+            unrealized: 0,
+            dividends,
+            fees,
+            total: realized + dividends,
+            status: "",
+        });
+        (rows, legacy)
     }
 
     /// 주식 시장에 있는 이 사용자의 재산 (평가액 + 묶인 코인). 구조금 기준에 코인과 함께 센다.

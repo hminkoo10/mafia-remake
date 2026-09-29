@@ -106,6 +106,7 @@ async fn fail(ctx: Context<'_>, message: impl Into<String>) -> Result<(), Error>
         "stock_buy",
         "stock_sell",
         "stock_balance",
+        "stock_pnl",
         "stock_orders",
         "stock_cancel",
         "stock_chart",
@@ -548,11 +549,13 @@ pub async fn stock_balance(ctx: Context<'_>) -> Result<(), Error> {
         won(view.pending)
     )];
     lines.push(format!(
-        "평가 손익 {} · 실현 손익 {} · 낸 수수료·세금 {}",
+        "평가 손익 {} · 실현 손익 {} · 받은 배당 {} · 낸 수수료·세금 {}",
         stats::signed_coin_text(view.unrealized),
         stats::signed_coin_text(view.realized),
+        won(view.dividends),
         won(view.fees)
     ));
+    lines.push("종목별 손익과 최근 매도의 실현 손익은 `/주식 손익`에서 봅니다.".to_string());
     if view.positions.is_empty() {
         lines.push("보유 주식이 없습니다. `/주식 매수`로 사 보세요.".to_string());
     }
@@ -604,6 +607,125 @@ pub async fn stock_balance(ctx: Context<'_>) -> Result<(), Error> {
         }
     }
     reply_embed(ctx, lines.join("\n"), "잔고", serenity::Colour::GOLD, true).await?;
+    Ok(())
+}
+
+/// `/주식 손익`에 보여 줄 종목 수 (나머지는 증권 사이트 '손익' 탭에서).
+const PNL_LINES: usize = 15;
+
+#[poise::command(
+    slash_command,
+    rename = "손익",
+    description_localized(
+        "ko",
+        "내 주식 손익을 봅니다: 종목별 실현·평가 손익과 배당, 수수료·세금, 최근 매도."
+    )
+)]
+pub async fn stock_pnl(ctx: Context<'_>) -> Result<(), Error> {
+    let user = ctx.author().id.get();
+    let (view, names) = {
+        let market = ctx.data().stocks.market.read().await;
+        let view = market.account_view(user, market.clock(now_ms()));
+        let names = view
+            .fills
+            .iter()
+            .map(|fill| {
+                let name = market
+                    .companies
+                    .get(&fill.code)
+                    .map_or_else(|| fill.code.clone(), |company| company.name.clone());
+                (fill.code.clone(), name)
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        (view, names)
+    };
+    let signed = stats::signed_coin_text;
+    let mut lines = vec![
+        format!(
+            "총 손익 **{}** = 실현 {} + 평가 {} + 배당 {}",
+            signed(view.realized + view.unrealized + view.dividends),
+            signed(view.realized),
+            signed(view.unrealized),
+            won(view.dividends)
+        ),
+        format!(
+            "낸 수수료·세금 {} (손익에 이미 들어 있음) · 체결 {}회",
+            won(view.fees),
+            format_amount(view.trades)
+        ),
+    ];
+    if view.pnl.is_empty() && view.legacy_pnl.is_none() {
+        lines.push("아직 주식을 거래한 적이 없습니다.".to_string());
+    } else {
+        lines.push(String::new());
+        lines.push("**종목별** (합계 = 실현 + 평가 + 배당)".to_string());
+        for row in view.pnl.iter().take(PNL_LINES) {
+            let held = if row.qty > 0 {
+                format!(
+                    " · 보유 {}주 평가 {}",
+                    format_amount(row.qty),
+                    signed(row.unrealized)
+                )
+            } else {
+                String::new()
+            };
+            let status = if row.status.is_empty() || row.status == "상장" {
+                String::new()
+            } else {
+                format!(" [{}]", row.status)
+            };
+            lines.push(format!(
+                "- {}{status}: **{}** · 실현 {}{held} · 배당 {} · 수수료·세금 {}",
+                row.name,
+                signed(row.total),
+                signed(row.realized),
+                won(row.dividends),
+                won(row.fees)
+            ));
+        }
+        if view.pnl.len() > PNL_LINES {
+            lines.push(format!(
+                "… 외 {}종목은 마피아증권 '손익' 탭에서 볼 수 있습니다.",
+                view.pnl.len() - PNL_LINES
+            ));
+        }
+        if let Some(legacy) = &view.legacy_pnl {
+            lines.push(format!(
+                "- {}: 실현 {} · 배당 {} · 수수료·세금 {}",
+                legacy.name,
+                signed(legacy.realized),
+                won(legacy.dividends),
+                won(legacy.fees)
+            ));
+        }
+    }
+    let sells = view
+        .fills
+        .iter()
+        .filter_map(|fill| fill.realized.map(|realized| (fill, realized)))
+        .take(5)
+        .collect::<Vec<_>>();
+    if !sells.is_empty() {
+        lines.push(String::new());
+        lines.push("**최근 매도**".to_string());
+        for (fill, realized) in sells {
+            // 판 주식의 원가 = 받은 코인 − 실현 손익.
+            let proceeds = fill.qty.saturating_mul(fill.price) - fill.cost;
+            let cost = (proceeds - realized).max(1);
+            lines.push(format!(
+                "- {} {} {}주 @{} · 실현 {} ({})",
+                kst_clock(fill.at),
+                names
+                    .get(&fill.code)
+                    .map_or(fill.code.as_str(), String::as_str),
+                format_amount(fill.qty),
+                won(fill.price),
+                signed(realized),
+                change_text(realized.saturating_mul(10_000) / cost)
+            ));
+        }
+    }
+    reply_embed(ctx, lines.join("\n"), "손익", serenity::Colour::GOLD, true).await?;
     Ok(())
 }
 

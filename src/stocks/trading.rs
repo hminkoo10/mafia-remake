@@ -620,6 +620,9 @@ impl StockMarket {
         self.to_treasury(fee, format!("{code} 매수 수수료"));
         self.stats.fees = self.stats.fees.saturating_add(fee);
         let account = self.account_mut(user, name);
+        let ledger = account.ledger_mut(code);
+        ledger.bought = ledger.bought.saturating_add(notional + fee);
+        ledger.fees = ledger.fees.saturating_add(fee);
         let position = account.positions.entry(code.to_string()).or_default();
         position.qty += qty;
         position.cost = position.cost.saturating_add(notional + fee);
@@ -632,6 +635,7 @@ impl StockMarket {
             qty,
             price: notional / qty,
             cost: fee,
+            realized: None,
         });
         while account.fills.len() > FILL_HISTORY_LIMIT {
             account.fills.pop_front();
@@ -644,7 +648,7 @@ impl StockMarket {
         ));
     }
 
-    /// 매도 체결을 계좌에서 빼고 대금을 준다.
+    /// 매도 체결을 계좌에서 빼고 대금을 준다. 이 체결의 실현 손익을 돌려준다.
     #[allow(clippy::too_many_arguments)]
     fn debit_seller(
         &mut self,
@@ -656,9 +660,9 @@ impl StockMarket {
         fee: i64,
         tax: i64,
         now: i64,
-    ) {
+    ) -> i64 {
         if qty <= 0 {
-            return;
+            return 0;
         }
         let proceeds = notional - fee - tax;
         let label = self.label(code);
@@ -667,6 +671,7 @@ impl StockMarket {
         self.stats.taxes = self.stats.taxes.saturating_add(tax);
         self.transfer(user, name, proceeds, format!("{code} 매도 대금"));
         let account = self.account_mut(user, name);
+        account.ledger_mut(code);
         let position = account.positions.entry(code.to_string()).or_default();
         let before = position.qty.max(1);
         let cost_out = (i128::from(position.cost) * i128::from(qty) / i128::from(before)) as i64;
@@ -676,9 +681,14 @@ impl StockMarket {
             position.qty = 0;
             position.cost = 0;
         }
-        account.realized = account.realized.saturating_add(proceeds - cost_out);
+        let realized = proceeds - cost_out;
+        account.realized = account.realized.saturating_add(realized);
         account.fees = account.fees.saturating_add(fee + tax);
         account.trades += 1;
+        let ledger = account.ledger_mut(code);
+        ledger.sold = ledger.sold.saturating_add(proceeds);
+        ledger.realized = ledger.realized.saturating_add(realized);
+        ledger.fees = ledger.fees.saturating_add(fee + tax);
         account.fills.push_back(FillRecord {
             at: now,
             code: code.to_string(),
@@ -686,6 +696,7 @@ impl StockMarket {
             qty,
             price: notional / qty,
             cost: fee + tax,
+            realized: Some(realized),
         });
         while account.fills.len() > FILL_HISTORY_LIMIT {
             account.fills.pop_front();
@@ -702,6 +713,7 @@ impl StockMarket {
             format_amount(proceeds),
             format_amount(fee + tax)
         ));
+        realized
     }
 
     /// 호가를 먹는다: 시장조성자와 다른 플레이어의 지정가를 가격 순으로 체결한다. 상대 주문과
@@ -1036,6 +1048,8 @@ impl StockMarket {
                 continue;
             }
             let fee = rules.fee(outcome.notional);
+            let mut charged = fee;
+            let mut realized = None;
             match order.side {
                 Side::Buy => {
                     if let Some(own) = self.orders.iter_mut().find(|own| own.id == id) {
@@ -1064,7 +1078,8 @@ impl StockMarket {
                         position.locked = (position.locked - outcome.filled).max(0);
                     }
                     let tax = rules.tax(outcome.notional);
-                    self.debit_seller(
+                    charged = fee + tax;
+                    realized = Some(self.debit_seller(
                         order.user,
                         &order.name,
                         &order.code,
@@ -1073,7 +1088,7 @@ impl StockMarket {
                         fee,
                         tax,
                         at,
-                    );
+                    ));
                 }
             }
             report.fills.push((
@@ -1084,7 +1099,8 @@ impl StockMarket {
                     side: order.side,
                     qty: outcome.filled,
                     price: outcome.notional / outcome.filled,
-                    cost: fee,
+                    cost: charged,
+                    realized,
                 },
             ));
             let done = self

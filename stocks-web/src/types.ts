@@ -194,6 +194,28 @@ export interface FillRecord {
   price: number;
   /** 수수료 + 세금. */
   cost: number;
+  /** 매도: 이 체결의 실현 손익 (받은 코인 − 판 주식의 평균 원가). 매수와 예전 기록은 없다. */
+  realized?: number | null;
+}
+
+/** 종목별 손익 (다 판 종목·상장폐지 종목도 남는다). */
+export interface StockPnlView {
+  code: string;
+  name: string;
+  /** 지금 가진 주식 수. */
+  qty: number;
+  /** 산 금액 (수수료 포함, 공모 배정·신주 인수·설립 자본금 포함). */
+  bought: number;
+  /** 판 금액 (받은 코인, 청산 분배금 포함). */
+  sold: number;
+  realized: number;
+  /** 가진 주식의 평가 손익. */
+  unrealized: number;
+  dividends: number;
+  fees: number;
+  /** 실현 + 평가 + 배당. */
+  total: number;
+  status: string;
 }
 
 export interface AccountView {
@@ -207,6 +229,15 @@ export interface AccountView {
   unrealized: number;
   realized: number;
   fees: number;
+  /** 받은 배당금 누적. */
+  dividends: number;
+  /** 누적 체결 수. */
+  trades: number;
+  /** 종목별 손익 (합계 손익이 큰 순). */
+  pnl: StockPnlView[];
+  /** 종목별 기록이 생기기 전 거래의 손익·배당·수수료 (종목 구분 없음). */
+  legacy_pnl: StockPnlView | null;
+  /** 최근 체결 (새것부터). */
   fills: FillRecord[];
   companies: string[];
 }

@@ -634,6 +634,11 @@ fn a_declared_dividend_is_paid_next_day_and_keeps_wealth_neutral() {
         holding2 * 500,
         "받은 배당금 누적 (업적용)"
     );
+    assert_eq!(
+        market.accounts[&2].ledger[&code].dividends,
+        holding2 * 500,
+        "종목별 장부에도"
+    );
     assert_eq!(market.companies[&code].equity, equity - shares * 500);
     // 배당락: 주가가 배당금만큼 내려간다.
     let price_after = market.companies[&code].price;
@@ -1466,6 +1471,118 @@ fn news_headlines_are_varied_and_filled_in() {
         .map(|_| macro_news(&mut rng).headline)
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(macro_headlines.len(), 48, "경제 소식 24쌍이 모두 나온다");
+}
+
+/// 매도마다 실현 손익이 체결 기록에 붙고, 종목별 장부에 산·판 금액·실현 손익·수수료가 쌓인다.
+#[test]
+fn realized_profit_is_recorded_per_sale_and_per_stock() {
+    let mut market = market();
+    let code = "100010";
+    let now = T0 + TICK_MS;
+    buy(&mut market, 5, code, 10, None, 10_000_000, now).unwrap();
+    {
+        // 값이 10% 오른 뒤 넉 주를 판다.
+        let company = market.companies.get_mut(code).unwrap();
+        company.mid = company.mid * 11 / 10;
+        company.price = company.mid;
+    }
+    sell(&mut market, 5, code, 4, None, now).unwrap();
+    let account = &market.accounts[&5];
+    let realized = account
+        .fills
+        .back()
+        .and_then(|fill| fill.realized)
+        .expect("매도에는 실현 손익이 붙는다");
+    assert!(realized > 0, "{realized}");
+    assert_eq!(
+        account.fills.front().unwrap().realized,
+        None,
+        "매수에는 없다"
+    );
+    assert_eq!(account.realized, realized);
+    let ledger = &account.ledger[code];
+    assert_eq!(ledger.realized, realized);
+    assert_eq!(ledger.fees, account.fees);
+    assert_eq!(
+        ledger.bought - ledger.sold,
+        -balances(&market)[&5],
+        "산 금액 − 판 금액 = 낸 코인 − 받은 코인"
+    );
+    let view = market.account_view(5, now);
+    let row = view.pnl.iter().find(|row| row.code == code).unwrap();
+    assert_eq!((row.qty, row.realized), (6, realized));
+    assert_eq!(row.total, row.realized + row.unrealized + row.dividends);
+    assert!(view.legacy_pnl.is_none());
+    assert_eq!(view.fills[0].realized, Some(realized), "체결은 새것부터");
+}
+
+/// 상장폐지로 사라진 주식은 원가만큼 실현 손실로 남는다 (분배금이 없는 시스템 회사). 예전에는 그냥
+/// 지워져 손익 어디에도 없었다.
+#[test]
+fn a_delisted_holding_is_booked_as_a_realized_loss() {
+    let rules = StockRules {
+        day_ms: MINUTE_MS,
+        ..quiet()
+    };
+    let mut market = market();
+    let code = "100070";
+    buy(&mut market, 5, code, 10, None, 10_000_000, T0 + TICK_MS).unwrap();
+    let cost = market.accounts[&5].positions[code].cost;
+    {
+        // 주당 순자산은 그대로 두고 주식 수만 줄여 시가총액을 상장 유지 기준 아래로.
+        let company = market.companies.get_mut(code).unwrap();
+        company.equity = company.equity / company.shares * 100;
+        company.shares = 100;
+    }
+    let mut rng = rng();
+    let mut at = T0;
+    for _ in 0..20 {
+        at += MINUTE_MS;
+        market.tick(at, &rules, &mut rng);
+    }
+    assert!(matches!(
+        market.companies[code].status,
+        CompanyStatus::Delisted { .. }
+    ));
+    let account = &market.accounts[&5];
+    assert!(!account.positions.contains_key(code));
+    assert_eq!(account.realized, -cost);
+    assert_eq!(account.ledger[code].realized, -cost);
+    let view = market.account_view(5, at);
+    let row = view.pnl.iter().find(|row| row.code == code).unwrap();
+    assert_eq!((row.qty, row.total, row.status), (0, -cost, "상장폐지"));
+}
+
+/// 종목별 장부가 생기기 전의 거래: 가진 주식은 원가를 산 금액으로 넣어 두고, 계좌 합계에만 있던
+/// 실현 손익·수수료는 '종목별 기록 이전 거래'로 따로 보인다.
+#[test]
+fn trades_from_before_the_ledger_are_kept_apart() {
+    let mut market = market();
+    let code = "100010";
+    {
+        let account = market.account_mut(5, "U5");
+        account.realized = 12_345;
+        account.fees = 100;
+        account.positions.insert(
+            code.to_string(),
+            Position {
+                qty: 10,
+                cost: 700_000,
+                ..Position::default()
+            },
+        );
+    }
+    let now = T0 + TICK_MS;
+    let view = market.account_view(5, now);
+    assert_eq!(view.pnl[0].bought, 700_000);
+    let legacy = view.legacy_pnl.expect("예전 합계");
+    assert_eq!((legacy.realized, legacy.fees), (12_345, 100));
+    buy(&mut market, 5, code, 1, None, 1_000_000, now).unwrap();
+    let account = &market.accounts[&5];
+    assert_eq!(
+        account.ledger[code].bought, account.positions[code].cost,
+        "예전 원가 + 새로 산 금액"
+    );
 }
 
 #[test]

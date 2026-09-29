@@ -478,6 +478,29 @@ pub struct FillRecord {
     pub price: i64,
     /// 수수료 + 세금.
     pub cost: i64,
+    /// 매도: 이 체결의 실현 손익 (받은 코인 − 판 주식의 평균 원가). 매수는 없다.
+    #[serde(default)]
+    pub realized: Option<i64>,
+}
+
+/// 종목별 손익 장부 (다 판 종목도 남긴다). 금액은 모두 코인.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StockLedger {
+    /// 산 금액: 매수(수수료 포함)·공모 배정·신주 인수·회사 설립 자본금.
+    #[serde(default)]
+    pub bought: i64,
+    /// 판 금액: 매도로 받은 코인(수수료·세금을 뺀)과 청산 분배금.
+    #[serde(default)]
+    pub sold: i64,
+    /// 실현 손익: 판 주식의 (받은 코인 − 평균 원가). 상장폐지로 사라진 주식은 (분배금 − 원가).
+    #[serde(default)]
+    pub realized: i64,
+    /// 받은 배당금.
+    #[serde(default)]
+    pub dividends: i64,
+    /// 낸 수수료·세금.
+    #[serde(default)]
+    pub fees: i64,
 }
 
 /// 증권 계좌 (코인은 통계 파일에 있고, 여기에는 주식과 기록만 둔다).
@@ -497,9 +520,26 @@ pub struct Account {
     /// 누적 체결 수 (체결 기록은 최근 것만 남기므로 따로 센다).
     #[serde(default)]
     pub trades: i64,
+    /// 종목별 손익 장부. 이 장부가 생기기 전의 거래는 계좌 합계(`realized`·`fees`·`dividends`)에만 있다.
+    #[serde(default)]
+    pub ledger: BTreeMap<String, StockLedger>,
     /// 받은 배당금 누적 (업적용, 청산 분배금은 빼고).
     #[serde(default)]
     pub dividends: i64,
+}
+
+impl Account {
+    /// 종목 장부 (처음 쓰면 만든다). 장부가 생기기 전부터 가진 주식은 그 원가를 산 금액으로 넣어
+    /// 두므로, 주식이 들고 나기 전에 불러야 한다.
+    pub fn ledger_mut(&mut self, code: &str) -> &mut StockLedger {
+        let held = self.positions.get(code).map_or(0, |position| position.cost);
+        self.ledger
+            .entry(code.to_string())
+            .or_insert_with(|| StockLedger {
+                bought: held,
+                ..StockLedger::default()
+            })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

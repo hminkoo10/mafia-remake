@@ -1,5 +1,5 @@
-// 내 계좌: 자산 요약, 잔고, 미체결, 체결, 공모·증자(청약·청약 취소·신주인수), 내 회사, 순위, 시장 뉴스,
-// 관리(관리자만).
+// 내 계좌: 자산·손익 요약, 잔고, 미체결, 체결(매도별 실현 손익), 손익(종목별), 공모·증자(청약·청약 취소·
+// 신주인수), 내 회사, 순위, 시장 뉴스, 관리(관리자만).
 import { useState, type ReactNode } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui";
 import { AdminTab } from "./AdminTab";
@@ -8,7 +8,7 @@ import { CompanyDesk } from "./CompanyDesk";
 import { NewsList } from "./NewsList";
 import { RankingTab } from "./RankingTab";
 import { bpText, dateTimeText, parseAmount, pctText, relativeText, signedWon, tone, won } from "./format";
-import type { Act, OfferingView, RightsClaimView, StockState, SubscriptionView } from "./types";
+import type { AccountView, Act, FillRecord, OfferingView, RightsClaimView, StockPnlView, StockState, SubscriptionView } from "./types";
 
 function Stat({ label, value, className }: { label: string; value: ReactNode; className?: string }) {
   return (
@@ -16,6 +16,128 @@ function Stat({ label, value, className }: { label: string; value: ReactNode; cl
       <span>{label}</span>
       <strong className={className}>{value}</strong>
     </div>
+  );
+}
+
+/** 매도 체결의 실현 손익과 수익률 (판 주식의 원가 = 받은 코인 − 실현 손익). 매수는 비운다. */
+function FillProfit({ fill }: { fill: FillRecord }) {
+  if (fill.realized == null) {
+    return (
+      <>
+        <td>—</td>
+        <td>—</td>
+      </>
+    );
+  }
+  const basis = fill.qty * fill.price - fill.cost - fill.realized;
+  const bp = basis > 0 ? Math.round((fill.realized * 10_000) / basis) : 0;
+  return (
+    <>
+      <td className={tone(fill.realized)}>{signedWon(fill.realized)}</td>
+      <td className={tone(bp)}>{pctText(bp)}</td>
+    </>
+  );
+}
+
+/** 종목별 손익: 산·판 금액, 실현·평가 손익, 배당, 수수료·세금, 합계. 다 판 종목과 상장폐지 종목도 남는다. */
+function PnlTable({ account, onSelect }: { account: AccountView; onSelect: (code: string) => void }) {
+  const rows = account.pnl;
+  const legacy = account.legacy_pnl;
+  if (rows.length === 0 && !legacy) {
+    return <p className="empty">아직 주식을 거래한 적이 없습니다.</p>;
+  }
+  const all = legacy ? [...rows, legacy] : rows;
+  const sum = (pick: (row: StockPnlView) => number) => all.reduce((acc, row) => acc + pick(row), 0);
+  const totals = {
+    bought: sum((row) => row.bought),
+    sold: sum((row) => row.sold),
+    realized: sum((row) => row.realized),
+    unrealized: sum((row) => row.unrealized),
+    dividends: sum((row) => row.dividends),
+    fees: sum((row) => row.fees),
+    total: sum((row) => row.total),
+  };
+  return (
+    <>
+      <div className="table-wrap">
+        <table className="table clickable pnl">
+          <thead>
+            <tr>
+              <th>종목</th>
+              <th>보유</th>
+              <th>산 금액</th>
+              <th>판 금액</th>
+              <th>실현 손익</th>
+              <th>평가 손익</th>
+              <th>배당</th>
+              <th>수수료·세금</th>
+              <th>합계</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.code} onClick={() => onSelect(row.code)} title="이 종목 보기">
+                <td>
+                  <b>{row.name}</b>
+                  <small>
+                    {row.code}
+                    {row.status && row.status !== "상장" ? ` · ${row.status}` : ""}
+                  </small>
+                </td>
+                <td>{row.qty > 0 ? won(row.qty) : "—"}</td>
+                <td>{won(row.bought)}</td>
+                <td>{won(row.sold)}</td>
+                <td className={tone(row.realized)}>{signedWon(row.realized)}</td>
+                <td className={tone(row.unrealized)}>{row.qty > 0 ? signedWon(row.unrealized) : "—"}</td>
+                <td>{row.dividends > 0 ? won(row.dividends) : "—"}</td>
+                <td>{won(row.fees)}</td>
+                <td className={tone(row.total)}>
+                  <b>{signedWon(row.total)}</b>
+                </td>
+              </tr>
+            ))}
+            {legacy && (
+              <tr className="legacy">
+                <td>
+                  <b>{legacy.name}</b>
+                  <small>종목별로 나누어 기록하기 전의 거래</small>
+                </td>
+                <td>—</td>
+                <td>—</td>
+                <td>—</td>
+                <td className={tone(legacy.realized)}>{signedWon(legacy.realized)}</td>
+                <td>—</td>
+                <td>{legacy.dividends > 0 ? won(legacy.dividends) : "—"}</td>
+                <td>{won(legacy.fees)}</td>
+                <td className={tone(legacy.total)}>
+                  <b>{signedWon(legacy.total)}</b>
+                </td>
+              </tr>
+            )}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td>
+                <b>합계</b>
+              </td>
+              <td />
+              <td>{won(totals.bought)}</td>
+              <td>{won(totals.sold)}</td>
+              <td className={tone(totals.realized)}>{signedWon(totals.realized)}</td>
+              <td className={tone(totals.unrealized)}>{signedWon(totals.unrealized)}</td>
+              <td>{won(totals.dividends)}</td>
+              <td>{won(totals.fees)}</td>
+              <td className={tone(totals.total)}>
+                <b>{signedWon(totals.total)}</b>
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <p className="foot">
+        실현 손익 = 받은 코인 − 판 주식의 평균 원가 (수수료·세금 포함). 상장폐지로 사라진 주식은 (청산 분배금 − 원가)가 실현 손익에 들어갑니다. 합계 = 실현 + 평가 + 배당이며 수수료·세금은 이미 손익에 들어 있습니다.
+      </p>
+    </>
   );
 }
 
@@ -39,6 +161,7 @@ export function AccountTabs({
   const openRights = a.rights.filter((claim) => claim.granted > claim.exercised).length;
   const ipoCount = state.offerings.length + state.rights_offerings.length;
   const total = state.me.coins + a.stock_value + a.pending;
+  const profit = a.realized + a.unrealized + a.dividends;
   const selectedCode = state.selected?.summary.code ?? null;
   return (
     <section className="card account">
@@ -47,14 +170,17 @@ export function AccountTabs({
         <Stat label="보유 코인" value={won(state.me.coins)} />
         <Stat label="주식 평가액" value={won(a.stock_value)} />
         <Stat label="주문·청약에 묶인 코인" value={won(a.pending)} />
+        <Stat label="총 손익 (실현+평가+배당)" value={signedWon(profit)} className={tone(profit)} />
         <Stat label="평가손익" value={signedWon(a.unrealized)} className={tone(a.unrealized)} />
         <Stat label="실현손익" value={signedWon(a.realized)} className={tone(a.realized)} />
+        <Stat label="받은 배당금" value={won(a.dividends)} />
       </div>
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList label="내 계좌">
           <TabsTrigger value="positions">잔고 {a.positions.length || ""}</TabsTrigger>
           <TabsTrigger value="orders">미체결 {a.orders.length || ""}</TabsTrigger>
           <TabsTrigger value="fills">체결</TabsTrigger>
+          <TabsTrigger value="pnl">손익</TabsTrigger>
           <TabsTrigger value="ipo">공모·증자 {ipoCount || ""}</TabsTrigger>
           <TabsTrigger value="company">내 회사</TabsTrigger>
           <TabsTrigger value="ranking">순위</TabsTrigger>
@@ -114,7 +240,7 @@ export function AccountTabs({
             </div>
           )}
           <p className="foot">
-            낸 수수료·세금 누적 {won(a.fees)} · 비상장 주식은 주당 순자산으로, 상장폐지된 주식은 0으로 평가합니다.
+            낸 수수료·세금 누적 {won(a.fees)} · 체결 {won(a.trades)}회 · 비상장 주식은 주당 순자산으로 평가합니다. 종목별 실현 손익은 '손익' 탭에 있습니다.
           </p>
         </TabsContent>
         <TabsContent value="orders">
@@ -177,6 +303,8 @@ export function AccountTabs({
                     <th>수량</th>
                     <th>체결가</th>
                     <th>수수료·세금</th>
+                    <th>실현 손익</th>
+                    <th>수익률</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -188,12 +316,16 @@ export function AccountTabs({
                       <td>{won(fill.qty)}</td>
                       <td>{won(fill.price)}</td>
                       <td>{won(fill.cost)}</td>
+                      <FillProfit fill={fill} />
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
+        </TabsContent>
+        <TabsContent value="pnl">
+          <PnlTable account={a} onSelect={onSelect} />
         </TabsContent>
         <TabsContent value="ipo">
           <div className="offer-list">

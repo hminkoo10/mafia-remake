@@ -545,6 +545,8 @@ impl StockMarket {
             self.transfer(user, &name, amount, format!("{code} {reason}"));
             if dividend && let Some(account) = self.accounts.get_mut(&user) {
                 account.dividends = account.dividends.saturating_add(amount);
+                let ledger = account.ledger_mut(code);
+                ledger.dividends = ledger.dividends.saturating_add(amount);
             }
             paid = paid.saturating_add(amount);
         }
@@ -716,8 +718,22 @@ impl StockMarket {
         }
         let distributed = self.pay_holders(code, per_share, "청산 분배금", false);
         let before = self.listed_cap_sum();
+        // 사라지는 주식은 받은 청산 분배금과 원가의 차이만큼 실현 손익에 넣는다 (분배금이 없으면
+        // 원가만큼 손실). 예전에는 그냥 지워져 손익 어디에도 남지 않았다.
         for account in self.accounts.values_mut() {
-            account.positions.remove(code);
+            if !account.positions.contains_key(code) {
+                continue;
+            }
+            account.ledger_mut(code);
+            let Some(position) = account.positions.remove(code) else {
+                continue;
+            };
+            let received = position.qty.max(0).saturating_mul(per_share.max(0));
+            let realized = received - position.cost;
+            account.realized = account.realized.saturating_add(realized);
+            let ledger = account.ledger_mut(code);
+            ledger.sold = ledger.sold.saturating_add(received);
+            ledger.realized = ledger.realized.saturating_add(realized);
         }
         let Some(company) = self.companies.get_mut(code) else {
             return;
@@ -845,6 +861,8 @@ impl StockMarket {
             }
             if *alloc > 0 {
                 let account = self.account_mut(order.user, &order.name);
+                let ledger = account.ledger_mut(code);
+                ledger.bought = ledger.bought.saturating_add(cost);
                 let position = account.positions.entry(code.to_string()).or_default();
                 position.qty += alloc;
                 position.cost = position.cost.saturating_add(cost);
@@ -1308,6 +1326,8 @@ impl StockMarket {
             format_amount(fee)
         ));
         let account = self.account_mut(user, user_name);
+        let ledger = account.ledger_mut(&code);
+        ledger.bought = ledger.bought.saturating_add(capital);
         account.positions.insert(
             code.clone(),
             Position {
@@ -1746,6 +1766,10 @@ impl StockMarket {
                 .map(|account| account.name.clone())
                 .unwrap_or_default();
             let account = self.account_mut(*user, &name);
+            let ledger = account.ledger_mut(code);
+            ledger.bought = ledger
+                .bought
+                .saturating_add(qty.saturating_mul(rights.price));
             let position = account.positions.entry(code.to_string()).or_default();
             position.qty += qty;
             position.cost = position
