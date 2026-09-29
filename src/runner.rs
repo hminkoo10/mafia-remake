@@ -344,7 +344,9 @@ pub fn role_short_guide(role: Role) -> &'static str {
         Role::Fraudster => {
             "시민 한 명의 직업으로 변장해 조사를 속이고, 변장 대상이나 자신이 마피아의 표적이 되면 접선합니다."
         }
-        Role::Contractor => "두 명의 직업을 맞히면 암살합니다.",
+        Role::Contractor => {
+            "두 명의 직업을 맞히면 둘 다 암살합니다. 마피아를 맞히면 접선만 합니다."
+        }
         Role::Thief => {
             "마지막으로 지목 투표한 대상의 능력을 훔칩니다. 결과는 투표가 끝난 뒤 전달됩니다."
         }

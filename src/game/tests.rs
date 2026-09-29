@@ -2724,6 +2724,115 @@ fn soldier_watch_voids_the_contract_naming_a_soldier() {
     assert!(game.get_player(4).unwrap().alive);
 }
 
+/// 청부 판정용 게임: 1 마피아, 2 청부업자, 3~6은 주어진 직업.
+fn contract_game(roles: [Role; 4]) -> MafiaGame {
+    let players = (1..=6).map(|id| (id, format!("P{id}"))).collect::<Vec<_>>();
+    let mut game = MafiaGame::new(players, 1, 0, 0, vec![Role::Contractor]).unwrap();
+    game.get_player_mut(1).unwrap().role = Role::Mafia;
+    game.get_player_mut(2).unwrap().role = Role::Contractor;
+    for (id, role) in (3..=6).zip(roles) {
+        game.get_player_mut(id).unwrap().role = role;
+    }
+    game.phase = Phase::Night;
+    game.day_number = 2;
+    game
+}
+
+/// 같은 밤 마피아가 청부 대상 한 명을 먼저 죽여도, 두 직업을 맞혔으면 청부는 성공하고 남은
+/// 대상이 암살된다 (예전에는 '정보가 정확하지 않다'며 실패하고 남은 대상도 살았다).
+#[test]
+fn a_contract_still_lands_when_the_mafia_kills_one_target_first() {
+    let mut game = contract_game([
+        Role::Psychologist,
+        Role::Gangster,
+        Role::Doctor,
+        Role::Citizen,
+    ]);
+    game.mafia_targets.insert(1, 3);
+    game.submit_contractor_contract(2, 3, Role::Psychologist, 4, Role::Gangster)
+        .unwrap();
+
+    let result = game.resolve_night().unwrap();
+
+    assert!(!game.get_player(3).unwrap().alive, "마피아 공격");
+    assert!(!game.get_player(4).unwrap().alive, "청부 암살");
+    assert_eq!(
+        result
+            .contractor_kills
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>(),
+        vec![4],
+        "마피아가 죽인 대상은 청부 암살로 세지 않는다"
+    );
+    let text = &result.contractor_results[&2];
+    assert!(
+        text.contains("P3님은 이미 다른 공격으로 쓰러져") && text.contains("P4님만"),
+        "{text}"
+    );
+}
+
+/// 추측 후보에 있는 교주·광신도·조커나 교주에게 포섭된 시민도 직업을 맞히면 암살된다
+/// (예전에는 시민팀만 인정해 맞혀도 실패했다).
+#[test]
+fn a_contract_kills_cult_members_whose_roles_were_guessed() {
+    let mut game = contract_game([
+        Role::CultLeader,
+        Role::Psychologist,
+        Role::Doctor,
+        Role::Citizen,
+    ]);
+    game.culted_ids.insert(4);
+    game.submit_contractor_contract(2, 3, Role::CultLeader, 4, Role::Psychologist)
+        .unwrap();
+
+    let result = game.resolve_night().unwrap();
+
+    assert!(!game.get_player(3).unwrap().alive && !game.get_player(4).unwrap().alive);
+    assert!(
+        result.contractor_results[&2].contains("청부가 성공했습니다. 대상 둘이"),
+        "{:?}",
+        result.contractor_results
+    );
+}
+
+/// 마피아를 맞히면 접선만 하고 마피아팀은 암살하지 않는다. 직업을 틀리면 실패한다.
+#[test]
+fn a_contract_contacts_the_mafia_and_fails_on_a_wrong_guess() {
+    let mut game = contract_game([
+        Role::Psychologist,
+        Role::Gangster,
+        Role::Doctor,
+        Role::Citizen,
+    ]);
+    game.submit_contractor_contract(2, 1, Role::Mafia, 3, Role::Psychologist)
+        .unwrap();
+    let result = game.resolve_night().unwrap();
+    assert!(game.contractor_contacted.contains(&2));
+    assert!(result.contractor_kills.is_empty());
+    assert!(game.get_player(1).unwrap().alive && game.get_player(3).unwrap().alive);
+    let text = &result.contractor_results[&2];
+    assert!(
+        text.contains("[동업] 마피아와 접선했습니다") && text.contains("대상 중 마피아가 있어"),
+        "{text}"
+    );
+
+    let mut game = contract_game([
+        Role::Psychologist,
+        Role::Gangster,
+        Role::Doctor,
+        Role::Citizen,
+    ]);
+    game.submit_contractor_contract(2, 3, Role::Doctor, 4, Role::Gangster)
+        .unwrap();
+    let result = game.resolve_night().unwrap();
+    assert!(result.contractor_kills.is_empty());
+    assert_eq!(
+        result.contractor_results[&2],
+        "대상의 정보가 정확하지 않아 암살에 실패했습니다."
+    );
+}
+
 /// 스파이는 마피아를 찾아낸 밤마다 첩보를 한 번 더 쓸 수 있다 (최초 접선에만
 /// 주어지던 보너스를 매 밤으로 확장).
 #[test]

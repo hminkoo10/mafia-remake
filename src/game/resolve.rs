@@ -189,6 +189,13 @@ impl MafiaGame {
         let mut killed_by_mafia_team_ids = HashSet::new();
         let mut soldier_blocks = Vec::new();
         let mut lover_sacrifices = Vec::new();
+        // [청부] 판정 기준: 이번 밤 결산에서 누가 먼저 쓰러지기 전, 밤이 시작될 때 살아 있던 사람.
+        let alive_at_dusk = self
+            .players
+            .iter()
+            .filter(|player| player.alive)
+            .map(|player| player.user_id)
+            .collect::<HashSet<_>>();
         // [독살] 지난밤 중독된 플레이어는 이번 밤 결산 시작 시 사망한다.
         self.resolve_poison_deaths(&mut killed_players, &mut killed_by_mafia_team_ids);
         let initial_protected_ids = protected_ids.clone();
@@ -302,7 +309,7 @@ impl MafiaGame {
         let timed_cult_bells = self.consume_cult_bells();
         let witch_contacts = self.witch_contacts_this_night.clone();
         let (contractor_results, contractor_contacts, contractor_kills) =
-            self.resolve_contractor_results(&blocked_actor_ids);
+            self.resolve_contractor_results(&blocked_actor_ids, &alive_at_dusk);
 
         for target in &contractor_kills {
             self.kill_player(
@@ -1320,6 +1327,7 @@ impl MafiaGame {
     fn resolve_contractor_results(
         &mut self,
         blocked_actor_ids: &HashSet<u64>,
+        alive_at_dusk: &HashSet<u64>,
     ) -> (HashMap<u64, String>, Vec<u64>, Vec<Player>) {
         let mut results = HashMap::new();
         let mut kills = Vec::new();
@@ -1362,9 +1370,14 @@ impl MafiaGame {
                 );
                 continue;
             }
+            // 판정은 밤이 시작될 때 살아 있던 사람 기준이다. 같은 밤 마피아 공격 등으로 먼저
+            // 쓰러진 대상이 있어도 추측이 맞았으면 맞은 것이다 (예전에는 '정보가 정확하지
+            // 않다'며 실패하고 남은 대상도 살아남았다).
             let matched_mafia = targets.iter().any(|(target, guessed_role)| {
                 target.as_ref().is_some_and(|target| {
-                    target.alive && target.role == Role::Mafia && *guessed_role == Role::Mafia
+                    alive_at_dusk.contains(&target.user_id)
+                        && target.role == Role::Mafia
+                        && *guessed_role == Role::Mafia
                 })
             });
             if matched_mafia {
@@ -1377,30 +1390,62 @@ impl MafiaGame {
                     self.contractor_contacts_this_night.push(actor_id);
                 }
             }
-            let success = targets.iter().all(|(target, guessed_role)| {
+            // 두 대상의 직업을 모두 맞혔는가. 추측 후보에 있는 교주·광신도·조커나 교주에게 포섭된
+            // 시민도 직업이 맞으면 맞은 것이다 (예전에는 시민팀만 인정해, 맞혀도 실패했다).
+            let guessed = targets.iter().all(|(target, guessed_role)| {
                 target.as_ref().is_some_and(|target| {
-                    target.alive
-                        && self.is_citizen_team(target)
+                    alive_at_dusk.contains(&target.user_id)
                         && target.role == *guessed_role
                         && !self.is_publicly_revealed(target)
                 })
             });
-            if !success {
-                let mut text = "대상의 정보가 정확하지 않아 암살에 실패했습니다.".to_string();
+            // 마피아팀은 암살하지 않는다 (마피아를 맞히면 접선만 한다).
+            let includes_mafia_team = targets.iter().any(|(target, _)| {
+                target
+                    .as_ref()
+                    .is_some_and(|target| self.is_mafia_team(target))
+            });
+            if !guessed || includes_mafia_team {
+                let mut text = if guessed {
+                    "대상 중 마피아가 있어 암살하지 않았습니다.".to_string()
+                } else {
+                    "대상의 정보가 정확하지 않아 암살에 실패했습니다.".to_string()
+                };
                 if matched_mafia {
                     text = format!("[동업] 마피아와 접선했습니다.\n{text}");
                 }
                 results.insert(actor_id, text);
                 continue;
             }
-            for (target, _) in targets {
-                if let Some(target) = target {
-                    if !kills.iter().any(|k: &Player| k.user_id == target.user_id) {
-                        kills.push(target);
-                    }
+            // 이미 쓰러진 대상은 빼고, 아직 살아 있는 대상만 암살한다.
+            let (standing, fallen): (Vec<Player>, Vec<Player>) = targets
+                .into_iter()
+                .filter_map(|(target, _)| target)
+                .partition(|target| target.alive);
+            for target in &standing {
+                if !kills.iter().any(|k: &Player| k.user_id == target.user_id) {
+                    kills.push(target.clone());
                 }
             }
-            let mut text = "청부가 성공했습니다. 대상 둘이 아침에 암살됩니다.".to_string();
+            let names = |players: &[Player]| {
+                players
+                    .iter()
+                    .map(|player| format!("{}님", player.name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let mut text = if fallen.is_empty() {
+                "청부가 성공했습니다. 대상 둘이 아침에 암살됩니다.".to_string()
+            } else if standing.is_empty() {
+                "청부 대상의 직업을 맞혔지만, 두 사람 모두 이미 다른 공격으로 쓰러졌습니다."
+                    .to_string()
+            } else {
+                format!(
+                    "청부가 성공했습니다. {}은 이미 다른 공격으로 쓰러져, {}만 아침에 암살됩니다.",
+                    names(&fallen),
+                    names(&standing)
+                )
+            };
             if matched_mafia {
                 text = format!("[동업] 마피아와 접선했습니다.\n{text}");
             }
