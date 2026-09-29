@@ -122,6 +122,7 @@ impl StockMarket {
                 rights: None,
                 pending_dividend: None,
                 activity_mark: Activity::default(),
+                activity_usual: None,
             };
             companies.insert(company.code.clone(), company);
         }

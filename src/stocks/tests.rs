@@ -1033,9 +1033,9 @@ fn resting_sell_orders_fill_against_a_new_buyback() {
 
 #[test]
 fn player_companies_are_in_the_news_more_often() {
-    // 뉴스를 10배로 늘려 6시간만 돌린다 (플레이어 회사 약 7.5건, 시스템 회사 약 2건 기대).
+    // 뉴스를 30배로 늘려 6시간만 돌린다 (플레이어 회사 약 22건, 시스템 회사 약 6건 기대).
     let rules = StockRules {
-        news_pct: 1_000,
+        news_pct: 3_000,
         ..quiet()
     };
     let mut market = market();
@@ -1129,6 +1129,72 @@ fn system_ipos_refill_the_market_and_earnings_pay_dividends() {
         assert!(result.dividend > 0);
         assert_eq!(balances(&market)[&6] - before[&6], 100 * result.dividend);
     }
+}
+
+/// 크게 좋은 실적에 배당까지: 배당락은 배당금만큼만 내리고 실적으로 오른 몫은 남는다 (예전에는
+/// 배당락을 직전 가격에 맞춰, 배당을 주는 호실적만 상승분이 지워지고 적자의 하락은 그대로라 주가가
+/// 한쪽으로 내려갔다).
+#[test]
+fn a_dividend_keeps_the_rally_from_strong_earnings() {
+    let rules = quiet();
+    let mut market = market();
+    let code = "100070";
+    let now = T0 + TICK_MS;
+    let company = market.companies.get_mut(code).unwrap();
+    company.next_earnings_at = now + TICK_MS;
+    company.consensus = Some(-company.equity);
+    let price = company.price;
+    market.tick(now + 2 * TICK_MS, &rules, &mut rng());
+    let result = market.companies[code].quarters.back().cloned().unwrap();
+    assert!(result.dividend > 0, "이익이 나 배당했다: {result:?}");
+    market.tick(now + 3 * TICK_MS, &rules, &mut rng());
+    let after = market.companies[code].price;
+    assert!(after as f64 >= price as f64 * 1.2, "{price} → {after}");
+}
+
+/// 게임 연동 종목의 평소 활동량은 실적 발표 때마다 그 주 쪽으로 옮겨 간다: 서버가 기준보다 조용해도
+/// 주가가 끝없이 내려가지 않고, 평소보다 많이 하면 실적이 좋아진다.
+#[test]
+fn game_linked_earnings_compare_with_the_usual_week() {
+    let rules = quiet();
+    let mut market = market();
+    let code = MAFIA_GAMES_CODE;
+    let mut now = T0;
+    for (games, usual) in [(0, 15.0), (30, 18.75)] {
+        market.record_activity(games, 0, 0);
+        market.companies.get_mut(code).unwrap().next_earnings_at = now + TICK_MS;
+        now += 2 * TICK_MS;
+        market.tick(now, &rules, &mut rng());
+        assert_eq!(market.companies[code].activity_usual, Some(usual));
+    }
+}
+
+/// 뉴스 충격은 평균이 0이다: 경제 소식은 호재·악재가 반씩이고 악재는 부호만 뒤집으며, 기업 뉴스도
+/// 로그 충격이 대칭이다. 한쪽으로 쏠리면 소식이 쌓일수록 시장·업종·종목이 한 방향으로 흘러간다.
+#[test]
+fn news_shocks_average_out_to_zero() {
+    let mut rng = rng();
+    let draws = 100_000;
+    let mut market_sum = 0.0;
+    let mut sectors = std::collections::BTreeMap::<Sector, f64>::new();
+    for _ in 0..draws {
+        let news = macro_news(&mut rng);
+        market_sum += news.market_jump;
+        if let Some((sector, jump)) = news.sector {
+            *sectors.entry(sector).or_default() += jump;
+        }
+    }
+    assert!(
+        (market_sum / draws as f64).abs() < 0.000_3,
+        "시장 {market_sum}"
+    );
+    for (sector, sum) in sectors {
+        assert!((sum / draws as f64).abs() < 0.000_3, "{sector:?} {sum}");
+    }
+    let total = (0..draws)
+        .map(|_| company_news("가나다", Sector::Bio, 0.0, &mut rng).jump)
+        .sum::<f64>();
+    assert!((total / draws as f64).abs() < 0.001, "기업 뉴스 {total}");
 }
 
 #[test]

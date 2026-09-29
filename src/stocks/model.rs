@@ -369,6 +369,9 @@ pub struct Company {
     /// 게임 연동 종목: 지난 실적 발표 때의 서버 활동 누적값 (마피아 판, 카지노 핸드, 하우스 손익).
     #[serde(default)]
     pub activity_mark: Activity,
+    /// 게임 연동 종목: 평소 한 주 활동량 (마피아 판 또는 카지노 핸드, 최근 몇 주 평균). 없으면 처음 기준.
+    #[serde(default)]
+    pub activity_usual: Option<f64>,
 }
 
 fn default_risk() -> u8 {

@@ -11,9 +11,11 @@ use std::collections::VecDeque;
 /// 게임 연동 종목 코드.
 pub const MAFIA_GAMES_CODE: &str = "100050";
 pub const CASINO_LEISURE_CODE: &str = "100080";
-/// 연동 종목의 기준 활동량 (실제 1주).
+/// 연동 종목의 처음 평소 활동량 (실제 1주). 실적 발표 때마다 그 주 활동 쪽으로 옮겨 간다.
 const BASE_MAFIA_GAMES: f64 = 20.0;
 const BASE_CASINO_HANDS: f64 = 300.0;
+/// 평소 활동량을 그 주 활동 쪽으로 옮기는 비율 (최근 몇 주 평균이 된다).
+const ACTIVITY_USUAL_WEIGHT: f64 = 0.25;
 /// 정리매매 기간 (게임일).
 pub const LIQUIDATION_DAYS: i64 = 6;
 /// 플레이어 회사 위험도별 분기 이익률 변동성.
@@ -62,7 +64,7 @@ impl StockMarket {
                 self.announce_earnings(&code, at, rules, rng, report);
             }
             if dividend_due {
-                self.pay_declared_dividend(&code, at, report);
+                self.pay_declared_dividend(&code, at, rules, report);
             }
             if rights_due {
                 self.finish_rights(&code, at, rules, report);
@@ -153,13 +155,14 @@ impl StockMarket {
 
     // ------------------------------------------------------------ 실적
 
-    /// 분기 기대 이익률 (시장 기대 수익률 + 배당 몫).
+    /// 분기 기대 이익률 (시장 기대 수익률 + 배당 몫). 배당은 주가의 배당수익률만큼 주므로 순자산으로 치면
+    /// 업종 PBR배다. 배당 몫도 그만큼 벌어야 배당을 주고도 순자산이 기대 수익률만큼 자란다.
     fn expected_roe(&self, company: &Company, rules: &StockRules) -> f64 {
         let drift = rules.drift_bp_week as f64 / BP as f64;
         if company.is_player() {
             drift
         } else {
-            drift + company.dividend_yield_bp as f64 / BP as f64 / 4.0
+            drift + company.dividend_yield_bp as f64 / BP as f64 / 4.0 * company.sector.pbr()
         }
     }
 
@@ -214,24 +217,24 @@ impl StockMarket {
             company.sector.earnings_vol()
         };
         let mut roe = expected + vol * fat_tail(rng);
-        // 게임 연동 종목: 이번 주 서버 활동이 기준보다 많으면 실적이 좋아진다 (영향에는 상한이 있다).
+        // 게임 연동 종목: 이번 주 서버 활동이 평소(최근 몇 주 평균)보다 많으면 실적이 좋아진다 (영향에는
+        // 상한이 있다). 평소를 고정값으로만 두면 서버가 그보다 조용할 때 주가가 끝없이 내려갔다.
         let mark = company.activity_mark;
         let activity = self.activity;
+        let mut usual = company.activity_usual;
         if company.code == MAFIA_GAMES_CODE {
             let games = (activity.mafia_games - mark.mafia_games).max(0) as f64;
-            roe += 0.02
-                * ((games + 1.0) / (BASE_MAFIA_GAMES + 1.0))
-                    .ln()
-                    .clamp(-1.5, 1.5);
+            let base = usual.unwrap_or(BASE_MAFIA_GAMES);
+            roe += 0.02 * ((games + 1.0) / (base + 1.0)).ln().clamp(-1.5, 1.5);
+            usual = Some(base + (games - base) * ACTIVITY_USUAL_WEIGHT);
         }
         if company.code == CASINO_LEISURE_CODE {
             let hands = (activity.casino_hands - mark.casino_hands).max(0) as f64;
             let house = (activity.casino_house - mark.casino_house) as f64;
-            roe += 0.015
-                * ((hands + 1.0) / (BASE_CASINO_HANDS + 1.0))
-                    .ln()
-                    .clamp(-1.5, 1.5);
+            let base = usual.unwrap_or(BASE_CASINO_HANDS);
+            roe += 0.015 * ((hands + 1.0) / (base + 1.0)).ln().clamp(-1.5, 1.5);
             roe += 0.01 * (house / 1_000_000.0).clamp(-1.0, 1.0);
+            usual = Some(base + (hands - base) * ACTIVITY_USUAL_WEIGHT);
         }
         let equity_before = company.equity.max(0);
         let profit = (equity_before as f64 * roe).round() as i64;
@@ -253,6 +256,7 @@ impl StockMarket {
         {
             let company = self.companies.get_mut(code).expect("company exists");
             company.activity_mark = activity;
+            company.activity_usual = usual;
             company.quarter = quarter;
             company.consensus = None;
             company.next_earnings_at += WEEK_MS;
@@ -276,7 +280,7 @@ impl StockMarket {
             let shares = self.companies[code].shares.max(1);
             let per_share = ((price as f64 * yield_q) as i64).min(profit / shares);
             if per_share > 0 {
-                self.pay_dividend(code, per_share, at);
+                self.pay_dividend(code, per_share, at, rules);
                 dividend = per_share;
             }
         }
@@ -478,12 +482,15 @@ impl StockMarket {
         paid
     }
 
-    /// 배당: 주주에게 주고 자본에서 뺀 뒤, 주가(내재가치)가 배당금만큼 내려가게 한다 (배당락).
-    fn pay_dividend(&mut self, code: &str, per_share: i64, at: i64) {
+    /// 배당: 주주에게 주고 자본에서 뺀 뒤, 주가가 배당금만큼 내려가게 한다 (배당락).
+    fn pay_dividend(&mut self, code: &str, per_share: i64, at: i64, rules: &StockRules) {
         let Some(company) = self.companies.get(code) else {
             return;
         };
-        let target = (company.price - per_share).max(1);
+        // 모형 가격(방금 발표한 실적까지 반영)을 배당금만큼 내린다. 직전 가격을 기준으로 맞추면 실적
+        // 발표로 오른 몫이 배당락에 지워져, 배당을 주는 호실적만 주가가 오르지 못했다.
+        let before = price_from_log(self.fair_log(company, at) + company.noise + company.impact);
+        let target = (before - per_share as f64).max(1.0);
         let total = per_share.saturating_mul(company.shares);
         let player = company.is_player();
         let paid = self.pay_holders(code, per_share, "배당금", true);
@@ -494,25 +501,39 @@ impl StockMarket {
             company.equity = (company.equity - total).max(0);
         }
         self.move_fair_to(code, target, at);
-    }
-
-    /// 투자 심리를 조정해 내재가치가 `target`원이 되게 한다 (배당락·권리락처럼 장부가 바뀔 때 주가가 튀지 않게).
-    fn move_fair_to(&mut self, code: &str, target: i64, at: i64) {
+        // 보이는 가격은 직전 가격에서 배당금만 뺀다. 실적 반응은 다음 갱신에 (지수에도) 반영된다.
         let Some(company) = self.companies.get(code) else {
             return;
         };
-        let current = self.fair_log(company, at);
-        let wanted = (target.max(1) as f64).ln();
-        let scale = if company.is_player() { 0.5 } else { 1.0 };
+        let (lower, upper) = self.limits(company, rules);
+        let shown = floor_tick((company.price - per_share).max(1)).clamp(lower, upper);
         if let Some(company) = self.companies.get_mut(code) {
-            company.sentiment = (company.sentiment + (wanted - current) / scale).clamp(-5.0, 5.0);
-            company.price = floor_tick(target.max(1));
-            company.mid = company.price;
-            company.impact = 0.0;
+            company.price = shown;
+            company.mid = shown;
         }
     }
 
-    fn pay_declared_dividend(&mut self, code: &str, at: i64, report: &mut TickReport) {
+    /// 투자 심리를 조정해 모형 가격(내재가치·잡음·주문 영향)이 `target`원이 되게 한다 (배당락처럼 장부가
+    /// 바뀔 때 주가가 튀지 않게). 잡음은 그대로 두어 심리에 섞이지 않게 한다.
+    fn move_fair_to(&mut self, code: &str, target: f64, at: i64) {
+        let Some(company) = self.companies.get(code) else {
+            return;
+        };
+        let current = self.fair_log(company, at) + company.noise + company.impact;
+        let wanted = target.max(1.0).ln();
+        let scale = if company.is_player() { 0.5 } else { 1.0 };
+        if let Some(company) = self.companies.get_mut(code) {
+            company.sentiment = (company.sentiment + (wanted - current) / scale).clamp(-5.0, 5.0);
+        }
+    }
+
+    fn pay_declared_dividend(
+        &mut self,
+        code: &str,
+        at: i64,
+        rules: &StockRules,
+        report: &mut TickReport,
+    ) {
         let Some(dividend) = self
             .companies
             .get_mut(code)
@@ -531,7 +552,7 @@ impl StockMarket {
         if per_share <= 0 || company.status != CompanyStatus::Listed {
             return;
         }
-        self.pay_dividend(code, per_share, at);
+        self.pay_dividend(code, per_share, at, rules);
         let item = self.push_news(
             at,
             NewsKind::Dividend,
@@ -929,6 +950,7 @@ impl StockMarket {
             rights: None,
             pending_dividend: None,
             activity_mark: self.activity,
+            activity_usual: None,
         };
         self.companies.insert(code.clone(), company);
         let item = self.push_news(
@@ -1068,6 +1090,7 @@ impl StockMarket {
             rights: None,
             pending_dividend: None,
             activity_mark: self.activity,
+            activity_usual: None,
         };
         self.companies.insert(code.clone(), company);
         self.transfer(
