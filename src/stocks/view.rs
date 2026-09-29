@@ -1,6 +1,6 @@
 // stocks/view.rs — 화면·명령어용 조회 (시세 요약, 종목 상세, 계좌, 평가액, 순위)
 
-use super::corporate::institution_shares;
+use super::corporate::{ai_subscribed, institution_shares};
 use super::model::*;
 use super::trading::Book;
 use serde::Serialize;
@@ -20,6 +20,8 @@ pub struct CompanySummary {
     pub market_cap: i64,
     pub managed: bool,
     pub halted: bool,
+    /// 시스템 회사 테마주 (작고 변동이 크며, 상장폐지될 수 있다).
+    pub theme: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -69,8 +71,12 @@ pub struct CompanyDetail {
     pub quarters: Vec<QuarterResult>,
     pub risk: u8,
     pub book: Book,
+    /// 청약 중인 공모 (AI 청약 최종 수량은 가린다: `ai_demand`는 0).
     pub ipo: Option<IpoOffering>,
+    /// 지금까지 들어온 플레이어 청약.
     pub ipo_requested: i64,
+    /// 지금까지 들어온 AI(게임 밖 투자자) 청약 (마감에 가까울수록 많이 들어온다).
+    pub ipo_ai_requested: i64,
     /// 공모 주식 중 기관이 받아 갈 수량 (지금 공모가 기준, 나머지가 일반 청약분).
     pub ipo_institutions: i64,
     pub rights: Option<RightsView>,
@@ -179,7 +185,33 @@ impl StockMarket {
             market_cap: company.market_cap(),
             managed: company.managed_since.is_some(),
             halted: company.admin_halt || now < company.halted_until || now < self.halted_until,
+            theme: company.is_theme(),
         }
+    }
+
+    /// 지금까지의 공모 청약 경쟁률: (플레이어 청약 + 들어온 AI 청약) ÷ 일반 청약분 (플레이어 회사는 기관
+    /// 배정분을 뺀 몫).
+    pub fn subscription_ratio(
+        &self,
+        company: &Company,
+        offering: &IpoOffering,
+        now: i64,
+        rules: &StockRules,
+    ) -> f64 {
+        let retail = if company.is_player() {
+            offering.shares
+                - institution_shares(offering.shares, offering.price, company.bvps(), rules)
+        } else {
+            offering.shares
+        };
+        let requested = self
+            .subscriptions
+            .iter()
+            .filter(|subscription| subscription.code == company.code)
+            .map(|subscription| subscription.qty)
+            .sum::<i64>()
+            .saturating_add(ai_subscribed(offering, now));
+        requested as f64 / retail.max(1) as f64
     }
 
     /// 시세 요약 (상장폐지된 회사는 뺀다).
@@ -290,10 +322,17 @@ impl StockMarket {
             risk: company.risk,
             book,
             ipo: match &company.status {
-                CompanyStatus::Subscription(offering) => Some(offering.clone()),
+                CompanyStatus::Subscription(offering) => Some(IpoOffering {
+                    ai_demand: 0,
+                    ..offering.clone()
+                }),
                 _ => None,
             },
             ipo_requested,
+            ipo_ai_requested: match &company.status {
+                CompanyStatus::Subscription(offering) => ai_subscribed(offering, now),
+                _ => 0,
+            },
             ipo_institutions,
             rights: company.rights.as_ref().map(|rights| RightsView {
                 price: rights.price,

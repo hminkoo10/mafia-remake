@@ -20,6 +20,17 @@ const ACTIVITY_USUAL_WEIGHT: f64 = 0.25;
 pub const LIQUIDATION_DAYS: i64 = 6;
 /// 플레이어 회사 위험도별 분기 이익률 변동성.
 const RISK_VOL: [f64; 5] = [0.02, 0.05, 0.10, 0.18, 0.30];
+/// 목표 수 이상일 때 게임일마다 새 시스템 회사가 공모에 들어갈 확률 (실제 하루 두 곳쯤).
+const EXTRA_IPO_CHANCE: f64 = 1.0 / 12.0;
+/// 새 시스템 회사 가운데 테마주 비율.
+const THEME_STOCK_SHARE: f64 = 0.4;
+/// 시스템 회사의 상장 유지 기준 시가총액.
+pub const MIN_SYSTEM_CAP: i64 = 3_000_000_000;
+/// 기준 미달이 이 게임일만큼 이어지면 상장폐지 우려 공시, 다음 값까지 이어지면 상장폐지 결정.
+pub const LOW_CAP_WARN_DAYS: u16 = 3;
+pub const LOW_CAP_DELIST_DAYS: u16 = 6;
+/// AI 청약 수요의 한도 (일반 청약분 대비 배수).
+const MAX_AI_RATIO: f64 = 500.0;
 
 impl StockMarket {
     // ------------------------------------------------------------ 일정
@@ -211,8 +222,12 @@ impl StockMarket {
             return;
         };
         let expected = self.expected_roe(company, rules);
+        let risk_vol = RISK_VOL[usize::from(company.risk.clamp(1, 5)) - 1];
         let vol = if company.is_player() {
-            RISK_VOL[usize::from(company.risk.clamp(1, 5)) - 1]
+            risk_vol
+        } else if company.is_theme() {
+            // 테마주: 실적이 업종보다 크게 흔들린다 (상장폐지까지 갈 수 있다).
+            risk_vol.max(company.sector.earnings_vol())
         } else {
             company.sector.earnings_vol()
         };
@@ -429,6 +444,78 @@ impl StockMarket {
                 report.news.push(item);
             }
             (false, None) => {}
+        }
+    }
+
+    /// 게임일이 바뀔 때 시스템 회사의 시가총액을 본다: 상장 유지 기준에 못 미친 날이 이어지면 상장폐지
+    /// 우려를 알리고, 더 이어지면 정리매매 뒤 상장폐지한다. 기준을 넘으면 다시 센다.
+    pub(super) fn check_listing_floor(
+        &mut self,
+        code: &str,
+        at: i64,
+        rules: &StockRules,
+        report: &mut TickReport,
+    ) {
+        let Some(company) = self.companies.get_mut(code) else {
+            return;
+        };
+        if company.is_player() || company.status != CompanyStatus::Listed {
+            return;
+        }
+        let name = company.name.clone();
+        let floor = format!("{}억원", MIN_SYSTEM_CAP / 100_000_000);
+        if company.market_cap() >= MIN_SYSTEM_CAP {
+            let warned = company.low_cap_days >= LOW_CAP_WARN_DAYS;
+            company.low_cap_days = 0;
+            if warned {
+                self.log(format!(
+                    "✅ {name}({code}) 시가총액 회복, 상장폐지 우려 해소"
+                ));
+                let item = self.push_news(
+                    at,
+                    NewsKind::Disclosure,
+                    Some(code),
+                    format!("{name}, 시가총액 {floor} 회복으로 상장폐지 우려 해소"),
+                    1,
+                );
+                report.news.push(item);
+            }
+            return;
+        }
+        company.low_cap_days = company.low_cap_days.saturating_add(1);
+        let days = company.low_cap_days;
+        if days >= LOW_CAP_DELIST_DAYS {
+            company.status = CompanyStatus::Liquidating {
+                until: at + LIQUIDATION_DAYS * rules.day_ms(),
+                reason: "시가총액 미달".to_string(),
+                trading: true,
+            };
+            self.log(format!(
+                "⚠️ {name}({code}) 시가총액 {floor} 미달 {days}게임일로 상장폐지 결정: 정리매매 {LIQUIDATION_DAYS}게임일"
+            ));
+            self.close_orders_for(code, "상장폐지 결정으로 주문 취소");
+            let item = self.push_news(
+                at,
+                NewsKind::Delisting,
+                Some(code),
+                format!("{name}, 시가총액 미달로 상장폐지 결정: 정리매매 {LIQUIDATION_DAYS}게임일"),
+                -1,
+            );
+            report.news.push(item);
+        } else if days == LOW_CAP_WARN_DAYS {
+            self.log(format!(
+                "⚠️ {name}({code}) 시가총액 {floor} 미달 {days}게임일째 (상장폐지 우려)"
+            ));
+            let item = self.push_news(
+                at,
+                NewsKind::Disclosure,
+                Some(code),
+                format!(
+                    "{name}, 시가총액 {floor} 미달 {days}게임일째… {LOW_CAP_DELIST_DAYS}게임일 이어지면 상장폐지"
+                ),
+                -1,
+            );
+            report.news.push(item);
         }
     }
 
@@ -683,8 +770,12 @@ impl StockMarket {
         self.subscriptions
             .retain(|subscription| subscription.code != code);
         let requested = orders.iter().map(|order| order.qty).sum::<i64>();
+        // AI(게임 밖 투자자) 청약까지 합쳐 본다: 공모가가 매력적이면 플레이어가 적어도 공모가 찬다.
+        let ai_demand = offering.ai_demand.max(0);
+        let total_requested = requested.saturating_add(ai_demand);
         if player
-            && requested.saturating_mul(BP) < offering.shares.saturating_mul(offering.min_fill_bp)
+            && total_requested.saturating_mul(BP)
+                < offering.shares.saturating_mul(offering.min_fill_bp)
         {
             for order in &orders {
                 self.transfer(
@@ -696,7 +787,7 @@ impl StockMarket {
             }
             self.companies.get_mut(code).expect("company exists").status = CompanyStatus::Private;
             self.log(format!(
-                "🧾 {} 공모 무산: 청약 {requested}주, {}명에게 증거금 반환",
+                "🧾 {} 공모 무산: 청약 {requested}주 (AI {ai_demand}주), {}명에게 증거금 반환",
                 self.label(code),
                 orders.len()
             ));
@@ -704,7 +795,9 @@ impl StockMarket {
                 at,
                 NewsKind::Disclosure,
                 Some(code),
-                format!("{name} 공모 무산: 청약 {requested}주로 최소 물량에 못 미침"),
+                format!(
+                    "{name} 공모 무산: 청약 {total_requested}주(AI {ai_demand}주 포함)로 최소 물량에 못 미침"
+                ),
                 -1,
             );
             report.news.push(item);
@@ -718,13 +811,19 @@ impl StockMarket {
             0
         };
         let retail = offering.shares - institutions;
-        let supply = retail.min(requested);
-        let allocations = allocate(
-            &orders.iter().map(|order| order.qty).collect::<Vec<_>>(),
-            supply,
-        );
+        // AI 청약은 가상 투자자 여럿으로 나눠, 플레이어와 똑같이 균등·비례 배정을 받는다.
+        let requests = orders
+            .iter()
+            .map(|order| order.qty)
+            .chain(ai_orders(ai_demand, retail))
+            .collect::<Vec<_>>();
+        let supply = retail.min(total_requested);
+        let allocations = allocate(&requests, supply);
+        let (player_allocations, ai_allocations) = allocations.split_at(orders.len());
+        let player_shares = player_allocations.iter().sum::<i64>();
+        let ai_shares = ai_allocations.iter().sum::<i64>();
         let mut proceeds = 0_i64;
-        for (order, alloc) in orders.iter().zip(&allocations) {
+        for (order, alloc) in orders.iter().zip(player_allocations) {
             let cost = alloc.saturating_mul(offering.price);
             proceeds = proceeds.saturating_add(cost);
             let refund = order.deposit - cost;
@@ -751,27 +850,38 @@ impl StockMarket {
                 position.cost = position.cost.saturating_add(cost);
             }
         }
+        if ai_demand > 0 {
+            self.log(format!(
+                "🤖 {} 공모 AI 청약 {ai_demand}주 → {ai_shares}주 배정",
+                self.label(code)
+            ));
+        }
         let day_ms = rules.day_ms();
         if player {
-            // 기관 납입금은 게임 밖에서 들어오는 돈이라 새로 생기는 코인이다 (시장조성자가 주식을 살 때와 같다).
-            let institutional = institutions.saturating_mul(offering.price);
-            if institutions > 0 {
-                self.stats.lp_sold = self.stats.lp_sold.saturating_add(institutional);
+            // 기관·AI 납입금은 게임 밖에서 들어오는 돈이라 새로 생기는 코인이다 (시장조성자가 주식을 살 때와
+            // 같다). 그 주식은 시장조성자가 유통 물량으로 들고 있다가 시장에 판다.
+            let float = institutions + ai_shares;
+            let outside = float.saturating_mul(offering.price);
+            if float > 0 {
+                self.stats.lp_sold = self.stats.lp_sold.saturating_add(outside);
                 self.log(format!(
-                    "🏛️ {} 공모 기관 배정 {institutions}주 (납입 {}, 시장조성자 유통 물량)",
+                    "🏛️ {} 공모 기관 {institutions}주·AI {ai_shares}주 배정 (납입 {}, 시장조성자 유통 물량)",
                     self.label(code),
-                    format_amount(institutional)
+                    format_amount(outside)
                 ));
             }
-            let raised = proceeds.saturating_add(institutional);
+            let raised = proceeds.saturating_add(outside);
             let fee = bp_part(raised, rules.ipo_fee_bp);
             self.to_treasury(fee, format!("{code} 공모 수수료"));
             let founder = self.companies[code].founder();
             let company = self.companies.get_mut(code).expect("company exists");
             company.equity = company.equity.saturating_add(raised - fee);
             company.paid_in = company.paid_in.saturating_add(raised - fee);
-            company.shares = company.shares.saturating_add(supply + institutions);
-            company.lp_inventory = Some(institutions);
+            company.shares = company
+                .shares
+                .saturating_add(player_shares + ai_shares + institutions);
+            company.lp_inventory = Some(float);
+            company.lp_ipo_float = float;
             company.adv = (company.shares / 50).max(10);
             company.depth = (company.adv / 20).max(1);
             // 설립자 지분 보호예수.
@@ -788,9 +898,9 @@ impl StockMarket {
             self.stats.ipo_burned = self.stats.ipo_burned.saturating_add(proceeds);
         }
         let before = self.listed_cap_sum();
-        // 청약 경쟁률은 플레이어가 나눠 받는 일반 청약분 기준.
+        // 청약 경쟁률은 일반 청약분 기준 (플레이어와 AI 청약을 합친다).
         let ratio = if retail > 0 {
-            requested as f64 / retail as f64
+            total_requested as f64 / retail as f64
         } else {
             0.0
         };
@@ -800,8 +910,8 @@ impl StockMarket {
         );
         {
             let company = self.companies.get_mut(code).expect("company exists");
-            // 청약 경쟁이 뜨거울수록 첫날 수요가 몰린다.
-            let pop = if player { 0.05 } else { 0.1 } * (1.0 + ratio).ln().min(5.0);
+            // 청약 경쟁이 뜨거울수록 첫날 수요가 몰린다 (AI 청약이 들어와 경쟁률이 커진 만큼 배율은 낮다).
+            let pop = if player { 0.05 } else { 0.06 } * (1.0 + ratio).ln().min(5.0);
             company.sentiment += pop;
             company.status = CompanyStatus::Listed;
             company.listed_at = at;
@@ -833,6 +943,7 @@ impl StockMarket {
         } else {
             String::new()
         };
+        let institution_text = format!(", 플레이어 배정 {player_shares}주{institution_text}");
         let item = self.push_news(
             at,
             NewsKind::Listing,
@@ -848,7 +959,8 @@ impl StockMarket {
         report.news.push(item);
     }
 
-    /// 시스템 회사가 목표보다 적으면 새 회사를 공모에 부친다 (게임일마다 최대 한 번).
+    /// 시스템 회사 공모 (게임일마다 최대 한 번): 목표 수보다 적으면 채우고, 목표 이상이어도 한도
+    /// (`system_extra_companies`만큼 더)까지는 가끔 새 회사가 상장한다. 열에 넷은 테마주다.
     pub(super) fn maybe_system_ipo(
         &mut self,
         at: i64,
@@ -857,18 +969,29 @@ impl StockMarket {
         report: &mut TickReport,
     ) {
         let day = rules.day_of(at);
-        if self.last_system_ipo_day == day {
-            return;
-        }
-        let active = self
-            .companies
-            .values()
-            .filter(|company| !company.is_player() && company.status.is_active())
-            .count() as i64;
-        if active >= rules.system_companies {
+        if self.last_system_ipo_day == day || rules.system_companies <= 0 {
             return;
         }
         self.last_system_ipo_day = day;
+        // 정리매매 중인 회사는 곧 빠지므로 세지 않는다.
+        let active = self
+            .companies
+            .values()
+            .filter(|company| {
+                !company.is_player()
+                    && matches!(
+                        company.status,
+                        CompanyStatus::Listed | CompanyStatus::Subscription(_)
+                    )
+            })
+            .count() as i64;
+        let limit = rules.system_companies + rules.system_extra_companies.max(0);
+        // 목표를 넘는 자리는 테마주가 들고 난다 (목표 안을 채울 때도 열에 넷은 테마주).
+        let extra = active >= rules.system_companies;
+        if extra && (active >= limit || uniform(rng) >= EXTRA_IPO_CHANCE) {
+            return;
+        }
+        let theme = extra || uniform(rng) < THEME_STOCK_SHARE;
         let sector = Sector::ALL[rng.random_range(0..Sector::ALL.len())];
         let mut name = random_company_name(sector, rng);
         for _ in 0..8 {
@@ -881,15 +1004,58 @@ impl StockMarket {
             return;
         }
         let code = self.next_code(200_000);
-        // 가격은 5천~15만원 사이 로그 균등, 시가총액 300억~3,000억.
-        let price = round_tick((5_000.0_f64.ln() + uniform(rng) * (30.0_f64).ln()).exp());
-        let cap = (30_000_000_000.0_f64.ln() + uniform(rng) * 10.0_f64.ln()).exp();
+        // 보통 회사: 주가 5천~15만원, 시가총액 300억~3,000억 (로그 균등).
+        // 테마주: 주가 1천~2만원, 시가총액 35억~150억 (상장 유지 기준에서 멀지 않다).
+        let (price, cap) = if theme {
+            (
+                log_uniform(1_000.0, 20_000.0, rng),
+                log_uniform(3.5e9, 1.5e10, rng),
+            )
+        } else {
+            (
+                log_uniform(5_000.0, 150_000.0, rng),
+                log_uniform(3e10, 3e11, rng),
+            )
+        };
+        let price = round_tick(price);
         let shares = ((cap / price as f64) as i64).max(10_000);
         let equity = (price as f64 * shares as f64 / sector.pbr()) as i64;
-        let adv = (shares / 300).max(100);
-        let offer_price = floor_tick(price.saturating_mul(8) / 10);
+        // 테마주는 손바뀜이 잦다.
+        let adv = if theme { shares / 60 } else { shares / 300 }.max(100);
+        // 공모가는 기준가의 70~95%: 쌀수록 AI 청약이 몰린다.
+        let discount = 0.70 + 0.25 * uniform(rng);
+        let offer_price = floor_tick((price as f64 * discount) as i64).max(1);
         let offered = (shares / 50).max(100);
-        let daily_vol = 0.02 + sector.earnings_vol() * 0.2;
+        let (daily_vol, beta, risk, spread_bp) = if theme {
+            (
+                0.06 + 0.04 * uniform(rng),
+                1.2 + 0.8 * uniform(rng),
+                THEME_RISK + u8::from(uniform(rng) < 0.5),
+                25,
+            )
+        } else {
+            (
+                0.02 + sector.earnings_vol() * 0.2,
+                0.8 + uniform(rng) * 0.6,
+                2,
+                15,
+            )
+        };
+        let dividend_yield_bp = if !theme && uniform(rng) < 0.4 {
+            100 + (uniform(rng) * 300.0) as i64
+        } else {
+            0
+        };
+        let upside = price as f64 / offer_price as f64 - 1.0;
+        let ai_demand = self.ai_ipo_demand(offered, sector, upside, theme, rules, normal(rng));
+        let description = if theme {
+            format!(
+                "{} 테마주. 소문과 뉴스에 크게 흔들리고, 실적이나 주가가 무너지면 상장폐지될 수 있다.",
+                sector.name()
+            )
+        } else {
+            format!("새로 상장하는 {} 기업.", sector.name())
+        };
         let company = Company {
             code: code.clone(),
             name: name.clone(),
@@ -901,8 +1067,9 @@ impl StockMarket {
                 opens_at: at,
                 closes_at: at + 3 * rules.day_ms(),
                 min_fill_bp: 0,
+                ai_demand,
             }),
-            description: format!("새로 상장하는 {} 기업.", sector.name()),
+            description,
             shares,
             paid_in: equity * 6 / 10,
             equity,
@@ -918,7 +1085,7 @@ impl StockMarket {
             turnover: 0,
             day,
             first_day_band: None,
-            beta: 0.8 + uniform(rng) * 0.6,
+            beta,
             daily_vol,
             sentiment: 0.0,
             pending_news: 0.0,
@@ -929,18 +1096,14 @@ impl StockMarket {
             volume_carry: 0.0,
             adv,
             depth: (adv / 40).max(1),
-            spread_bp: 15,
+            spread_bp,
             lp_inventory: None,
-            dividend_yield_bp: if uniform(rng) < 0.4 {
-                100 + (uniform(rng) * 300.0) as i64
-            } else {
-                0
-            },
+            dividend_yield_bp,
             next_earnings_at: at + WEEK_MS,
             consensus: None,
             quarter: 0,
             quarters: VecDeque::new(),
-            risk: 2,
+            risk,
             risk_changed_at: 0,
             managed_since: None,
             halted_until: 0,
@@ -951,15 +1114,21 @@ impl StockMarket {
             pending_dividend: None,
             activity_mark: self.activity,
             activity_usual: None,
+            low_cap_days: 0,
+            lp_ipo_float: 0,
         };
         self.companies.insert(code.clone(), company);
+        let kind = if theme {
+            format!("{} 테마주", sector.name())
+        } else {
+            sector.name().to_string()
+        };
         let item = self.push_news(
             at,
             NewsKind::Listing,
             Some(&code),
             format!(
-                "공모주 청약 시작: {name}({}), 공모가 {}, {}주, 청약 {}게임일",
-                sector.name(),
+                "공모주 청약 시작: {name}({kind}), 공모가 {}, {}주, 청약 {}게임일",
                 format_amount(offer_price),
                 offered,
                 3
@@ -967,6 +1136,37 @@ impl StockMarket {
             1,
         );
         report.news.push(item);
+    }
+
+    /// AI(게임 밖 투자자) 청약 수요 (주): 공모가가 기대 가치보다 쌀수록(`upside`, 0.25면 25% 싸다), 시장·
+    /// 업종 분위기가 좋을수록, 테마주일수록 많고, 같은 조건이어도 공모마다 다르다 (`luck`, 표준정규값).
+    fn ai_ipo_demand(
+        &self,
+        retail: i64,
+        sector: Sector,
+        upside: f64,
+        theme: bool,
+        rules: &StockRules,
+        luck: f64,
+    ) -> i64 {
+        if rules.ipo_ai_pct <= 0 || retail <= 0 || !upside.is_finite() {
+            return 0;
+        }
+        let mood = self.macro_state.market
+            + self
+                .macro_state
+                .sectors
+                .get(&sector)
+                .copied()
+                .unwrap_or(0.0);
+        let ratio = 2.0
+            * (8.0 * upside.clamp(-1.0, 1.0)).exp()
+            * (2.0 * mood).exp().clamp(0.5, 2.0)
+            * if theme { 2.0 } else { 1.0 }
+            * (0.7 * luck.clamp(-4.0, 4.0)).exp()
+            * rules.ipo_ai_pct.clamp(0, 1_000) as f64
+            / 100.0;
+        (retail as f64 * ratio.clamp(0.0, MAX_AI_RATIO)).round() as i64
     }
 
     /// 쓰지 않은 종목코드 (`base`부터).
@@ -1091,6 +1291,8 @@ impl StockMarket {
             pending_dividend: None,
             activity_mark: self.activity,
             activity_usual: None,
+            low_cap_days: 0,
+            lp_ipo_float: 0,
         };
         self.companies.insert(code.clone(), company);
         self.transfer(
@@ -1184,7 +1386,16 @@ impl StockMarket {
             ));
         }
         let name = company.name.clone();
+        let sector = company.sector;
         let institutions = institution_shares(new_shares, price, bvps, rules);
+        let ai_demand = self.ai_ipo_demand(
+            new_shares - institutions,
+            sector,
+            bvps / price as f64 - 1.0,
+            false,
+            rules,
+            offering_luck(code, now),
+        );
         let institution_text = if institutions > 0 {
             format!(" (기관 배정 예정 {institutions}주)")
         } else {
@@ -1196,6 +1407,7 @@ impl StockMarket {
             opens_at: now,
             closes_at: now + rules.day_ms(),
             min_fill_bp: 5_000,
+            ai_demand,
         };
         self.companies.get_mut(code).expect("company exists").status =
             CompanyStatus::Subscription(offering.clone());
@@ -1511,7 +1723,8 @@ impl StockMarket {
                     rights.price,
                     company.bvps(),
                     company.shares.saturating_add(exercised),
-                    inventory,
+                    // 공모 때 받은 유통 물량은 한도와 따로 든다 (`lp_buy_room`과 같이).
+                    (inventory - company.lp_ipo_float).max(0),
                     rules,
                 )
             })
@@ -1770,6 +1983,39 @@ impl StockMarket {
         self.activity.casino_hands = self.activity.casino_hands.saturating_add(casino_hands);
         self.activity.casino_house = self.activity.casino_house.saturating_add(casino_house);
     }
+}
+
+/// `low`~`high` 로그 균등 난수.
+fn log_uniform(low: f64, high: f64, rng: &mut dyn RngCore) -> f64 {
+    (low.ln() + uniform(rng) * (high / low).ln()).exp()
+}
+
+/// 공모마다 다른 운 (표준정규값). 명령 처리에는 난수가 없어서 종목 코드와 시각으로 정한다.
+fn offering_luck(code: &str, at: i64) -> f64 {
+    use rand::SeedableRng;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (code, at).hash(&mut hasher);
+    normal(&mut rand::rngs::StdRng::seed_from_u64(hasher.finish()))
+}
+
+/// AI 청약을 가상 투자자 여럿의 청약으로 나눈다: 일반 청약분 대비 배수의 네 배만큼 (1~60명).
+fn ai_orders(demand: i64, retail: i64) -> Vec<i64> {
+    if demand <= 0 {
+        return Vec::new();
+    }
+    let ratio = demand as f64 / retail.max(1) as f64;
+    let bidders = (ratio * 4.0).round().clamp(1.0, 60.0) as i64;
+    (0..bidders)
+        .map(|index| demand / bidders + i64::from(index < demand % bidders))
+        .collect()
+}
+
+/// 지금까지 들어온 AI 청약: 청약 기간 동안 늘어 마감에 다 찬다 (실제처럼 막판에 몰린다).
+pub fn ai_subscribed(offering: &IpoOffering, now: i64) -> i64 {
+    let span = (offering.closes_at - offering.opens_at).max(1) as f64;
+    let progress = ((now - offering.opens_at) as f64 / span).clamp(0.0, 1.0);
+    (offering.ai_demand.max(0) as f64 * progress * progress).round() as i64
 }
 
 fn player_daily_vol(risk: u8) -> f64 {

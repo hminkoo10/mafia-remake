@@ -403,7 +403,8 @@ function OfferingCard({
   const cost = qty * offering.price;
   const institutions = offering.institutions ?? 0;
   const retail = offering.shares - institutions;
-  const ratio = retail > 0 ? offering.requested / retail : 0;
+  const ai = offering.ai_requested ?? 0;
+  const ratio = retail > 0 ? (offering.requested + ai) / retail : 0;
   return (
     <div className="desk-card offer">
       <header>
@@ -411,6 +412,7 @@ function OfferingCard({
           <h3>{offering.name}</h3>
           <span>
             {offering.code} · {offering.sector}
+            {offering.theme ? " · 테마주" : ""}
             {offering.player ? ` · 플레이어 회사${offering.founder_name ? ` (${offering.founder_name})` : ""}` : ""}
           </span>
         </div>
@@ -432,7 +434,10 @@ function OfferingCard({
         <div>
           <dt>청약 경쟁률</dt>
           <dd>
-            {ratio.toFixed(2)} : 1 <small>({won(offering.requested)}주)</small>
+            {ratio.toFixed(2)} : 1{" "}
+            <small>
+              (플레이어 {won(offering.requested)}주 · AI {won(ai)}주)
+            </small>
           </dd>
         </div>
         <div>
@@ -440,6 +445,9 @@ function OfferingCard({
           <dd>{relativeText(offering.closes_at, now)}</dd>
         </div>
       </dl>
+      <p className="desk-hint">
+        AI 투자자도 함께 청약하고 마감이 가까울수록 몰립니다. 경쟁률이 높을수록 배정받는 주식이 줄고, 못 받은 만큼 증거금을 돌려받습니다.
+      </p>
       {offering.min_fill_bp > 0 && (
         <p className="desk-hint">청약이 공모 주식의 {bpText(offering.min_fill_bp)}에 못 미치면 공모가 무산되고 증거금은 모두 돌려받습니다.</p>
       )}

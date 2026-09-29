@@ -222,7 +222,8 @@ function ManageCompany({
       {s.status === "공모 청약" && detail.ipo && (
         <p className="desk-hint">
           공모 청약 진행 중: {won(detail.ipo.shares)}주
-          {detail.ipo_institutions > 0 && ` (기관 ${won(detail.ipo_institutions)}주)`} 중 {won(detail.ipo_requested)}주 청약,{" "}
+          {detail.ipo_institutions > 0 && ` (기관 ${won(detail.ipo_institutions)}주)`} 중 {won(detail.ipo_requested)}주 청약
+          {detail.ipo_ai_requested > 0 && ` (AI ${won(detail.ipo_ai_requested)}주 따로)`},{" "}
           {relativeText(detail.ipo.closes_at, now)} 마감.
           청약이 공모 주식의 {bpText(detail.ipo.min_fill_bp)}에 못 미치면 공모가 무산되고 증거금은 돌려줍니다.
         </p>

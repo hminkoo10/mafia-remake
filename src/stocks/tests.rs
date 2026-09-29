@@ -6,13 +6,16 @@ use rand::rngs::StdRng;
 
 const T0: i64 = 1_800_000_000_000;
 
-/// 가격이 스스로 움직이지 않는 규칙 (체결·기업 활동만 본다). 공모는 플레이어끼리만 (기관 배정 없음).
+/// 가격이 스스로 움직이지 않는 규칙 (체결·기업 활동만 본다). 공모는 플레이어끼리만 (기관·AI 배정 없음),
+/// 시스템 회사는 목표 수만큼만 (추가 상장 없음).
 fn quiet() -> StockRules {
     StockRules {
         vol_pct: 0,
         news_pct: 0,
         vi_bp: 0,
         ipo_institution_bp: 0,
+        ipo_ai_pct: 0,
+        system_extra_companies: 0,
         ..StockRules::default()
     }
 }
@@ -1118,6 +1121,207 @@ fn risk_and_description_are_the_founders_calls() {
 }
 
 // ------------------------------------------------------------ 시스템 회사·기타
+
+/// AI 투자자도 공모에 청약한다: 청약 기간 동안 막판으로 갈수록 들어오고, 플레이어와 함께 균등·비례
+/// 배정을 받아 경쟁률이 높으면 플레이어가 받는 주식이 준다. 최종 AI 수요는 화면에 미리 보이지 않는다.
+#[test]
+fn ai_investors_compete_for_ipo_shares() {
+    let rules = StockRules {
+        ipo_ai_pct: 100,
+        ..quiet()
+    };
+    let mut market = market();
+    market.companies.remove("100120").unwrap();
+    let start = T0 + rules.day_ms() + TICK_MS;
+    market.tick(start, &rules, &mut rng());
+    let code = market
+        .companies
+        .values()
+        .find(|company| matches!(company.status, CompanyStatus::Subscription(_)))
+        .expect("신규 공모")
+        .code
+        .clone();
+    let CompanyStatus::Subscription(offering) =
+        &mut market.companies.get_mut(&code).unwrap().status
+    else {
+        unreachable!()
+    };
+    assert!(offering.ai_demand > 0, "AI 수요가 정해져 있다");
+    offering.ai_demand = offering.shares * 9;
+    let offering = offering.clone();
+    let offered = offering.shares;
+    assert_eq!(ai_subscribed(&offering, offering.opens_at), 0);
+    let half = ai_subscribed(&offering, (offering.opens_at + offering.closes_at) / 2);
+    assert!(
+        (half - offered * 9 / 4).abs() <= 1,
+        "기간 절반에 4분의 1쯤: {half}"
+    );
+    assert_eq!(ai_subscribed(&offering, offering.closes_at), offered * 9);
+    let detail = market.company_detail(&code, start, &rules).unwrap();
+    assert_eq!(detail.ipo.unwrap().ai_demand, 0);
+
+    market.subscribe(5, "U5", &code, offered, start).unwrap();
+    let report = market.tick(offering.closes_at + TICK_MS, &rules, &mut rng());
+    let got = market.accounts[&5].positions[&code].qty;
+    assert!(
+        got > 0 && got < offered / 5,
+        "경쟁률 10:1에서 {got}주 / {offered}주"
+    );
+    assert_eq!(
+        balances(&market)[&5],
+        -got * offering.price,
+        "못 받은 만큼 증거금을 돌려받는다"
+    );
+    assert!(
+        report
+            .news
+            .iter()
+            .any(|news| news.kind == NewsKind::Listing && news.headline.contains("경쟁률 10.0:1"))
+    );
+}
+
+/// 플레이어 회사 공모에도 AI가 청약한다: 공모가가 쌀수록 많이 몰리고, 플레이어 청약이 모자라도 AI
+/// 청약으로 공모가 차며, AI가 받은 주식은 시장조성자가 유통 물량으로 든다 (보유 한도와 따로).
+#[test]
+fn ai_investors_join_player_ipos() {
+    let rules = StockRules {
+        ipo_ai_pct: 100,
+        ..quiet()
+    };
+    let mut market = market();
+    let cheap = found(&mut market, 1, 2_000_000);
+    let pricey = market
+        .found_company(2, "U2", "비싼상사", Sector::Game, 2_000_000, T0, &rules)
+        .unwrap();
+    let now = T0 + rules.day_ms();
+    // 주당 순자산 5,000원: 0.8배와 2배에 공모한다.
+    market
+        .start_ipo(1, &cheap, 4_000, 200, now, &rules)
+        .unwrap();
+    market
+        .start_ipo(2, &pricey, 10_000, 200, now, &rules)
+        .unwrap();
+    let ai_demand = |market: &StockMarket, code: &str| match &market.companies[code].status {
+        CompanyStatus::Subscription(offering) => offering.ai_demand,
+        _ => unreachable!(),
+    };
+    assert!(
+        ai_demand(&market, &cheap) > ai_demand(&market, &pricey),
+        "싼 공모 {}주, 비싼 공모 {}주",
+        ai_demand(&market, &cheap),
+        ai_demand(&market, &pricey)
+    );
+    if let CompanyStatus::Subscription(offering) =
+        &mut market.companies.get_mut(&cheap).unwrap().status
+    {
+        offering.ai_demand = 150;
+    }
+    // 플레이어 청약 20주는 최소 물량(100주)에 못 미치지만 AI 150주가 채운다.
+    market.subscribe(3, "U3", &cheap, 20, now).unwrap();
+    let now = now + rules.day_ms() + TICK_MS;
+    market.tick(now, &rules, &mut rng());
+    let company = &market.companies[&cheap];
+    assert_eq!(company.status, CompanyStatus::Listed);
+    assert_eq!(market.accounts[&3].positions[&cheap].qty, 20);
+    assert_eq!(company.shares, 400 + 170);
+    assert_eq!(company.lp_inventory, Some(150));
+    assert_eq!(company.lp_ipo_float, 150);
+    let fee = bp_part(170 * 4_000, rules.ipo_fee_bp);
+    assert_eq!(company.equity, 2_000_000 + 170 * 4_000 - fee);
+    // 시장조성자는 보유 한도(25%)를 넘게 들고 있어도 공모 물량과 따로 주주의 매도를 받는다.
+    sell(&mut market, 3, &cheap, 10, None, now).unwrap();
+    assert_eq!(market.accounts[&3].positions[&cheap].qty, 10);
+    assert_eq!(market.companies[&pricey].status, CompanyStatus::Private);
+}
+
+/// 시스템 회사는 목표 수를 넘어서도 한도까지 새로 상장하고, 열에 넷쯤은 작고 변동이 큰 테마주다.
+#[test]
+fn the_market_keeps_listing_new_system_companies() {
+    let rules = StockRules {
+        day_ms: MINUTE_MS,
+        system_extra_companies: 6,
+        ..quiet()
+    };
+    let mut market = market();
+    let mut rng = rng();
+    let mut at = T0;
+    for _ in 0..240 {
+        at += MINUTE_MS;
+        market.tick(at, &rules, &mut rng);
+    }
+    let system = market
+        .companies
+        .values()
+        .filter(|company| {
+            !company.is_player()
+                && matches!(
+                    company.status,
+                    CompanyStatus::Listed | CompanyStatus::Subscription(_)
+                )
+        })
+        .count();
+    assert!((13..=18).contains(&system), "시스템 회사 {system}곳");
+    let theme = market
+        .companies
+        .values()
+        .find(|company| company.risk >= THEME_RISK)
+        .expect("테마주도 상장한다");
+    assert!(theme.daily_vol >= 0.05 && theme.dividend_yield_bp == 0);
+    assert!(market.summary_of(theme, at).theme);
+}
+
+/// 시가총액이 상장 유지 기준 아래로 이어지면 상장폐지 우려 공시 뒤 정리매매를 거쳐 상장폐지되고, 빈자리는
+/// 새 공모로 채운다.
+#[test]
+fn a_system_company_below_the_cap_floor_is_delisted() {
+    let rules = StockRules {
+        day_ms: MINUTE_MS,
+        ..quiet()
+    };
+    let mut market = market();
+    let code = "100070";
+    {
+        // 주당 순자산은 그대로 두고 주식 수만 줄여 시가총액을 기준 아래로.
+        let company = market.companies.get_mut(code).unwrap();
+        company.equity = company.equity / company.shares * 100;
+        company.shares = 100;
+    }
+    let mut rng = rng();
+    let mut news = Vec::new();
+    let mut at = T0;
+    for _ in 0..20 {
+        at += MINUTE_MS;
+        news.extend(market.tick(at, &rules, &mut rng).news);
+    }
+    let headlines = news
+        .iter()
+        .filter(|item| item.code.as_deref() == Some(code))
+        .map(|item| item.headline.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        headlines
+            .iter()
+            .any(|text| text.contains(&format!("미달 {LOW_CAP_WARN_DAYS}게임일째"))),
+        "{headlines:?}"
+    );
+    assert!(
+        headlines
+            .iter()
+            .any(|text| text.contains("시가총액 미달로 상장폐지 결정")),
+        "{headlines:?}"
+    );
+    assert!(matches!(
+        market.companies[code].status,
+        CompanyStatus::Delisted { .. }
+    ));
+    assert!(
+        market
+            .companies
+            .values()
+            .any(|company| company.code.starts_with('2') && company.status.is_active()),
+        "빈자리는 새 공모로 채운다"
+    );
+}
 
 #[test]
 fn system_ipos_refill_the_market_and_earnings_pay_dividends() {

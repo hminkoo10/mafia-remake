@@ -3,16 +3,31 @@ import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui";
 import { NewsList } from "./NewsList";
 import { bpText, compactWon, dateTimeText, pctText, relativeText, RISK_TEXT, tone, won } from "./format";
-import type { CompanyDetail, NewsItem } from "./types";
+import type { CompanyDetail, NewsItem, StockRulesView } from "./types";
 
-export function CompanyInfo({ detail, news, now }: { detail: CompanyDetail; news: NewsItem[]; now: number }) {
+export function CompanyInfo({
+  detail,
+  news,
+  now,
+  rules,
+}: {
+  detail: CompanyDetail;
+  news: NewsItem[];
+  now: number;
+  rules: StockRulesView;
+}) {
   const [tab, setTab] = useState("overview");
   const s = detail.summary;
   const pbr = detail.bvps > 0 ? s.price / detail.bvps : null;
   const notices: string[] = [];
   if (detail.ipo) {
     notices.push(
-      `공모 청약 중: 공모가 ${won(detail.ipo.price)}, ${won(detail.ipo.shares)}주 중 ${won(detail.ipo_requested)}주 청약 · ${relativeText(detail.ipo.closes_at, now)} 마감`,
+      `공모 청약 중: 공모가 ${won(detail.ipo.price)}, ${won(detail.ipo.shares)}주 · 플레이어 ${won(detail.ipo_requested)}주 · AI ${won(detail.ipo_ai_requested)}주 청약 · ${relativeText(detail.ipo.closes_at, now)} 마감`,
+    );
+  }
+  if (s.theme) {
+    notices.push(
+      `테마주: 작고 변동이 큰 종목입니다. 시가총액이 ${Math.round(rules.min_system_cap / 1e8)}억원 아래로 ${rules.low_cap_warn_days}게임일 이어지면 상장폐지 우려, ${rules.low_cap_delist_days}게임일이면 정리매매 뒤 상장폐지됩니다.`,
     );
   }
   if (detail.rights) {

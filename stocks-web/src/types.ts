@@ -58,6 +58,8 @@ export interface CompanySummary {
   market_cap: number;
   managed: boolean;
   halted: boolean;
+  /** 시스템 회사 테마주 (작고 변동이 크며, 시가총액이 기준 아래로 이어지면 상장폐지된다). */
+  theme: boolean;
 }
 
 export interface MarketSummary {
@@ -123,6 +125,8 @@ export interface CompanyDetail {
   book: Book;
   ipo: IpoOffering | null;
   ipo_requested: number;
+  /** 지금까지 들어온 AI 청약 (마감에 가까울수록 많이 들어온다). */
+  ipo_ai_requested: number;
   /** 공모 주식 중 기관이 받아 갈 수량 (나머지가 일반 청약분). */
   ipo_institutions: number;
   rights: { price: number; shares: number; until: number } | null;
@@ -221,6 +225,9 @@ export interface OfferingView {
   requested: number;
   /** 기관이 받아 갈 수량 (플레이어는 나머지 일반 청약분을 나눠 받는다). */
   institutions: number;
+  /** 지금까지 들어온 AI(게임 밖 투자자) 청약. 플레이어와 함께 균등·비례 배정을 받는다. */
+  ai_requested: number;
+  theme: boolean;
 }
 
 export interface SectorView {
@@ -240,6 +247,10 @@ export interface StockRulesView {
   listing_min_equity: number;
   lockup_days: number;
   max_companies: number;
+  /** 시스템 회사 상장 유지 기준 시가총액과, 미달이 이어질 때 상장폐지 우려·결정까지의 게임일. */
+  min_system_cap: number;
+  low_cap_warn_days: number;
+  low_cap_delist_days: number;
   sectors: SectorView[];
 }
 

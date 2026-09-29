@@ -97,10 +97,12 @@ impl StockMarket {
         (up, ticks - up)
     }
 
-    /// 플레이어 회사: 시장조성자가 더 살 수 있는 수량.
+    /// 플레이어 회사: 시장조성자가 더 살 수 있는 수량. 공모 때 받은 유통 물량(기관·AI 배정분)은
+    /// 한도와 따로 든다 (AI가 많이 받아 간 공모에서도 상장 뒤 주주가 팔 수 있게).
     fn lp_buy_room(company: &Company, rules: &StockRules) -> Option<i64> {
         company.lp_inventory.map(|inventory| {
-            let cap = company.shares.saturating_mul(rules.lp_inventory_bp.max(0)) / BP;
+            let cap = company.shares.saturating_mul(rules.lp_inventory_bp.max(0)) / BP
+                + company.lp_ipo_float.max(0);
             (cap - inventory).max(0)
         })
     }

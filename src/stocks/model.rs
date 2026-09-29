@@ -10,6 +10,8 @@ pub const HOUR_MS: i64 = 60 * MINUTE_MS;
 pub const DAY_MS: i64 = 24 * HOUR_MS;
 /// 분기 = 실제 1주.
 pub const WEEK_MS: i64 = 7 * DAY_MS;
+/// 이 위험도 이상인 시스템 회사는 테마주다 (`Company::is_theme`).
+pub const THEME_RISK: u8 = 4;
 /// 액면가 (플레이어 회사 설립 때 발행 주식 수를 정한다).
 pub const PAR_VALUE: i64 = 5_000;
 /// 호가창에 보여 주는 단계 수.
@@ -203,6 +205,10 @@ pub struct IpoOffering {
     pub closes_at: i64,
     /// 청약이 공모 주식의 이 만분율보다 적으면 공모가 무산된다 (플레이어 회사).
     pub min_fill_bp: i64,
+    /// AI(게임 밖 투자자) 청약 수량: 공모를 열 때 정하고, 청약 기간 동안 조금씩 들어와 마감에 다 찬다.
+    /// 화면에는 지금까지 들어온 만큼만 보인다 (`ai_subscribed`).
+    #[serde(default)]
+    pub ai_demand: i64,
 }
 
 /// 분기 실적.
@@ -372,6 +378,12 @@ pub struct Company {
     /// 게임 연동 종목: 평소 한 주 활동량 (마피아 판 또는 카지노 핸드, 최근 몇 주 평균). 없으면 처음 기준.
     #[serde(default)]
     pub activity_usual: Option<f64>,
+    /// 시스템 회사: 시가총액이 상장 유지 기준에 못 미친 채 넘어간 게임일 수 (이어지면 상장폐지).
+    #[serde(default)]
+    pub low_cap_days: u16,
+    /// 플레이어 회사: 공모 때 시장조성자가 받은 유통 물량 (기관·AI 배정분). 시장조성자 보유 한도에 더한다.
+    #[serde(default)]
+    pub lp_ipo_float: i64,
 }
 
 fn default_risk() -> u8 {
@@ -384,6 +396,11 @@ impl Company {
             CompanyKind::Player { founder, .. } => Some(*founder),
             CompanyKind::System => None,
         }
+    }
+
+    /// 시스템 회사 테마주: 작고, 주가가 크게 오래 흔들리고, 실적이 업종보다 크게 흔들린다.
+    pub fn is_theme(&self) -> bool {
+        !self.is_player() && self.risk >= THEME_RISK
     }
 
     pub fn is_player(&self) -> bool {
@@ -852,6 +869,11 @@ pub struct StockRules {
     /// 플레이어 회사 공모에서 기관이 받아 가는 최대 비율 (공모 주식의 만분율). 공모가가 주당 순자산
     /// 이하일 때 이만큼이고, 비쌀수록 줄어 순자산의 2배면 받지 않는다.
     pub ipo_institution_bp: i64,
+    /// 공모 청약에 들어오는 AI(게임 밖 투자자) 수요 배율 (%). 0이면 플레이어끼리만 청약한다.
+    pub ipo_ai_pct: i64,
+    /// 시스템 회사가 목표 수(`system_companies`)를 넘어 늘 수 있는 만큼. 한도 안에서는 새 회사가 가끔
+    /// 상장하고, 약한 회사는 상장폐지된다.
+    pub system_extra_companies: i64,
 }
 
 impl Default for StockRules {
@@ -880,6 +902,8 @@ impl Default for StockRules {
             system_companies: 12,
             lp_inventory_bp: 2_500,
             ipo_institution_bp: 3_000,
+            ipo_ai_pct: 100,
+            system_extra_companies: 10,
         }
     }
 }

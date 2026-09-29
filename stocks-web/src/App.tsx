@@ -340,7 +340,7 @@ export default function App() {
                     height={phone ? 250 : 330}
                   />
                 </div>
-                {selected && <CompanyInfo detail={selected} news={state.selected_news} now={now} />}
+                {selected && <CompanyInfo detail={selected} news={state.selected_news} now={now} rules={state.rules} />}
               </section>
               <section className="col-trade">
                 {selected && (
@@ -397,6 +397,7 @@ function StockList({
         <small>
           {c.code} · {c.sector}
           {c.status !== "상장" ? ` · ${c.status}` : ""}
+          {c.theme ? " · 테마" : ""}
           {c.managed ? " · 관리" : ""}
           {c.halted ? " · 정지" : ""}
         </small>
@@ -441,6 +442,7 @@ function QuoteHeader({ detail, onOpenList }: { detail: CompanyDetail; onOpenList
         <span className="tag">{s.sector}</span>
         {s.player && <span className="tag player">플레이어 회사{s.founder_name ? ` · ${s.founder_name}` : ""}</span>}
         {s.status !== "상장" && <span className="tag warn">{s.status}</span>}
+        {s.theme && <span className="tag warn">테마주</span>}
         {s.managed && <span className="tag warn">관리종목</span>}
         {s.halted && <span className="tag warn">거래정지</span>}
       </div>

@@ -146,6 +146,10 @@ pub struct StockRulesView {
     pub listing_min_equity: i64,
     pub lockup_days: i64,
     pub max_companies: i64,
+    /// 시스템 회사 상장 유지 기준 시가총액과, 미달이 이어질 때 상장폐지 우려·결정까지의 게임일.
+    pub min_system_cap: i64,
+    pub low_cap_warn_days: u16,
+    pub low_cap_delist_days: u16,
     pub sectors: Vec<SectorView>,
 }
 
@@ -200,6 +204,10 @@ pub struct OfferingView {
     pub requested: i64,
     /// 기관이 받아 갈 수량 (플레이어는 나머지 일반 청약분을 나눠 받는다).
     pub institutions: i64,
+    /// 지금까지 들어온 AI(게임 밖 투자자) 청약. 플레이어와 함께 균등·비례 배정을 받는다.
+    pub ai_requested: i64,
+    /// 테마주 (시스템 회사 가운데 작고 변동이 큰 종목).
+    pub theme: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -282,6 +290,8 @@ async fn build_state(stocks: &StockHub, user: u64, name: &str, code: Option<&str
                     .filter(|subscription| subscription.code == company.code)
                     .map(|subscription| subscription.qty)
                     .sum(),
+                ai_requested: mafia_remake::stocks::ai_subscribed(offering, now),
+                theme: company.is_theme(),
                 institutions: if company.is_player() {
                     mafia_remake::stocks::institution_shares(
                         offering.shares,
@@ -364,6 +374,9 @@ async fn build_state(stocks: &StockHub, user: u64, name: &str, code: Option<&str
             listing_min_equity: rules.listing_min_equity,
             lockup_days: rules.lockup_days,
             max_companies: rules.max_companies,
+            min_system_cap: mafia_remake::stocks::MIN_SYSTEM_CAP,
+            low_cap_warn_days: mafia_remake::stocks::LOW_CAP_WARN_DAYS,
+            low_cap_delist_days: mafia_remake::stocks::LOW_CAP_DELIST_DAYS,
             sectors: Sector::ALL
                 .iter()
                 .map(|sector| SectorView {

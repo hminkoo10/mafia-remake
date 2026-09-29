@@ -11,6 +11,10 @@ use std::collections::{BTreeMap, VecDeque};
 const MAX_CATCHUP_TICKS: i64 = WEEK_MS / TICK_MS;
 /// 잡음이 절반으로 돌아가는 데 걸리는 게임일.
 const NOISE_HALF_LIFE_DAYS: f64 = 3.0;
+/// 테마주 잡음의 반감기 (게임일): 급등락이 오래 남아 크게 오르거나 기준 아래로 무너진다.
+const THEME_NOISE_HALF_LIFE_DAYS: f64 = 24.0;
+/// 테마주 투자 심리의 주간 변동성 (보통 종목 0.04, 바이오 0.08).
+const THEME_SENTIMENT_VOL: f64 = 0.2;
 /// 투자 심리가 절반으로 돌아가는 데 걸리는 실제 시간.
 const SENTIMENT_HALF_LIFE_MS: f64 = 2.0 * WEEK_MS as f64;
 /// 뉴스 충격이 절반쯤 반영되는 시간.
@@ -52,6 +56,8 @@ const MACRO_NEWS_PER_DAY: f64 = 3.0;
 const COMPANY_NEWS_PER_DAY: f64 = 0.8;
 /// 플레이어 회사 뉴스 빈도: 종목당 실제 하루 3건 (시스템 회사 12개 사이에서도 눈에 띄게).
 const PLAYER_COMPANY_NEWS_PER_DAY: f64 = 3.0;
+/// 테마주 뉴스 빈도: 종목당 실제 하루 2건 (소문이 잦다).
+const THEME_COMPANY_NEWS_PER_DAY: f64 = 2.0;
 
 /// 한 번의 갱신에서 생긴 일 (봇이 Discord·웹에 알린다).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -123,6 +129,8 @@ impl StockMarket {
                 pending_dividend: None,
                 activity_mark: Activity::default(),
                 activity_usual: None,
+                low_cap_days: 0,
+                lp_ipo_float: 0,
             };
             companies.insert(company.code.clone(), company);
         }
@@ -557,6 +565,8 @@ impl StockMarket {
             company.turnover = 0;
             company.vi_ref = company.price;
             company.first_day_band = None;
+            // 시스템 회사의 상장 유지 기준 (시가총액)은 하루에 한 번 본다.
+            self.check_listing_floor(code, at, rules, report);
         }
         if !quoted {
             return;
@@ -587,9 +597,16 @@ impl StockMarket {
             (0.001 + 0.004 * company.last_shock.powi(2) + 0.995 * company.garch).clamp(0.2, 6.0);
         company.last_shock = shock;
         let sigma = company.daily_vol * vol_scale * company.garch.sqrt() * intraday * dt_day.sqrt();
-        let kappa = std::f64::consts::LN_2 / NOISE_HALF_LIFE_DAYS;
+        let half_life = if company.is_theme() {
+            THEME_NOISE_HALF_LIFE_DAYS
+        } else {
+            NOISE_HALF_LIFE_DAYS
+        };
+        let kappa = std::f64::consts::LN_2 / half_life;
         company.noise = (company.noise * (1.0 - kappa * dt_day) + sigma * shock).clamp(-2.0, 2.0);
-        let sentiment_vol = if company.sector == Sector::Bio {
+        let sentiment_vol = if company.is_theme() {
+            THEME_SENTIMENT_VOL
+        } else if company.sector == Sector::Bio {
             0.08
         } else {
             0.04
@@ -669,6 +686,8 @@ impl StockMarket {
         let news_scale = rules.news_pct.max(0) as f64 / 100.0;
         let per_day = if company.is_player() {
             PLAYER_COMPANY_NEWS_PER_DAY
+        } else if company.is_theme() {
+            THEME_COMPANY_NEWS_PER_DAY
         } else {
             COMPANY_NEWS_PER_DAY
         };

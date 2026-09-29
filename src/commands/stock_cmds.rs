@@ -5,7 +5,7 @@ use super::*;
 use crate::stock_hub::{Need, now_ms};
 use mafia_remake::stocks::{
     self as market_engine, Candle, CompanyDetail, CompanyStatus, NewsItem, NewsKind, Sector, Side,
-    StockMarket, format_amount,
+    StockMarket, StockRules, format_amount,
 };
 
 const TITLE: &str = "주식";
@@ -122,7 +122,7 @@ pub async fn stock(_ctx: Context<'_>) -> Result<(), Error> {
 }
 
 /// 시장 요약 본문 (시세판과 /주식 시세가 같이 쓴다).
-pub fn market_board_text(market: &StockMarket, now: i64) -> String {
+pub fn market_board_text(market: &StockMarket, now: i64, rules: &StockRules) -> String {
     let mut lines = vec![format!("마피아 종합지수 **{}**", index_change(market))];
     if now < market.halted_until {
         lines.push(format!(
@@ -140,6 +140,7 @@ pub fn market_board_text(market: &StockMarket, now: i64) -> String {
     {
         let summary = market.summary_of(company, now);
         let flags = [
+            summary.theme.then_some("테마"),
             summary.managed.then_some("관리"),
             summary.halted.then_some("정지"),
             matches!(company.status, CompanyStatus::Liquidating { .. }).then_some("정리매매"),
@@ -155,10 +156,11 @@ pub fn market_board_text(market: &StockMarket, now: i64) -> String {
         };
         match &company.status {
             CompanyStatus::Subscription(offering) => ipos.push(format!(
-                "🆕 {} ({}) 공모가 {} · {}까지 청약",
+                "🆕 {} ({}){flag} 공모가 {} · 경쟁률 {:.1}:1 · {}까지 청약",
                 company.name,
                 company.code,
                 won(offering.price),
+                market.subscription_ratio(company, offering, now, rules),
                 kst_clock(offering.closes_at)
             )),
             CompanyStatus::Private => {}
@@ -255,11 +257,15 @@ fn company_text(detail: &CompanyDetail) -> String {
         } else {
             String::new()
         };
+        let retail = (offering.shares - detail.ipo_institutions).max(1);
+        let subscribed = detail.ipo_requested + detail.ipo_ai_requested;
         lines.push(format!(
-            "🆕 공모 청약 중: 공모가 {} · {}주{institutions} · 청약 {}주 · {}까지 (`/주식 청약`)",
+            "🆕 공모 청약 중: 공모가 {} · {}주{institutions} · 청약 {}주 (AI {}주 포함, 경쟁률 {:.1}:1) · {}까지 (`/주식 청약`)",
             won(offering.price),
             format_amount(offering.shares),
-            format_amount(detail.ipo_requested),
+            format_amount(subscribed),
+            format_amount(detail.ipo_ai_requested),
+            subscribed as f64 / retail as f64,
             kst_clock(offering.closes_at)
         ));
     }
@@ -378,7 +384,7 @@ pub async fn stock_quote(
     let now = ctx.data().stocks.now().await;
     let (rules, _) = ctx.data().stocks.rules().await;
     let text = match 종목 {
-        None => market_board_text(&*ctx.data().stocks.market.read().await, now),
+        None => market_board_text(&*ctx.data().stocks.market.read().await, now, &rules),
         Some(query) => {
             let code = match resolve(ctx, &query).await {
                 Ok(code) => code,
@@ -1745,9 +1751,10 @@ pub async fn stock_panel(ctx: Context<'_>) -> Result<(), Error> {
     if !require_manager(ctx).await? {
         return Ok(());
     }
+    let (rules, _) = ctx.data().stocks.rules().await;
     let text = {
         let market = ctx.data().stocks.market.read().await;
-        market_board_text(&market, market.clock(now_ms()))
+        market_board_text(&market, market.clock(now_ms()), &rules)
     };
     let message = ctx
         .channel_id()
@@ -1939,9 +1946,10 @@ async fn refresh_stock_panel(ctx: &serenity::Context, data: &Data) {
     if channel == 0 {
         return;
     }
+    let (rules, _) = data.stocks.rules().await;
     let text = {
         let market = data.stocks.market.read().await;
-        market_board_text(&market, market.clock(now_ms()))
+        market_board_text(&market, market.clock(now_ms()), &rules)
     };
     if message == 0 {
         // 웹에서 시세판 채널만 정했다: 새로 올려 고정한다.
