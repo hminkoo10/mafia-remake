@@ -523,7 +523,14 @@ impl StockMarket {
 
     /// 주주에게 주당 `per_share`씩 준다: 플레이어는 코인으로, 시장조성자 몫은 금고로. 준 총액을 돌려준다.
     /// `dividend`면 받은 배당금 누적에도 더한다 (청산 분배금은 배당이 아니다).
-    fn pay_holders(&mut self, code: &str, per_share: i64, reason: &str, dividend: bool) -> i64 {
+    fn pay_holders(
+        &mut self,
+        code: &str,
+        per_share: i64,
+        reason: &str,
+        dividend: bool,
+        at: i64,
+    ) -> i64 {
         if per_share <= 0 {
             return 0;
         }
@@ -547,6 +554,12 @@ impl StockMarket {
                 account.dividends = account.dividends.saturating_add(amount);
                 let ledger = account.ledger_mut(code);
                 ledger.dividends = ledger.dividends.saturating_add(amount);
+                account.record(HistoryEntry {
+                    price: per_share,
+                    amount,
+                    note: format!("{qty}주 보유"),
+                    ..HistoryEntry::new(at, HistoryKind::Dividend, code)
+                });
             }
             paid = paid.saturating_add(amount);
         }
@@ -582,7 +595,7 @@ impl StockMarket {
         let target = (before - per_share as f64).max(1.0);
         let total = per_share.saturating_mul(company.shares);
         let player = company.is_player();
-        let paid = self.pay_holders(code, per_share, "배당금", true);
+        let paid = self.pay_holders(code, per_share, "배당금", true, at);
         if !player {
             self.stats.dividends = self.stats.dividends.saturating_add(paid);
         }
@@ -695,6 +708,12 @@ impl StockMarket {
                 subscription.deposit,
                 format!("{code} 청약 증거금 반환"),
             );
+            self.account_mut(subscription.user, &subscription.name)
+                .record(HistoryEntry {
+                    amount: subscription.deposit,
+                    note: format!("{reason}로 상장 취소, 청약 {}주", subscription.qty),
+                    ..HistoryEntry::new(at, HistoryKind::SubscriptionRefund, code)
+                });
         }
         // 행사한 신주인수권 대금은 돌려준다 (신주가 나오지 않았다).
         if let Some(rights) = self
@@ -714,9 +733,15 @@ impl StockMarket {
                     qty.saturating_mul(rights.price),
                     format!("{code} 유상증자 대금 반환"),
                 );
+                self.account_mut(user, &name).record(HistoryEntry {
+                    price: rights.price,
+                    amount: qty.saturating_mul(rights.price),
+                    note: format!("{reason}로 신주 {qty}주 발행 취소"),
+                    ..HistoryEntry::new(at, HistoryKind::RightsRefund, code)
+                });
             }
         }
-        let distributed = self.pay_holders(code, per_share, "청산 분배금", false);
+        let distributed = self.pay_holders(code, per_share, "청산 분배금", false, at);
         let before = self.listed_cap_sum();
         // 사라지는 주식은 받은 청산 분배금과 원가의 차이만큼 실현 손익에 넣는다 (분배금이 없으면
         // 원가만큼 손실). 예전에는 그냥 지워져 손익 어디에도 남지 않았다.
@@ -734,6 +759,14 @@ impl StockMarket {
             let ledger = account.ledger_mut(code);
             ledger.sold = ledger.sold.saturating_add(received);
             ledger.realized = ledger.realized.saturating_add(realized);
+            account.record(HistoryEntry {
+                qty: -position.qty,
+                price: per_share.max(0),
+                amount: received,
+                realized: Some(realized),
+                note: reason.to_string(),
+                ..HistoryEntry::new(at, HistoryKind::Delisted, code)
+            });
         }
         let Some(company) = self.companies.get_mut(code) else {
             return;
@@ -800,6 +833,13 @@ impl StockMarket {
                     order.deposit,
                     format!("{code} 공모 무산 증거금 반환"),
                 );
+                self.account_mut(order.user, &order.name)
+                    .record(HistoryEntry {
+                        price: offering.price,
+                        amount: order.deposit,
+                        note: format!("청약 {}주, 증거금 반환", order.qty),
+                        ..HistoryEntry::new(at, HistoryKind::IpoFailed, code)
+                    });
             }
             self.companies.get_mut(code).expect("company exists").status = CompanyStatus::Private;
             self.log(format!(
@@ -859,6 +899,18 @@ impl StockMarket {
                     format!("{code} 청약 미배정 증거금 반환"),
                 );
             }
+            self.account_mut(order.user, &order.name)
+                .record(HistoryEntry {
+                    qty: *alloc,
+                    price: offering.price,
+                    amount: refund.max(0),
+                    note: format!(
+                        "청약 {}주 중 {alloc}주 배정, 납입 {}",
+                        order.qty,
+                        format_amount(cost)
+                    ),
+                    ..HistoryEntry::new(at, HistoryKind::Allot, code)
+                });
             if *alloc > 0 {
                 let account = self.account_mut(order.user, &order.name);
                 let ledger = account.ledger_mut(code);
@@ -1326,6 +1378,14 @@ impl StockMarket {
             format_amount(fee)
         ));
         let account = self.account_mut(user, user_name);
+        account.record(HistoryEntry {
+            qty: shares,
+            price: capital / shares.max(1),
+            amount: -(capital + fee),
+            fee,
+            note: format!("자본금 {}", format_amount(capital)),
+            ..HistoryEntry::new(now, HistoryKind::Found, &code)
+        });
         let ledger = account.ledger_mut(&code);
         ledger.bought = ledger.bought.saturating_add(capital);
         account.positions.insert(
@@ -1517,6 +1577,13 @@ impl StockMarket {
                 at: now,
             }),
         }
+        self.account_mut(user, name).record(HistoryEntry {
+            qty: 0,
+            price: deposit / qty.max(1),
+            amount: -deposit,
+            note: format!("{qty}주 청약 (증거금)"),
+            ..HistoryEntry::new(now, HistoryKind::Subscribe, code)
+        });
         self.log(format!(
             "🧾 {name} · {} 공모 {qty}주 청약 (증거금 {})",
             self.label(code),
@@ -1527,7 +1594,7 @@ impl StockMarket {
     }
 
     /// 청약 취소 (마감 전).
-    pub fn cancel_subscription(&mut self, user: u64, code: &str) -> Result<i64, String> {
+    pub fn cancel_subscription(&mut self, user: u64, code: &str, now: i64) -> Result<i64, String> {
         let index = self
             .subscriptions
             .iter()
@@ -1540,6 +1607,12 @@ impl StockMarket {
             subscription.deposit,
             format!("{code} 청약 취소"),
         );
+        self.account_mut(user, &subscription.name)
+            .record(HistoryEntry {
+                amount: subscription.deposit,
+                note: format!("{}주 청약 취소 (증거금 반환)", subscription.qty),
+                ..HistoryEntry::new(now, HistoryKind::Unsubscribe, code)
+            });
         self.log(format!(
             "🧾 {} · {} 청약 취소 (환불 {})",
             subscription.name,
@@ -1714,7 +1787,14 @@ impl StockMarket {
             return Err("유상증자 청약이 마감됐습니다.".to_string());
         }
         *rights.exercised.entry(user).or_default() += qty;
+        let price = rights.price;
         self.transfer(user, name, -cost, format!("{code} 유상증자 대금"));
+        self.account_mut(user, name).record(HistoryEntry {
+            price,
+            amount: -cost,
+            note: format!("신주 {qty}주 인수 (마감 뒤 입고)"),
+            ..HistoryEntry::new(now, HistoryKind::RightsExercise, code)
+        });
         self.log(format!(
             "🧾 {name} · {} 신주 {qty}주 인수 (납입 {})",
             self.label(code),
@@ -1766,6 +1846,11 @@ impl StockMarket {
                 .map(|account| account.name.clone())
                 .unwrap_or_default();
             let account = self.account_mut(*user, &name);
+            account.record(HistoryEntry {
+                qty: *qty,
+                price: rights.price,
+                ..HistoryEntry::new(at, HistoryKind::RightsShares, code)
+            });
             let ledger = account.ledger_mut(code);
             ledger.bought = ledger
                 .bought
@@ -1944,6 +2029,17 @@ impl StockMarket {
                         .map(|account| account.name.clone())
                         .unwrap_or_default();
                     self.transfer(user, &founder_name, left, format!("{code} 해산 잔여 자본"));
+                    let account = self.account_mut(user, &founder_name);
+                    account.realized = account.realized.saturating_add(left);
+                    let ledger = account.ledger_mut(code);
+                    ledger.sold = ledger.sold.saturating_add(left);
+                    ledger.realized = ledger.realized.saturating_add(left);
+                    account.record(HistoryEntry {
+                        amount: left,
+                        realized: Some(left),
+                        note: "해산 뒤 나누고 남은 자본".to_string(),
+                        ..HistoryEntry::new(now, HistoryKind::Payout, code)
+                    });
                     if let Some(company) = self.companies.get_mut(code) {
                         company.equity = 0;
                     }

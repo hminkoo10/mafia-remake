@@ -1,5 +1,5 @@
-// 내 계좌: 자산·손익 요약, 잔고, 미체결, 체결(매도별 실현 손익), 손익(종목별), 공모·증자(청약·청약 취소·
-// 신주인수), 내 회사, 순위, 시장 뉴스, 관리(관리자만).
+// 내 계좌: 자산·손익 요약, 잔고, 미체결, 체결(매도별 실현 손익), 손익(종목별), 거래내역, 공모·증자(청약·
+// 청약 취소·신주인수), 내 회사, 순위, 시장 뉴스, 관리(관리자만).
 import { useState, type ReactNode } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui";
 import { AdminTab } from "./AdminTab";
@@ -8,7 +8,18 @@ import { CompanyDesk } from "./CompanyDesk";
 import { NewsList } from "./NewsList";
 import { RankingTab } from "./RankingTab";
 import { bpText, dateTimeText, parseAmount, pctText, relativeText, signedWon, tone, won } from "./format";
-import type { AccountView, Act, FillRecord, OfferingView, RightsClaimView, StockPnlView, StockState, SubscriptionView } from "./types";
+import type {
+  AccountView,
+  Act,
+  FillRecord,
+  HistoryKind,
+  HistoryView,
+  OfferingView,
+  RightsClaimView,
+  StockPnlView,
+  StockState,
+  SubscriptionView,
+} from "./types";
 
 function Stat({ label, value, className }: { label: string; value: ReactNode; className?: string }) {
   return (
@@ -35,6 +46,84 @@ function FillProfit({ fill }: { fill: FillRecord }) {
     <>
       <td className={tone(fill.realized)}>{signedWon(fill.realized)}</td>
       <td className={tone(bp)}>{pctText(bp)}</td>
+    </>
+  );
+}
+
+const HISTORY_FILTERS: { key: string; label: string; kinds: HistoryKind[] | null }[] = [
+  { key: "all", label: "전체", kinds: null },
+  { key: "trade", label: "매매", kinds: ["buy", "sell"] },
+  {
+    key: "offering",
+    label: "공모·증자",
+    kinds: ["subscribe", "unsubscribe", "allot", "ipo_failed", "subscription_refund", "rights_exercise", "rights_shares", "rights_refund"],
+  },
+  { key: "income", label: "배당·분배·기타", kinds: ["dividend", "delisted", "payout", "found"] },
+];
+
+function signedQty(qty: number) {
+  if (qty === 0) return "—";
+  return `${qty > 0 ? "+" : "−"}${won(Math.abs(qty))}`;
+}
+
+/** 거래내역: 매매, 공모 청약·배정, 배당, 유상증자, 상장폐지, 회사 설립 (주문 증거금은 빼고). */
+function HistoryTable({ history, onSelect }: { history: HistoryView[]; onSelect: (code: string) => void }) {
+  const [filter, setFilter] = useState("all");
+  const kinds = HISTORY_FILTERS.find((item) => item.key === filter)?.kinds ?? null;
+  const rows = kinds ? history.filter((entry) => kinds.includes(entry.kind)) : history;
+  return (
+    <>
+      <div className="seg history-filter" role="group" aria-label="거래내역 구분">
+        {HISTORY_FILTERS.map((item) => (
+          <button key={item.key} className={filter === item.key ? "on" : ""} onClick={() => setFilter(item.key)}>
+            {item.label}
+          </button>
+        ))}
+      </div>
+      {rows.length === 0 ? (
+        <p className="empty">{history.length === 0 ? "아직 거래내역이 없습니다." : "이 구분의 거래내역이 없습니다."}</p>
+      ) : (
+        <div className="table-wrap">
+          <table className="table clickable">
+            <thead>
+              <tr>
+                <th>시각</th>
+                <th>구분</th>
+                <th>종목</th>
+                <th>주식</th>
+                <th>단가</th>
+                <th>코인</th>
+                <th>수수료·세금</th>
+                <th>실현 손익</th>
+                <th>비고</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((entry, index) => (
+                <tr key={`${entry.at}-${index}`} onClick={() => onSelect(entry.code)} title="이 종목 보기">
+                  <td>{dateTimeText(entry.at)}</td>
+                  <td className={entry.kind === "buy" ? "up" : entry.kind === "sell" ? "down" : ""}>{entry.label}</td>
+                  <td>
+                    <b>{entry.name}</b>
+                    <small>{entry.code}</small>
+                  </td>
+                  <td>{signedQty(entry.qty)}</td>
+                  <td>{entry.price > 0 ? won(entry.price) : "—"}</td>
+                  <td className={tone(entry.amount)}>{entry.amount === 0 ? "—" : signedWon(entry.amount)}</td>
+                  <td>{entry.fee > 0 ? won(entry.fee) : "—"}</td>
+                  <td className={entry.realized == null ? "" : tone(entry.realized)}>
+                    {entry.realized == null ? "—" : signedWon(entry.realized)}
+                  </td>
+                  <td className="note">{entry.note || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="foot">
+        주식은 들어온 수(+)와 나간 수(−), 코인은 받은 돈(+)과 낸 돈(−)입니다. 지정가 주문에 묶인 코인은 체결되거나 풀릴 때 반영되므로 여기에 따로 적지 않습니다. 최근 300건까지 남습니다.
+      </p>
     </>
   );
 }
@@ -181,6 +270,7 @@ export function AccountTabs({
           <TabsTrigger value="orders">미체결 {a.orders.length || ""}</TabsTrigger>
           <TabsTrigger value="fills">체결</TabsTrigger>
           <TabsTrigger value="pnl">손익</TabsTrigger>
+          <TabsTrigger value="history">거래내역</TabsTrigger>
           <TabsTrigger value="ipo">공모·증자 {ipoCount || ""}</TabsTrigger>
           <TabsTrigger value="company">내 회사</TabsTrigger>
           <TabsTrigger value="ranking">순위</TabsTrigger>
@@ -326,6 +416,9 @@ export function AccountTabs({
         </TabsContent>
         <TabsContent value="pnl">
           <PnlTable account={a} onSelect={onSelect} />
+        </TabsContent>
+        <TabsContent value="history">
+          <HistoryTable history={a.history} onSelect={onSelect} />
         </TabsContent>
         <TabsContent value="ipo">
           <div className="offer-list">

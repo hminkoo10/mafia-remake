@@ -198,6 +198,41 @@ export interface FillRecord {
   realized?: number | null;
 }
 
+export type HistoryKind =
+  | "buy"
+  | "sell"
+  | "subscribe"
+  | "unsubscribe"
+  | "allot"
+  | "ipo_failed"
+  | "subscription_refund"
+  | "dividend"
+  | "rights_exercise"
+  | "rights_shares"
+  | "rights_refund"
+  | "delisted"
+  | "payout"
+  | "found";
+
+/** 거래내역 한 줄 (주문 증거금은 빼고, 주식이나 코인이 실제로 들고 난 일). */
+export interface HistoryView {
+  at: number;
+  kind: HistoryKind;
+  /** 구분 ("매수", "공모 배정", "배당금" …). */
+  label: string;
+  code: string;
+  name: string;
+  /** 들어온(+)·나간(−) 주식 수. */
+  qty: number;
+  /** 한 주 값 (체결가·공모가·발행가·주당 배당·주당 분배금, 없으면 0). */
+  price: number;
+  /** 받은(+)·낸(−) 코인. */
+  amount: number;
+  fee: number;
+  realized: number | null;
+  note: string;
+}
+
 /** 종목별 손익 (다 판 종목·상장폐지 종목도 남는다). */
 export interface StockPnlView {
   code: string;
@@ -239,6 +274,8 @@ export interface AccountView {
   legacy_pnl: StockPnlView | null;
   /** 최근 체결 (새것부터). */
   fills: FillRecord[];
+  /** 거래내역 (새것부터, 최근 300건). */
+  history: HistoryView[];
   companies: string[];
 }
 

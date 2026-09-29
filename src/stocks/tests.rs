@@ -1551,6 +1551,74 @@ fn a_delisted_holding_is_booked_as_a_realized_loss() {
     let view = market.account_view(5, at);
     let row = view.pnl.iter().find(|row| row.code == code).unwrap();
     assert_eq!((row.qty, row.total, row.status), (0, -cost, "상장폐지"));
+    let last = account.history.back().unwrap();
+    assert_eq!(
+        (last.kind, last.qty, last.amount, last.realized),
+        (HistoryKind::Delisted, -10, 0, Some(-cost))
+    );
+    assert_eq!(last.note, "시가총액 미달");
+}
+
+/// 거래내역: 공모 청약·배정, 매도·매수, 배당이 차례로 한 줄씩 남는다. 코인 합계는 실제로 오간 코인과,
+/// 주식 수는 잔고와 같다 (시장가 주문만 써서 묶였다 풀리는 증거금이 없다).
+#[test]
+fn account_history_records_every_settled_movement() {
+    let rules = quiet();
+    let mut market = market();
+    let (code, now) = listed_company(&mut market);
+    sell(&mut market, 2, &code, 10, None, now).unwrap();
+    buy(&mut market, 2, "100010", 2, None, 1_000_000, now).unwrap();
+    market.declare_dividend(1, &code, 100, now, &rules).unwrap();
+    market.tick(now + rules.day_ms() + TICK_MS, &rules, &mut rng());
+    let history = &market.accounts[&2].history;
+    assert_eq!(
+        history.iter().map(|entry| entry.kind).collect::<Vec<_>>(),
+        vec![
+            HistoryKind::Subscribe,
+            HistoryKind::Allot,
+            HistoryKind::Sell,
+            HistoryKind::Buy,
+            HistoryKind::Dividend,
+        ]
+    );
+    assert_eq!(
+        history.iter().map(|entry| entry.amount).sum::<i64>(),
+        balances(&market)[&2],
+        "코인 합계 = 실제로 오간 코인"
+    );
+    assert_eq!(
+        history
+            .iter()
+            .filter(|entry| entry.code == code)
+            .map(|entry| entry.qty)
+            .sum::<i64>(),
+        market.accounts[&2].positions[&code].qty,
+        "주식 수 합계 = 잔고"
+    );
+    assert!(history[2].realized.is_some(), "매도에는 실현 손익");
+    assert_eq!(history[4].amount, 190 * 100, "190주 × 주당 100");
+    let view = market.account_view(2, now);
+    assert_eq!(
+        (view.history[0].kind, view.history[0].label),
+        (HistoryKind::Dividend, "배당금"),
+        "화면은 새것부터"
+    );
+
+    // 청약 취소도 남는다.
+    let other = market
+        .found_company(3, "U3", "다른상사", Sector::Game, 2_000_000, T0, &rules)
+        .unwrap();
+    let open_at = now + rules.day_ms();
+    market
+        .start_ipo(3, &other, 5_000, 100, open_at, &rules)
+        .unwrap();
+    market.subscribe(2, "U2", &other, 10, open_at).unwrap();
+    market.cancel_subscription(2, &other, open_at + 1).unwrap();
+    let last = market.accounts[&2].history.back().unwrap();
+    assert_eq!(
+        (last.kind, last.amount),
+        (HistoryKind::Unsubscribe, 10 * 5_000)
+    );
 }
 
 /// 종목별 장부가 생기기 전의 거래: 가진 주식은 원가를 산 금액으로 넣어 두고, 계좌 합계에만 있던

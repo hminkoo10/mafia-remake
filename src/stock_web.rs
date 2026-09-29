@@ -628,7 +628,7 @@ async fn unsubscribe_handler(
         .transact(
             user,
             |_, _| Ok(Need::Nothing),
-            |market, _, _, _| market.cancel_subscription(user, code),
+            |market, _, _, now| market.cancel_subscription(user, code, now),
         )
         .await;
     match result {

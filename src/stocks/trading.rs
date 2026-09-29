@@ -637,6 +637,13 @@ impl StockMarket {
             cost: fee,
             realized: None,
         });
+        account.record(HistoryEntry {
+            qty,
+            price: notional / qty,
+            amount: -(notional + fee),
+            fee,
+            ..HistoryEntry::new(now, HistoryKind::Buy, code)
+        });
         while account.fills.len() > FILL_HISTORY_LIMIT {
             account.fills.pop_front();
         }
@@ -697,6 +704,14 @@ impl StockMarket {
             price: notional / qty,
             cost: fee + tax,
             realized: Some(realized),
+        });
+        account.record(HistoryEntry {
+            qty: -qty,
+            price: notional / qty,
+            amount: proceeds,
+            fee: fee + tax,
+            realized: Some(realized),
+            ..HistoryEntry::new(now, HistoryKind::Sell, code)
         });
         while account.fills.len() > FILL_HISTORY_LIMIT {
             account.fills.pop_front();

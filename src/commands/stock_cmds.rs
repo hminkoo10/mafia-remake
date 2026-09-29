@@ -107,6 +107,7 @@ async fn fail(ctx: Context<'_>, message: impl Into<String>) -> Result<(), Error>
         "stock_sell",
         "stock_balance",
         "stock_pnl",
+        "stock_history",
         "stock_orders",
         "stock_cancel",
         "stock_chart",
@@ -610,6 +611,84 @@ pub async fn stock_balance(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// `/주식 거래내역`에 보여 줄 줄 수 (전체는 증권 사이트 '거래내역' 탭에서).
+const HISTORY_LINES: usize = 20;
+
+/// 거래내역 한 줄: "- 9/29 15:54 매도 백두은행 -10주 @8,790 · +87,711원 (수수료·세금 189원, 실현 -302원)".
+fn history_line(entry: &market_engine::HistoryView) -> String {
+    let shares = match entry.qty.signum() {
+        1 => format!(" +{}주", format_amount(entry.qty)),
+        -1 => format!(" -{}주", format_amount(-entry.qty)),
+        _ => String::new(),
+    };
+    let price = if entry.price > 0 {
+        format!(" @{}", format_amount(entry.price))
+    } else {
+        String::new()
+    };
+    let amount = if entry.amount != 0 {
+        format!(" · {}", stats::signed_coin_text(entry.amount))
+    } else {
+        String::new()
+    };
+    let mut extras = Vec::new();
+    if entry.fee > 0 {
+        extras.push(format!("수수료·세금 {}", won(entry.fee)));
+    }
+    if let Some(realized) = entry.realized {
+        extras.push(format!("실현 {}", stats::signed_coin_text(realized)));
+    }
+    if !entry.note.is_empty() {
+        extras.push(entry.note.clone());
+    }
+    let extras = if extras.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", extras.join(", "))
+    };
+    format!(
+        "- {} {} {}{shares}{price}{amount}{extras}",
+        kst_clock(entry.at),
+        entry.label,
+        entry.name
+    )
+}
+
+#[poise::command(
+    slash_command,
+    rename = "거래내역",
+    description_localized(
+        "ko",
+        "내 주식 계좌 거래내역을 봅니다: 매매, 공모 청약·배정, 배당, 유상증자, 상장폐지, 회사 설립."
+    )
+)]
+pub async fn stock_history(ctx: Context<'_>) -> Result<(), Error> {
+    let user = ctx.author().id.get();
+    let view = {
+        let market = ctx.data().stocks.market.read().await;
+        market.account_view(user, market.clock(now_ms()))
+    };
+    let text = if view.history.is_empty() {
+        "아직 거래내역이 없습니다. `/주식 매수`나 공모 청약으로 시작해 보세요.".to_string()
+    } else {
+        let mut lines = view
+            .history
+            .iter()
+            .take(HISTORY_LINES)
+            .map(history_line)
+            .collect::<Vec<_>>();
+        if view.history.len() > HISTORY_LINES {
+            lines.push(format!(
+                "… 이전 {}건은 마피아증권 '거래내역' 탭에서 볼 수 있습니다.",
+                view.history.len() - HISTORY_LINES
+            ));
+        }
+        lines.join("\n")
+    };
+    reply_embed(ctx, text, "거래내역", serenity::Colour::GOLD, true).await?;
+    Ok(())
+}
+
 /// `/주식 손익`에 보여 줄 종목 수 (나머지는 증권 사이트 '손익' 탭에서).
 const PNL_LINES: usize = 15;
 
@@ -1085,7 +1164,7 @@ pub async fn stock_unsubscribe(
         .transact(
             user,
             |_, _| Ok(Need::Nothing),
-            |market, _, _, _| market.cancel_subscription(user, &code),
+            |market, _, _, now| market.cancel_subscription(user, &code, now),
         )
         .await;
     match result {

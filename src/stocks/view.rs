@@ -161,8 +161,29 @@ pub struct AccountView {
     pub legacy_pnl: Option<StockPnlView>,
     /// 최근 체결 (새것부터). 매도에는 실현 손익이 붙는다.
     pub fills: Vec<FillRecord>,
+    /// 거래내역 (새것부터): 매매·공모 청약과 배정·배당·유상증자·상장폐지·회사 설립.
+    pub history: Vec<HistoryView>,
     /// 내가 대표인 회사 코드.
     pub companies: Vec<String>,
+}
+
+/// 거래내역 한 줄.
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryView {
+    pub at: i64,
+    pub kind: HistoryKind,
+    /// 구분 ("매수", "공모 배정", "배당금" …).
+    pub label: &'static str,
+    pub code: String,
+    pub name: String,
+    /// 들어온(+)·나간(−) 주식 수.
+    pub qty: i64,
+    pub price: i64,
+    /// 받은(+)·낸(−) 코인.
+    pub amount: i64,
+    pub fee: i64,
+    pub realized: Option<i64>,
+    pub note: String,
 }
 
 /// 종목별 손익.
@@ -523,6 +544,28 @@ impl StockMarket {
             legacy_pnl,
             fills: account
                 .map(|account| account.fills.iter().rev().cloned().collect())
+                .unwrap_or_default(),
+            history: account
+                .map(|account| {
+                    account
+                        .history
+                        .iter()
+                        .rev()
+                        .map(|entry| HistoryView {
+                            at: entry.at,
+                            kind: entry.kind,
+                            label: entry.kind.label(),
+                            name: name_of(&entry.code),
+                            code: entry.code.clone(),
+                            qty: entry.qty,
+                            price: entry.price,
+                            amount: entry.amount,
+                            fee: entry.fee,
+                            realized: entry.realized,
+                            note: entry.note.clone(),
+                        })
+                        .collect()
+                })
                 .unwrap_or_default(),
             companies: self
                 .companies

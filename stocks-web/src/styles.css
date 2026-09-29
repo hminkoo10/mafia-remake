@@ -238,6 +238,8 @@ h1, h2, h3, h4 { margin: 0; }
 .table.clickable tbody tr:hover td { background: var(--softer); }
 .table tfoot td { border-top: 2px solid var(--line); border-bottom: none; font-weight: 700; }
 .table.pnl tr.legacy td { color: var(--ink-3); cursor: default; }
+.table td.note { text-align: left; white-space: normal; min-width: 160px; color: var(--ink-3); font-size: 13px; }
+.seg.history-filter { margin-bottom: 12px; }
 
 /* ------------------------------------------------------------ 호가창 */
 

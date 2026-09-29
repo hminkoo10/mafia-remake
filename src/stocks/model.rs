@@ -483,6 +483,93 @@ pub struct FillRecord {
     pub realized: Option<i64>,
 }
 
+/// 계좌 거래내역에 남기는 최대 줄 수 (오래된 것부터 버린다).
+pub const HISTORY_LIMIT: usize = 300;
+
+/// 거래내역의 구분.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryKind {
+    Buy,
+    Sell,
+    Subscribe,
+    Unsubscribe,
+    Allot,
+    IpoFailed,
+    SubscriptionRefund,
+    Dividend,
+    RightsExercise,
+    RightsShares,
+    RightsRefund,
+    Delisted,
+    Payout,
+    Found,
+}
+
+impl HistoryKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            HistoryKind::Buy => "매수",
+            HistoryKind::Sell => "매도",
+            HistoryKind::Subscribe => "공모 청약",
+            HistoryKind::Unsubscribe => "청약 취소",
+            HistoryKind::Allot => "공모 배정",
+            HistoryKind::IpoFailed => "공모 무산",
+            HistoryKind::SubscriptionRefund => "청약금 반환",
+            HistoryKind::Dividend => "배당금",
+            HistoryKind::RightsExercise => "신주 인수",
+            HistoryKind::RightsShares => "신주 입고",
+            HistoryKind::RightsRefund => "인수 대금 반환",
+            HistoryKind::Delisted => "상장폐지",
+            HistoryKind::Payout => "잔여 자본 분배",
+            HistoryKind::Found => "회사 설립",
+        }
+    }
+}
+
+/// 계좌 거래내역 한 줄. 주문을 걸 때 묶이는 코인(증거금)은 남기지 않고, 실제로 주식이나 코인이
+/// 들고 난 일만 남긴다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub at: i64,
+    pub kind: HistoryKind,
+    pub code: String,
+    /// 들어온(+)·나간(−) 주식 수.
+    #[serde(default)]
+    pub qty: i64,
+    /// 한 주 값: 체결가·공모가·발행가·주당 배당·주당 분배금 (없으면 0).
+    #[serde(default)]
+    pub price: i64,
+    /// 받은(+)·낸(−) 코인.
+    #[serde(default)]
+    pub amount: i64,
+    /// 낸 수수료·세금 (금액에 이미 들어 있다).
+    #[serde(default)]
+    pub fee: i64,
+    /// 매도·상장폐지의 실현 손익.
+    #[serde(default)]
+    pub realized: Option<i64>,
+    /// 덧붙이는 말 (상장폐지 사유, 청약·배정 수량 등).
+    #[serde(default)]
+    pub note: String,
+}
+
+impl HistoryEntry {
+    pub fn new(at: i64, kind: HistoryKind, code: &str) -> Self {
+        Self {
+            at,
+            kind,
+            code: code.to_string(),
+            qty: 0,
+            price: 0,
+            amount: 0,
+            fee: 0,
+            realized: None,
+            note: String::new(),
+        }
+    }
+}
+
 /// 종목별 손익 장부 (다 판 종목도 남긴다). 금액은 모두 코인.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StockLedger {
@@ -520,6 +607,9 @@ pub struct Account {
     /// 누적 체결 수 (체결 기록은 최근 것만 남기므로 따로 센다).
     #[serde(default)]
     pub trades: i64,
+    /// 거래내역 (최근 `HISTORY_LIMIT`줄, 새것이 뒤).
+    #[serde(default)]
+    pub history: VecDeque<HistoryEntry>,
     /// 종목별 손익 장부. 이 장부가 생기기 전의 거래는 계좌 합계(`realized`·`fees`·`dividends`)에만 있다.
     #[serde(default)]
     pub ledger: BTreeMap<String, StockLedger>,
@@ -529,6 +619,14 @@ pub struct Account {
 }
 
 impl Account {
+    /// 거래내역에 한 줄 남긴다 (오래된 것부터 버린다).
+    pub fn record(&mut self, entry: HistoryEntry) {
+        self.history.push_back(entry);
+        while self.history.len() > HISTORY_LIMIT {
+            self.history.pop_front();
+        }
+    }
+
     /// 종목 장부 (처음 쓰면 만든다). 장부가 생기기 전부터 가진 주식은 그 원가를 산 금액으로 넣어
     /// 두므로, 주식이 들고 나기 전에 불러야 한다.
     pub fn ledger_mut(&mut self, code: &str) -> &mut StockLedger {
