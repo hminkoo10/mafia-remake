@@ -75,6 +75,28 @@ impl MafiaGame {
         actors
     }
 
+    /// 소생을 아직 쓰지 않았고 다른 제약(개구리·유혹)도 없는데, 소생시킬 수 있는 사망자가 없어
+    /// 이번 밤 행동이 없는 성직자 (소생을 훔친 도둑 포함). 밤이 시작될 때 이유를 알린다.
+    pub fn priests_without_revive_targets(&self) -> Vec<Player> {
+        if !self.unpurified_dead_players().is_empty() {
+            return Vec::new();
+        }
+        self.players
+            .iter()
+            .filter(|player| {
+                // 개구리·유혹으로 막힌 사람은 사망자가 있어도 못 쓰므로 여기서 알리지 않는다.
+                let blocked = self.is_frog(player)
+                    || (self.is_madam_seduced(player) && !self.is_mafia_team(player));
+                player.alive
+                    && !blocked
+                    && !self.priest_used_ids.contains(&player.user_id)
+                    && (player.role == Role::Priest
+                        || self.thief_night_role(player) == Some(Role::Priest))
+            })
+            .cloned()
+            .collect()
+    }
+
     pub fn all_night_actions_submitted(&mut self) -> bool {
         self.phase == Phase::Night
             && self

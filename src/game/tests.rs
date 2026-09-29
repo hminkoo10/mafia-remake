@@ -2724,6 +2724,39 @@ fn soldier_watch_voids_the_contract_naming_a_soldier() {
     assert!(game.get_player(4).unwrap().alive);
 }
 
+/// 소생시킬 수 있는 사망자가 없으면(사망자가 없거나 모두 성불됐으면) 성직자에게 이유를 알린다.
+/// 소생을 이미 썼거나 소생시킬 사망자가 있으면 빠진다 (그때는 선택지를 받는다).
+#[test]
+fn priests_without_revive_targets_are_listed_for_a_notice() {
+    let mut game = MafiaGame::new(basic_players(), 1, 0, 0, Vec::new()).unwrap();
+    for id in 1..=5 {
+        game.get_player_mut(id).unwrap().role = Role::Citizen;
+    }
+    game.get_player_mut(1).unwrap().role = Role::Mafia;
+    game.get_player_mut(2).unwrap().role = Role::Priest;
+    game.phase = Phase::Night;
+    let ids = |game: &MafiaGame| {
+        game.priests_without_revive_targets()
+            .iter()
+            .map(|player| player.user_id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&game), vec![2], "사망자가 없다");
+    assert!(
+        !game
+            .night_action_actors()
+            .iter()
+            .any(|actor| actor.user_id == 2),
+        "선택지는 받지 않는다"
+    );
+    game.get_player_mut(3).unwrap().alive = false;
+    assert!(ids(&game).is_empty(), "소생시킬 사망자가 있다");
+    game.purified_dead_ids.insert(3);
+    assert_eq!(ids(&game), vec![2], "사망자가 모두 성불됐다");
+    game.priest_used_ids.insert(2);
+    assert!(ids(&game).is_empty(), "소생을 이미 썼다");
+}
+
 /// 청부 판정용 게임: 1 마피아, 2 청부업자, 3~6은 주어진 직업.
 fn contract_game(roles: [Role; 4]) -> MafiaGame {
     let players = (1..=6).map(|id| (id, format!("P{id}"))).collect::<Vec<_>>();

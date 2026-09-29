@@ -344,6 +344,19 @@ pub async fn run_night(
             failed_actions.push(format!("{} ({})", actor.name, error.public_reason()));
         }
     }
+    // [소생] 소생시킬 수 있는 사망자가 없어 선택지가 없는 성직자에게도 이유를 알린다
+    // (아무 메시지도 오지 않으면 능력이 고장 난 것처럼 보였다).
+    let idle_priests = running.read().await.game.priests_without_revive_targets();
+    for priest in idle_priests {
+        let _ = send_player_secret(
+            ctx,
+            running,
+            &priest,
+            "[성직자] 지금은 소생시킬 수 있는 사망자가 없어 이번 밤에는 소생을 쓸 수 없습니다. 소생은 그대로 남아 있습니다.",
+            vec![],
+        )
+        .await;
+    }
     if !failed_actions.is_empty() {
         send_game_embed(
             ctx,
