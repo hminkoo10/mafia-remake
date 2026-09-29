@@ -60,6 +60,7 @@ fn claim_text(claim: &stats::Claim) -> Option<String> {
 )]
 pub async fn missions(ctx: Context<'_>) -> Result<(), Error> {
     let user = ctx.author();
+    let name = author_name(ctx).await;
     let user_id = user.id.get();
     let rules = ctx.data().config.read().await.reward_rules();
     let today = stats::kst_today();
@@ -69,7 +70,7 @@ pub async fn missions(ctx: Context<'_>) -> Result<(), Error> {
         let (statuses, claim) = stats::claim_missions(
             &mut stats_file,
             user_id,
-            &user.name,
+            &name,
             &today,
             trades_today,
             &rules,
@@ -94,7 +95,7 @@ pub async fn missions(ctx: Context<'_>) -> Result<(), Error> {
             crate::audit_log::COINS,
             format!(
                 "🎯 {} 미션 보상 {} ({items}, 보유 코인 {})",
-                user.name,
+                name,
                 stats::coin_text(claim.total),
                 stats::coin_text(claim.balance)
             ),
@@ -169,13 +170,14 @@ pub async fn missions(ctx: Context<'_>) -> Result<(), Error> {
 )]
 pub async fn achievements(ctx: Context<'_>) -> Result<(), Error> {
     let user = ctx.author();
+    let name = author_name(ctx).await;
     let user_id = user.id.get();
     let rules = ctx.data().config.read().await.reward_rules();
     let (_, stock) = stock_progress(ctx.data(), user_id).await;
     let (statuses, claim, earned, snapshot) = {
         let mut stats_file = ctx.data().stats.write().await;
         let (statuses, claim) =
-            stats::claim_achievements(&mut stats_file, user_id, &user.name, stock, &rules);
+            stats::claim_achievements(&mut stats_file, user_id, &name, stock, &rules);
         let earned = stats_file
             .users
             .get(&user_id.to_string())
@@ -195,7 +197,7 @@ pub async fn achievements(ctx: Context<'_>) -> Result<(), Error> {
             crate::audit_log::COINS,
             format!(
                 "🏆 {} 업적 보상 {} ({items}, 보유 코인 {})",
-                user.name,
+                name,
                 stats::coin_text(claim.total),
                 stats::coin_text(claim.balance)
             ),

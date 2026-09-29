@@ -309,6 +309,7 @@ pub async fn create_casino_table(
         return Ok(());
     }
     // 채널 생성은 3초를 넘길 수 있으니 여기서부터 지연 응답으로 바꾼다.
+    let author = author_name(ctx).await;
     let deferred = defer_best_effort(ctx, "카지노테이블생성").await;
     let message = match create_table_body(
         ctx.serenity_context(),
@@ -318,7 +319,7 @@ pub async fn create_casino_table(
         종류.kind(),
         &이름,
         ctx.author().id.get(),
-        &ctx.author().name,
+        &author,
         settings,
         false,
     )
@@ -379,14 +380,10 @@ pub async fn close_casino_table(
         return Ok(());
     };
     // 채널 알림·삭제·로그·패널 갱신이 3초를 넘길 수 있으니 여기서부터 지연 응답으로 바꾼다.
+    let author = author_name(ctx).await;
     defer_best_effort(ctx, "카지노테이블닫기").await;
-    let Some((name, refunds)) = close_table_body(
-        ctx.serenity_context(),
-        ctx.data(),
-        &table_id,
-        &ctx.author().name,
-    )
-    .await?
+    let Some((name, refunds)) =
+        close_table_body(ctx.serenity_context(), ctx.data(), &table_id, &author).await?
     else {
         reply_embed(
             ctx,
@@ -508,11 +505,7 @@ pub async fn enter_casino(
         None => summaries[0].id.clone(),
     };
     let user = ctx.author();
-    let display_name = ctx
-        .author_member()
-        .await
-        .map(|member| member.display_name().to_string())
-        .unwrap_or_else(|| user.name.clone());
+    let display_name = author_name(ctx).await;
     let table_name = match hub.table(&table_id) {
         Some(table) => table.read().await.name.clone(),
         None => table_id.clone(),
@@ -560,11 +553,7 @@ pub async fn leave_casino_table(ctx: Context<'_>) -> Result<(), Error> {
     if let Err(error) = ctx.defer_ephemeral().await {
         eprintln!("failed to defer 카지노퇴장: {error:?}");
     }
-    let name = ctx
-        .author_member()
-        .await
-        .map(|member| member.display_name().to_string())
-        .unwrap_or_else(|| ctx.author().name.clone());
+    let name = author_name(ctx).await;
     let (message, colour) = leave_table(ctx.data(), None, ctx.author().id.get(), &name).await;
     reply_embed(ctx, message, "카지노 퇴장", colour, true).await?;
     Ok(())
@@ -1229,11 +1218,8 @@ pub async fn handle_casino_panel(
                 }
                 [summary] => {
                     let name = summary.name.clone();
-                    let display_name = component
-                        .member
-                        .as_ref()
-                        .map(|member| member.display_name().to_string())
-                        .unwrap_or_else(|| component.user.name.clone());
+                    let display_name =
+                        member_display_name(component.member.as_ref(), &component.user);
                     component
                         .create_response(
                             ctx,
@@ -1377,11 +1363,7 @@ pub async fn handle_casino_pick(
                 return Ok(());
             };
             let name = table.read().await.name.clone();
-            let display_name = component
-                .member
-                .as_ref()
-                .map(|member| member.display_name().to_string())
-                .unwrap_or_else(|| component.user.name.clone());
+            let display_name = member_display_name(component.member.as_ref(), &component.user);
             component
                 .create_response(
                     ctx,
@@ -1614,7 +1596,13 @@ pub async fn handle_casino_close_confirm(
         return Ok(());
     }
     component.defer(ctx).await?;
-    let result = close_table_body(ctx, data, table_id, &component.user.name).await?;
+    let result = close_table_body(
+        ctx,
+        data,
+        table_id,
+        &member_display_name(component.member.as_ref(), &component.user),
+    )
+    .await?;
     let message = match result {
         Some((name, refunds)) => format!(
             "테이블 **{name}**을 닫았습니다.{}",
@@ -1704,7 +1692,7 @@ pub async fn handle_casino_create_submit(
         kind,
         &name,
         modal.user.id.get(),
-        &modal.user.name,
+        &member_display_name(modal.member.as_ref(), &modal.user),
         settings,
         true,
     )
@@ -1880,7 +1868,7 @@ pub async fn handle_casino_settings_submit(
             "카지노 테이블",
             format!(
                 "{} 님이 테이블 **{old_name}**을 바꿨습니다.{rename_log}{settings_log}",
-                modal.user.name,
+                member_display_name(modal.member.as_ref(), &modal.user),
             ),
         )
         .await;
@@ -1941,11 +1929,7 @@ pub async fn handle_casino_leave(
 ) -> Result<()> {
     // 퇴장은 코인 저장을 기다리므로 먼저 응답을 미룬다.
     component.defer_ephemeral(&ctx.http).await?;
-    let name = component
-        .member
-        .as_ref()
-        .map(|member| member.display_name().to_string())
-        .unwrap_or_else(|| component.user.name.clone());
+    let name = member_display_name(component.member.as_ref(), &component.user);
     let (message, colour) = leave_table(data, Some(table_id), component.user.id.get(), &name).await;
     component
         .edit_response(
@@ -1968,11 +1952,7 @@ pub async fn handle_casino_enter(
     table_id: &str,
 ) -> Result<()> {
     let user = &component.user;
-    let display_name = component
-        .member
-        .as_ref()
-        .map(|member| member.display_name().to_string())
-        .unwrap_or_else(|| user.name.clone());
+    let display_name = member_display_name(component.member.as_ref(), user);
     let table_name = match data.casino.table(table_id) {
         Some(table) => Some(table.read().await.name.clone()),
         None => None,
@@ -2449,11 +2429,7 @@ pub async fn handle_casino_channel_message(data: &Data, message: &serenity::Mess
     if text.is_empty() {
         return true;
     }
-    let name = message
-        .member
-        .as_ref()
-        .and_then(|member| member.nick.clone())
-        .unwrap_or_else(|| message.author.name.clone());
+    let name = message_author_display_name(message);
     let text = text.chars().take(240).collect::<String>();
     hub.relay_chat_from_discord(&table_id, message.author.id.get(), &name, &text)
         .await;

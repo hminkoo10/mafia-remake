@@ -540,6 +540,46 @@ fn listed_company(market: &mut StockMarket) -> (String, i64) {
     (code, now)
 }
 
+/// 서버 별명이 바뀌면 주주 명부·주문·회사 대표 이름을 고친다 (웹이 다시 그리도록 판을 올린다).
+#[test]
+fn renaming_users_updates_the_shareholder_register() {
+    let mut market = market();
+    let (code, now) = listed_company(&mut market);
+    let price = market.companies[&code].price;
+    buy(
+        &mut market,
+        2,
+        &code,
+        1,
+        Some(tick_down(tick_down(price))),
+        1_000_000,
+        now,
+    )
+    .unwrap();
+    assert!(market.orders.iter().any(|order| order.user == 2));
+    let version = market.version;
+    assert!(market.rename_users(&[
+        (1, "대표별명".to_string()),
+        (2, "주주별명".to_string()),
+        (99, "없는사람".to_string()),
+    ]));
+    assert_eq!(market.accounts[&2].name, "주주별명");
+    assert!(
+        market
+            .orders
+            .iter()
+            .filter(|order| order.user == 2)
+            .all(|order| order.name == "주주별명")
+    );
+    assert!(matches!(
+        &market.companies[&code].kind,
+        CompanyKind::Player { founder_name, .. } if founder_name == "대표별명"
+    ));
+    assert!(!market.accounts.contains_key(&99));
+    assert!(market.version > version);
+    assert!(!market.rename_users(&[(2, "주주별명".to_string())]));
+}
+
 #[test]
 fn small_player_companies_still_show_trading_volume() {
     // 600주짜리 플레이어 회사: 틱마다 1주 미만인 거래량이 버려지지 않고 쌓여 하루 거래량과 분봉에 보인다.

@@ -254,6 +254,46 @@ impl StockMarket {
         account
     }
 
+    /// 서버 별명이 바뀐 사람들의 이름을 주주 명부·주문·청약·회사 대표에 반영한다. 바뀐 게 있으면 true.
+    pub fn rename_users(&mut self, names: &[(u64, String)]) -> bool {
+        let names = names
+            .iter()
+            .filter(|(_, name)| !name.is_empty())
+            .map(|(user, name)| (*user, name.as_str()))
+            .collect::<BTreeMap<_, _>>();
+        let mut changed = false;
+        let mut rename = |current: &mut String, user: u64| {
+            if let Some(name) = names.get(&user)
+                && current.as_str() != *name
+            {
+                *current = (*name).to_string();
+                changed = true;
+            }
+        };
+        for (user, account) in &mut self.accounts {
+            rename(&mut account.name, *user);
+        }
+        for order in &mut self.orders {
+            rename(&mut order.name, order.user);
+        }
+        for subscription in &mut self.subscriptions {
+            rename(&mut subscription.name, subscription.user);
+        }
+        for company in self.companies.values_mut() {
+            if let CompanyKind::Player {
+                founder,
+                founder_name,
+            } = &mut company.kind
+            {
+                rename(founder_name, *founder);
+            }
+        }
+        if changed {
+            self.version += 1;
+        }
+        changed
+    }
+
     // ------------------------------------------------------------ 가격 모형
 
     /// 회사의 내재가치 (로그). 순자산 × 업종 PBR × 시장·업종 팩터 × 투자 심리.

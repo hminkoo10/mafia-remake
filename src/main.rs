@@ -556,6 +556,9 @@ async fn event_handler(
                 eprintln!("message event error: {error:?}");
             }
         }
+        serenity::FullEvent::GuildMemberUpdate { event, .. } => {
+            commands::handle_member_update(data, event).await;
+        }
         _ => {}
     }
     Ok(())
@@ -1310,6 +1313,7 @@ async fn main() -> Result<()> {
                 tokio::spawn(commands::run_casino_ticker(data.clone()));
                 tokio::spawn(commands::run_economy_ticker(ctx.clone(), data.clone()));
                 tokio::spawn(commands::run_stock_ticker(ctx.clone(), data.clone()));
+                tokio::spawn(commands::refresh_member_names(ctx.clone(), data.clone()));
                 tokio::spawn(audit_log::run_audit_relay(ctx.http.clone(), data.clone()));
                 tokio::spawn(commands::run_casino_relay(ctx.clone(), data.clone()));
                 let mut activity_update_rx = activity_discord_update_setup.subscribe();

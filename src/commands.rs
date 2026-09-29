@@ -996,15 +996,79 @@ pub fn personal_stats_text(
     )
 }
 
+/// 서버 별명이 바뀐 사람들의 저장된 이름(전적·순위·코인 기록·주식 장부)을 고친다.
+pub(crate) async fn rename_members(data: &Data, names: Vec<(u64, String)>) {
+    if names.is_empty() {
+        return;
+    }
+    let snapshot = {
+        let mut stats_file = data.stats.write().await;
+        (stats::rename_players(&mut stats_file, &names) > 0).then(|| stats_file.clone())
+    };
+    if let Some(snapshot) = snapshot {
+        save_stats_snapshot(data, snapshot).await;
+    }
+    data.stocks.rename_users(&names).await;
+}
+
+/// 서버 멤버 정보가 바뀌었다 (별명·역할 등): 본 서버에서 바뀐 것이면 저장된 이름을 서버 별명으로 맞춘다.
+pub async fn handle_member_update(data: &Data, event: &serenity::GuildMemberUpdateEvent) {
+    if event.user.bot {
+        return;
+    }
+    let home_guild_id = data.config.read().await.home_guild_id;
+    if home_guild_id != 0 && event.guild_id.get() != home_guild_id {
+        return;
+    }
+    let name = event
+        .nick
+        .clone()
+        .unwrap_or_else(|| user_display_name(&event.user));
+    rename_members(data, vec![(event.user.id.get(), name)]).await;
+}
+
+/// 봇이 켜질 때: 꺼져 있는 동안 바뀐 별명까지, 본 서버 멤버의 저장된 이름을 서버 별명으로 한 번 맞춘다.
+pub async fn refresh_member_names(ctx: serenity::Context, data: Data) {
+    let home_guild_id = data.config.read().await.home_guild_id;
+    if home_guild_id == 0 {
+        return;
+    }
+    let guild_id = serenity::GuildId::new(home_guild_id);
+    let mut names = Vec::new();
+    let mut after = None;
+    loop {
+        let members = match guild_id.members(&ctx.http, Some(1000), after).await {
+            Ok(members) => members,
+            Err(error) => {
+                eprintln!("서버 별명을 불러오지 못해 저장된 이름을 맞추지 못했습니다: {error:?}");
+                return;
+            }
+        };
+        let count = members.len();
+        after = members.last().map(|member| member.user.id);
+        names.extend(
+            members
+                .iter()
+                .filter(|member| !member.user.bot)
+                .map(|member| (member.user.id.get(), display_name(member))),
+        );
+        if count < 1000 {
+            break;
+        }
+    }
+    rename_members(&data, names).await;
+}
+
 #[poise::command(
     slash_command,
     rename = "내정보",
     description_localized("ko", "내 마피아 게임 전적을 확인합니다.")
 )]
 pub async fn show_my_info(ctx: Context<'_>) -> Result<(), Error> {
+    let name = author_name(ctx).await;
     let stats_file = ctx.data().stats.read().await;
     let user = ctx.author();
-    let text = personal_stats_text(&stats_file, user.id.get(), &user.name);
+    let text = personal_stats_text(&stats_file, user.id.get(), &name);
     reply_embed(ctx, text, "내정보", serenity::Colour::GOLD, true).await?;
     Ok(())
 }
@@ -1091,9 +1155,10 @@ pub async fn show_rank_cutoffs(ctx: Context<'_>) -> Result<(), Error> {
     description_localized("ko", "내 최근 레이팅 변화 기록을 확인합니다.")
 )]
 pub async fn rating_log(ctx: Context<'_>) -> Result<(), Error> {
+    let name = author_name(ctx).await;
     let stats_file = ctx.data().stats.read().await;
     let user = ctx.author();
-    let text = stats::rating_log_text(&stats_file, user.id.get(), &user.name, 10);
+    let text = stats::rating_log_text(&stats_file, user.id.get(), &name, 10);
     reply_embed(ctx, text, "레이팅 로그", serenity::Colour::GOLD, true).await?;
     Ok(())
 }

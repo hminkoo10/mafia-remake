@@ -582,6 +582,13 @@ impl StockHub {
         Ok((day, market.time_shift_ms - shift_before))
     }
 
+    /// 서버 별명이 바뀐 사람들의 이름을 주식 장부에 반영한다 (다음 저장 때 쓴다).
+    pub async fn rename_users(&self, names: &[(u64, String)]) {
+        if self.market.write().await.rename_users(names) {
+            self.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
     pub async fn find_code(&self, query: &str) -> Option<String> {
         self.market
             .read()

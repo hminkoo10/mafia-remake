@@ -139,6 +139,7 @@ pub async fn relief_command(ctx: Context<'_>) -> Result<(), Error> {
     const TITLE: &str = "구조금";
     let rules = ctx.data().config.read().await.economy_rules();
     let user = ctx.author();
+    let name = author_name(ctx).await;
     let user_id = user.id.get();
     // 테이블 칩과 주식(평가액·주문 증거금)도 재산으로 센다 (코인을 옮겨 두고 받지 못하게).
     let chips = ctx
@@ -154,7 +155,7 @@ pub async fn relief_command(ctx: Context<'_>) -> Result<(), Error> {
         stats::claim_relief(
             &mut stats_file,
             user_id,
-            &user.name,
+            &name,
             chips,
             &rules,
             &today,
@@ -178,7 +179,7 @@ pub async fn relief_command(ctx: Context<'_>) -> Result<(), Error> {
         crate::audit_log::COINS,
         format!(
             "🆘 {} 구조금 {} (금고에서 {}, 보유 코인 {})",
-            user.name,
+            name,
             stats::coin_text(paid.amount),
             stats::coin_text(paid.from_treasury),
             stats::coin_text(paid.balance)
@@ -268,12 +269,13 @@ pub async fn manage_treasury(
         stats::coin_text(after),
         stats::signed_coin_text(after - before)
     );
+    let admin_name = author_name(ctx).await;
     let log_channel_id = ctx.data().config.read().await.log_channel_id;
     send_admin_log(
         ctx.http(),
         log_channel_id,
         TITLE,
-        format!("{} 님이 {text}", ctx.author().name),
+        format!("{} 님이 {text}", admin_name),
     )
     .await;
     reply_embed(ctx, text, TITLE, serenity::Colour::DARK_GREEN, false).await?;

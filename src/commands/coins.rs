@@ -92,6 +92,7 @@ pub async fn claim_attendance(ctx: Context<'_>) -> Result<(), Error> {
         (config.attendance_coins, config.reward_rules())
     };
     let user = ctx.author();
+    let name = author_name(ctx).await;
     let today = stats::kst_today();
     let yesterday = stats::kst_yesterday();
     let (outcome, streak, snapshot) = {
@@ -102,12 +103,12 @@ pub async fn claim_attendance(ctx: Context<'_>) -> Result<(), Error> {
             .map(|entry| entry.last_attendance_date.clone())
             .unwrap_or_default();
         let outcome =
-            stats::claim_attendance(&mut stats_file, user.id.get(), &user.name, amount, &today);
+            stats::claim_attendance(&mut stats_file, user.id.get(), &name, amount, &today);
         let streak = matches!(outcome, stats::AttendanceOutcome::Claimed { .. }).then(|| {
             stats::apply_attendance_streak(
                 &mut stats_file,
                 user.id.get(),
-                &user.name,
+                &name,
                 &today,
                 &yesterday,
                 &previous,
@@ -131,7 +132,7 @@ pub async fn claim_attendance(ctx: Context<'_>) -> Result<(), Error> {
                 crate::audit_log::COINS,
                 format!(
                     "📅 {} 출석 {} (연속 {streak_days}일{bonus_log}, 보유 코인 {})",
-                    user.name,
+                    name,
                     stats::coin_text(amount),
                     stats::coin_text(balance)
                 ),
@@ -190,7 +191,8 @@ pub async fn set_bet(
     #[description = "배팅액(원). 0이면 배팅하지 않습니다."] 금액: i64,
 ) -> Result<(), Error> {
     let user = ctx.author();
-    match apply_bet_setting(ctx.data(), user.id.get(), &user.name, 금액).await {
+    let name = author_name(ctx).await;
+    match apply_bet_setting(ctx.data(), user.id.get(), &name, 금액).await {
         Ok(balance) => {
             reply_embed(
                 ctx,
@@ -341,6 +343,7 @@ pub async fn exchange_coupon(
         return Ok(());
     };
     let user = ctx.author();
+    let name = author_name(ctx).await;
     let user_id = user.id.get();
     let today = stats::kst_today();
     let week = stats::kst_week();
@@ -353,29 +356,27 @@ pub async fn exchange_coupon(
         match stats::reserve_coupon_usage(
             &mut stats_file,
             user_id,
-            &user.name,
+            &name,
             포인트,
             limits,
             &today,
             &week,
         ) {
             Err(message) => Err(message),
-            Ok(()) => {
-                match stats::reserve_coins(&mut stats_file, user_id, &user.name, cost, locked) {
-                    Ok(balance) => Ok((balance, stats_file.clone())),
-                    Err(message) => {
-                        stats::release_coupon_usage(
-                            &mut stats_file,
-                            user_id,
-                            &user.name,
-                            포인트,
-                            &today,
-                            &week,
-                        );
-                        Err(message)
-                    }
+            Ok(()) => match stats::reserve_coins(&mut stats_file, user_id, &name, cost, locked) {
+                Ok(balance) => Ok((balance, stats_file.clone())),
+                Err(message) => {
+                    stats::release_coupon_usage(
+                        &mut stats_file,
+                        user_id,
+                        &name,
+                        포인트,
+                        &today,
+                        &week,
+                    );
+                    Err(message)
                 }
-            }
+            },
         }
     };
     let (balance, snapshot) = match reserved {
@@ -400,7 +401,7 @@ pub async fn exchange_coupon(
                 "내신 쿠폰 발급",
                 format!(
                     "{} 님(`{user_id}`)이 {포인트}포인트 쿠폰 {}장을 발급했습니다 (코인 {} 차감, 남은 코인 {}).",
-                    user.name,
+                    name,
                     codes.len(),
                     stats::coin_text(cost),
                     stats::coin_text(balance)
@@ -412,7 +413,7 @@ pub async fn exchange_coupon(
                 stats::record_coupon(
                     &mut stats_file,
                     user_id,
-                    &user.name,
+                    &name,
                     포인트,
                     codes.clone(),
                     &issued_at,
@@ -455,22 +456,15 @@ pub async fn exchange_coupon(
                 "내신 쿠폰 발급 실패",
                 format!(
                     "{} 님(`{user_id}`) {포인트}포인트 쿠폰 발급 실패, 코인 {} 환불. 원인: {error}",
-                    user.name,
+                    name,
                     stats::coin_text(cost)
                 ),
             )
             .await;
             let snapshot = {
                 let mut stats_file = ctx.data().stats.write().await;
-                stats::refund_coins(&mut stats_file, user_id, &user.name, cost);
-                stats::release_coupon_usage(
-                    &mut stats_file,
-                    user_id,
-                    &user.name,
-                    포인트,
-                    &today,
-                    &week,
-                );
+                stats::refund_coins(&mut stats_file, user_id, &name, cost);
+                stats::release_coupon_usage(&mut stats_file, user_id, &name, 포인트, &today, &week);
                 stats_file.clone()
             };
             save_stats_snapshot(ctx.data(), snapshot).await;
@@ -540,7 +534,14 @@ pub async fn handle_bet_submit(
         .await?;
         return Ok(());
     };
-    match apply_bet_setting(data, modal.user.id.get(), &modal.user.name, amount).await {
+    match apply_bet_setting(
+        data,
+        modal.user.id.get(),
+        &member_display_name(modal.member.as_ref(), &modal.user),
+        amount,
+    )
+    .await
+    {
         Ok(balance) => {
             send_modal_private(
                 ctx,
@@ -681,6 +682,8 @@ pub async fn gift_coins(
         return Ok(());
     }
     let sender = ctx.author();
+    let sender_name = author_name(ctx).await;
+    let receiver_name = argument_name(ctx, &대상);
     let sender_id = sender.id.get();
     let receiver_id = 대상.id.get();
     let rules = ctx.data().config.read().await.economy_rules();
@@ -693,9 +696,9 @@ pub async fn gift_coins(
         stats::gift_coins(
             &mut stats_file,
             sender_id,
-            &sender.name,
+            &sender_name,
             receiver_id,
-            &대상.name,
+            &receiver_name,
             금액,
             locked,
             &rules,
@@ -731,8 +734,8 @@ pub async fn gift_coins(
         TITLE,
         format!(
             "{} 님(`{sender_id}`)이 {} 님(`{receiver_id}`)에게 {}을 선물했습니다{fee_text}. 보낸 사람 남은 코인 {} / 받은 사람 코인 {}",
-            sender.name,
-            대상.name,
+            sender_name,
+            receiver_name,
             stats::coin_text(gift.amount),
             stats::coin_text(gift.sender_balance),
             stats::coin_text(gift.receiver_balance)
@@ -771,8 +774,9 @@ pub async fn manage_coins(
         return Ok(());
     }
     let user_id = 유저.id.get();
-    let name = 유저.name.clone();
+    let name = argument_name(ctx, &유저);
     let admin_id = ctx.author().id.get();
+    let admin_name = author_name(ctx).await;
     let outcome: std::result::Result<String, String> = match 동작 {
         CoinAdminAction::View => {
             let stats_read = ctx.data().stats.read().await;
@@ -828,7 +832,7 @@ pub async fn manage_coins(
                             "코인 관리",
                             format!(
                                 "{} 님이 {name} 님(`{user_id}`) 코인 {action_name} {}: {} → {}",
-                                ctx.author().name,
+                                admin_name,
                                 stats::coin_text(amount),
                                 stats::coin_text(change.before),
                                 stats::coin_text(change.after)
@@ -937,6 +941,7 @@ pub async fn issue_coupons(
     let expiry_text = expires_on
         .as_deref()
         .map_or("무기한".to_string(), |date| format!("{date}까지"));
+    let admin_name = author_name(ctx).await;
     let code_block = format!("```\n{}\n```", codes.join("\n"));
     let log_channel_id = ctx.data().config.read().await.log_channel_id;
     send_admin_log(
@@ -945,7 +950,7 @@ pub async fn issue_coupons(
         "쿠폰 발급",
         format!(
             "{} 님이 {} 쿠폰 {}장을 발급했습니다 ({expiry_text}).\n{code_block}",
-            ctx.author().name,
+            admin_name,
             stats::coin_text(코인),
             codes.len()
         ),
@@ -976,6 +981,7 @@ pub async fn redeem_coupon(
     #[description = "쿠폰 코드"] 코드: String,
 ) -> Result<(), Error> {
     let user = ctx.author();
+    let name = author_name(ctx).await;
     let today = stats::kst_today();
     let redeemed_at = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
     let result = {
@@ -983,7 +989,7 @@ pub async fn redeem_coupon(
         stats::redeem_coupon(
             &mut stats_file,
             user.id.get(),
-            &user.name,
+            &name,
             &코드,
             &today,
             &redeemed_at,
@@ -1000,7 +1006,7 @@ pub async fn redeem_coupon(
                 "쿠폰 사용",
                 format!(
                     "{} 님(`{}`)이 쿠폰 `{}`을 사용해 {}을 받았습니다 (보유 {}).",
-                    user.name,
+                    name,
                     user.id.get(),
                     redemption.code,
                     stats::coin_text(redemption.coins),

@@ -306,11 +306,12 @@ pub async fn web_configure_game(ctx: Context<'_>) -> Result<(), Error> {
         return Ok(());
     };
     let user = ctx.author();
+    let name = author_name(ctx).await;
     let token = web_settings::issue_session(
         &ctx.data().web_sessions,
         guild_id.get(),
         user.id.get(),
-        user.name.clone(),
+        name.clone(),
     );
     let url = format!(
         "{}{}/{}",
@@ -323,7 +324,7 @@ pub async fn web_configure_game(ctx: Context<'_>) -> Result<(), Error> {
         ctx,
         format!(
             "아래 링크에서 마피아 게임 설정을 카테고리별로 편집할 수 있습니다. 카테고리마다 따로 저장하고, 다 바꾸면 페이지 아래 '설정 마치기'로 링크를 닫으세요.\n{url}\n\n⚠️ 이 링크는 **{}** 님만 사용할 수 있고, **{minutes}분 동안** 유효합니다. 다른 사람과 공유하지 마세요.",
-            user.name
+            name
         ),
         "웹 설정 링크 발급",
         serenity::Colour::DARK_GREEN,
@@ -507,6 +508,7 @@ pub async fn add_to_blacklist(
     if !require_manager(ctx).await? {
         return Ok(());
     }
+    let target_name = argument_name(ctx, &유저);
     let mut config_write = ctx.data().config.write().await;
     let id = 유저.id.get();
     let changed = !config_write.blacklist_user_ids.contains(&id);
@@ -517,6 +519,7 @@ pub async fn add_to_blacklist(
     config::save_config(&*ctx.data().config_path, &config_write)?;
     drop(config_write);
     if changed {
+        let admin_name = author_name(ctx).await;
         let log_channel_id = ctx.data().config.read().await.log_channel_id;
         send_admin_log(
             ctx.http(),
@@ -524,8 +527,7 @@ pub async fn add_to_blacklist(
             "블랙리스트",
             format!(
                 "{} 님이 {} 님(`{id}`)을 블랙리스트에 추가했습니다.",
-                ctx.author().name,
-                유저.name
+                admin_name, target_name
             ),
         )
         .await;
@@ -535,10 +537,10 @@ pub async fn add_to_blacklist(
         if changed {
             format!(
                 "{} 님을 블랙리스트에 추가했습니다. 이제 게임에 참가할 수 없습니다.",
-                유저.name
+                target_name
             )
         } else {
-            format!("{} 님은 이미 블랙리스트에 있습니다.", 유저.name)
+            format!("{} 님은 이미 블랙리스트에 있습니다.", target_name)
         },
         "블랙리스트",
         serenity::Colour::DARK_GREEN,
@@ -560,6 +562,7 @@ pub async fn remove_from_blacklist(
     if !require_manager(ctx).await? {
         return Ok(());
     }
+    let target_name = argument_name(ctx, &유저);
     let mut config_write = ctx.data().config.write().await;
     let id = 유저.id.get();
     let before = config_write.blacklist_user_ids.len();
@@ -570,6 +573,7 @@ pub async fn remove_from_blacklist(
     config::save_config(&*ctx.data().config_path, &config_write)?;
     drop(config_write);
     if changed {
+        let admin_name = author_name(ctx).await;
         let log_channel_id = ctx.data().config.read().await.log_channel_id;
         send_admin_log(
             ctx.http(),
@@ -577,8 +581,7 @@ pub async fn remove_from_blacklist(
             "블랙리스트",
             format!(
                 "{} 님이 {} 님(`{id}`)을 블랙리스트에서 해제했습니다.",
-                ctx.author().name,
-                유저.name
+                admin_name, target_name
             ),
         )
         .await;
@@ -588,10 +591,10 @@ pub async fn remove_from_blacklist(
         if changed {
             format!(
                 "{} 님을 블랙리스트에서 해제했습니다. 이제 게임에 참가할 수 있습니다.",
-                유저.name
+                target_name
             )
         } else {
-            format!("{} 님은 블랙리스트에 없습니다.", 유저.name)
+            format!("{} 님은 블랙리스트에 없습니다.", target_name)
         },
         "블랙리스트",
         serenity::Colour::DARK_GREEN,
@@ -656,13 +659,14 @@ pub async fn set_log_channel(
             "로그 채널을 <#{channel_id}>로 설정했습니다. 코인 관리, 코인 선물, 쿠폰 발급, 블랙리스트 변경, 리더보드 초기화 기록이 여기로 갑니다."
         )
     };
+    let admin_name = author_name(ctx).await;
     send_admin_log(
         ctx.http(),
         channel_id,
         "로그 채널",
         format!(
             "{} 님이 이 채널을 마피아 봇 로그 채널로 설정했습니다.",
-            ctx.author().name
+            admin_name
         ),
     )
     .await;

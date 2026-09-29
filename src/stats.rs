@@ -733,6 +733,23 @@ fn ensure_player_stats<'a>(
     entry
 }
 
+/// 서버 별명이 바뀐 사람들의 기록 이름을 고친다 (기록이 없는 사람은 만들지 않는다). 고친 수를 돌려준다.
+pub fn rename_players(stats: &mut StatsFile, names: &[(u64, String)]) -> usize {
+    let mut renamed = 0;
+    for (user_id, name) in names {
+        if name.is_empty() {
+            continue;
+        }
+        if let Some(entry) = stats.users.get_mut(&user_id.to_string())
+            && entry.name != *name
+        {
+            entry.name = name.clone();
+            renamed += 1;
+        }
+    }
+    renamed
+}
+
 #[derive(Debug, Clone)]
 struct RatingChange {
     before: i64,

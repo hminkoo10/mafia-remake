@@ -472,6 +472,41 @@ pub fn display_name(member: &serenity::Member) -> String {
         .unwrap_or_else(|| member.user.name.clone())
 }
 
+/// 서버 별명을 모를 때(DM 등)의 이름: 전역 표시 이름 → 사용자 이름.
+pub fn user_display_name(user: &serenity::User) -> String {
+    user.global_name
+        .clone()
+        .unwrap_or_else(|| user.name.clone())
+}
+
+/// 버튼·모달을 누른 사람의 이 서버 이름: 서버 별명 → 전역 표시 이름 → 사용자 이름.
+pub fn member_display_name(member: Option<&serenity::Member>, user: &serenity::User) -> String {
+    member.map_or_else(|| user_display_name(user), display_name)
+}
+
+/// 명령을 쓴 사람의 이 서버 이름 (서버 별명 우선). 기록·순위·로그에 남는 이름은 모두 이것을 쓴다.
+pub async fn author_name(ctx: Context<'_>) -> String {
+    match ctx.author_member().await {
+        Some(member) => display_name(&member),
+        None => user_display_name(ctx.author()),
+    }
+}
+
+/// 명령 인자로 받은 사람의 이 서버 이름 (Discord가 명령과 함께 보내 준 멤버 정보의 서버 별명).
+pub fn argument_name(ctx: Context<'_>, user: &serenity::User) -> String {
+    let nick = if let poise::Context::Application(app) = ctx {
+        app.interaction
+            .data
+            .resolved
+            .members
+            .get(&user.id)
+            .and_then(|member| member.nick.clone())
+    } else {
+        None
+    };
+    nick.unwrap_or_else(|| user_display_name(user))
+}
+
 pub async fn role_by_name(
     ctx: &serenity::Context,
     guild_id: serenity::GuildId,
@@ -502,6 +537,22 @@ mod tests {
         );
         assert!(failure.log_detail().contains("memo_channel_id=Some(20)"));
         assert!(failure.log_detail().contains("cannot message user"));
+    }
+
+    /// 이름은 서버 별명 → 전역 표시 이름 → 사용자(계정) 이름 순서로 고른다.
+    #[test]
+    fn names_prefer_the_server_nickname() {
+        let mut user = serenity::User::default();
+        user.name = "account_name".to_string();
+        assert_eq!(user_display_name(&user), "account_name");
+        user.global_name = Some("표시이름".to_string());
+        assert_eq!(user_display_name(&user), "표시이름");
+        let mut member = serenity::Member::default();
+        member.user = user.clone();
+        assert_eq!(member_display_name(Some(&member), &user), "표시이름");
+        member.nick = Some("서버별명".to_string());
+        assert_eq!(member_display_name(Some(&member), &user), "서버별명");
+        assert_eq!(member_display_name(None, &user), "표시이름");
     }
 
     #[test]

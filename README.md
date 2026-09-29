@@ -298,6 +298,8 @@ cd stocks-web && npm run dev  # Vite 5175, /stocks/api 는 localhost:2053으로 
 - **Privileged Intents**: Server Members Intent, Message Content Intent, Presence Intent
 - **권한**: 채널 관리, 역할 관리, 메시지 전송, 임베드 전송, 웹훅 관리
 
+사람 이름은 어디서나 **서버 별명**으로 표시합니다 (별명이 없으면 Discord 표시 이름, 그것도 없으면 계정 이름). 전적·순위·코인 기록·카지노·주식 장부에 남는 이름도 같고, 본 서버에서 별명이 바뀌면 곧바로, 봇이 켜질 때는 본 서버 멤버 전체를 한 번 맞춥니다 (Server Members Intent 필요).
+
 ### 레이트리밋 분산 (워커 봇 토큰)
 
 Discord 레이트리밋 버킷(전역 50/s 포함)은 **봇 토큰 단위**로 집계됩니다. 게임 진행 중 페이즈 전환 때 채널 권한 오버라이트가 대량으로 몰리면 단일 토큰의 예산이 금방 소진되어 봇이 느려집니다. `DISCORD_WORKER_TOKENS`에 추가 봇 토큰을 넣으면 봇 정체성과 무관한 길드 관리용 REST 호출이 여러 토큰으로 라운드로빈 분산되어 예산이 **(N+1)배**가 됩니다.

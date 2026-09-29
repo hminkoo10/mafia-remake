@@ -32,14 +32,6 @@ fn index_change(market: &StockMarket) -> String {
     format!("{:.2} {}", market.index.value, change_text(bp))
 }
 
-/// 사용자 표시 이름 (서버 별명 우선).
-async fn display_name(ctx: Context<'_>) -> String {
-    ctx.author_member()
-        .await
-        .map(|member| member.display_name().to_string())
-        .unwrap_or_else(|| ctx.author().name.clone())
-}
-
 fn kst_clock(unix_ms: i64) -> String {
     let kst = chrono::FixedOffset::east_opt(9 * 3600).expect("KST offset");
     chrono::DateTime::from_timestamp_millis(unix_ms)
@@ -414,7 +406,7 @@ async fn place(
         Ok(code) => code,
         Err(message) => return fail(ctx, message).await,
     };
-    let name = display_name(ctx).await;
+    let name = author_name(ctx).await;
     let user = ctx.author().id.get();
     let result = ctx
         .data()
@@ -912,7 +904,7 @@ pub async fn stock_subscribe(
         Ok(code) => code,
         Err(message) => return fail(ctx, message).await,
     };
-    let name = display_name(ctx).await;
+    let name = author_name(ctx).await;
     let user = ctx.author().id.get();
     let result = ctx
         .data()
@@ -990,7 +982,7 @@ pub async fn stock_unsubscribe(
     description_localized("ko", "증권 사이트(마피아증권: 차트·호가·주문) 개인 링크를 받습니다.")
 )]
 pub async fn stock_web(ctx: Context<'_>) -> Result<(), Error> {
-    let name = display_name(ctx).await;
+    let name = author_name(ctx).await;
     let (link, text) = stock_site_link(
         ctx.serenity_context(),
         ctx.data(),
@@ -1067,11 +1059,7 @@ pub async fn handle_stock_site(
 ) -> anyhow::Result<()> {
     // 관리자 확인에 Discord 조회가 걸릴 수 있어 먼저 응답을 미뤄 둔다 (3초 안에 답해야 한다).
     component.defer_ephemeral(&ctx.http).await?;
-    let name = component
-        .member
-        .as_ref()
-        .map(|member| member.display_name().to_string())
-        .unwrap_or_else(|| component.user.name.clone());
+    let name = member_display_name(component.member.as_ref(), &component.user);
     let (link, text) =
         stock_site_link(ctx, data, component.guild_id, component.user.id, &name).await;
     component
@@ -1194,7 +1182,7 @@ pub async fn company_found(
     #[min = 1]
     자본금: i64,
 ) -> Result<(), Error> {
-    let name = display_name(ctx).await;
+    let name = author_name(ctx).await;
     let user = ctx.author().id.get();
     let result = ctx
         .data()
@@ -1412,7 +1400,7 @@ pub async fn company_exercise(
         Ok(code) => code,
         Err(message) => return fail(ctx, message).await,
     };
-    let name = display_name(ctx).await;
+    let name = author_name(ctx).await;
     let user = ctx.author().id.get();
     let result = ctx
         .data()
@@ -1703,12 +1691,13 @@ pub async fn manage_stocks(
                     "거래재개"
                 }
             );
+            let admin_name = author_name(ctx).await;
             let log_channel_id = ctx.data().config.read().await.log_channel_id;
             send_admin_log(
                 ctx.http(),
                 log_channel_id,
                 "주식 관리",
-                format!("{} 님이 {text}", ctx.author().name),
+                format!("{} 님이 {text}", admin_name),
             )
             .await;
             reply_embed(ctx, text, "주식 관리", serenity::Colour::DARK_GREEN, false).await?;
@@ -1728,12 +1717,13 @@ async fn skip_game_days(ctx: Context<'_>, days: i64) -> Result<(), Error> {
             let text = format!(
                 "게임일을 {days}일 넘겨 새 게임일이 시작됐습니다. 그 사이의 시세·주문·청약·배당·보호예수는 모두 처리했습니다."
             );
+            let admin_name = author_name(ctx).await;
             let log_channel_id = ctx.data().config.read().await.log_channel_id;
             send_admin_log(
                 ctx.http(),
                 log_channel_id,
                 "주식 관리",
-                format!("{} 님이 게임일을 {days}일 넘김", ctx.author().name),
+                format!("{} 님이 게임일을 {days}일 넘김", admin_name),
             )
             .await;
             reply_embed(ctx, text, "주식 관리", serenity::Colour::DARK_GREEN, true).await?;

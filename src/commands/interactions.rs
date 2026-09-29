@@ -894,7 +894,7 @@ pub async fn handle_join(
         rec.joined_names.insert(user_id, display_name(&member));
     } else {
         rec.joined_names
-            .insert(user_id, component.user.name.clone());
+            .insert(user_id, user_display_name(&component.user));
     }
     rec.joined_ids.insert(user_id);
     // 자동시작 인원에 도달하면 남은 모집 시간을 기다리지 않고 바로 시작한다.
@@ -965,7 +965,7 @@ pub async fn handle_spectate(
         }
     } else {
         rec.spectator_names
-            .insert(user_id, component.user.name.clone());
+            .insert(user_id, user_display_name(&component.user));
     }
     let updated = rec.clone();
     drop(rec);

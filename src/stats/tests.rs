@@ -25,6 +25,28 @@ fn initial_roles(game: &MafiaGame) -> HashMap<u64, Role> {
         .collect()
 }
 
+/// 서버 별명이 바뀌면 기록 이름을 고친다. 기록이 없는 사람은 만들지 않고, 빈 이름은 무시한다.
+#[test]
+fn renaming_players_changes_only_existing_records() {
+    let mut stats = StatsFile::default();
+    adjust_coins(&mut stats, 1, "account_name", 100);
+    let renamed = rename_players(
+        &mut stats,
+        &[
+            (1, "서버별명".to_string()),
+            (2, "없는사람".to_string()),
+            (1, String::new()),
+        ],
+    );
+    assert_eq!(renamed, 1);
+    assert_eq!(stats.users["1"].name, "서버별명");
+    assert!(!stats.users.contains_key("2"));
+    assert_eq!(
+        rename_players(&mut stats, &[(1, "서버별명".to_string())]),
+        0
+    );
+}
+
 #[test]
 fn win_rate_handles_zero_games() {
     assert_eq!(win_rate_text(0, 0), "0.0%");
