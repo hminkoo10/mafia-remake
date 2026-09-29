@@ -1180,7 +1180,7 @@ fn news_shocks_average_out_to_zero() {
     for _ in 0..draws {
         let news = macro_news(&mut rng);
         market_sum += news.market_jump;
-        if let Some((sector, jump)) = news.sector {
+        for (sector, jump) in news.sectors {
             *sectors.entry(sector).or_default() += jump;
         }
     }
@@ -1195,6 +1195,33 @@ fn news_shocks_average_out_to_zero() {
         .map(|_| company_news("가나다", Sector::Bio, 0.0, &mut rng).jump)
         .sum::<f64>();
     assert!((total / draws as f64).abs() < 0.001, "기업 뉴스 {total}");
+}
+
+/// 뉴스 제목은 여러 가지이고 틀의 빈칸이 모두 채워진다.
+#[test]
+fn news_headlines_are_varied_and_filled_in() {
+    let mut rng = rng();
+    for sector in Sector::ALL {
+        let mut headlines = std::collections::BTreeSet::new();
+        for _ in 0..600 {
+            let news = company_news("가나다", sector, 0.2, &mut rng);
+            assert!(
+                !news.headline.contains('{') && !news.topic.contains('{'),
+                "{news:?}"
+            );
+            assert!(news.headline.contains("가나다"), "{news:?}");
+            headlines.insert(news.headline);
+        }
+        assert!(
+            headlines.len() >= 60,
+            "{sector:?} 제목 {}가지",
+            headlines.len()
+        );
+    }
+    let macro_headlines = (0..2_000)
+        .map(|_| macro_news(&mut rng).headline)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(macro_headlines.len(), 48, "경제 소식 24쌍이 모두 나온다");
 }
 
 #[test]

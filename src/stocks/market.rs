@@ -477,7 +477,7 @@ impl StockMarket {
         if uniform(rng) < chance {
             let draft = macro_news(rng);
             self.macro_state.market += draft.market_jump;
-            if let Some((sector, jump)) = draft.sector {
+            for (sector, jump) in draft.sectors {
                 *self.macro_state.sectors.entry(sector).or_insert(0.0) += jump;
             }
             let item = self.push_news(at, NewsKind::Macro, None, draft.headline, draft.tone);
