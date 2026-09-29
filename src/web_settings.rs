@@ -1199,7 +1199,7 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
     ),
     field(
         "stock_system_companies",
-        "시스템 회사 수 목표",
+        "시스템 회사 수 목표 (넘어서 테마주 10곳까지 더 상장)",
         WebFieldKind::Int,
         Some(0),
     ),
