@@ -780,11 +780,18 @@ pub async fn announce_winner(
                     .iter()
                     .filter(|player| {
                         let entry = stats_file.users.get(&player.user_id.to_string());
-                        stats::mission_status(entry, player.user_id, &today, 0)
-                            .first()
-                            .is_some_and(|status| {
-                                !status.claimed && status.progress == status.mission.target
-                            })
+                        stats::mission_status(
+                            entry,
+                            player.user_id,
+                            &today,
+                            stats::StockDay::default(),
+                        )
+                        .iter()
+                        .any(|status| {
+                            status.mission.kind.is_mafia()
+                                && !status.claimed
+                                && status.progress == status.mission.target
+                        })
                     })
                     .map(|player| player.name.clone())
                     .collect();

@@ -1,6 +1,6 @@
 // stats/rewards.rs — 코인 벌이: 마피아 참여 보상, 일일 미션, 업적, 연속 출석 보너스.
 // 보상 코인은 새로 발행한다. 부계정으로 찍어 내지 못하게 참여 보상은 하루 판 수로, 미션은 하루
-// 세 개로, 업적은 단계마다 한 번씩으로 총량을 묶는다. 금액은 모두 운영 설정이고(0이면 끔), 발행한
+// 네 개로, 업적은 단계마다 한 번씩으로 총량을 묶는다. 금액은 모두 운영 설정이고(0이면 끔), 발행한
 // 누적은 `RewardTotals`에 남긴다.
 
 use super::{PlayerStats, StatsFile, ensure_player_stats, player_won_game, rating_team_key};
@@ -38,7 +38,7 @@ pub struct RewardRules {
     pub daily_games: i64,
     /// 일일 미션 하나의 보상.
     pub mission_coins: i64,
-    /// 일일 미션 세 개를 다 끝낸 보너스.
+    /// 일일 미션을 모두 끝낸 보너스.
     pub mission_bonus: i64,
     /// 업적 보상 배율 (%, 0이면 업적 보상 끔).
     pub achievement_pct: i64,
@@ -75,6 +75,12 @@ pub struct RewardRecord {
     pub day_wins: i64,
     #[serde(default)]
     pub day_hands: i64,
+    /// 오늘 마피아 판을 끝까지 살아남은 수.
+    #[serde(default)]
+    pub day_survivals: i64,
+    /// 오늘 순이익이 난 카지노 판 수.
+    #[serde(default)]
+    pub day_casino_wins: i64,
     /// 오늘 참여 보상을 받은 판 수.
     #[serde(default)]
     pub day_rewarded_games: i64,
@@ -109,7 +115,7 @@ pub struct RewardRecord {
     pub best_attendance_streak: i64,
     #[serde(default)]
     pub attendance_days: i64,
-    /// 일일 미션 세 개를 다 끝낸 날 수.
+    /// 일일 미션을 모두 끝낸 날 수.
     #[serde(default)]
     pub mission_days: i64,
     /// 보상으로 받은 코인 누적.
@@ -124,6 +130,8 @@ impl RewardRecord {
             self.day_games = 0;
             self.day_wins = 0;
             self.day_hands = 0;
+            self.day_survivals = 0;
+            self.day_casino_wins = 0;
             self.day_rewarded_games = 0;
             self.claimed.clear();
         }
@@ -217,6 +225,9 @@ pub fn grant_game_rewards(
         let entry = ensure_player_stats(stats, player.user_id, &player.name);
         entry.rewards.roll(today);
         entry.rewards.day_games += 1;
+        if player.alive {
+            entry.rewards.day_survivals += 1;
+        }
         if won {
             entry.rewards.day_wins += 1;
             *entry.rewards.team_wins.entry(team.to_string()).or_default() += 1;
@@ -247,6 +258,7 @@ pub fn record_casino_hand(stats: &mut StatsFile, user_id: u64, name: &str, today
     entry.rewards.day_hands += 1;
     entry.rewards.casino_hands += 1;
     if won {
+        entry.rewards.day_casino_wins += 1;
         entry.rewards.casino_wins += 1;
     }
 }
@@ -262,8 +274,22 @@ pub fn record_jackpot(stats: &mut StatsFile, user_id: u64, name: &str) {
 pub enum MissionKind {
     MafiaGames,
     MafiaWins,
+    MafiaSurvivals,
     CasinoHands,
+    CasinoWins,
     StockTrades,
+    StockDistinct,
+    StockProfits,
+}
+
+impl MissionKind {
+    /// 마피아 판으로 채우는 미션인가 (판이 끝나면 달성 알림을 보낸다).
+    pub fn is_mafia(self) -> bool {
+        matches!(
+            self,
+            Self::MafiaGames | Self::MafiaWins | Self::MafiaSurvivals
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,8 +328,18 @@ fn mission(category: &'static str, kind: MissionKind, target: i64) -> Mission {
     let (key, title) = match kind {
         MissionKind::MafiaGames => ("mafia-games", format!("마피아 {target}판 끝까지 하기")),
         MissionKind::MafiaWins => ("mafia-wins", format!("마피아에서 {target}번 이기기")),
+        MissionKind::MafiaSurvivals => (
+            "mafia-survive",
+            format!("마피아 {target}판 끝까지 살아남기"),
+        ),
         MissionKind::CasinoHands => ("casino-hands", format!("카지노 {target}판 하기")),
+        MissionKind::CasinoWins => ("casino-wins", format!("카지노 {target}판 이기기 (순이익)")),
         MissionKind::StockTrades => ("stock-trades", format!("주식 {target}번 체결하기")),
+        MissionKind::StockDistinct => (
+            "stock-distinct",
+            format!("주식 서로 다른 {target}종목 거래하기"),
+        ),
+        MissionKind::StockProfits => ("stock-profit", format!("주식 팔아서 이익 {target}번 내기")),
     };
     Mission {
         id: format!("{key}-{target}"),
@@ -314,33 +350,66 @@ fn mission(category: &'static str, kind: MissionKind, target: i64) -> Mission {
     }
 }
 
-/// 오늘의 미션 세 개 (마피아·카지노·주식에서 하나씩, 날마다 바뀐다).
+/// 오늘의 미션 네 개 (마피아·카지노·주식에서 하나씩과 도전 하나, 날마다 바뀐다).
 pub fn daily_missions(user_id: u64, day: &str) -> Vec<Mission> {
     let mafia = [
         (MissionKind::MafiaGames, 1),
         (MissionKind::MafiaGames, 2),
+        (MissionKind::MafiaGames, 3),
         (MissionKind::MafiaWins, 1),
+        (MissionKind::MafiaSurvivals, 1),
     ];
     let casino = [
         (MissionKind::CasinoHands, 10),
         (MissionKind::CasinoHands, 20),
+        (MissionKind::CasinoHands, 30),
+        (MissionKind::CasinoWins, 3),
     ];
-    let stocks = [(MissionKind::StockTrades, 1), (MissionKind::StockTrades, 3)];
+    let stocks = [
+        (MissionKind::StockTrades, 1),
+        (MissionKind::StockTrades, 3),
+        (MissionKind::StockTrades, 5),
+        (MissionKind::StockDistinct, 2),
+        (MissionKind::StockProfits, 1),
+    ];
+    let challenge = [
+        (MissionKind::MafiaWins, 2),
+        (MissionKind::MafiaSurvivals, 2),
+        (MissionKind::CasinoHands, 50),
+        (MissionKind::CasinoWins, 10),
+        (MissionKind::StockTrades, 10),
+        (MissionKind::StockDistinct, 3),
+        (MissionKind::StockProfits, 2),
+    ];
     let (kind, target) = mafia[pick(user_id, day, "mafia", mafia.len())];
     let first = mission("마피아", kind, target);
     let (kind, target) = casino[pick(user_id, day, "casino", casino.len())];
     let second = mission("카지노", kind, target);
     let (kind, target) = stocks[pick(user_id, day, "stocks", stocks.len())];
     let third = mission("주식", kind, target);
-    vec![first, second, third]
+    let (kind, target) = challenge[pick(user_id, day, "challenge", challenge.len())];
+    let mut fourth = mission("도전", kind, target);
+    fourth.id = format!("challenge-{}", fourth.id);
+    vec![first, second, third, fourth]
 }
 
-/// 오늘의 미션 진행. 주식 체결 수는 호출자가 시장에서 센다.
+/// 오늘의 주식 활동 (호출자가 시장의 체결 기록에서 센다).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StockDay {
+    /// 오늘 체결 수.
+    pub trades: i64,
+    /// 오늘 거래한 서로 다른 종목 수.
+    pub distinct: i64,
+    /// 오늘 이익(실현 손익 > 0)을 낸 매도 체결 수.
+    pub profitable: i64,
+}
+
+/// 오늘의 미션 진행. 주식 활동(`StockDay`)은 호출자가 시장의 체결 기록에서 센다.
 pub fn mission_status(
     entry: Option<&PlayerStats>,
     user_id: u64,
     today: &str,
-    stock_trades_today: i64,
+    stock: StockDay,
 ) -> Vec<MissionStatus> {
     let record = entry
         .map(|entry| &entry.rewards)
@@ -351,8 +420,12 @@ pub fn mission_status(
             let progress = match mission.kind {
                 MissionKind::MafiaGames => record.map_or(0, |record| record.day_games),
                 MissionKind::MafiaWins => record.map_or(0, |record| record.day_wins),
+                MissionKind::MafiaSurvivals => record.map_or(0, |record| record.day_survivals),
                 MissionKind::CasinoHands => record.map_or(0, |record| record.day_hands),
-                MissionKind::StockTrades => stock_trades_today,
+                MissionKind::CasinoWins => record.map_or(0, |record| record.day_casino_wins),
+                MissionKind::StockTrades => stock.trades,
+                MissionKind::StockDistinct => stock.distinct,
+                MissionKind::StockProfits => stock.profitable,
             };
             let claimed = record.is_some_and(|record| record.claimed.contains(&mission.id));
             MissionStatus {
@@ -373,28 +446,25 @@ pub struct Claim {
     pub balance: i64,
 }
 
-/// 끝낸 미션의 보상을 받는다 (받은 것은 건너뛴다). 세 개를 다 끝내면 보너스도 준다.
+/// 끝낸 미션의 보상을 받는다 (받은 것은 건너뛴다). 미션을 모두 끝내면 보너스도 준다.
 /// 돌려주는 진행 상황은 받은 뒤의 것이다.
 pub fn claim_missions(
     stats: &mut StatsFile,
     user_id: u64,
     name: &str,
     today: &str,
-    stock_trades_today: i64,
+    stock: StockDay,
     rules: &RewardRules,
 ) -> (Vec<MissionStatus>, Claim) {
     let mut claim = Claim::default();
     if rules.mission_coins <= 0 && rules.mission_bonus <= 0 {
         let entry = ensure_player_stats(stats, user_id, name);
         claim.balance = entry.coins;
-        return (
-            mission_status(Some(entry), user_id, today, stock_trades_today),
-            claim,
-        );
+        return (mission_status(Some(entry), user_id, today, stock), claim);
     }
     let entry = ensure_player_stats(stats, user_id, name);
     entry.rewards.roll(today);
-    let statuses = mission_status(Some(entry), user_id, today, stock_trades_today);
+    let statuses = mission_status(Some(entry), user_id, today, stock);
     for status in &statuses {
         if status.done && !status.claimed && rules.mission_coins > 0 {
             entry.rewards.claimed.push(status.mission.id.clone());
@@ -411,14 +481,15 @@ pub fn claim_missions(
         entry.rewards.mission_days += 1;
         if rules.mission_bonus > 0 {
             pay(entry, rules.mission_bonus);
-            claim
-                .paid
-                .push(("세 미션 모두 달성 보너스".to_string(), rules.mission_bonus));
+            claim.paid.push((
+                "오늘의 미션 모두 달성 보너스".to_string(),
+                rules.mission_bonus,
+            ));
             claim.total += rules.mission_bonus;
         }
     }
     claim.balance = entry.coins;
-    let statuses = mission_status(Some(entry), user_id, today, stock_trades_today);
+    let statuses = mission_status(Some(entry), user_id, today, stock);
     stats.reward_totals.missions = stats.reward_totals.missions.saturating_add(claim.total);
     (statuses, claim)
 }
@@ -784,7 +855,7 @@ pub const ACHIEVEMENT_TRACKS: &[AchievementTrack] = &[
     track(
         "mission-days",
         "미션 올클리어",
-        "미션 세 개 모두 {}일",
+        "미션 모두 달성 {}일",
         Metric::MissionDays,
         &[
             (1, 10_000),

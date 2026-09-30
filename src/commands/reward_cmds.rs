@@ -3,18 +3,25 @@
 
 use super::*;
 use crate::stock_hub::now_ms;
+use std::collections::HashSet;
 
-/// 주식 시장에서 세는 값: 오늘 체결 수와 업적용 거래·설립·상장 수.
-async fn stock_progress(data: &Data, user_id: u64) -> (i64, stats::StockProgress) {
+/// 주식 시장에서 세는 값: 오늘의 주식 활동(미션용 체결·종목·이익 난 매도 수)과 업적용 거래·설립·상장 수.
+async fn stock_progress(data: &Data, user_id: u64) -> (stats::StockDay, stats::StockProgress) {
     let market = data.stocks.market.read().await;
     let day_start = market.clock(stats::kst_day_start_ms(now_ms()));
     let account = market.accounts.get(&user_id);
-    let today = account.map_or(0, |account| {
-        account
-            .fills
-            .iter()
-            .filter(|fill| fill.at >= day_start)
-            .count() as i64
+    let today = account.map_or_else(stats::StockDay::default, |account| {
+        let mut stock = stats::StockDay::default();
+        let mut codes = HashSet::new();
+        for fill in account.fills.iter().filter(|fill| fill.at >= day_start) {
+            stock.trades += 1;
+            codes.insert(&fill.code);
+            if fill.realized.is_some_and(|realized| realized > 0) {
+                stock.profitable += 1;
+            }
+        }
+        stock.distinct = codes.len() as i64;
+        stock
     });
     let founded = market
         .companies
@@ -64,17 +71,11 @@ pub async fn missions(ctx: Context<'_>) -> Result<(), Error> {
     let user_id = user.id.get();
     let rules = ctx.data().config.read().await.reward_rules();
     let today = stats::kst_today();
-    let (trades_today, _) = stock_progress(ctx.data(), user_id).await;
+    let (stock_day, _) = stock_progress(ctx.data(), user_id).await;
     let (statuses, claim, bonus_claimed, rewarded_games, snapshot) = {
         let mut stats_file = ctx.data().stats.write().await;
-        let (statuses, claim) = stats::claim_missions(
-            &mut stats_file,
-            user_id,
-            &name,
-            &today,
-            trades_today,
-            &rules,
-        );
+        let (statuses, claim) =
+            stats::claim_missions(&mut stats_file, user_id, &name, &today, stock_day, &rules);
         let entry = stats_file.users.get(&user_id.to_string());
         let bonus_claimed = stats::mission_bonus_claimed(entry, &today);
         let rewarded_games = entry
@@ -127,10 +128,10 @@ pub async fn missions(ctx: Context<'_>) -> Result<(), Error> {
         ));
     }
     lines.push(if bonus_claimed {
-        "✅ 세 미션 모두 달성 보너스 (받음)".to_string()
+        "✅ 오늘의 미션 모두 달성 보너스 (받음)".to_string()
     } else {
         format!(
-            "⭐ 세 미션을 모두 끝내면 보너스 **+{}**",
+            "⭐ 오늘의 미션을 모두 끝내면 보너스 **+{}**",
             stats::coin_text(rules.mission_bonus)
         )
     });

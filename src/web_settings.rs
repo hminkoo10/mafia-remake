@@ -776,7 +776,7 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
     ),
     field(
         "mission_bonus_coins",
-        "일일 미션 세 개 달성 보너스(원)",
+        "일일 미션 모두 달성 보너스(원)",
         WebFieldKind::Int,
         Some(0),
     ),

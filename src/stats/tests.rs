@@ -1536,7 +1536,12 @@ fn daily_missions_change_by_day_but_not_within_a_day() {
         .iter()
         .map(|mission| mission.category)
         .collect::<Vec<_>>();
-    assert_eq!(categories, vec!["마피아", "카지노", "주식"]);
+    assert_eq!(categories, vec!["마피아", "카지노", "주식", "도전"]);
+    assert!(
+        daily_missions(7, "2026-09-26")[3]
+            .id
+            .starts_with("challenge-")
+    );
     let mafia = (1..=28)
         .map(|day| {
             daily_missions(7, &format!("2026-09-{day:02}"))[0]
@@ -1548,7 +1553,7 @@ fn daily_missions_change_by_day_but_not_within_a_day() {
 }
 
 #[test]
-fn missions_are_paid_once_and_all_three_add_a_bonus() {
+fn missions_are_paid_once_and_all_four_add_a_bonus() {
     let mut stats = StatsFile::default();
     let rules = reward_rules();
     let today = "2026-09-26";
@@ -1557,25 +1562,104 @@ fn missions_are_paid_once_and_all_three_add_a_bonus() {
         entry.rewards.day = today.to_string();
         entry.rewards.day_games = 5;
         entry.rewards.day_wins = 5;
-        entry.rewards.day_hands = 50;
+        entry.rewards.day_survivals = 5;
+        entry.rewards.day_hands = 60;
+        entry.rewards.day_casino_wins = 20;
     }
-    let (statuses, claim) = claim_missions(&mut stats, 1, "Alpha", today, 0, &rules);
-    assert_eq!(claim.total, 4_000, "마피아·카지노 두 개");
-    assert!(statuses[0].claimed && statuses[1].claimed && !statuses[2].done);
-    let (_, again) = claim_missions(&mut stats, 1, "Alpha", today, 0, &rules);
+    let stock = StockDay {
+        trades: 20,
+        distinct: 5,
+        profitable: 5,
+    };
+    let (statuses, claim) = claim_missions(&mut stats, 1, "Alpha", today, stock, &rules);
+    assert_eq!(claim.total, 4 * 2_000 + 3_000);
+    assert!(statuses.iter().all(|status| status.claimed && status.done));
+    let (_, again) = claim_missions(&mut stats, 1, "Alpha", today, stock, &rules);
     assert_eq!(again.total, 0, "한 번만 받는다");
-    let (_, stocks) = claim_missions(&mut stats, 1, "Alpha", today, 5, &rules);
-    assert_eq!(stocks.total, 2_000 + 3_000, "주식 미션과 세 개 보너스");
     assert!(mission_bonus_claimed(stats.users.get("1"), today));
-    assert_eq!(stats.users["1"].coins, 9_000);
-    assert_eq!(stats.reward_totals.missions, 9_000);
+    assert_eq!(stats.users["1"].coins, 11_000);
+    assert_eq!(stats.reward_totals.missions, 11_000);
     // 다음 날에는 진행이 새로 시작한다.
-    let tomorrow = mission_status(stats.users.get("1"), 1, "2026-09-27", 0);
+    let tomorrow = mission_status(stats.users.get("1"), 1, "2026-09-27", StockDay::default());
     assert!(
         tomorrow
             .iter()
             .all(|status| status.progress == 0 && !status.claimed)
     );
+}
+
+#[test]
+fn daily_survivals_and_casino_wins_count_only_qualifying_results() {
+    let mut game = rating_test_game();
+    game.players[0].alive = false;
+    let mut stats = StatsFile::default();
+    grant_game_rewards(
+        &mut stats,
+        &game,
+        Winner::Citizen,
+        &reward_rules(),
+        "2026-09-26",
+    );
+    let day_games = stats
+        .users
+        .values()
+        .map(|entry| entry.rewards.day_games)
+        .sum::<i64>();
+    let day_survivals = stats
+        .users
+        .values()
+        .map(|entry| entry.rewards.day_survivals)
+        .sum::<i64>();
+    assert_eq!(day_games, 4);
+    assert_eq!(day_survivals, 3);
+
+    record_casino_hand(&mut stats, 1, "Alpha", "2026-09-26", true);
+    record_casino_hand(&mut stats, 1, "Alpha", "2026-09-26", false);
+    let record = &stats.users["1"].rewards;
+    assert_eq!(record.day_hands, 2);
+    assert_eq!(record.day_casino_wins, 1);
+}
+
+#[test]
+fn challenge_and_category_missions_of_same_kind_are_claimed_separately() {
+    let pair = (1..=100)
+        .filter_map(|day| {
+            let today = format!("2026-09-{day:02}");
+            let missions = daily_missions(1, &today);
+            missions[..3]
+                .iter()
+                .find(|mission| mission.kind == missions[3].kind)
+                .map(|mission| (today, mission.id.clone(), missions[3].id.clone()))
+        })
+        .next();
+    assert!(
+        pair.is_some(),
+        "도전과 일반 미션이 같은 종류인 날이 있어야 한다"
+    );
+    let Some((today, category_id, challenge_id)) = pair else {
+        return;
+    };
+    assert_ne!(category_id, challenge_id);
+
+    let mut stats = StatsFile::default();
+    {
+        let entry = stats.users.entry("1".to_string()).or_default();
+        entry.rewards.day = today.clone();
+        entry.rewards.day_games = 5;
+        entry.rewards.day_wins = 5;
+        entry.rewards.day_survivals = 5;
+        entry.rewards.day_hands = 60;
+        entry.rewards.day_casino_wins = 20;
+    }
+    let stock = StockDay {
+        trades: 20,
+        distinct: 5,
+        profitable: 5,
+    };
+    claim_missions(&mut stats, 1, "Alpha", &today, stock, &reward_rules());
+    let claimed = &stats.users["1"].rewards.claimed;
+    assert!(claimed.contains(&category_id));
+    assert!(claimed.contains(&challenge_id));
 }
 
 #[test]
@@ -1769,21 +1853,28 @@ fn long_term_counters_feed_the_achievement_tracks() {
     assert_eq!(record.best_attendance_streak, 3);
     assert_eq!(record.attendance_streak, 1);
 
-    // 미션 세 개를 다 끝낸 날 수 (보너스를 꺼도 센다).
+    // 미션을 모두 끝낸 날 수 (보너스를 꺼도 센다).
     let today = "2026-09-26";
     {
         let entry = stats.users.get_mut("1").unwrap();
         entry.rewards.day = today.to_string();
         entry.rewards.day_games = 5;
         entry.rewards.day_wins = 5;
-        entry.rewards.day_hands = 50;
+        entry.rewards.day_survivals = 5;
+        entry.rewards.day_hands = 60;
+        entry.rewards.day_casino_wins = 20;
     }
     let no_bonus = RewardRules {
         mission_bonus: 0,
         ..rules
     };
-    claim_missions(&mut stats, 1, "Alpha", today, 5, &no_bonus);
-    claim_missions(&mut stats, 1, "Alpha", today, 5, &no_bonus);
+    let stock = StockDay {
+        trades: 20,
+        distinct: 5,
+        profitable: 5,
+    };
+    claim_missions(&mut stats, 1, "Alpha", today, stock, &no_bonus);
+    claim_missions(&mut stats, 1, "Alpha", today, stock, &no_bonus);
     assert_eq!(
         stats.users["1"].rewards.mission_days, 1,
         "하루에 한 번만 센다"
