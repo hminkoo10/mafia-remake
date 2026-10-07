@@ -130,6 +130,8 @@ impl StockHub {
             }
             (file.market, file.bindings)
         };
+        // 예전 형식의 저장 파일을 지금 규칙에 맞춘다 (새 시장은 이미 지금 형식).
+        market.migrate();
         // 봉은 없어도 시장을 돌릴 수 있다 (읽지 못하면 빈 차트로 시작한다).
         if let Ok(text) = std::fs::read_to_string(&candles_path) {
             match serde_json::from_str::<CandleStore>(&text) {

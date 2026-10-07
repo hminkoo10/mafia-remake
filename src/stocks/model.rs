@@ -27,6 +27,8 @@ pub const FILL_HISTORY_LIMIT: usize = 50;
 /// 비율 단위: 만분율, 백만분율.
 pub const BP: i64 = 10_000;
 pub const PPM: i64 = 1_000_000;
+/// 저장 파일 형식 번호 (`StockMarket::migrate`가 예전 파일을 이 형식으로 바꾼다).
+pub const MARKET_SCHEMA: u32 = 1;
 
 /// 업종.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -384,6 +386,9 @@ pub struct Company {
     /// 플레이어 회사: 공모 때 시장조성자가 받은 유통 물량 (기관·AI 배정분). 시장조성자 보유 한도에 더한다.
     #[serde(default)]
     pub lp_ipo_float: i64,
+    /// 시스템 회사: 마지막으로 유상증자·자사주 매입을 결정한 시각 (한동안 다시 하지 않는다).
+    #[serde(default)]
+    pub action_at: i64,
 }
 
 fn default_risk() -> u8 {
@@ -810,7 +815,7 @@ pub struct MarketStats {
     pub taxes: i64,
     /// 시스템 회사 배당으로 생긴 코인.
     pub dividends: i64,
-    /// 시스템 회사 공모로 사라진 코인.
+    /// 시스템 회사 공모·유상증자로 사라진 코인.
     pub ipo_burned: i64,
     /// 플레이어 회사 실적으로 생기거나(+) 사라진(-) 코인.
     pub company_earnings: i64,
@@ -908,6 +913,9 @@ pub struct CandleStore {
 pub struct StockMarket {
     #[serde(default)]
     pub version: u64,
+    /// 저장 파일 형식 번호 (`MARKET_SCHEMA`). 불러온 뒤 `migrate`가 지금 형식으로 바꾼다.
+    #[serde(default)]
+    pub schema: u32,
     pub companies: BTreeMap<String, Company>,
     #[serde(default)]
     pub accounts: BTreeMap<u64, Account>,
@@ -1012,6 +1020,8 @@ pub struct StockRules {
     /// 시스템 회사가 목표 수(`system_companies`)를 넘어 늘 수 있는 만큼. 한도 안에서는 새 회사가 가끔
     /// 상장하고, 약한 회사는 상장폐지된다.
     pub system_extra_companies: i64,
+    /// 시스템 회사가 스스로 유상증자·자사주 매입을 하는 빈도 (%). 0이면 하지 않는다.
+    pub system_actions_pct: i64,
 }
 
 impl Default for StockRules {
@@ -1042,6 +1052,7 @@ impl Default for StockRules {
             ipo_institution_bp: 3_000,
             ipo_ai_pct: 100,
             system_extra_companies: 10,
+            system_actions_pct: 100,
         }
     }
 }

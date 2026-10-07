@@ -51,7 +51,7 @@ export function AdminTab({ state, busy, act }: { state: StockState; busy: boolea
             <dd>{won(stats.dividends)}</dd>
           </div>
           <div>
-            <dt>시스템 공모 대금 (사라짐)</dt>
+            <dt>시스템 공모·증자 대금 (사라짐)</dt>
             <dd>{won(stats.ipo_burned)}</dd>
           </div>
           <div>

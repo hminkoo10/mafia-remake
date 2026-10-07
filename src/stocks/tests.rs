@@ -16,6 +16,7 @@ fn quiet() -> StockRules {
         ipo_institution_bp: 0,
         ipo_ai_pct: 0,
         system_extra_companies: 0,
+        system_actions_pct: 0,
         ..StockRules::default()
     }
 }
@@ -1898,4 +1899,334 @@ fn every_news_item_waits_for_the_news_channel() {
             .any(|item| item.kind == NewsKind::Delisting && item.headline.contains("해산"))
     );
     assert!(market.take_news_outbox().is_empty(), "꺼낸 뉴스는 비운다");
+}
+
+// ------------------------------------------------------------ 시스템 회사 경영·테마주
+
+/// 시스템 회사 유상증자: 결정과 함께 권리락으로 주가가 기준가로 내려가고 (지수는 그대로), 주주는 보유
+/// 비율대로 신주인수권을 받는다. 마감 때 신주는 모두 발행되고 (실권주는 기관·AI), 주가는 튀지 않는다.
+#[test]
+fn system_rights_go_ex_rights_and_issue_every_share() {
+    let rules = quiet();
+    let mut market = market();
+    let mut rng = rng();
+    let code = "100010";
+    buy(&mut market, 1, code, 1_000, None, 1_000_000_000, T0).unwrap();
+    let qty = market.accounts[&1].positions[code].qty;
+    let at = T0 + TICK_MS;
+    let (price, prev_close, shares, equity) = {
+        let company = &market.companies[code];
+        (
+            company.price,
+            company.prev_close,
+            company.shares,
+            company.equity,
+        )
+    };
+    let index = market.listed_cap_sum() / market.index.divisor;
+    let mut report = TickReport::default();
+    market.start_system_rights(code, at, &rules, &mut rng, &mut report);
+    let company = &market.companies[code];
+    let rights = company.rights.clone().expect("유상증자 진행 중");
+    assert!(rights.price < price, "발행가는 할인된다");
+    let terp = (shares as f64 * price as f64 + rights.shares as f64 * rights.price as f64)
+        / (shares + rights.shares) as f64;
+    assert_eq!(company.price, floor_tick(terp as i64), "권리락 기준가");
+    let ratio = terp / price as f64;
+    assert!((company.prev_close as f64 - prev_close as f64 * ratio).abs() <= 1.0);
+    assert_eq!(
+        rights.rights[&1],
+        (i128::from(rights.shares) * i128::from(qty) / i128::from(shares)) as i64
+    );
+    let after = market.listed_cap_sum() / market.index.divisor;
+    assert!(
+        (after / index - 1.0).abs() < 1e-9,
+        "권리락은 지수를 움직이지 않는다"
+    );
+    assert!(
+        report
+            .news
+            .iter()
+            .any(|item| item.headline.contains("유상증자 결정"))
+    );
+
+    // 절반만 인수한다.
+    let take = rights.rights[&1] / 2;
+    let cost = market.exercise_rights(1, "U1", code, take, at).unwrap();
+    assert_eq!(cost, take * rights.price);
+    market.tick(rights.until - TICK_MS, &rules, &mut rng);
+    let before_close = market.companies[code].price;
+    let burned = market.stats.ipo_burned;
+    market.tick(rights.until + 2 * TICK_MS, &rules, &mut rng);
+    let company = &market.companies[code];
+    assert!(company.rights.is_none());
+    assert_eq!(
+        company.shares,
+        shares + rights.shares,
+        "신주는 모두 발행된다"
+    );
+    assert!(company.equity > equity);
+    assert_eq!(market.accounts[&1].positions[code].qty, qty + take);
+    assert_eq!(market.stats.ipo_burned, burned + cost, "낸 대금은 사라진다");
+    assert!(
+        (company.price - before_close).abs() <= tick_size(before_close),
+        "마감 때 주가가 튀지 않는다 ({before_close} → {})",
+        company.price
+    );
+}
+
+/// 청약 중에 상장폐지가 결정된 시스템 회사는 신주를 내지 않고 인수 대금을 돌려준다.
+#[test]
+fn system_rights_are_refunded_when_delisting_is_decided() {
+    let rules = quiet();
+    let mut market = market();
+    let mut rng = rng();
+    let code = "100010";
+    buy(&mut market, 1, code, 1_000, None, 1_000_000_000, T0).unwrap();
+    let at = T0 + TICK_MS;
+    let mut report = TickReport::default();
+    market.start_system_rights(code, at, &rules, &mut rng, &mut report);
+    let rights = market.companies[code]
+        .rights
+        .clone()
+        .expect("유상증자 진행 중");
+    let cost = market
+        .exercise_rights(1, "U1", code, rights.rights[&1], at)
+        .unwrap();
+    let paid = balances(&market)[&1];
+    let shares = market.companies[code].shares;
+    market.companies.get_mut(code).unwrap().status = CompanyStatus::Liquidating {
+        until: rights.until + DAY_MS,
+        reason: "파산".to_string(),
+        trading: true,
+    };
+    market.tick(rights.until + TICK_MS, &rules, &mut rng);
+    assert!(market.companies[code].rights.is_none());
+    assert_eq!(market.companies[code].shares, shares, "신주를 내지 않는다");
+    assert_eq!(balances(&market)[&1], paid + cost, "인수 대금을 돌려준다");
+}
+
+/// 시스템 회사 자사주 매입: 기간 동안 유통 주식을 사서 소각하고, 주주는 매입 호가에 팔 수 있다. 사들인
+/// 만큼 주가가 기계적으로 빠지지 않는다.
+#[test]
+fn system_buyback_retires_shares_without_a_mechanical_drop() {
+    let rules = quiet();
+    let mut market = market();
+    let mut rng = rng();
+    let code = "100030";
+    buy(&mut market, 1, code, 100, None, 100_000_000, T0).unwrap();
+    let at = T0 + MINUTE_MS;
+    market.tick(at, &rules, &mut rng);
+    let (price, shares) = (market.companies[code].price, market.companies[code].shares);
+    let mut report = TickReport::default();
+    market.start_system_buyback(code, at, &rules, &mut rng, &mut report);
+    let buyback = market.companies[code]
+        .buyback
+        .clone()
+        .expect("자사주 매입 중");
+    assert!(
+        report
+            .news
+            .iter()
+            .any(|item| item.headline.contains("자사주 매입·소각 결정"))
+    );
+    // 주주가 매입 호가에 팔면 그만큼 바로 소각된다 (같은 가격의 시장조성자 호가가 먼저).
+    let before_sale = market.companies[code].shares;
+    let sold = sell(&mut market, 1, code, 100, None, at).unwrap();
+    assert_eq!(sold.filled, 100);
+    let taken = market.companies[code]
+        .buyback
+        .as_ref()
+        .map_or(0, |buyback| buyback.bought);
+    assert!(taken > 0, "매입 호가에도 팔린다");
+    assert_eq!(market.companies[code].shares, before_sale - taken);
+    market.tick(buyback.until + TICK_MS, &rules, &mut rng);
+    let company = &market.companies[code];
+    assert!(company.buyback.is_none());
+    assert!(
+        company.shares < shares - taken,
+        "기간 동안 유통 주식도 산다"
+    );
+    assert!(
+        company.price >= price,
+        "매입으로 주가가 기계적으로 빠지지 않는다 ({price} → {})",
+        company.price
+    );
+}
+
+/// 테마주는 기준가의 일부를 기대감(투자 심리)으로 들고 상장한다: 순자산이 그만큼 낮다.
+#[test]
+fn theme_ipo_lists_with_hype_in_sentiment() {
+    use super::corporate::{THEME_HYPE_MAX, THEME_HYPE_MIN};
+    let rules = StockRules {
+        day_ms: MINUTE_MS,
+        system_extra_companies: 10,
+        ..quiet()
+    };
+    let mut market = market();
+    let mut rng = rng();
+    let mut at = T0;
+    let theme = loop {
+        at += MINUTE_MS;
+        assert!(at < T0 + 300 * MINUTE_MS, "테마주가 공모에 들어간다");
+        market.tick(at, &rules, &mut rng);
+        if let Some(company) = market.companies.values().find(|company| {
+            company.is_theme() && matches!(company.status, CompanyStatus::Subscription(_))
+        }) {
+            break company.clone();
+        }
+    };
+    assert!(
+        (THEME_HYPE_MIN..=THEME_HYPE_MAX).contains(&theme.sentiment),
+        "{}",
+        theme.sentiment
+    );
+    let CompanyStatus::Subscription(offering) = &theme.status else {
+        unreachable!()
+    };
+    let base = theme.equity as f64 * theme.sector.pbr() * theme.sentiment.exp();
+    let ratio = base / (offering.price as f64 * theme.shares as f64);
+    assert!(
+        ratio > 1.0 / 0.95 - 0.02 && ratio < 1.0 / 0.70 + 0.02,
+        "기준가 ÷ 공모가 {ratio}"
+    );
+}
+
+/// 예전 저장 파일: 테마주의 순자산 일부를 기대감으로 옮기고 (주가는 그대로) 지수에서 테마주를 뺀다.
+/// 한 번만 한다.
+#[test]
+fn migrate_moves_theme_book_into_hype_once() {
+    use super::corporate::{THEME_HYPE_MAX, THEME_HYPE_MIN};
+    assert_eq!(market().schema, MARKET_SCHEMA);
+    let mut market = market();
+    let mut theme = market.companies["100060"].clone();
+    theme.code = "200010".to_string();
+    theme.name = "테마상사".to_string();
+    theme.risk = THEME_RISK;
+    market.companies.insert(theme.code.clone(), theme.clone());
+    // 예전 지수는 테마주까지 더했다.
+    let all = market
+        .companies
+        .values()
+        .map(|company| company.market_cap() as f64)
+        .sum::<f64>();
+    market.index.divisor = all / market.index.value;
+    market.schema = 0;
+    let prices = market
+        .companies
+        .keys()
+        .map(|code| (code.clone(), market.model_price(code, T0)))
+        .collect::<Vec<_>>();
+
+    market.migrate();
+    assert_eq!(market.schema, MARKET_SCHEMA);
+    for (code, price) in &prices {
+        let now = market.model_price(code, T0);
+        assert!((now / price - 1.0).abs() < 1e-9, "{code} {price} → {now}");
+    }
+    let moved = &market.companies["200010"];
+    let hype = moved.sentiment - theme.sentiment;
+    assert!((THEME_HYPE_MIN..=THEME_HYPE_MAX).contains(&hype), "{hype}");
+    assert!(((theme.equity as f64 / moved.equity as f64).ln() - hype).abs() < 1e-6);
+    let without_theme = market
+        .companies
+        .values()
+        .filter(|company| !company.is_theme())
+        .map(|company| company.market_cap() as f64)
+        .sum::<f64>();
+    assert!((market.listed_cap_sum() - without_theme).abs() < 1.0);
+    assert!(
+        (market.listed_cap_sum() / market.index.divisor / market.index.value - 1.0).abs() < 1e-9,
+        "지수가 튀지 않는다"
+    );
+
+    let once = market.clone();
+    market.migrate();
+    assert_eq!(market, once, "두 번째는 바꾸지 않는다");
+}
+
+/// 시스템 회사는 스스로 유상증자·자사주 매입을 결정하고, 한 번 결정하면 한동안 다시 하지 않는다.
+#[test]
+fn system_companies_decide_rights_and_buybacks_on_their_own() {
+    use super::corporate::SYSTEM_ACTION_COOLDOWN_MS;
+    let rules = StockRules {
+        system_actions_pct: 1_000,
+        ..quiet()
+    };
+    let mut market = market();
+    let mut rng = rng();
+    let mut news = Vec::new();
+    let mut at = T0;
+    for _ in 0..48 {
+        at += HOUR_MS;
+        news.extend(market.tick(at, &rules, &mut rng).news);
+    }
+    let decisions = news
+        .iter()
+        .filter(|item| {
+            item.headline.contains("유상증자 결정")
+                || item.headline.contains("자사주 매입·소각 결정")
+        })
+        .collect::<Vec<_>>();
+    assert!(!decisions.is_empty(), "결정이 나온다");
+    assert!(
+        decisions.iter().all(|item| item.at >= T0 + DAY_MS),
+        "상장한 지 하루가 지나야 한다"
+    );
+    for item in &decisions {
+        let again = decisions.iter().filter(|other| {
+            other.code == item.code
+                && other.at > item.at
+                && other.at - item.at < SYSTEM_ACTION_COOLDOWN_MS
+        });
+        assert_eq!(
+            again.count(),
+            0,
+            "{:?}는 한동안 다시 하지 않는다",
+            item.code
+        );
+    }
+}
+
+/// 테마주는 기대감이 남아 투자 심리가 좋을 때만 유상증자를 하고, 자사주는 사지 않는다.
+#[test]
+fn theme_stocks_raise_money_only_while_hyped() {
+    let rules = StockRules {
+        system_actions_pct: 1_000,
+        ..quiet()
+    };
+    let mut market = market();
+    let mut rng = rng();
+    let mut theme = market.companies["100060"].clone();
+    theme.code = "200010".to_string();
+    theme.name = "테마상사".to_string();
+    theme.risk = THEME_RISK;
+    theme.listed_at = T0 - WEEK_MS;
+    market.companies.insert(theme.code.clone(), theme);
+    let started = |market: &mut StockMarket, sentiment: f64, rng: &mut StdRng| {
+        let mut count = 0;
+        for hour in 0..200 {
+            let company = market.companies.get_mut("200010").unwrap();
+            company.sentiment = sentiment;
+            company.rights = None;
+            company.action_at = 0;
+            let mut report = TickReport::default();
+            market.maybe_system_action("200010", T0 + hour * HOUR_MS, &rules, rng, &mut report);
+            count += usize::from(market.companies["200010"].rights.is_some());
+            assert!(
+                market.companies["200010"].buyback.is_none(),
+                "테마주는 자사주를 사지 않는다"
+            );
+        }
+        count
+    };
+    assert_eq!(
+        started(&mut market, -0.1, &mut rng),
+        0,
+        "기대감이 식으면 증자하지 않는다"
+    );
+    assert!(
+        started(&mut market, 0.5, &mut rng) > 0,
+        "기대감이 남아 있으면 증자한다"
+    );
 }

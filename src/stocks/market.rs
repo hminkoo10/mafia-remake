@@ -1,6 +1,7 @@
 // stocks/market.rs — 시장 만들기, 5초마다 가격 갱신(팩터 모형), 게임일 넘기기, 지수, 뉴스, 장부
 
 use super::catalog::CATALOG;
+use super::corporate::{THEME_HYPE_MAX, THEME_HYPE_MIN};
 use super::model::*;
 use super::news::{company_news, macro_news};
 use super::price::*;
@@ -17,6 +18,8 @@ const THEME_NOISE_HALF_LIFE_DAYS: f64 = 24.0;
 const THEME_SENTIMENT_VOL: f64 = 0.2;
 /// 투자 심리가 절반으로 돌아가는 데 걸리는 실제 시간.
 const SENTIMENT_HALF_LIFE_MS: f64 = 2.0 * WEEK_MS as f64;
+/// 테마주 투자 심리(상장 기대감·뉴스·주문 영향)가 절반으로 식는 시간: 보통 종목보다 빠르다.
+const THEME_SENTIMENT_HALF_LIFE_MS: f64 = 4.0 * DAY_MS as f64;
 /// 뉴스 충격이 절반쯤 반영되는 시간.
 const NEWS_HALF_LIFE_MS: f64 = 10.0 * MINUTE_MS as f64;
 /// 주문 일시 충격이 절반으로 사라지는 시간.
@@ -44,6 +47,14 @@ pub fn duration_text(ms: i64) -> String {
     } else {
         format!("{seconds}초")
     }
+}
+
+/// 문자열로 정해지는 [0, 1) 값 (저장 파일 갱신처럼 난수 없이 골고루 고를 때).
+fn unit_hash(text: &str) -> f64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    (hasher.finish() >> 11) as f64 / (1_u64 << 53) as f64
 }
 
 /// 봇이 가져가지 않은 운영 기록을 이만큼까지만 둔다.
@@ -131,6 +142,7 @@ impl StockMarket {
                 activity_usual: None,
                 low_cap_days: 0,
                 lp_ipo_float: 0,
+                action_at: 0,
             };
             companies.insert(company.code.clone(), company);
         }
@@ -140,6 +152,7 @@ impl StockMarket {
             .sum::<f64>();
         let mut market = Self {
             version: 0,
+            schema: MARKET_SCHEMA,
             companies,
             accounts: BTreeMap::new(),
             orders: Vec::new(),
@@ -186,6 +199,44 @@ impl StockMarket {
             0,
         );
         market
+    }
+
+    /// 불러온 저장 파일을 지금 형식으로 바꾼다 (봇이 불러올 때 한 번). 형식 1: 테마주가 상장 기대감을
+    /// 투자 심리로 들고 있게 하고 (순자산을 그만큼 낮춰 주가는 그대로), 지수에서 테마주를 뺀다.
+    pub fn migrate(&mut self) {
+        if self.schema < 1 {
+            // 예전 지수는 테마주까지 더했다.
+            let before = self
+                .companies
+                .values()
+                .filter(|company| company.status.is_tradable())
+                .map(|company| company.market_cap() as f64)
+                .sum::<f64>();
+            let mut count = 0;
+            for company in self.companies.values_mut() {
+                let active = matches!(
+                    company.status,
+                    CompanyStatus::Listed | CompanyStatus::Subscription(_)
+                );
+                if !company.is_theme() || !active {
+                    continue;
+                }
+                let hype =
+                    THEME_HYPE_MIN + (THEME_HYPE_MAX - THEME_HYPE_MIN) * unit_hash(&company.code);
+                let keep = (-hype).exp();
+                if company.equity > 0 {
+                    company.equity = ((company.equity as f64 * keep) as i64).max(1);
+                }
+                company.paid_in = (company.paid_in as f64 * keep) as i64;
+                company.sentiment = (company.sentiment + hype).clamp(-5.0, 5.0);
+                count += 1;
+            }
+            self.rebase_index(before);
+            self.schema = 1;
+            self.log(format!(
+                "🔧 주식 저장 파일 갱신: 테마주 {count}곳의 순자산 일부를 상장 기대감으로 옮기고 지수에서 테마주를 뺐습니다"
+            ));
+        }
     }
 
     // ------------------------------------------------------------ 장부·뉴스
@@ -346,6 +397,13 @@ impl StockMarket {
             log = terminal + (log - terminal) * fade;
         }
         if log.is_finite() { log } else { 0.0 }
+    }
+
+    /// 모형 가격 (내재가치·잡음·주문 영향, 가격제한 전). 회사가 없으면 0.
+    pub(super) fn model_price(&self, code: &str, at: i64) -> f64 {
+        self.companies.get(code).map_or(0.0, |company| {
+            price_from_log(self.fair_log(company, at) + company.noise + company.impact)
+        })
     }
 
     /// 오늘의 가격 범위 (상장 첫날 범위, 정리매매는 무제한).
@@ -565,8 +623,9 @@ impl StockMarket {
             company.turnover = 0;
             company.vi_ref = company.price;
             company.first_day_band = None;
-            // 시스템 회사의 상장 유지 기준 (시가총액)은 하루에 한 번 본다.
+            // 시스템 회사의 상장 유지 기준 (시가총액)과 유상증자·자사주 매입은 하루에 한 번 본다.
             self.check_listing_floor(code, at, rules, report);
+            self.maybe_system_action(code, at, rules, rng, report);
         }
         if !quoted {
             return;
@@ -611,7 +670,12 @@ impl StockMarket {
         } else {
             0.04
         };
-        company.sentiment = company.sentiment * decay(TICK_MS as f64, SENTIMENT_HALF_LIFE_MS)
+        let sentiment_half_life = if company.is_theme() {
+            THEME_SENTIMENT_HALF_LIFE_MS
+        } else {
+            SENTIMENT_HALF_LIFE_MS
+        };
+        company.sentiment = company.sentiment * decay(TICK_MS as f64, sentiment_half_life)
             + sentiment_vol * vol_scale * dt_week.sqrt() * sentiment_shock;
         let absorbed = company.pending_news * (1.0 - decay(TICK_MS as f64, NEWS_HALF_LIFE_MS));
         company.pending_news -= absorbed;
@@ -762,11 +826,12 @@ impl StockMarket {
         }
     }
 
-    /// 상장 종목 시가총액 합.
+    /// 지수에 드는 종목(거래 중, 테마주 제외)의 시가총액 합. 테마주는 자주 상장했다 무너져 빠지므로
+    /// 지수에 넣지 않는다.
     pub fn listed_cap_sum(&self) -> f64 {
         self.companies
             .values()
-            .filter(|company| company.status.is_tradable())
+            .filter(|company| company.status.is_tradable() && !company.is_theme())
             .map(|company| company.market_cap() as f64)
             .sum()
     }

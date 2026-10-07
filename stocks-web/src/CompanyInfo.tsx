@@ -27,7 +27,7 @@ export function CompanyInfo({
   }
   if (s.theme) {
     notices.push(
-      `테마주: 작고 변동이 큰 종목입니다. 시가총액이 ${Math.round(rules.min_system_cap / 1e8)}억원 아래로 ${rules.low_cap_warn_days}게임일 이어지면 상장폐지 우려, ${rules.low_cap_delist_days}게임일이면 정리매매 뒤 상장폐지됩니다.`,
+      `테마주: 기대감에 비싸게 상장해 그 거품이 며칠에 걸쳐 빠지고, 적자가 이어지는 작고 변동이 큰 종목입니다 (종합지수에는 넣지 않습니다). 시가총액이 ${Math.round(rules.min_system_cap / 1e8)}억원 아래로 ${rules.low_cap_warn_days}게임일 이어지면 상장폐지 우려, ${rules.low_cap_delist_days}게임일이면 정리매매 뒤 상장폐지됩니다.`,
     );
   }
   if (detail.rights) {

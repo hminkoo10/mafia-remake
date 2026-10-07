@@ -1813,7 +1813,7 @@ pub fn market_stats_text(market: &StockMarket) -> String {
         ),
         format!("시스템 회사 배당 (코인 생김): {}", won(stats.dividends)),
         format!(
-            "시스템 회사 공모 대금 (코인 사라짐): {}",
+            "시스템 회사 공모·유상증자 대금 (코인 사라짐): {}",
             won(stats.ipo_burned)
         ),
         format!(

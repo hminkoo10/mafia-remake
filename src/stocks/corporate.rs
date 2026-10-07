@@ -20,10 +20,28 @@ const ACTIVITY_USUAL_WEIGHT: f64 = 0.25;
 pub const LIQUIDATION_DAYS: i64 = 6;
 /// 플레이어 회사 위험도별 분기 이익률 변동성.
 const RISK_VOL: [f64; 5] = [0.02, 0.05, 0.10, 0.18, 0.30];
-/// 목표 수 이상일 때 게임일마다 새 시스템 회사가 공모에 들어갈 확률 (실제 하루 두 곳쯤).
-const EXTRA_IPO_CHANCE: f64 = 1.0 / 12.0;
+/// 목표 수 이상일 때 게임일마다 새 시스템 회사가 공모에 들어갈 확률 (자리가 비어 있으면 실제 하루 세 곳쯤).
+const EXTRA_IPO_CHANCE: f64 = 1.0 / 8.0;
 /// 새 시스템 회사 가운데 테마주 비율.
 const THEME_STOCK_SHARE: f64 = 0.4;
+/// 테마주 상장 때 주가에 붙은 기대감 (로그, 이 범위에서 고르게). 순자산을 그만큼 낮춰 잡고 투자 심리로
+/// 얹으므로, 심리가 식으면 주가가 순자산 가치 쪽으로 내려간다.
+pub(super) const THEME_HYPE_MIN: f64 = 0.3;
+pub(super) const THEME_HYPE_MAX: f64 = 1.0;
+/// 테마주의 주간 기대 적자 (순자산 대비). 기대감이 다시 붙지 않으면 결국 내려간다.
+const THEME_CASH_BURN: f64 = 0.04;
+/// 시스템 회사 유상증자 청약 기간과 자사주 매입 기간 (게임일).
+const SYSTEM_RIGHTS_DAYS: i64 = 3;
+const SYSTEM_BUYBACK_DAYS: i64 = 2;
+/// 시스템 회사가 유상증자·자사주 매입을 결정한 뒤 다시 결정하기까지 (실제 시간).
+pub(super) const SYSTEM_ACTION_COOLDOWN_MS: i64 = WEEK_MS;
+/// 시스템 회사가 유상증자를 결정하는 빈도 (회사마다 실제 1주에). 테마주는 기대감이 남아 주가가 높을 때
+/// (투자 심리가 좋을 때)만, 그동안은 잦게 한다.
+const THEME_RIGHTS_PER_WEEK: f64 = 0.5;
+const SYSTEM_RIGHTS_PER_WEEK: f64 = 0.12;
+/// 보통 시스템 회사가 자사주 매입을 결정하는 빈도 (실제 1주에, 투자 심리가 나빠 주가가 약하면 잦다).
+const BUYBACK_PER_WEEK: f64 = 0.15;
+const WEAK_BUYBACK_PER_WEEK: f64 = 0.5;
 /// 시스템 회사의 상장 유지 기준 시가총액.
 pub const MIN_SYSTEM_CAP: i64 = 3_000_000_000;
 /// 기준 미달이 이 게임일만큼 이어지면 상장폐지 우려 공시, 다음 값까지 이어지면 상장폐지 결정.
@@ -124,10 +142,13 @@ impl StockMarket {
             let spent_before = (total - buyback.budget).max(0);
             let allowance = (i128::from(total) * i128::from(elapsed) / i128::from(duration)) as i64
                 - spent_before;
-            let (qty, spent) = if allowance > 0 {
+            let player = self.companies.get(&code).is_some_and(Company::is_player);
+            let (qty, spent) = if allowance <= 0 {
+                (0, 0)
+            } else if player {
                 self.buy_back(&code, allowance.min(buyback.budget), at, rules)
             } else {
-                (0, 0)
+                self.buy_back_float(&code, allowance.min(buyback.budget), at, rules)
             };
             let Some(company) = self.companies.get_mut(&code) else {
                 continue;
@@ -172,11 +193,14 @@ impl StockMarket {
     // ------------------------------------------------------------ 실적
 
     /// 분기 기대 이익률 (시장 기대 수익률 + 배당 몫). 배당은 주가의 배당수익률만큼 주므로 순자산으로 치면
-    /// 업종 PBR배다. 배당 몫도 그만큼 벌어야 배당을 주고도 순자산이 기대 수익률만큼 자란다.
+    /// 업종 PBR배다. 배당 몫도 그만큼 벌어야 배당을 주고도 순자산이 기대 수익률만큼 자란다. 테마주는
+    /// 적자를 낸다.
     fn expected_roe(&self, company: &Company, rules: &StockRules) -> f64 {
         let drift = rules.drift_bp_week as f64 / BP as f64;
         if company.is_player() {
             drift
+        } else if company.is_theme() {
+            drift - THEME_CASH_BURN
         } else {
             drift + company.dividend_yield_bp as f64 / BP as f64 / 4.0 * company.sector.pbr()
         }
@@ -622,7 +646,7 @@ impl StockMarket {
 
     /// 투자 심리를 조정해 모형 가격(내재가치·잡음·주문 영향)이 `target`원이 되게 한다 (배당락처럼 장부가
     /// 바뀔 때 주가가 튀지 않게). 잡음은 그대로 두어 심리에 섞이지 않게 한다.
-    fn move_fair_to(&mut self, code: &str, target: f64, at: i64) {
+    pub(super) fn move_fair_to(&mut self, code: &str, target: f64, at: i64) {
         let Some(company) = self.companies.get(code) else {
             return;
         };
@@ -632,6 +656,20 @@ impl StockMarket {
         if let Some(company) = self.companies.get_mut(code) {
             company.sentiment = (company.sentiment + (wanted - current) / scale).clamp(-5.0, 5.0);
         }
+    }
+
+    /// 시스템 회사가 `cash`를 들여 주식 `qty`주를 사서 소각한다. 시스템 회사의 순자산은 업종 PBR로 값이
+    /// 매겨지므로 들인 돈을 PBR로 나눈 만큼 줄여 모형 가치가 들인 돈만큼 줄게 하고, 주가는 그대로 둔다.
+    pub(super) fn retire_system_shares(&mut self, code: &str, qty: i64, cash: i64, at: i64) {
+        let model = self.model_price(code, at);
+        let before = self.listed_cap_sum();
+        if let Some(company) = self.companies.get_mut(code) {
+            let book = (cash as f64 / company.sector.pbr()) as i64;
+            company.shares = (company.shares - qty).max(1);
+            company.equity = (company.equity - book).max(0);
+        }
+        self.move_fair_to(code, model, at);
+        self.rebase_index(before);
     }
 
     fn pay_declared_dividend(
@@ -688,6 +726,29 @@ impl StockMarket {
         self.delist(code, at, &reason, per_share, report);
     }
 
+    /// 행사한 신주인수권 대금을 돌려준다 (신주가 나오지 않았다).
+    fn refund_rights(&mut self, code: &str, rights: &RightsOffering, reason: &str, at: i64) {
+        for (user, qty) in &rights.exercised {
+            let name = self
+                .accounts
+                .get(user)
+                .map(|account| account.name.clone())
+                .unwrap_or_default();
+            self.transfer(
+                *user,
+                &name,
+                qty.saturating_mul(rights.price),
+                format!("{code} 유상증자 대금 반환"),
+            );
+            self.account_mut(*user, &name).record(HistoryEntry {
+                price: rights.price,
+                amount: qty.saturating_mul(rights.price),
+                note: format!("{reason}로 신주 {qty}주 발행 취소"),
+                ..HistoryEntry::new(at, HistoryKind::RightsRefund, code)
+            });
+        }
+    }
+
     /// 상장폐지·해산: 주문을 닫고, 주당 `per_share`를 나눠 준 뒤, 주식을 없앤다.
     fn delist(
         &mut self,
@@ -720,31 +781,12 @@ impl StockMarket {
                     ..HistoryEntry::new(at, HistoryKind::SubscriptionRefund, code)
                 });
         }
-        // 행사한 신주인수권 대금은 돌려준다 (신주가 나오지 않았다).
         if let Some(rights) = self
             .companies
             .get_mut(code)
             .and_then(|company| company.rights.take())
         {
-            for (user, qty) in rights.exercised {
-                let name = self
-                    .accounts
-                    .get(&user)
-                    .map(|account| account.name.clone())
-                    .unwrap_or_default();
-                self.transfer(
-                    user,
-                    &name,
-                    qty.saturating_mul(rights.price),
-                    format!("{code} 유상증자 대금 반환"),
-                );
-                self.account_mut(user, &name).record(HistoryEntry {
-                    price: rights.price,
-                    amount: qty.saturating_mul(rights.price),
-                    note: format!("{reason}로 신주 {qty}주 발행 취소"),
-                    ..HistoryEntry::new(at, HistoryKind::RightsRefund, code)
-                });
-            }
+            self.refund_rights(code, &rights, reason, at);
         }
         let distributed = self.pay_holders(code, per_share, "청산 분배금", false, at);
         let before = self.listed_cap_sum();
@@ -1098,7 +1140,13 @@ impl StockMarket {
         };
         let price = round_tick(price);
         let shares = ((cap / price as f64) as i64).max(10_000);
-        let equity = (price as f64 * shares as f64 / sector.pbr()) as i64;
+        // 테마주는 기준가의 일부가 기대감이다: 순자산을 그만큼 낮추고 투자 심리로 얹는다.
+        let hype = if theme {
+            THEME_HYPE_MIN + (THEME_HYPE_MAX - THEME_HYPE_MIN) * uniform(rng)
+        } else {
+            0.0
+        };
+        let equity = (price as f64 * shares as f64 / sector.pbr() / hype.exp()) as i64;
         // 테마주는 손바뀜이 잦다.
         let adv = if theme { shares / 60 } else { shares / 300 }.max(100);
         // 공모가는 기준가의 70~95%: 쌀수록 AI 청약이 몰린다.
@@ -1130,7 +1178,7 @@ impl StockMarket {
         let ai_demand = self.ai_ipo_demand(offered, sector, upside, base, rules, normal(rng));
         let description = if theme {
             format!(
-                "{} 테마주. 소문과 뉴스에 크게 흔들리고, 실적이나 주가가 무너지면 상장폐지될 수 있다.",
+                "{} 테마주. 기대감에 비싸게 상장해 소문과 뉴스에 크게 흔들린다. 적자가 이어지고 기대감이 식으면 상장폐지될 수 있다.",
                 sector.name()
             )
         } else {
@@ -1167,7 +1215,7 @@ impl StockMarket {
             first_day_band: None,
             beta,
             daily_vol,
-            sentiment: 0.0,
+            sentiment: hype,
             pending_news: 0.0,
             noise: 0.0,
             impact: 0.0,
@@ -1196,6 +1244,7 @@ impl StockMarket {
             activity_usual: None,
             low_cap_days: 0,
             lp_ipo_float: 0,
+            action_at: 0,
         };
         self.companies.insert(code.clone(), company);
         let kind = if theme {
@@ -1266,6 +1315,200 @@ impl StockMarket {
         self.companies
             .values()
             .any(|company| company.status.is_active() && normalize_name(&company.name) == key)
+    }
+
+    // ------------------------------------------------------------ 시스템 회사 경영
+
+    /// 게임일마다: 상장한 지 하루가 지난 시스템 회사가 가끔 스스로 유상증자나 자사주 매입을 결정한다
+    /// (같은 회사는 한동안 다시 하지 않는다). 테마주는 기대감으로 주가가 높을 때 증자를 서두르고 자사주는
+    /// 사지 않으며, 보통 회사는 투자 심리가 나빠 주가가 약할 때 자사주를 더 자주 산다.
+    pub(super) fn maybe_system_action(
+        &mut self,
+        code: &str,
+        at: i64,
+        rules: &StockRules,
+        rng: &mut dyn RngCore,
+        report: &mut TickReport,
+    ) {
+        if rules.system_actions_pct <= 0 {
+            return;
+        }
+        let Some(company) = self.companies.get(code) else {
+            return;
+        };
+        // 진행 중인 일이 있거나 상장폐지 우려(시가총액 미달이 이어짐)가 있으면 하지 않는다.
+        let busy = company.rights.is_some()
+            || company.buyback.is_some()
+            || company.admin_halt
+            || company.low_cap_days > 0;
+        let resting = company.action_at > 0 && at - company.action_at < SYSTEM_ACTION_COOLDOWN_MS;
+        if company.is_player()
+            || company.status != CompanyStatus::Listed
+            || busy
+            || resting
+            || at - company.listed_at < DAY_MS
+        {
+            return;
+        }
+        // 빈도는 실제 1주 기준이라 게임일 길이에 맞춰 나눈다.
+        let scale = rules.system_actions_pct.clamp(0, 1_000) as f64 / 100.0 * rules.day_ms() as f64
+            / WEEK_MS as f64;
+        let theme = company.is_theme();
+        let rights = if !theme {
+            scale * SYSTEM_RIGHTS_PER_WEEK
+        } else if company.sentiment > 0.0 {
+            scale * THEME_RIGHTS_PER_WEEK
+        } else {
+            0.0
+        };
+        let buyback = if theme || company.managed_since.is_some() {
+            0.0
+        } else if company.sentiment < 0.0 {
+            scale * WEAK_BUYBACK_PER_WEEK
+        } else {
+            scale * BUYBACK_PER_WEEK
+        };
+        let roll = uniform(rng);
+        if roll < rights {
+            self.start_system_rights(code, at, rules, rng, report);
+        } else if roll < rights + buyback {
+            self.start_system_buyback(code, at, rules, rng, report);
+        }
+    }
+
+    /// 시스템 회사 주주배정 유상증자: 지금 주주에게 보유 비율대로 신주인수권을 주고 `SYSTEM_RIGHTS_DAYS`
+    /// 동안 청약을 받는다. 결정과 함께 권리락으로 주가를 신주 발행가를 섞은 기준가로 내린다 (주주가 옛
+    /// 가격에 팔고 싼 신주인수권까지 챙기지 못하게). 실권주는 마감 때 기관·AI가 모두 인수한다.
+    pub(super) fn start_system_rights(
+        &mut self,
+        code: &str,
+        at: i64,
+        rules: &StockRules,
+        rng: &mut dyn RngCore,
+        report: &mut TickReport,
+    ) {
+        let Some(company) = self.companies.get(code) else {
+            return;
+        };
+        // 신주 비율과 할인율: 테마주는 자주 조금씩 깊게 할인해서, 보통 회사는 드물게 작게.
+        let (fraction, discount) = if company.is_theme() {
+            (0.1 + 0.15 * uniform(rng), 0.15 + 0.15 * uniform(rng))
+        } else {
+            (0.05 + 0.10 * uniform(rng), 0.10 + 0.15 * uniform(rng))
+        };
+        let shares = company.shares.max(1);
+        let new_shares = ((shares as f64 * fraction) as i64).max(1);
+        let old_price = company.price.max(1);
+        let issue = floor_tick((old_price as f64 * (1.0 - discount)) as i64).max(1);
+        // 권리락 기준가: 신주를 모두 발행한다고 보고 지금 주가와 발행가를 섞은 값.
+        let terp = (shares as f64 * old_price as f64 + new_shares as f64 * issue as f64)
+            / (shares as f64 + new_shares as f64);
+        let ratio = terp / old_price as f64;
+        let name = company.name.clone();
+        let rights = self
+            .accounts
+            .iter()
+            .filter_map(|(holder, account)| {
+                let qty = account
+                    .positions
+                    .get(code)
+                    .map_or(0, |position| position.qty);
+                let granted =
+                    (i128::from(new_shares) * i128::from(qty) / i128::from(shares)) as i64;
+                (granted > 0).then_some((*holder, granted))
+            })
+            .collect();
+        let target = self.model_price(code, at) * ratio;
+        let before = self.listed_cap_sum();
+        self.move_fair_to(code, target, at);
+        let price = floor_tick(terp as i64).max(1);
+        let scale = |value: i64| ((value as f64 * ratio).round() as i64).max(1);
+        let company = self.companies.get_mut(code).expect("company exists");
+        company.price = price;
+        company.mid = price;
+        company.low = company.low.min(price);
+        // 등락률·가격제한·변동성 완화장치는 실제 거래소처럼 권리락 기준가에서 잰다.
+        company.prev_close = scale(company.prev_close);
+        company.vi_ref = scale(company.vi_ref);
+        // 증자 결정은 악재다 (주식이 늘고, 돈이 모자란다는 신호).
+        company.pending_news -= 0.02 + 0.1 * fraction;
+        company.action_at = at;
+        company.rights = Some(RightsOffering {
+            price: issue,
+            shares: new_shares,
+            until: at + SYSTEM_RIGHTS_DAYS * rules.day_ms(),
+            rights,
+            exercised: Default::default(),
+        });
+        self.rebase_index(before);
+        self.log(format!(
+            "🏢 {} 유상증자 결정: 신주 {new_shares}주 @{}, 권리락 {} → {} ({SYSTEM_RIGHTS_DAYS}게임일)",
+            self.label(code),
+            format_amount(issue),
+            format_amount(old_price),
+            format_amount(price)
+        ));
+        let item = self.push_news(
+            at,
+            NewsKind::Disclosure,
+            Some(code),
+            format!(
+                "{name}, 주주배정 유상증자 결정: 신주 {new_shares}주(1주당 {:.2}주), 발행가 {}, 권리락 기준가 {} ({SYSTEM_RIGHTS_DAYS}게임일 동안 주주 청약, 실권주는 기관 인수)",
+                new_shares as f64 / shares as f64,
+                format_amount(issue),
+                format_amount(price)
+            ),
+            -1,
+        );
+        report.news.push(item);
+    }
+
+    /// 시스템 회사 자사주 매입·소각: 시가총액의 0.5~2%를 `SYSTEM_BUYBACK_DAYS` 동안 장내에서 고르게 사서
+    /// 소각한다. 매입 공시에 주가가 반응하고, 그동안 회사가 현재가에 매수 호가를 내 주주가 바로 팔 수 있다.
+    pub(super) fn start_system_buyback(
+        &mut self,
+        code: &str,
+        at: i64,
+        rules: &StockRules,
+        rng: &mut dyn RngCore,
+        report: &mut TickReport,
+    ) {
+        let Some(company) = self.companies.get(code) else {
+            return;
+        };
+        let cap = company.market_cap().max(1);
+        let budget = (cap as f64 * (0.005 + 0.015 * uniform(rng))) as i64;
+        if budget < company.price {
+            return;
+        }
+        let name = company.name.clone();
+        let company = self.companies.get_mut(code).expect("company exists");
+        // 매입 공시에 주가가 반응한다: 시가총액 대비 규모만큼 (투자 심리 최대 +0.06, 몇 분에 걸쳐).
+        company.pending_news += (3.0 * budget as f64 / cap as f64).min(0.06);
+        company.action_at = at;
+        company.buyback = Some(Buyback {
+            budget,
+            until: at + SYSTEM_BUYBACK_DAYS * rules.day_ms(),
+            bought: 0,
+            total: budget,
+            started_at: at,
+        });
+        self.log(format!(
+            "🏢 {} 자사주 매입 결정: 예산 {} ({SYSTEM_BUYBACK_DAYS}게임일)",
+            self.label(code),
+            format_amount(budget)
+        ));
+        let item = self.push_news(
+            at,
+            NewsKind::Disclosure,
+            Some(code),
+            format!(
+                "{name}, {} 규모 자사주 매입·소각 결정 ({SYSTEM_BUYBACK_DAYS}게임일 동안 장내 매수)",
+                format_amount(budget)
+            ),
+            1,
+        );
+        report.news.push(item);
     }
 
     // ------------------------------------------------------------ 플레이어 회사
@@ -1372,6 +1615,7 @@ impl StockMarket {
             activity_usual: None,
             low_cap_days: 0,
             lp_ipo_float: 0,
+            action_at: 0,
         };
         self.companies.insert(code.clone(), company);
         self.transfer(
@@ -1822,31 +2066,66 @@ impl StockMarket {
             return;
         };
         let exercised = rights.exercised.values().sum::<i64>();
+        let player = self.companies.get(code).is_some_and(Company::is_player);
+        // 청약 중에 상장폐지가 결정된 시스템 회사는 신주를 내지 않고 인수 대금을 돌려준다.
+        if !player
+            && let Some(company) = self.companies.get(code)
+            && company.status != CompanyStatus::Listed
+        {
+            let name = company.name.clone();
+            self.refund_rights(code, &rights, "정리매매", at);
+            self.log(format!(
+                "🏢 {name}({code}) 유상증자 취소: 상장폐지 결정으로 신주 미발행, 인수 대금 반환"
+            ));
+            let item = self.push_news(
+                at,
+                NewsKind::Disclosure,
+                Some(code),
+                format!("{name}, 상장폐지 결정으로 유상증자 취소 (인수 대금 반환)"),
+                -1,
+            );
+            report.news.push(item);
+            return;
+        }
         // 실권주 (주주가 인수하지 않은 신주, 시장조성자 몫 포함): 실제처럼 기관이 발행가에 인수해 시장에
         // 풀린다. 기관 납입금은 공모 기관 배정처럼 새로 생기는 코인이다. 기관도 사지 않은 몫은 발행하지 않는다.
+        // 시스템 회사의 실권주는 기관·AI가 모두 인수한다 (게임 밖의 돈이라 코인이 오가지 않는다).
         let unsubscribed = (rights.shares - exercised).max(0);
-        let institutions = self.companies.get(code).map_or(0, |company| {
-            company.lp_inventory.map_or(0, |inventory| {
-                rights_institution_shares(
-                    unsubscribed,
-                    rights.price,
-                    company.bvps(),
-                    company.shares.saturating_add(exercised),
-                    // 공모 때 받은 유통 물량은 한도와 따로 든다 (`lp_buy_room`과 같이).
-                    (inventory - company.lp_ipo_float).max(0),
-                    rules,
-                )
+        let institutions = if player {
+            self.companies.get(code).map_or(0, |company| {
+                company.lp_inventory.map_or(0, |inventory| {
+                    rights_institution_shares(
+                        unsubscribed,
+                        rights.price,
+                        company.bvps(),
+                        company.shares.saturating_add(exercised),
+                        // 공모 때 받은 유통 물량은 한도와 따로 든다 (`lp_buy_room`과 같이).
+                        (inventory - company.lp_ipo_float).max(0),
+                        rules,
+                    )
+                })
             })
-        });
+        } else {
+            unsubscribed
+        };
         let dropped = unsubscribed - institutions;
         let total = exercised + institutions;
         let proceeds = total.saturating_mul(rights.price);
-        if institutions > 0 {
+        if player && institutions > 0 {
             self.stats.lp_sold = self
                 .stats
                 .lp_sold
                 .saturating_add(institutions.saturating_mul(rights.price));
         }
+        if !player {
+            // 주주가 낸 대금은 시스템 회사 공모 대금처럼 게임에서 사라진다.
+            self.stats.ipo_burned = self
+                .stats
+                .ipo_burned
+                .saturating_add(exercised.saturating_mul(rights.price));
+        }
+        // 시스템 회사는 주식 수·순자산이 바뀌어도 주가가 튀지 않게 지금 모형 가격을 기억해 둔다.
+        let model = (!player).then(|| self.model_price(code, at));
         let before = self.listed_cap_sum();
         for (user, qty) in &rights.exercised {
             let name = self
@@ -1874,17 +2153,35 @@ impl StockMarket {
             return;
         };
         let name = company.name.clone();
+        let old_shares = company.shares.max(1);
         company.shares = company.shares.saturating_add(total);
-        company.equity = company.equity.saturating_add(proceeds);
-        company.paid_in = company.paid_in.saturating_add(proceeds);
-        if let Some(inventory) = company.lp_inventory.as_mut() {
-            *inventory = inventory.saturating_add(institutions);
+        if player {
+            company.equity = company.equity.saturating_add(proceeds);
+            company.paid_in = company.paid_in.saturating_add(proceeds);
+            if let Some(inventory) = company.lp_inventory.as_mut() {
+                *inventory = inventory.saturating_add(institutions);
+            }
+            company.adv = (company.shares / 50).max(10);
+            company.depth = (company.adv / 20).max(1);
+        } else {
+            // 시스템 회사의 순자산은 업종 PBR로 값이 매겨지므로, 모형 가치가 조달한 돈만큼 늘게 PBR로
+            // 나눠 더한다. 거래량은 주식 수에 맞춰 늘린다.
+            let book = (proceeds as f64 / company.sector.pbr()) as i64;
+            company.equity = company.equity.saturating_add(book);
+            company.paid_in = company.paid_in.saturating_add(book);
+            company.adv = (i128::from(company.adv) * i128::from(company.shares)
+                / i128::from(old_shares))
+            .clamp(1, i128::from(i64::MAX)) as i64;
+            company.depth = (company.adv / 40).max(1);
         }
-        company.adv = (company.shares / 50).max(10);
-        company.depth = (company.adv / 20).max(1);
+        if let Some(model) = model {
+            self.move_fair_to(code, model, at);
+        }
         self.rebase_index(before);
         let mut detail = format!("주주 {exercised}주");
-        if institutions > 0 {
+        if !player {
+            detail.push_str(", 나머지 기관·AI 인수");
+        } else if institutions > 0 {
             detail.push_str(&format!(", 실권주 {institutions}주 기관 인수"));
         }
         if dropped > 0 {

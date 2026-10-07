@@ -855,7 +855,7 @@ impl StockMarket {
                         .saturating_add(fill.qty.saturating_mul(fill.price));
                     self.fill_maker(id, fill.qty, fill.price, now, rules);
                 }
-                Source::Buyback => self.fill_buyback(code, fill.qty, fill.price, rules),
+                Source::Buyback => self.fill_buyback(code, fill.qty, fill.price, now, rules),
             }
         }
         let last = fills.last().map_or(0, |fill| fill.price);
@@ -905,11 +905,27 @@ impl StockMarket {
     }
 
     /// 주주가 자사주 매입 호가에 팔았다: 회사 현금으로 사서 바로 소각한다 (회사가 내는 수수료는 금고로).
-    fn fill_buyback(&mut self, code: &str, qty: i64, price: i64, rules: &StockRules) {
+    fn fill_buyback(&mut self, code: &str, qty: i64, price: i64, now: i64, rules: &StockRules) {
         let notional = qty.saturating_mul(price);
         let fee = rules.fee(notional);
         self.to_treasury(fee, format!("{code} 자사주 매입 수수료"));
         self.stats.fees = self.stats.fees.saturating_add(fee);
+        if self
+            .companies
+            .get(code)
+            .is_some_and(|company| !company.is_player())
+        {
+            if let Some(buyback) = self
+                .companies
+                .get_mut(code)
+                .and_then(|company| company.buyback.as_mut())
+            {
+                buyback.budget = (buyback.budget - notional - fee).max(0);
+                buyback.bought += qty;
+            }
+            self.retire_system_shares(code, qty, notional + fee, now);
+            return;
+        }
         let before = self.listed_cap_sum();
         if let Some(company) = self.companies.get_mut(code) {
             company.shares = (company.shares - qty).max(1);
@@ -1168,6 +1184,31 @@ impl StockMarket {
         }
         self.rebase_index(before);
         (outcome.filled, outcome.notional + fee)
+    }
+
+    /// 시스템 회사 자사주 매입 체결: 호가창을 거치지 않고 (따로 세지 않는) 유통 주식을 호가 중심에 사서
+    /// 소각한다. 사들이는 것 자체로는 주가를 밀어 올리지 않는다 (매입 공시가 이미 투자 심리에 들어갔다).
+    pub(super) fn buy_back_float(
+        &mut self,
+        code: &str,
+        budget: i64,
+        now: i64,
+        rules: &StockRules,
+    ) -> (i64, i64) {
+        let Some(company) = self.companies.get(code) else {
+            return (0, 0);
+        };
+        if self.trading_open(company, rules, now).is_err() || budget <= 0 {
+            return (0, 0);
+        }
+        let price = company.quote_mid().max(1);
+        let qty = (budget / price).min(company.shares - 1);
+        if qty <= 0 {
+            return (0, 0);
+        }
+        let spent = qty.saturating_mul(price);
+        self.retire_system_shares(code, qty, spent, now);
+        (qty, spent)
     }
 }
 
