@@ -1517,7 +1517,10 @@ pub async fn company_ipo(
 #[poise::command(
     slash_command,
     rename = "배당",
-    description_localized("ko", "내 회사의 현금배당을 결정합니다 (다음 게임일에 지급).")
+    description_localized(
+        "ko",
+        "내 회사의 현금배당을 결정합니다 (다음 게임일에 지급, 대표 지분 보호예수 중에는 불가)."
+    )
 )]
 pub async fn company_dividend(
     ctx: Context<'_>,
@@ -1734,7 +1737,7 @@ pub async fn company_describe(
     rename = "해산",
     description_localized(
         "ko",
-        "회사를 해산합니다 (상장사는 대표 지분 50% 이상일 때 청산·상장폐지)."
+        "회사를 해산합니다 (상장사는 보호예수가 끝나고 대표 지분 50% 이상일 때 청산·상장폐지)."
     )
 )]
 pub async fn company_dissolve(

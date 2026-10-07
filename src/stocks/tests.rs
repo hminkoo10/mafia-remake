@@ -544,6 +544,17 @@ fn listed_company(market: &mut StockMarket) -> (String, i64) {
     (code, now)
 }
 
+/// 대표(1번) 지분 보호예수가 끝났다고 친다 (배당·청산 계산만 보는 테스트).
+fn end_lockup(market: &mut StockMarket, code: &str, now: i64) {
+    if let Some(position) = market
+        .accounts
+        .get_mut(&1)
+        .and_then(|account| account.positions.get_mut(code))
+    {
+        position.lockup_until = now;
+    }
+}
+
 /// 서버 별명이 바뀌면 주주 명부·주문·회사 대표 이름을 고친다 (웹이 다시 그리도록 판을 올린다).
 #[test]
 fn renaming_users_updates_the_shareholder_register() {
@@ -611,6 +622,7 @@ fn a_declared_dividend_is_paid_next_day_and_keeps_wealth_neutral() {
     let rules = quiet();
     let mut market = market();
     let (code, now) = listed_company(&mut market);
+    end_lockup(&mut market, &code, now);
     let shares = market.companies[&code].shares;
     let equity = market.companies[&code].equity;
     assert!(
@@ -762,6 +774,7 @@ fn a_founder_with_a_majority_can_dissolve_and_everyone_gets_book_value() {
     let rules = quiet();
     let mut market = market();
     let (code, now) = listed_company(&mut market);
+    end_lockup(&mut market, &code, now);
     assert!(market.dissolve(2, &code, now, &rules).is_err(), "대표만");
     let equity = market.companies[&code].equity;
     let shares = market.companies[&code].shares;
@@ -786,6 +799,34 @@ fn a_founder_with_a_majority_can_dissolve_and_everyone_gets_book_value() {
     assert!(matches!(
         market.companies[&code].status,
         CompanyStatus::Delisted { .. }
+    ));
+}
+
+/// 상장 뒤 대표 지분 보호예수 동안에는 배당·청산으로 공모 대금을 나눠 갖지 못한다 (기관·AI 납입금은
+/// 새로 생기는 코인이라, 비싸게 공모하고 바로 청산하면 코인을 찍어 낼 수 있었다). 풀리면 할 수 있다.
+#[test]
+fn the_founder_cannot_cash_out_during_the_lockup() {
+    let rules = quiet();
+    let mut market = market();
+    let (code, now) = listed_company(&mut market);
+    let until = market.accounts[&1].positions[&code].lockup_until;
+    assert!(until > now);
+    let error = market.dissolve(1, &code, now, &rules).unwrap_err();
+    assert!(error.contains("보호예수"), "{error}");
+    let error = market
+        .declare_dividend(1, &code, 100, now, &rules)
+        .unwrap_err();
+    assert!(error.contains("보호예수"), "{error}");
+    assert_eq!(market.companies[&code].status, CompanyStatus::Listed);
+    assert!(market.companies[&code].pending_dividend.is_none());
+    // 보호예수가 풀리면 배당도 청산도 된다.
+    market
+        .declare_dividend(1, &code, 100, until, &rules)
+        .unwrap();
+    market.dissolve(1, &code, until, &rules).unwrap();
+    assert!(matches!(
+        market.companies[&code].status,
+        CompanyStatus::Liquidating { .. }
     ));
 }
 
@@ -1583,6 +1624,7 @@ fn account_history_records_every_settled_movement() {
     let rules = quiet();
     let mut market = market();
     let (code, now) = listed_company(&mut market);
+    end_lockup(&mut market, &code, now);
     sell(&mut market, 2, &code, 10, None, now).unwrap();
     buy(&mut market, 2, "100010", 2, None, 1_000_000, now).unwrap();
     market.declare_dividend(1, &code, 100, now, &rules).unwrap();

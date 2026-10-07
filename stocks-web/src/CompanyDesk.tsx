@@ -260,7 +260,7 @@ function IpoForm({ detail, rules, busy, run }: { detail: CompanyDetail; rules: S
           공모가는 주당 순자산의 0.8~3배({won(low)}~{won(high)}), 공모 주식은 {won(minShares)}~{won(detail.shares)}주입니다. 청약은 1게임일 동안
           받고, 모인 대금에서 수수료 {bpText(rules.ipo_fee_bp)}를 뺀 만큼이 회사 현금이 됩니다. 공모가가 주당 순자산에 가까울수록 기관이 공모
           주식의 최대 30%를 받아 가 상장 뒤 시장에서 거래되는 물량이 됩니다 (순자산의 2배 이상이면 기관은 받지 않음). 상장하면 대표 지분은
-          {rules.lockup_days}게임일 동안 팔 수 없습니다.
+          {rules.lockup_days}게임일 동안 팔 수 없고, 그동안 배당·해산도 할 수 없습니다.
           {tooSmall && ` 자본총계가 ${won(rules.listing_min_equity)} 이상이어야 상장할 수 있습니다.`}
         </>
       }
@@ -292,7 +292,7 @@ function DividendForm({ detail, busy, run }: { detail: CompanyDetail; busy: bool
       hint={
         pending
           ? `주당 ${won(detail.pending_dividend!.per_share)} 배당이 지급을 기다리고 있습니다.`
-          : `회사 현금에서 주주에게 보유 주식 수만큼 나눠 줍니다. 다음 게임일이 시작될 때 지급됩니다. (최대 주당 ${won(Math.floor(detail.equity / Math.max(1, detail.shares)))})`
+          : `회사 현금에서 주주에게 보유 주식 수만큼 나눠 줍니다. 다음 게임일이 시작될 때 지급되고, 상장 뒤 대표 지분 보호예수 동안에는 할 수 없습니다. (최대 주당 ${won(Math.floor(detail.equity / Math.max(1, detail.shares)))})`
       }
       submit={total > 0 ? `총 ${won(total)} 배당` : "배당 결정"}
       disabled={pending || perShare <= 0 || total > detail.equity}
@@ -424,7 +424,7 @@ function DissolveForm({ detail, listed, busy, run }: { detail: CompanyDetail; li
       title="해산"
       hint={
         listed
-          ? "대표 지분이 50% 이상이어야 합니다. 1게임일 거래정지 뒤 남은 회사 현금을 주주에게 주식 수만큼 나누고 상장폐지합니다. 되돌릴 수 없습니다."
+          ? "대표 지분 보호예수가 끝나고 대표 지분이 50% 이상이어야 합니다. 1게임일 거래정지 뒤 남은 회사 현금을 주주에게 주식 수만큼 나누고 상장폐지합니다. 되돌릴 수 없습니다."
           : "비상장 회사는 바로 해산되고, 남은 회사 현금을 돌려받습니다. 되돌릴 수 없습니다."
       }
       submit="해산 결정"

@@ -2,7 +2,7 @@
 // (배당·유상증자·자사주·위험도·청산), 관리종목·파산·정리매매·상장폐지, 시스템 회사 신규 상장
 
 use super::catalog::{random_company_name, valid_company_name};
-use super::market::TickReport;
+use super::market::{TickReport, duration_text};
 use super::model::*;
 use super::price::*;
 use rand::{Rng, RngCore};
@@ -1677,6 +1677,30 @@ impl StockMarket {
         Ok(company)
     }
 
+    /// 상장 뒤 대표 지분이 보호예수 중이면 배당·청산을 막는다: 공모로 들어온 돈(기관·AI 납입금은 새로
+    /// 생기는 코인)을 상장하자마자 대표가 나눠 갖지 못하게.
+    fn check_founder_lockup(
+        &self,
+        user: u64,
+        code: &str,
+        now: i64,
+        what: &str,
+    ) -> Result<(), String> {
+        let until = self
+            .accounts
+            .get(&user)
+            .and_then(|account| account.positions.get(code))
+            .filter(|position| position.lockup_qty > 0 && now < position.lockup_until)
+            .map(|position| position.lockup_until);
+        match until {
+            Some(until) => Err(format!(
+                "대표 지분 보호예수 기간에는 {what}할 수 없습니다 ({} 뒤 풀림).",
+                duration_text(until - now)
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// 공모 청약을 연다 (비상장 → 청약 1게임일 → 상장).
     pub fn start_ipo(
         &mut self,
@@ -1876,7 +1900,7 @@ impl StockMarket {
         Ok(subscription.deposit)
     }
 
-    /// 현금배당 결정 (다음 게임일 시작에 그때 주주에게 지급).
+    /// 현금배당 결정 (다음 게임일 시작에 그때 주주에게 지급). 대표 지분 보호예수 중에는 못 한다.
     pub fn declare_dividend(
         &mut self,
         user: u64,
@@ -1889,6 +1913,8 @@ impl StockMarket {
         if company.status != CompanyStatus::Listed {
             return Err("상장된 회사만 배당할 수 있습니다.".to_string());
         }
+        // 회사 현금을 모두 배당하면 청산과 같다.
+        self.check_founder_lockup(user, code, now, "배당")?;
         if company.pending_dividend.is_some() {
             return Err("이미 결정한 배당이 지급을 기다리고 있습니다.".to_string());
         }
@@ -2310,8 +2336,8 @@ impl StockMarket {
         Ok(())
     }
 
-    /// 해산·청산: 비상장이면 바로 자본을 대표에게 돌려주고, 상장사면 대표가 지분 50% 이상일 때
-    /// 1게임일 거래정지 뒤 남은 자본을 주주에게 나누고 상장폐지한다.
+    /// 해산·청산: 비상장이면 바로 자본을 대표에게 돌려주고, 상장사면 대표 지분 보호예수가 끝났고 대표가
+    /// 지분 50% 이상일 때 1게임일 거래정지 뒤 남은 자본을 주주에게 나누고 상장폐지한다.
     pub fn dissolve(
         &mut self,
         user: u64,
@@ -2352,6 +2378,7 @@ impl StockMarket {
                 }
             }
             CompanyStatus::Listed => {
+                self.check_founder_lockup(user, code, now, "청산")?;
                 let owned = self
                     .accounts
                     .get(&user)
