@@ -4,9 +4,8 @@
 #![allow(unused_imports, clippy::too_many_arguments, clippy::collapsible_if)]
 
 use super::{
-    COMPLETED_REPLAY_LIMIT, CONFIRM_VOTE_SECONDS, Context, ContractorContractDraft,
-    DAY_EXTENSION_VOTE_SECONDS, DISCUSSION_EXTENSION_SECONDS, Data, Error, PRIVATE_CHAT_ROLES,
-    RunningGame,
+    COMPLETED_REPLAY_LIMIT, CONFIRM_VOTE_SECONDS, Context, ContractorContractDraft, Data, Error,
+    PRIVATE_CHAT_ROLES, RunningGame,
 };
 use crate::channel::*;
 use crate::commands::{draw_lb_text, fill_circle, fill_rect, image_color, truncate_for_board};

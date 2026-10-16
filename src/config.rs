@@ -20,6 +20,9 @@ pub struct BotConfig {
     pub night_seconds: u64,
     #[serde(default = "default_discussion_seconds")]
     pub discussion_seconds: u64,
+    /// 낮 토론 중 생존자가 `시간 연장`을 누를 때마다 늘어나는 토론 시간(초). 한 사람은 낮마다 한 번. 0이면 끈다.
+    #[serde(default = "default_day_extension_seconds")]
+    pub day_extension_seconds: u64,
     pub vote_seconds: u64,
     #[serde(default = "default_chat_slowmode_seconds")]
     pub chat_slowmode_seconds: u64,
@@ -279,6 +282,13 @@ const fn default_joker_count() -> u32 {
 const fn default_discussion_seconds() -> u64 {
     60
 }
+
+const fn default_day_extension_seconds() -> u64 {
+    15
+}
+
+/// 한 사람이 누를 때 늘어나는 낮 토론 시간의 상한 (생존자 수만큼 쌓이므로 너무 길지 않게).
+pub const MAX_DAY_EXTENSION_SECONDS: u64 = 300;
 
 const fn default_recruitment_seconds() -> u64 {
     60

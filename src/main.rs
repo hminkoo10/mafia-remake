@@ -2,7 +2,7 @@ use anyhow::{Context as AnyhowContext, Result};
 use chrono::{SecondsFormat, Utc};
 use dashmap::DashMap;
 use mafia_remake::game::MafiaGame;
-use mafia_remake::model::{Player, Role, Winner};
+use mafia_remake::model::{Phase, Player, Role, Winner};
 use mafia_remake::{config, stats};
 use poise::serenity_prelude as serenity;
 use serde_json::{Value, json};
@@ -18,8 +18,6 @@ use std::{
 use tokio::sync::{Notify, RwLock};
 
 const MAX_GAME_PLAYERS: usize = 24;
-const DAY_EXTENSION_VOTE_SECONDS: u64 = 10;
-const DISCUSSION_EXTENSION_SECONDS: u64 = 60;
 const CONFIRM_VOTE_SECONDS: u64 = 15;
 const COMPLETED_REPLAY_LIMIT: usize = 100;
 const GAME_NOTIFICATION_ROLE: &str = "게임알림";
@@ -243,9 +241,8 @@ struct RunningGame {
     final_defense_user_id: Option<u64>,
     day_skip_voter_ids: HashSet<u64>,
     day_skip_confirmed: bool,
-    day_extension_voter_ids: HashSet<u64>,
-    day_extension_active: bool,
-    day_extension_confirmed: bool,
+    /// 오늘 낮에 토론 시간을 연장한 생존자 (한 사람은 낮마다 한 번).
+    day_extender_ids: HashSet<u64>,
     night_timed_events_due: bool,
     contractor_contract_drafts: HashMap<u64, ContractorContractDraft>,
     /// Activity 프론트엔드에 표시할 밤 행동 결과 (user_id → 결과 텍스트)
@@ -274,6 +271,50 @@ impl RunningGame {
             .elapsed()
             .as_millis()
             .min(u128::from(u64::MAX)) as u64
+    }
+
+    /// 생존자 `user_id`가 낮 토론 시간을 `seconds`초 연장한다 (한 사람은 낮마다 한 번). 성공하면 새 마감
+    /// 시각을, 안 되면 사용자에게 보일 이유를 돌려준다.
+    fn extend_day_discussion(
+        &mut self,
+        user_id: u64,
+        seconds: u64,
+        now: Instant,
+    ) -> std::result::Result<Instant, String> {
+        if seconds == 0 {
+            return Err("토론 시간 연장이 꺼져 있습니다.".to_string());
+        }
+        let deadline = self
+            .phase_deadline
+            .filter(|deadline| *deadline > now)
+            .filter(|_| self.game.phase == Phase::Day && !self.day_skip_confirmed)
+            .ok_or_else(|| "지금은 토론 시간을 연장할 수 없습니다.".to_string())?;
+        if !self
+            .game
+            .get_player(user_id)
+            .is_some_and(|player| player.alive)
+        {
+            return Err("생존 중인 참가자만 시간을 연장할 수 있습니다.".to_string());
+        }
+        if !self.day_extender_ids.insert(user_id) {
+            return Err(
+                "오늘 낮에는 이미 시간을 연장했습니다. 연장은 낮마다 한 번만 할 수 있습니다."
+                    .to_string(),
+            );
+        }
+        let extended = deadline + std::time::Duration::from_secs(seconds);
+        self.phase_deadline = Some(extended);
+        let extension_count = self.day_extender_ids.len();
+        self.record_replay_event(
+            "day_extension",
+            Some(user_id),
+            &[],
+            json!({
+                "seconds": seconds,
+                "extension_count": extension_count,
+            }),
+        );
+        Ok(extended)
     }
 
     fn role_team_key(role: Role) -> &'static str {

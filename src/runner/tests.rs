@@ -622,3 +622,68 @@ fn non_anonymous_select_values_keep_user_ids() {
         Some(Some(3))
     );
 }
+
+/// `시간 연장`: 생존자는 낮마다 한 번, 누를 때마다 토론 마감이 설정한 초만큼 늦춰진다.
+#[test]
+fn each_living_player_extends_the_day_discussion_once() {
+    let mut running = dead_chat_test_running();
+    running.game.phase = Phase::Day;
+    let now = Instant::now();
+    let deadline = now + Duration::from_secs(30);
+    running.phase_deadline = Some(deadline);
+    let ids = running
+        .game
+        .players
+        .iter()
+        .map(|player| player.user_id)
+        .collect::<Vec<_>>();
+
+    let first = running.extend_day_discussion(ids[0], 15, now).unwrap();
+    assert_eq!(first, deadline + Duration::from_secs(15));
+    assert_eq!(running.phase_deadline, Some(first));
+    let again = running.extend_day_discussion(ids[0], 15, now).unwrap_err();
+    assert!(again.contains("이미"), "{again}");
+    let second = running.extend_day_discussion(ids[1], 15, now).unwrap();
+    assert_eq!(
+        second,
+        deadline + Duration::from_secs(30),
+        "다른 생존자는 또 늘린다"
+    );
+
+    if let Some(player) = running
+        .game
+        .players
+        .iter_mut()
+        .find(|player| player.user_id == ids[2])
+    {
+        player.alive = false;
+    }
+    let dead = running.extend_day_discussion(ids[2], 15, now).unwrap_err();
+    assert!(dead.contains("생존"), "{dead}");
+    let off = running.extend_day_discussion(ids[3], 0, now).unwrap_err();
+    assert!(off.contains("꺼져"), "{off}");
+    running.day_skip_confirmed = true;
+    assert!(
+        running.extend_day_discussion(ids[3], 15, now).is_err(),
+        "바로 투표가 정해지면 못 늘린다"
+    );
+    running.day_skip_confirmed = false;
+    assert!(
+        running
+            .extend_day_discussion(ids[3], 15, second + Duration::from_secs(1))
+            .is_err(),
+        "마감이 지나면 못 늘린다"
+    );
+    running.game.phase = Phase::Vote;
+    assert!(running.extend_day_discussion(ids[3], 15, now).is_err());
+
+    // 거절된 시도는 아무것도 바꾸지 않는다.
+    assert_eq!(running.phase_deadline, Some(second));
+    assert_eq!(running.day_extender_ids.len(), 2);
+    let recorded = running
+        .replay_events
+        .iter()
+        .filter(|event| event["kind"] == "day_extension")
+        .count();
+    assert_eq!(recorded, 2);
+}

@@ -987,7 +987,6 @@ async fn action_handler(
             );
             if vote_count >= required_votes {
                 running.day_skip_confirmed = true;
-                running.day_extension_active = false;
                 running.day_notify.notify_waiters();
             }
             Ok(None)

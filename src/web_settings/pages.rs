@@ -972,7 +972,7 @@ Authorization: Bearer mfr_...</pre></section>
 <section class="panel"><h2>보호 관리 API</h2>{protected_rows}</section>
 <section class="panel"><h2>관리 작업 본문</h2><pre>POST {protected_api_url}/games/{{guild_id}}/actions
 {{"action":"skip_day"}}   # 낮 토론 즉시 종료
-{{"action":"extend_day"}} # 연장 투표 중 1분 연장 승인
+{{"action":"extend_day"}} # 낮 토론 시간을 설정한 초만큼 연장
 {{"action":"stop"}}       # 게임 종료
 
 POST {protected_api_url}/recruitments/{{guild_id}}/actions
@@ -1094,6 +1094,7 @@ pub(crate) fn config_value(config: &BotConfig, name: &str) -> String {
         "recruitment_seconds" => config.recruitment_seconds.to_string(),
         "night_seconds" => config.night_seconds.to_string(),
         "discussion_seconds" => config.discussion_seconds.to_string(),
+        "day_extension_seconds" => config.day_extension_seconds.to_string(),
         "vote_seconds" => config.vote_seconds.to_string(),
         "chat_slowmode_seconds" => config.chat_slowmode_seconds.to_string(),
         "attendance_coins" => config.attendance_coins.to_string(),
@@ -1380,6 +1381,9 @@ pub(crate) fn set_int(
         }
         "night_seconds" => config.night_seconds = value,
         "discussion_seconds" => config.discussion_seconds = value,
+        "day_extension_seconds" => {
+            config.day_extension_seconds = value.min(config::MAX_DAY_EXTENSION_SECONDS)
+        }
         "vote_seconds" => config.vote_seconds = value,
         "chat_slowmode_seconds" => config.chat_slowmode_seconds = value,
         "attendance_coins" => config.attendance_coins = value as i64,

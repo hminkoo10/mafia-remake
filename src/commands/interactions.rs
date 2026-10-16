@@ -669,7 +669,6 @@ pub async fn handle_skip_day(
             .map_err(Into::into);
         }
         running_write.day_skip_confirmed = true;
-        running_write.day_extension_active = false;
         (
             vote_count,
             alive_ids.len(),
@@ -679,6 +678,7 @@ pub async fn handle_skip_day(
     };
     let (vote_count, alive_count, notify, guild_id) = outcome;
     notify.notify_waiters();
+    let extension_seconds = data.config.read().await.day_extension_seconds;
     component
         .create_response(
             ctx,
@@ -691,7 +691,7 @@ pub async fn handle_skip_day(
                         "바로 투표",
                         serenity::Colour::DARK_GREEN,
                     ))
-                    .components(day_skip_components(guild_id, true, true)),
+                    .components(day_skip_components(guild_id, true, true, extension_seconds)),
             ),
         )
         .await?;
@@ -701,6 +701,7 @@ pub async fn handle_skip_day(
     Ok(())
 }
 
+/// `시간 연장`: 생존자가 낮마다 한 번 누를 수 있고, 누를 때마다 토론 시간이 설정한 초만큼 늘어난다.
 pub async fn handle_day_extension(
     ctx: &serenity::Context,
     data: &Data,
@@ -711,97 +712,53 @@ pub async fn handle_day_extension(
         send_component_private(ctx, component, "진행 중인 게임이 없습니다.").await?;
         return Ok(());
     };
+    let seconds = data.config.read().await.day_extension_seconds;
     let user_id = component.user.id.get();
     let outcome = {
         let mut running_write = running.write().await;
-        if !running_write.day_extension_active {
-            return send_component_private(ctx, component, "연장 투표가 종료되었습니다.")
-                .await
-                .map_err(Into::into);
+        let now = Instant::now();
+        match running_write.extend_day_discussion(user_id, seconds, now) {
+            Ok(deadline) => Ok((
+                running_write
+                    .game
+                    .get_player(user_id)
+                    .map(|player| player.name.clone())
+                    .unwrap_or_default(),
+                deadline.saturating_duration_since(now).as_secs(),
+                running_write.day_notify.clone(),
+            )),
+            Err(reason) => Err(reason),
         }
-        if running_write.game.phase != Phase::Day {
-            return send_component_private(ctx, component, "지금 진행 중인 낮 토론이 없습니다.")
-                .await
-                .map_err(Into::into);
-        }
-        let alive_ids = running_write
-            .game
-            .alive_players()
-            .into_iter()
-            .map(|player| player.user_id)
-            .collect::<HashSet<_>>();
-        if !alive_ids.contains(&user_id) {
-            return send_component_private(
-                ctx,
-                component,
-                "생존 중인 참가자만 연장 투표를 할 수 있습니다.",
-            )
-            .await
-            .map_err(Into::into);
-        }
-        let required_votes = majority_required(alive_ids.len());
-        if running_write.day_extension_voter_ids.contains(&user_id) {
-            return send_component_private(
-                ctx,
-                component,
-                format!(
-                    "이미 1분 연장에 투표했습니다. 현재 {}/{}명",
-                    running_write.day_extension_voter_ids.len(),
-                    required_votes
-                ),
-            )
-            .await
-            .map_err(Into::into);
-        }
-        running_write.day_extension_voter_ids.insert(user_id);
-        let vote_count = running_write.day_extension_voter_ids.len();
-        running_write.record_replay_event(
-            "day_extension_vote",
-            Some(user_id),
-            &[],
-            serde_json::json!({
-                "vote_count": vote_count,
-                "required_votes": required_votes,
-                "alive_count": alive_ids.len(),
-                "confirmed": vote_count >= required_votes,
-            }),
-        );
-        if vote_count < required_votes {
-            return send_component_private(
-                ctx,
-                component,
-                format!("1분 연장에 투표했습니다. 현재 {vote_count}/{required_votes}명"),
-            )
-            .await
-            .map_err(Into::into);
-        }
-        running_write.day_extension_confirmed = true;
-        running_write.day_extension_active = false;
-        (
-            vote_count,
-            alive_ids.len(),
-            running_write.day_notify.clone(),
-            running_write.guild_id,
-        )
     };
-    let (vote_count, alive_count, notify, guild_id) = outcome;
+    let (name, remaining, notify) = match outcome {
+        Ok(outcome) => outcome,
+        Err(reason) => {
+            return send_component_private(ctx, component, reason)
+                .await
+                .map_err(Into::into);
+        }
+    };
     notify.notify_waiters();
-    component
-        .create_response(
-            ctx,
-            serenity::CreateInteractionResponse::UpdateMessage(
-                serenity::CreateInteractionResponseMessage::new()
-                    .embed(make_embed(
-                        format!(
-                            "생존자 과반수가 1분 연장을 선택했습니다. ({vote_count}/{alive_count}명)\n낮 토론을 1분 연장합니다."
-                        ),
-                        "낮 토론 연장",
-                        serenity::Colour::DARK_GREEN,
-                    ))
-                    .components(day_extension_components(guild_id, true, true)),
-            ),
-        )
-        .await?;
+    send_component_private(
+        ctx,
+        component,
+        format!(
+            "토론 시간을 {seconds}초 늘렸습니다. (남은 토론 시간 {})",
+            duration_text(remaining)
+        ),
+    )
+    .await?;
+    send_game_embed(
+        ctx,
+        &running,
+        format!("{name}님이 시간을 연장했습니다."),
+        &format!("토론 시간 +{seconds}초"),
+        serenity::Colour::GOLD,
+        vec![],
+        false,
+        true,
+    )
+    .await?;
     if running.read().await.night_timed_events_due {
         trigger_timed_night_events(ctx, data, &running).await?;
     }

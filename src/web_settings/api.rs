@@ -616,6 +616,7 @@ pub(crate) async fn control_game(
     else {
         return Err("game not found".to_string());
     };
+    let extension_seconds = state.config.read().await.day_extension_seconds;
     let notifications = {
         let mut running = running.write().await;
         match action {
@@ -637,16 +638,24 @@ pub(crate) async fn control_game(
                     return Err("skip_day is only available during day discussion".to_string());
                 }
                 running.day_skip_confirmed = true;
-                running.day_extension_active = false;
                 vec![running.day_notify.clone()]
             }
+            // 관리자 작업이라 생존자 한 명당 한 번 제한(`day_extender_ids`)과 상관없이 늘린다.
             "extend_day" => {
-                if running.game.phase != Phase::Day || !running.day_extension_active {
+                if extension_seconds == 0 {
                     return Err(
-                        "extend_day is only available during the day extension vote".to_string()
+                        "day extension is turned off (day_extension_seconds = 0)".to_string()
                     );
                 }
-                running.day_extension_confirmed = true;
+                let now = Instant::now();
+                let deadline = running
+                    .phase_deadline
+                    .filter(|deadline| *deadline > now)
+                    .filter(|_| running.game.phase == Phase::Day && !running.day_skip_confirmed)
+                    .ok_or_else(|| {
+                        "extend_day is only available during day discussion".to_string()
+                    })?;
+                running.phase_deadline = Some(deadline + Duration::from_secs(extension_seconds));
                 vec![running.day_notify.clone()]
             }
             _ => return Err("unsupported game action".to_string()),

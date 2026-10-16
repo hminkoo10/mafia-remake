@@ -15,6 +15,7 @@ fn test_config() -> BotConfig {
         recruitment_seconds: 60,
         night_seconds: 60,
         discussion_seconds: 60,
+        day_extension_seconds: 15,
         vote_seconds: 30,
         chat_slowmode_seconds: 3,
         attendance_coins: 10_000,

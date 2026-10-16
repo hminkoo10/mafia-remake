@@ -26,9 +26,7 @@ pub async fn run_day(
         running_write.final_defense_user_id = None;
         running_write.day_skip_voter_ids.clear();
         running_write.day_skip_confirmed = false;
-        running_write.day_extension_voter_ids.clear();
-        running_write.day_extension_active = false;
-        running_write.day_extension_confirmed = false;
+        running_write.day_extender_ids.clear();
         let mercenary_contracts = running_write.game.receive_mercenary_contracts();
         running_write.record_replay_event(
             "phase_started",
@@ -101,21 +99,33 @@ pub async fn run_day(
         .await;
     }
     let discussion_time = duration_text(discussion_seconds);
+    let extension_seconds = config.day_extension_seconds;
+    let extension_note = if extension_seconds > 0 {
+        format!(
+            "\n생존자는 낮마다 한 번 `시간 연장`을 눌러 토론 시간을 {extension_seconds}초 늘릴 수 있습니다."
+        )
+    } else {
+        String::new()
+    };
     let public_status = running.read().await.game.public_status();
+    // 토론 시간은 낮 안내를 보낼 때부터 센다 (위의 채팅 권한 정리에 걸린 시간은 빼고).
+    running.write().await.phase_deadline =
+        Some(Instant::now() + Duration::from_secs(discussion_seconds));
     let mut day_message = send_game_embed(
         ctx,
         running,
         format!(
-            "{}일차 낮입니다. {discussion_time} 동안 자유롭게 토론하세요.\n생존자 과반이 `바로 투표`를 누르면 토론과 연장을 끝내고 바로 지목 투표로 넘어갑니다.\n시간이 지나면 {DAY_EXTENSION_VOTE_SECONDS}초 동안 1분 연장 투표가 열립니다. 생존자 과반수가 연장을 누르면 1분 연장되고, 연장은 낮마다 1번만 가능합니다. 과반수가 모이지 않으면 바로 투표로 넘어갑니다.\n{public_status}",
+            "{}일차 낮입니다. {discussion_time} 동안 자유롭게 토론하세요.\n생존자 과반이 `바로 투표`를 누르면 토론을 끝내고 바로 지목 투표로 넘어갑니다.{extension_note}\n{public_status}",
             running.read().await.game.day_number
         ),
         "낮 토론",
         serenity::Colour::GOLD,
-        day_skip_components(guild_id, false, false),
+        day_skip_components(guild_id, false, false, extension_seconds),
         false,
         true,
     )
     .await?;
+    let announced_at = Instant::now();
     let mut failed_hackers = Vec::new();
     for actor in hackers {
         if !send_day_single_select(ctx, running, &actor, "hacker", "해킹 대상을 선택하세요").await
@@ -227,164 +237,45 @@ pub async fn run_day(
         )
         .await;
     }
-    let mut extension_used = false;
-    let mut current_discussion_seconds = discussion_seconds;
-    let mut discussion_deadline = Instant::now() + Duration::from_secs(current_discussion_seconds);
+    // 낮 행동 선택지를 보내는 데 걸린 시간은 토론 시간에서 빼지 않는다 (그사이 누른 연장은 그대로).
+    if let Some(deadline) = running.write().await.phase_deadline.as_mut() {
+        *deadline += announced_at.elapsed();
+    }
+    // 토론은 마감 시각(`phase_deadline`, 생존자가 `시간 연장`을 누를 때마다 늦춰진다)까지 이어지고,
+    // 생존자 과반이 `바로 투표`를 누르면 바로 끝난다. 깨우는 알림은 상태를 읽기 전에 등록해 둬서
+    // 그사이에 온 알림을 놓치지 않는다.
     loop {
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(discussion_deadline)) => {
-                    break;
-                }
-                _ = day_notify.notified() => {
-                    let running_read = running.read().await;
-                    if running_read.game.phase == Phase::Ended || running_read.day_skip_confirmed {
-                        break;
-                    }
-                }
-            }
-        }
-        {
+        let notified = day_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let deadline = {
             let running_read = running.read().await;
             if running_read.game.phase == Phase::Ended || running_read.day_skip_confirmed {
-                let _ = day_message
-                    .edit(
-                        &ctx.http,
-                        serenity::EditMessage::new()
-                            .components(day_skip_components(guild_id, true, true)),
-                    )
-                    .await;
-                return Ok(());
+                break;
             }
-        }
-        if extension_used {
-            send_game_embed(
-                ctx,
-                running,
-                "연장된 토론 시간이 종료되었습니다.\n토론 연장은 낮마다 1번만 가능하므로 바로 지목 투표로 넘어갑니다.",
-                "낮 토론 종료",
-                serenity::Colour::GOLD,
-                vec![],
-                false,
-                true,
-            )
-            .await?;
-            let _ = day_message
-                .edit(
-                    &ctx.http,
-                    serenity::EditMessage::new()
-                        .components(day_skip_components(guild_id, true, false)),
-                )
-                .await;
-            return Ok(());
-        }
-
-        let (alive_count, required_votes) = {
-            let mut running_write = running.write().await;
-            let alive_count = running_write.game.alive_players().len();
-            running_write.day_extension_voter_ids.clear();
-            running_write.day_extension_active = true;
-            running_write.day_extension_confirmed = false;
-            running_write.phase_deadline =
-                Some(Instant::now() + Duration::from_secs(DAY_EXTENSION_VOTE_SECONDS));
-            (alive_count, majority_required(alive_count))
+            running_read.phase_deadline
         };
-        let mut extension_message = send_game_embed(
-            ctx,
-            running,
-            format!(
-                "{} 토론 시간이 지났습니다.\n{DAY_EXTENSION_VOTE_SECONDS}초 안에 생존자 과반수({required_votes}/{alive_count}명)가 `1분 연장`을 누르면 낮 토론을 1분 연장합니다.\n과반수가 모이지 않으면 바로 투표로 넘어갑니다.",
-                duration_text(current_discussion_seconds)
-            ),
-            "낮 토론 연장 투표",
-            serenity::Colour::GOLD,
-            day_extension_components(guild_id, false, false),
-            false,
-            true,
-        )
-        .await?;
-        let extension_deadline = Instant::now() + Duration::from_secs(DAY_EXTENSION_VOTE_SECONDS);
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(extension_deadline)) => {
-                    break;
-                }
-                _ = day_notify.notified() => {
-                    let running_read = running.read().await;
-                    if running_read.game.phase == Phase::Ended
-                        || running_read.day_skip_confirmed
-                        || running_read.day_extension_confirmed
-                    {
-                        break;
-                    }
-                }
-            }
-        }
-        let (skip_confirmed, extension_confirmed, extension_votes, phase_ended) = {
-            let mut running_write = running.write().await;
-            running_write.day_extension_active = false;
-            (
-                running_write.day_skip_confirmed,
-                running_write.day_extension_confirmed,
-                running_write.day_extension_voter_ids.len(),
-                running_write.game.phase == Phase::Ended,
-            )
+        let Some(deadline) = deadline.filter(|deadline| *deadline > Instant::now()) else {
+            break;
         };
-        if skip_confirmed {
-            let _ = extension_message
-                .edit(
-                    &ctx.http,
-                    serenity::EditMessage::new()
-                        .embed(make_embed(
-                            "생존자 과반수가 바로 투표를 선택해 연장 투표를 종료합니다.\n바로 지목 투표로 넘어갑니다.",
-                            "바로 투표",
-                            serenity::Colour::DARK_GREEN,
-                        ))
-                        .components(day_extension_components(guild_id, true, false)),
-                )
-                .await;
-            let _ = day_message
-                .edit(
-                    &ctx.http,
-                    serenity::EditMessage::new()
-                        .components(day_skip_components(guild_id, true, true)),
-                )
-                .await;
-            return Ok(());
+        tokio::select! {
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => {}
+            _ = &mut notified => {}
         }
-        if phase_ended {
-            return Ok(());
-        }
-        if extension_confirmed {
-            extension_used = true;
-            current_discussion_seconds = DISCUSSION_EXTENSION_SECONDS;
-            discussion_deadline =
-                Instant::now() + Duration::from_secs(DISCUSSION_EXTENSION_SECONDS);
-            running.write().await.phase_deadline = Some(discussion_deadline);
-            continue;
-        }
-        let _ = extension_message
-            .edit(
-                &ctx.http,
-                serenity::EditMessage::new()
-                    .embed(make_embed(
-                        format!(
-                            "{DAY_EXTENSION_VOTE_SECONDS}초 동안 1분 연장 투표가 과반수에 도달하지 못했습니다. ({extension_votes}/{required_votes}명)\n바로 투표로 넘어갑니다."
-                        ),
-                        "낮 토론 종료",
-                        serenity::Colour::GOLD,
-                    ))
-                    .components(day_extension_components(guild_id, true, false)),
-            )
-            .await;
-        let _ = day_message
-            .edit(
-                &ctx.http,
-                serenity::EditMessage::new().components(day_skip_components(guild_id, true, false)),
-            )
-            .await;
-        return Ok(());
     }
+    let skip_confirmed = running.read().await.day_skip_confirmed;
+    let _ = day_message
+        .edit(
+            &ctx.http,
+            serenity::EditMessage::new().components(day_skip_components(
+                guild_id,
+                true,
+                skip_confirmed,
+                extension_seconds,
+            )),
+        )
+        .await;
+    Ok(())
 }
 
 pub async fn send_day_single_select(

@@ -345,6 +345,7 @@ Discord에서 `/마피아설정` 또는 `/마피아웹설정`으로 게임 중�
 | `default_mafia_count` | 마피아 기본 인원 | 3 |
 | `night_seconds` | 밤 행동 시간(초) | 40 |
 | `discussion_seconds` | 낮 토론 시간(초) | 60 |
+| `day_extension_seconds` | 낮 토론 중 생존자가 `시간 연장`을 누를 때마다 늘어나는 시간(초). 한 사람은 낮마다 한 번, 0이면 버튼을 숨김 (최대 300) | 15 |
 | `vote_seconds` | 투표 시간(초) | 20 |
 | `reveal_death_roles` | 사망 시 역할 공개 여부 | false |
 | `show_confirmation_vote_counts` | 찬반투표 집계 공개 여부 | true |

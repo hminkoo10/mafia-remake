@@ -731,6 +731,12 @@ const WEB_CONFIG_FIELDS: &[WebConfigField] = &[
         WebFieldKind::Int,
         Some(1),
     ),
+    field(
+        "day_extension_seconds",
+        "낮 토론 연장(초, 생존자 한 명이 낮마다 한 번 누를 때마다, 0이면 끔)",
+        WebFieldKind::Int,
+        Some(0),
+    ),
     field("vote_seconds", "투표 시간(초)", WebFieldKind::Int, Some(1)),
     field(
         "chat_slowmode_seconds",
@@ -1237,6 +1243,7 @@ const WEB_CONFIG_CATEGORIES: &[WebConfigCategory] = &[
             "recruitment_seconds",
             "night_seconds",
             "discussion_seconds",
+            "day_extension_seconds",
             "vote_seconds",
             "chat_slowmode_seconds",
             "reveal_death_roles",

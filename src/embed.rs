@@ -338,12 +338,15 @@ pub fn duration_text(seconds: u64) -> String {
     }
 }
 
+/// 낮 토론 버튼: `바로 투표`(생존자 과반이면 토론 끝)와, `extension_seconds`가 0보다 크면
+/// `시간 연장`(생존자 한 명이 낮마다 한 번, 누를 때마다 토론 시간이 그만큼 늘어난다).
 pub fn day_skip_components(
     guild_id: serenity::GuildId,
     disabled: bool,
     confirmed: bool,
+    extension_seconds: u64,
 ) -> Vec<serenity::CreateActionRow> {
-    vec![serenity::CreateActionRow::Buttons(vec![
+    let mut buttons = vec![
         serenity::CreateButton::new(format!("skipday:{}", guild_id.get()))
             .label(if confirmed {
                 "투표 확정"
@@ -352,7 +355,16 @@ pub fn day_skip_components(
             })
             .style(serenity::ButtonStyle::Primary)
             .disabled(disabled),
-    ])]
+    ];
+    if extension_seconds > 0 {
+        buttons.push(
+            serenity::CreateButton::new(format!("extendday:{}", guild_id.get()))
+                .label(format!("시간 연장 (+{extension_seconds}초)"))
+                .style(serenity::ButtonStyle::Secondary)
+                .disabled(disabled),
+        );
+    }
+    vec![serenity::CreateActionRow::Buttons(buttons)]
 }
 
 /// 최후변론 대상자 전용 `발언 종료` 버튼. 대상자가 누르면 남은 시간을 기다리지
@@ -367,23 +379,6 @@ pub fn final_defense_components(
         serenity::CreateButton::new(format!("enddefense:{}", guild_id.get()))
             .label("발언 종료")
             .style(serenity::ButtonStyle::Danger)
-            .disabled(disabled),
-    ])]
-}
-
-pub fn day_extension_components(
-    guild_id: serenity::GuildId,
-    disabled: bool,
-    confirmed: bool,
-) -> Vec<serenity::CreateActionRow> {
-    vec![serenity::CreateActionRow::Buttons(vec![
-        serenity::CreateButton::new(format!("extendday:{}", guild_id.get()))
-            .label(if confirmed {
-                "연장 확정"
-            } else {
-                "1분 연장"
-            })
-            .style(serenity::ButtonStyle::Secondary)
             .disabled(disabled),
     ])]
 }
@@ -561,6 +556,20 @@ mod tests {
         let json = serde_json::to_value(final_defense_components(serenity::GuildId::new(7), false))
             .unwrap();
         assert_eq!(json[0]["components"][0]["custom_id"], "enddefense:7");
+    }
+
+    /// 낮 토론 메시지에는 `바로 투표` 옆에 `시간 연장 (+N초)`가 붙고, 연장이 꺼져 있으면 없다.
+    #[test]
+    fn day_buttons_offer_an_extension_unless_it_is_off() {
+        let guild = serenity::GuildId::new(7);
+        let json = serde_json::to_value(day_skip_components(guild, false, false, 15)).unwrap();
+        let buttons = json[0]["components"].as_array().unwrap();
+        assert_eq!(buttons.len(), 2);
+        assert_eq!(buttons[0]["custom_id"], "skipday:7");
+        assert_eq!(buttons[1]["custom_id"], "extendday:7");
+        assert_eq!(buttons[1]["label"], "시간 연장 (+15초)");
+        let off = serde_json::to_value(day_skip_components(guild, false, false, 0)).unwrap();
+        assert_eq!(off[0]["components"].as_array().unwrap().len(), 1);
     }
 }
 
